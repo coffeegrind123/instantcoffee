@@ -75,6 +75,7 @@ Then point Claude Code at it:
 | `./scripts/update.sh` | Update llama.cpp **and** forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `./scripts/claude-local.sh` | Launch Claude Code against the local model, primed for it |
+| `./scripts/pi-local.sh` | Launch the pi coding agent against the local model |
 | `./scripts/download-ik-model.sh` | Fetch the recipe model for the `ik` backend (852 shards, resumable) |
 | `./scripts/download-model.sh` | Fetch the single-file GGUF for the `mainline` backend |
 
@@ -211,6 +212,66 @@ Use `host.docker.internal` instead of `localhost` if you run Claude Code inside 
 container. Note this calls `~/.local/bin/claude` directly, so it does not recurse
 through your existing `claude` alias.
 
+## Using it with pi (pi.dev)
+
+```bash
+./scripts/pi-local.sh                 # start a session
+./scripts/pi-local.sh --install-only  # just write the provider config
+./scripts/pi-local.sh -p "summarize"  # any pi flag passes through
+```
+
+pi has no "point at a proxy" flag — custom providers live in
+`~/.pi/agent/models.json`. The script generates that entry from `.env`, so the
+model id, context window and port cannot drift from what the stack serves. It
+*merges* into the file rather than overwriting, since pi keeps other providers
+there too.
+
+What it writes, and why each field:
+
+```json
+{
+  "providers": {
+    "forge": {
+      "baseUrl": "http://localhost:8081/v1",
+      "api": "openai-completions",
+      "apiKey": "local",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        { "id": "qwen3.6-27b", "contextWindow": 65536, "maxTokens": 16384 }
+      ]
+    }
+  }
+}
+```
+
+- **`openai-completions`, not `anthropic-messages`.** forge speaks both, but the
+  OpenAI endpoint is the short path (pi → forge → llama.cpp). Routing via
+  Anthropic would add a translation hop that drops `cache_control` and
+  `thinking` for no gain.
+- **`apiKey: "local"`** — pi hides models it considers unauthenticated, so even a
+  keyless local server needs a placeholder.
+- **`compat` both false** — llama.cpp's chat templates don't know the `developer`
+  role, and `reasoning_effort` is an OpenAI-ism it doesn't implement. pi's own
+  docs flag this for exactly this class of server.
+- **`maxTokens` well under `contextWindow`** — with `--no-context-shift` an
+  overflowing request fails loudly, and an agent loop's prompt grows every turn.
+- **`baseUrl` host** — the script uses `host.docker.internal` when it detects it
+  is running inside a container, `localhost` otherwise.
+
+**Not using pi's `/llama` integration.** pi can manage its own llama.cpp router
+and models. That would bypass forge completely and lose every guardrail this
+repo exists to provide, so the model is registered as a plain custom provider
+instead.
+
+pi is minimal by design — no MCP, no sub-agents — so it needs far less trimming
+than Claude Code. The one flag that matters is `-nc`, which the script passes:
+it skips `AGENTS.md`/`CLAUDE.md` discovery, and pi walks parent directories
+looking for those. On a 64K window they are a real fraction of the budget. Drop
+`-nc` from the script when you do want project conventions loaded.
+
 ### What does not survive the trip
 
 forge translates Anthropic requests to OpenAI for llama.cpp, and Anthropic-only
@@ -271,6 +332,7 @@ scripts/
   smoke_test.py         end-to-end checks (runs inside the compose network)
   download_model.py     resumable GGUF fetch
   claude-local.sh       launch Claude Code primed for the local model
+  pi-local.sh           launch the pi coding agent against forge
   claude-code-env.sh    source this to redirect the API only
 context/design/         why things are the way they are
 ```
