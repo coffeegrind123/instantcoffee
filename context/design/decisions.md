@@ -159,12 +159,6 @@ Three external configurations were reviewed. Flags were checked against
 
 **Rejected:**
 
-- **ik_llama.cpp / Thireus GGUF Tool Suite.** Genuinely better perplexity-per-byte via
-  per-tensor recipe quantization. Rejected anyway: it is a *fork* requiring a
-  from-source build, which throws away the pinned upstream image that makes this repo
-  reproducible, and its 399-shard download pipeline is far more fragile than one file
-  on a link that already struggles at ~2.6 MB/s. Its `-amb` flag does not exist in
-  mainline. The quality gain does not pay for the operational cost here.
 - **`--reasoning-preserve`.** Real flag, but it governs how llama.cpp carries reasoning
   through chat history — and forge owns that concern via `--reasoning-replay`, sending
   a full message list every turn. Redundant at best, conflicting at worst.
@@ -184,3 +178,52 @@ is wrong — the real per-token cost is ~4x what those numbers imply.
   200 stream. This is a documented forge limitation, not something this repo can fix.
 - **Multi-model routing.** One model, one GPU, one slot (`-np 1`) so the single user
   gets the whole context window.
+
+
+## Reversal: ik_llama.cpp was adopted after all
+
+This route was rejected in an earlier pass, on two objections that turned out to be
+false. Both were checkable rather than arguable, and checking took minutes:
+
+1. *"The fork will not have the architecture."* It does — `LLM_ARCH_QWEN35` (plus
+   `LLM_ARCH_QWEN3NEXT`) is in `src/llama-arch.cpp`.
+2. *"Its server will not do native tool calling, forcing forge into prompt-injection
+   mode."* It does — `--jinja`, `--reasoning-format`, `--reasoning-budget` and
+   `--chat-template-kwargs` are all in `common/common.cpp`, and the fork carries
+   `chat.cpp` with PEG/auto tool-call parsers.
+
+A third objection was simply out of date: the fork publishes **prebuilt Ubuntu CUDA
+binaries** with the CUDA runtime bundled, so there is no from-source build. A 1.3 GB
+download replaces a 30-60 minute compile.
+
+Worth recording how the first check nearly went wrong. `gh search code` returned zero
+hits for both `qwen3_5` and `jinja` in the fork — which looks like confirmation of the
+rejection. It was an artifact: **GitHub code search does not index forks.** The control
+(fetching a file known to exist) failed too, showing the method was broken rather than
+the feature absent. A negative result is worth nothing until the control passes.
+
+### What the ik route actually buys
+
+The recipe ladder for this model, all GPU-resident:
+
+| bpw | Size | Perplexity |
+| --- | --- | --- |
+| 3.4009 | 10 GB | 7.0303 |
+| 4.2512 | 13 GB | 6.9155 |
+| **5.1014** | **15 GB** | **6.9014** |
+| 6.8018 | 21 GB | 6.9001 |
+
+Perplexity is flat above 15 GB — the 21 GB recipe buys 0.0013 for 6 GB. The 15 GB rung
+is chosen because it is *both* smaller than the 17.9 GB unsloth 4-bit file *and* higher
+precision (5.1 bpw), which is what frees VRAM for context rather than spending it on
+weights.
+
+### Costs accepted
+
+- **852 shards instead of one file.** Needs `ulimit -n` raised; the default 1024 fails
+  mid-load as "too many open files" with nothing naming shards as the cause.
+- **The model is engine-locked.** `iq4_ks`/`iq5_ks`/`iq6_k` do not exist in mainline, so
+  these weights only ever run under ik_llama. The mainline profile is kept for exactly
+  this reason.
+- **`avx2` build, deliberately.** This host is a Ryzen 9 3900X with no AVX512; an
+  avx512 archive would SIGILL at start.
