@@ -144,13 +144,50 @@ source scripts/claude-code-env.sh   # must be sourced, not executed
 claude
 ```
 
-It sets `ANTHROPIC_BASE_URL` to the forge proxy plus a dummy `ANTHROPIC_AUTH_TOKEN`
-(forge relocates exactly one credential to the backend; llama.cpp ignores it). Open a
-new shell to go back to the hosted API.
+It sets `ANTHROPIC_BASE_URL` to the forge proxy plus a dummy `ANTHROPIC_AUTH_TOKEN`,
+and unsets `ANTHROPIC_API_KEY` — forge refuses any request carrying *two* credentials,
+and a leftover key in the environment is the usual way that happens. Open a new shell
+to go back to the hosted API.
 
 forge serves the Anthropic Messages API on `/v1/messages` and the OpenAI
 chat-completions API on `/v1/chat/completions`, so opencode, Continue, aider and
 anything else OpenAI-shaped work against the same port.
+
+### Give it enough context
+
+Claude Code's system prompt plus its tool schemas is already a five-figure token
+count before your first message, and every connected MCP server adds more. The
+default `CTX_SIZE=32768` is fine for API use but tight for Claude Code. For that
+workload, put this in `.env.local`:
+
+```
+CTX_SIZE=65536
+LLAMA_EXTRA_FLAGS=-ctk q8_0 -ctv q8_0
+```
+
+The quantized KV cache halves the 4.0 GiB that 64K would otherwise cost, landing the
+total near 19.7 GiB — comfortable inside the ~22.4 GiB actually free. `CTX_SIZE` also
+drives forge's `--budget-tokens`, so the two can never disagree. Restart with
+`./scripts/up.sh` after changing it.
+
+Because `--no-context-shift` is set, overflowing the window fails loudly instead of
+silently discarding your oldest turns.
+
+### What does not survive the trip
+
+forge translates Anthropic requests to OpenAI for llama.cpp, and Anthropic-only
+fields have no analog on the other side:
+
+- **`cache_control` is dropped** — there is no prompt caching. Every turn re-reads
+  the whole conversation, which is the main reason context size matters here.
+- **`thinking` blocks are dropped**; forge does not synthesize signed Anthropic
+  thinking blocks. Qwen still reasons — `--reasoning-budget 4096` — you just do not
+  get it back as replayable thinking.
+- **Streaming is not incremental.** forge accepts `stream=true` and returns SSE, but
+  inference completes before the events are emitted, because rescue parsing and
+  retries need the whole response. Expect the reply to land at once after a pause,
+  not to type itself out.
+- **The model name is ignored** end to end. `ANTHROPIC_MODEL` is a label.
 
 ## Troubleshooting
 

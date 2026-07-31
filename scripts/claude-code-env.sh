@@ -43,6 +43,10 @@ export ANTHROPIC_BASE_URL="http://${__qf_host}:${__qf_port}"
 # forge does not validate this; it just needs one credential to relocate. The
 # backend is llama.cpp, which ignores it entirely.
 export ANTHROPIC_AUTH_TOKEN="local"
+# forge refuses any request carrying two credentials — it never picks a winner.
+# A leftover ANTHROPIC_API_KEY in the environment is exactly how that happens,
+# so clear it rather than letting the proxy reject every request with a 400.
+unset ANTHROPIC_API_KEY
 export ANTHROPIC_MODEL="${__qf_alias}"
 # Claude Code reaches for a small/fast model for background work. There is only
 # one model here, so both point at it.
