@@ -6,7 +6,8 @@ observed values are kept so a future reader can tell what has gone stale.
 
 ## The model
 
-`Qwen/Qwen3.6-27B` (released 2026-04-24), served from `unsloth/Qwen3.6-27B-GGUF`.
+`Qwen/Qwen3.6-27B` (released 2026-04-24), served from `unsloth/Qwen3.6-27B-MTP-GGUF`
+(the MTP variant of the same UD-Q4_K_XL quant — see the settings review below).
 
 Facts pulled from the model's own `config.json` rather than assumed:
 
@@ -15,8 +16,8 @@ Facts pulled from the model's own `config.json` rather than assumed:
 | Architecture | `Qwen3_5ForConditionalGeneration` (`qwen3_5`) | Needs a llama.cpp new enough to have `conversion/qwen.py` — verified present |
 | Layers | 64 | — |
 | Layer layout | 16 × (3 × Gated DeltaNet → 1 × full attention) | Only **16 layers** hold a KV cache |
-| Full-attention heads | 24 Q / 4 KV, head_dim 256 | ≈ 64 KiB of KV per token, so 2.0 GiB at 32K |
-| Native context | 262,144 | Far more than 24 GiB of VRAM can hold; we cap at 32K |
+| Full-attention heads | 24 Q / 4 KV, head_dim 256 | ≈ 64 KiB of KV per token at f16, ~34 KiB at q8_0 |
+| Native context | 262,144 | Far more than 24 GiB of VRAM can hold; we cap at 64K |
 | Vision | SigLIP-style tower, `mmproj-F16.gguf` (0.93 GB) | Optional, off by default — forge does not use vision |
 | Thinking | On by default, `<think>…</think>` | Needs a reasoning budget; see below |
 
@@ -27,8 +28,9 @@ with full attention on every layer would need ~4× the KV cache.
 
 `UD-Q4_K_XL` (16.4 GiB) over `Q4_K_M` (15.7 GiB): unsloth's dynamic quants hold
 quality better at the same rung, and the 0.7 GiB difference is affordable — the
-projected total at 32K context is ~19.7 GiB against 24.0 GiB available. The README
-carries the full ladder so dropping a rung is a one-line change.
+projected total at 64K context with a q8_0 KV cache is ~19.8 GiB against the
+~22.4 GiB actually free (a desktop holds the rest). The README carries the full
+ladder so dropping a rung is a one-line change.
 
 ## The backends
 
@@ -66,8 +68,9 @@ Checked against `common/arg.cpp` at tag `b10200`:
   `reasoning_content` instead of depending on template auto-detection.
 - **`--no-context-shift`** makes an over-long conversation fail loudly instead of
   silently dropping the oldest tokens mid-session.
-- Sampling defaults follow Qwen's thinking-mode recommendation (`temp 1.0`,
-  `top_p 0.95`, `top_k 20`, `min_p 0.0`). Client requests still override them.
+- Sampling follows Qwen's **precise-coding** thinking preset (`temp 0.6`,
+  `top_p 0.95`, `top_k 20`, `min_p 0.0`) rather than the 1.0 general preset — see
+  the settings review below. Client requests still override them.
 
 ### forge flags
 
