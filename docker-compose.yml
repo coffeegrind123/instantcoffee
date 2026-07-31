@@ -101,7 +101,11 @@ services:
       GGUF_FILE: ${GGUF_FILE}
       MMPROJ_FILE: ${MMPROJ_FILE}
       HF_TOKEN: ${HF_TOKEN:-}
-      HF_XET_HIGH_PERFORMANCE: "1"
+      # Xet is huggingface_hub's default chunked transfer. On this link it
+      # stalled dead at ~1.1 GB with the connection still open and no error, so
+      # the downloader uses plain HTTP range requests, which resume reliably.
+      # Set to "0" to try Xet again if your network is better behaved.
+      HF_HUB_DISABLE_XET: "1"
     volumes:
       - "${MODELS_DIR}:/models"
 

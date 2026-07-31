@@ -107,9 +107,23 @@ expired PAT for `ghcr.io`; Docker sent it and the registry answered `denied` on 
 public image. It presents as an access problem with the image, not with the local
 credential. Fixed by re-issuing from `gh auth token`.
 
-**`HF_HUB_ENABLE_HF_TRANSFER` is deprecated** — the first download run emitted a
-`FutureWarning` pointing at `HF_XET_HIGH_PERFORMANCE`. The compose file and image
-were switched to the Xet variant.
+**The Xet transfer backend stalled silently.** `HF_HUB_ENABLE_HF_TRANSFER` is
+deprecated in favour of Xet, so the downloader was switched to it — and Xet then
+stopped dead at ~1.1 GB with the container still running, the connection still open,
+no error, and no progress for ten minutes. The chunk cache inside the container was
+only 1.2 MB, ruling out progress happening somewhere invisible.
+
+Setting `HF_HUB_DISABLE_XET=1` (plain HTTP range requests) downloaded steadily at
+~2.6 MB/s, which is *faster* than Xet managed before it hung. That is the default
+here; flip it to `"0"` on a better-behaved network.
+
+The download also retries up to `DOWNLOAD_ATTEMPTS` times (default 12), resuming from
+the `.incomplete` file. Over an 18 GB pull on a slow link, a dropped connection is a
+matter of when, not if.
+
+**The link here is slow, and it is not HuggingFace's fault.** Measured concurrently:
+GitHub 5 KB/s, PyPI 34 KB/s, HF ~1–2.6 MB/s. Always run the control before blaming
+the remote.
 
 ## Verification
 

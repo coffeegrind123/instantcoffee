@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 DEST = Path("/models")
@@ -25,6 +26,12 @@ def _human(num_bytes: float) -> str:
             return f"{num_bytes:.1f} {unit}"
         num_bytes /= 1024.0
     return f"{num_bytes:.1f} PiB"
+
+
+# A ~18 GB pull over a slow link will meet a dropped connection sooner or later,
+# and a stall that never raises is worse than an error. Retry around it — each
+# attempt resumes from the .incomplete file rather than starting over.
+MAX_ATTEMPTS = int(os.environ.get("DOWNLOAD_ATTEMPTS", "12"))
 
 
 def fetch(repo: str, filename: str, token: str | None) -> Path:
@@ -39,12 +46,26 @@ def fetch(repo: str, filename: str, token: str | None) -> Path:
     # Download into a cache dir on the same volume, then move into place. The
     # move is what makes presence of the final path mean "complete" — a killed
     # transfer leaves a blob behind, never a truncated model file.
-    cached = hf_hub_download(
-        repo_id=repo,
-        filename=filename,
-        cache_dir=str(DEST / ".hf-cache"),
-        token=token or None,
-    )
+    cached = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            cached = hf_hub_download(
+                repo_id=repo,
+                filename=filename,
+                cache_dir=str(DEST / ".hf-cache"),
+                token=token or None,
+            )
+            break
+        except Exception as exc:
+            if attempt == MAX_ATTEMPTS:
+                raise
+            wait = min(60, 5 * attempt)
+            print(f"[retry] attempt {attempt}/{MAX_ATTEMPTS} failed: "
+                  f"{type(exc).__name__}: {exc}")
+            print(f"[retry] resuming in {wait}s")
+            time.sleep(wait)
+
+    assert cached is not None
     target.parent.mkdir(parents=True, exist_ok=True)
     # Resolve the symlink the cache hands back before moving.
     shutil.move(os.path.realpath(cached), target)
