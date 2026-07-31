@@ -42,9 +42,15 @@ fi
 # ANTHROPIC_*_MODEL       one model serves every role; the name is cosmetic
 # DISABLE_PROMPT_CACHING  cache_control is dropped translating to OpenAI anyway,
 #                         so asking for it only adds blocks that go nowhere
-# MAX_THINKING_TOKENS=0   Qwen already reasons server-side under
-#                         --reasoning-budget, and forge cannot return signed
-#                         Anthropic thinking blocks. Asking twice just burns window.
+# MAX_THINKING_TOKENS=0   Near-cosmetic here, and worth being precise about:
+#                         forge's Anthropic->OpenAI converter forwards an
+#                         allow-list (model, max_tokens, temperature, top_p,
+#                         top_k, stop_sequences, tool_choice), so the `thinking`
+#                         field is dropped and never reaches llama-server. It
+#                         does NOT consume model context. Set to 0 only so the
+#                         client stops requesting a feature the backend cannot
+#                         honor. Qwen's actual thinking is controlled solely by
+#                         REASONING_BUDGET in .env.
 # API_TIMEOUT_MS          must outlast forge's own --backend-timeout (600s), or
 #                         the client gives up on a request the server is still
 #                         working on

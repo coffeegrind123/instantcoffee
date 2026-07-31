@@ -164,7 +164,7 @@ Code *sends*, which is what actually matters on a 64K local window:
 | What it sets | Why |
 | --- | --- |
 | `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` | Ignores every MCP server. The single biggest context win — one server can publish hundreds of tool schemas that load before your first message. Set `CLAUDE_DISABLE_MCP=0` to keep them. |
-| `MAX_THINKING_TOKENS=0` | Qwen already reasons server-side under `--reasoning-budget`, and forge cannot return signed Anthropic thinking blocks. Asking twice just burns window. |
+| `MAX_THINKING_TOKENS=0` | Cosmetic, not a saving. forge forwards an allow-list to the backend and `thinking` is not on it, so the field is dropped and never reaches llama-server — it costs no model context either way. This just stops the client asking for something the backend cannot honor. **To change how much Qwen actually thinks, set `REASONING_BUDGET` in `.env`.** |
 | `DISABLE_PROMPT_CACHING=1` | `cache_control` is dropped in translation anyway; this stops Claude Code building cache blocks that go nowhere. |
 | `API_TIMEOUT_MS=1800000` | Must outlast forge's own `--backend-timeout` (600s), or the client gives up on a request the server is still working on. |
 | `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` | Subagents nest 3 deep by default. Each level is another full context on one GPU serving one slot. |
@@ -206,9 +206,11 @@ fields have no analog on the other side:
 
 - **`cache_control` is dropped** — there is no prompt caching. Every turn re-reads
   the whole conversation, which is the main reason context size matters here.
-- **`thinking` blocks are dropped**; forge does not synthesize signed Anthropic
-  thinking blocks. Qwen still reasons — `--reasoning-budget 4096` — you just do not
-  get it back as replayable thinking.
+- **`thinking` is dropped in both directions.** The request field is not on forge's
+  forward allow-list, so Claude Code's thinking settings have no effect on the model;
+  and forge does not synthesize signed Anthropic thinking blocks on the way back.
+  Qwen still reasons under `--reasoning-budget 4096` — that is the only control, and
+  it lives in `.env` as `REASONING_BUDGET`.
 - **Streaming is not incremental.** forge accepts `stream=true` and returns SSE, but
   inference completes before the events are emitted, because rescue parsing and
   retries need the whole response. Expect the reply to land at once after a pause,
