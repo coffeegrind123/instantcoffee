@@ -17,7 +17,7 @@ behind the **forge** guardrail proxy.
                   ▼
        ┌─────────────────────┐   llama-server     :8080
        │  llama.cpp + CUDA   │   Qwen3.6-27B UD-Q4_K_XL, --jinja native
-       │  (container, GPU)   │   function calling, 32K context
+       │  (container, GPU)   │   function calling, 64K context
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -50,8 +50,7 @@ any time.
 Then point Claude Code at it:
 
 ```bash
-source scripts/claude-code-env.sh
-claude
+./scripts/claude-local.sh
 ```
 
 ## Day-to-day
@@ -64,6 +63,7 @@ claude
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
 | `./scripts/update.sh` | Update llama.cpp **and** forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
+| `./scripts/claude-local.sh` | Launch Claude Code against the local model, primed for it |
 | `./scripts/download-model.sh` | (Re-)fetch the GGUF named in `.env` |
 
 ## Updating
@@ -97,9 +97,10 @@ The keys worth knowing:
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
 | `GGUF_FILE` | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | See the VRAM table |
-| `CTX_SIZE` | `32768` | Context per slot; also what forge uses as its token budget |
+| `CTX_SIZE` | `65536` | Context per slot; also what forge uses as its token budget |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
+| `LLAMA_EXTRA_FLAGS` | `-ctk q8_0 -ctv q8_0` | Quantized KV cache — halves what 64K context costs |
 | `MMPROJ_FILE` | *(empty)* | Set to `mmproj-F16.gguf` for image input |
 | `FORGE_CAPABILITY` | `native` | Keep `native` — llama.cpp with `--jinja` does real function calling |
 | `FORGE_REASONING_REPLAY` | `none` | `keep-last` / `full` replay captured reasoning to the backend |
@@ -112,13 +113,17 @@ attention (the other 48 are Gated DeltaNet, whose recurrent state does not grow 
 context). That makes its KV cache far smaller than a normal 27B — about **64 KiB per
 token**, so 2.0 GiB at 32K.
 
-| GGUF | Weights | @32K ctx | @64K ctx | Verdict on 24 GiB |
+| GGUF | Weights | @64K (default) | @128K | Verdict on ~22.4 GiB |
 | --- | --- | --- | --- | --- |
-| `IQ4_XS` | 14.4 GiB | ~17.7 | ~19.7 | Most headroom, lowest quality of the 4-bits |
-| `Q4_K_M` | 15.7 GiB | ~19.0 | ~21.0 | Safe |
-| **`UD-Q4_K_XL`** | **16.4 GiB** | **~19.7** | **~21.7** | **Default — best quality that still leaves room** |
-| `Q5_K_M` | 18.2 GiB | ~21.5 | ~23.5 | Headless only; no room for a desktop |
-| `Q6_K` | 21.0 GiB | ~24.3 | — | Does not fit |
+| `IQ4_XS` | 14.4 GiB | ~17.8 | ~20.0 | Most headroom, lowest quality of the 4-bits |
+| `Q4_K_M` | 15.7 GiB | ~19.1 | ~21.3 | Safe |
+| **`UD-Q4_K_XL`** | **16.4 GiB** | **~19.8** | **~22.0** | **Default — best quality that still fits** |
+| `Q5_K_M` | 18.2 GiB | ~21.6 | — | Very tight; headless only |
+| `Q6_K` | 21.0 GiB | — | — | Does not fit |
+
+Columns assume the default `q8_0` KV cache, which costs ~34 KiB per token against
+f16's ~64 KiB. Drop `LLAMA_EXTRA_FLAGS` to go back to an f16 cache and the 64K column
+gains about 2 GiB.
 
 Totals include ~1.3 GiB of CUDA context and compute buffers. Note that the card is
 never entirely yours: measured on this machine, llama.cpp saw **22992 MiB free** of
@@ -128,14 +133,6 @@ rather than 24. Check yours with:
 ```bash
 docker compose run --rm --no-deps llama --list-devices
 ```
-
-Going past 64K context needs a quantized KV cache — add to `.env`:
-
-```
-LLAMA_EXTRA_FLAGS=-ctk q8_0 -ctv q8_0
-```
-
-That roughly halves KV, which brings 128K within reach at `UD-Q4_K_XL`.
 
 ## Using it with Claude Code
 
@@ -153,25 +150,54 @@ forge serves the Anthropic Messages API on `/v1/messages` and the OpenAI
 chat-completions API on `/v1/chat/completions`, so opencode, Continue, aider and
 anything else OpenAI-shaped work against the same port.
 
-### Give it enough context
+### The primed launcher
 
-Claude Code's system prompt plus its tool schemas is already a five-figure token
-count before your first message, and every connected MCP server adds more. The
-default `CTX_SIZE=32768` is fine for API use but tight for Claude Code. For that
-workload, put this in `.env.local`:
+`claude-code-env.sh` only redirects the API. `claude-local.sh` also trims what Claude
+Code *sends*, which is what actually matters on a 64K local window:
+
+```bash
+./scripts/claude-local.sh              # start a primed session
+./scripts/claude-local.sh -c           # any claude flag passes through
+./scripts/claude-local.sh --print-only # show the exact command without running it
+```
+
+| What it sets | Why |
+| --- | --- |
+| `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` | Ignores every MCP server. The single biggest context win — one server can publish hundreds of tool schemas that load before your first message. Set `CLAUDE_DISABLE_MCP=0` to keep them. |
+| `MAX_THINKING_TOKENS=0` | Qwen already reasons server-side under `--reasoning-budget`, and forge cannot return signed Anthropic thinking blocks. Asking twice just burns window. |
+| `DISABLE_PROMPT_CACHING=1` | `cache_control` is dropped in translation anyway; this stops Claude Code building cache blocks that go nowhere. |
+| `API_TIMEOUT_MS=1800000` | Must outlast forge's own `--backend-timeout` (600s), or the client gives up on a request the server is still working on. |
+| `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` | Subagents nest 3 deep by default. Each level is another full context on one GPU serving one slot. |
+| `ANTHROPIC_*_MODEL` | One model fills every role, including the small/fast one. |
+
+### If you have a `claude` shell alias
+
+**Bash expands aliases only in interactive shells**, so an alias in `.bash_aliases`
+has *no effect* from inside these scripts. `claude-local.sh` would otherwise launch
+the bare binary and silently drop your usual flags. Replay them from `.env` instead:
 
 ```
-CTX_SIZE=65536
-LLAMA_EXTRA_FLAGS=-ctk q8_0 -ctv q8_0
+CLAUDE_EXTRA_ARGS=--permission-mode bypassPermissions
+CLAUDE_SYSTEM_PROMPT_FILE=~/claude-prompt.txt
 ```
 
-The quantized KV cache halves the 4.0 GiB that 64K would otherwise cost, landing the
-total near 19.7 GiB — comfortable inside the ~22.4 GiB actually free. `CTX_SIZE` also
-drives forge's `--budget-tokens`, so the two can never disagree. Restart with
-`./scripts/up.sh` after changing it.
+`--print-only` shows exactly what will run, so you can confirm your flags survived.
 
-Because `--no-context-shift` is set, overflowing the window fails loudly instead of
-silently discarding your oldest turns.
+Sourcing `claude-code-env.sh` and then typing `claude` is the other way round: that
+*is* an interactive shell, so your alias applies normally and only the API is
+redirected.
+
+### One-liner
+
+If you would rather add another alias next to your existing ones:
+
+```bash
+alias flaude='ANTHROPIC_BASE_URL=http://localhost:8081 ANTHROPIC_AUTH_TOKEN=local ANTHROPIC_MODEL=qwen3.6-27b ANTHROPIC_SMALL_FAST_MODEL=qwen3.6-27b ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.6-27b DISABLE_PROMPT_CACHING=1 MAX_THINKING_TOKENS=0 API_TIMEOUT_MS=1800000 CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ~/.local/bin/claude --strict-mcp-config --mcp-config "{\"mcpServers\":{}}" --model qwen3.6-27b --permission-mode bypassPermissions --append-system-prompt "$(cat ~/claude-prompt.txt)"'
+```
+
+Use `host.docker.internal` instead of `localhost` if you run Claude Code inside a
+container. Note this calls `~/.local/bin/claude` directly, so it does not recurse
+through your existing `claude` alias.
 
 ### What does not survive the trip
 
@@ -230,6 +256,7 @@ scripts/
   update.sh             update everything, verify, roll back on failure
   smoke_test.py         end-to-end checks (runs inside the compose network)
   download_model.py     resumable GGUF fetch
-  claude-code-env.sh    source this to point Claude Code at forge
+  claude-local.sh       launch Claude Code primed for the local model
+  claude-code-env.sh    source this to redirect the API only
 context/design/         why things are the way they are
 ```
