@@ -134,13 +134,48 @@ completion, an **OpenAI-format tool call**, and an **Anthropic-format tool call*
 the last being the path Claude Code takes. `update.sh` runs it after every update and
 rolls back the pins if it fails.
 
-## Deliberately not done
+## Settings taken from other public Qwen3.6 rigs
 
-- **MTP speculative decoding.** llama.cpp has `--spec-type draft_mtp` and unsloth
-  publishes `unsloth/Qwen3.6-27B-MTP-GGUF` (the same quants, ~0.3 GB larger, MTP head
-  embedded). It is a plausible throughput win but was not measured here, so it is not
-  in the default path. To try it: point `MODEL_REPO` at the MTP repo, re-download, and
-  set `LLAMA_EXTRA_FLAGS=--spec-type draft_mtp`.
+Three external configurations were reviewed. Flags were checked against
+`common/arg.cpp` at b10200 before adopting anything — the value name is
+`draft-mtp` with a hyphen, not the underscore form seen in some write-ups.
+
+**Adopted:**
+
+- **`--temp 0.6`** instead of 1.0. Qwen publishes two thinking-mode presets: 1.0 for
+  general use, 0.6 for "precise coding". Two independent public rigs converged on 0.6,
+  and this stack exists to drive a coding agent.
+- **`-b 4096 -ub 2048`.** The default micro-batch of 512 leaves the GPU idle during
+  prompt processing, which is the dominant per-turn cost for a client that resends a
+  very large prompt every turn. Two external configs raise these; Thireus separately
+  reports that larger batches *lower* perplexity.
+- **MTP speculative decoding** (`--spec-type draft-mtp --spec-draft-n-max 2`), with
+  `MODEL_REPO` switched to `unsloth/Qwen3.6-27B-MTP-GGUF`. Decode speed only — output
+  is unchanged. One public rig measured n-max 2 fastest, 3 no better, and 4 collapsing
+  back to non-MTP speed. Not yet measured on this card; `SPEC_TYPE=` disables it.
+
+**Rejected:**
+
+- **ik_llama.cpp / Thireus GGUF Tool Suite.** Genuinely better perplexity-per-byte via
+  per-tensor recipe quantization. Rejected anyway: it is a *fork* requiring a
+  from-source build, which throws away the pinned upstream image that makes this repo
+  reproducible, and its 399-shard download pipeline is far more fragile than one file
+  on a link that already struggles at ~2.6 MB/s. Its `-amb` flag does not exist in
+  mainline. The quality gain does not pay for the operational cost here.
+- **`--reasoning-preserve`.** Real flag, but it governs how llama.cpp carries reasoning
+  through chat history — and forge owns that concern via `--reasoning-replay`, sending
+  a full message list every turn. Redundant at best, conflicting at worst.
+- **DRY sampler** (`--dry-multiplier 1.2 --dry-allowed-length 2`, `--repeat-penalty 1.1`).
+  Contradicts Qwen's own recommendation of `repetition_penalty 1.0`, and an allowed
+  length of 2 is aggressive for code, where short token sequences repeat legitimately
+  (indentation, `});`). Available via `LLAMA_EXTRA_FLAGS` if repetition loops show up.
+
+**Note on a third-party spec sheet.** One reference circulated for this model lists
+`head_dim=80, q_heads=64, kv_heads=64`. Qwen's published `config.json` says
+`head_dim=256, 24 Q heads, 4 KV heads`. Any KV-cache sizing derived from the former
+is wrong — the real per-token cost is ~4x what those numbers imply.
+
+## Deliberately not done
 - **Streaming through the proxy.** forge buffers responses rather than streaming
   incrementally, so a backend-side error arrives as an event inside an already-open
   200 stream. This is a documented forge limitation, not something this repo can fix.

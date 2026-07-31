@@ -28,6 +28,7 @@ services:
       -c ${CTX_SIZE}
       -np ${PARALLEL_SLOTS}
       --no-context-shift
+      ${SPEC_TYPE:+--spec-type ${SPEC_TYPE} --spec-draft-n-max ${SPEC_DRAFT_N_MAX}}
       --temp ${TEMPERATURE}
       --top-p ${TOP_P}
       --top-k ${TOP_K}
