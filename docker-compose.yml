@@ -1,0 +1,126 @@
+name: qwen36-forge
+
+services:
+  # ---------------------------------------------------------------------------
+  # llama-server — the actual inference engine, holding Qwen3.6-27B on the 4090.
+  # ---------------------------------------------------------------------------
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}
+    container_name: qwen36-llama
+    restart: unless-stopped
+    gpus: all
+    ports:
+      - "${BIND_ADDR}:${LLAMA_PORT}:8080"
+    volumes:
+      - "${MODELS_DIR}:/models:ro"
+    # --jinja is what turns on native function calling. Without it llama.cpp
+    # ignores the `tools` parameter entirely and forge has nothing to guard.
+    command: >
+      -m /models/${GGUF_FILE}
+      --alias ${MODEL_ALIAS}
+      --host 0.0.0.0
+      --port 8080
+      --jinja
+      --reasoning-format deepseek
+      --reasoning-budget ${REASONING_BUDGET}
+      -ngl ${NGL}
+      -fa ${FLASH_ATTN}
+      -c ${CTX_SIZE}
+      -np ${PARALLEL_SLOTS}
+      --no-context-shift
+      --temp ${TEMPERATURE}
+      --top-p ${TOP_P}
+      --top-k ${TOP_K}
+      --min-p ${MIN_P}
+      --metrics
+      ${LLAMA_EXTRA_FLAGS}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      # A 27B GGUF takes a while to read off disk and upload to VRAM on a cold
+      # start. start_period keeps those minutes from counting as failures.
+      start_period: 600s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # forge — guardrail proxy. Clients talk to this, never to llama directly.
+  # ---------------------------------------------------------------------------
+  forge:
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    image: qwen36-forge/proxy:${FORGE_VERSION}
+    container_name: qwen36-forge
+    restart: unless-stopped
+    depends_on:
+      llama:
+        condition: service_healthy
+    ports:
+      - "${BIND_ADDR}:${FORGE_PORT}:8081"
+    # --budget-mode manual + --budget-tokens pins the context budget to the same
+    # number llama-server was booted with, so forge never has to probe for it.
+    command: >
+      --backend-url http://llama:8080
+      --backend-capability ${FORGE_CAPABILITY}
+      --budget-mode manual
+      --budget-tokens ${CTX_SIZE}
+      --max-retries ${FORGE_MAX_RETRIES}
+      --max-tool-errors ${FORGE_MAX_TOOL_ERRORS}
+      --reasoning-replay ${FORGE_REASONING_REPLAY}
+      --backend-timeout ${FORGE_BACKEND_TIMEOUT}
+      ${FORGE_EXTRA_FLAGS}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=4).status==200 else 1)"
+      interval: 15s
+      timeout: 6s
+      start_period: 30s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # One-shot model downloader. Not started by `up` — it lives behind a profile.
+  #   docker compose --profile tools run --rm downloader
+  # ---------------------------------------------------------------------------
+  downloader:
+    profiles: ["tools"]
+    image: qwen36-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/download_model.py"]
+    environment:
+      MODEL_REPO: ${MODEL_REPO}
+      GGUF_FILE: ${GGUF_FILE}
+      MMPROJ_FILE: ${MMPROJ_FILE}
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_XET_HIGH_PERFORMANCE: "1"
+    volumes:
+      - "${MODELS_DIR}:/models"
+
+  # ---------------------------------------------------------------------------
+  # One-shot smoke test. Runs INSIDE the compose network, so it exercises the
+  # same paths the services use rather than the host's port mapping.
+  #   docker compose --profile tools run --rm smoketest
+  # ---------------------------------------------------------------------------
+  smoketest:
+    profiles: ["tools"]
+    image: qwen36-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/smoke_test.py"]
+    environment:
+      LLAMA_URL: http://llama:8080
+      FORGE_URL: http://forge:8081
+      MODEL_ALIAS: ${MODEL_ALIAS}
+      CTX_SIZE: ${CTX_SIZE}

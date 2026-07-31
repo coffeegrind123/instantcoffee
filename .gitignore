@@ -1,0 +1,10 @@
+# Machine-local overrides, merged on top of the committed .env by the scripts.
+.env.local
+
+# Transient backup written by update.sh while it applies a change.
+.env.bak
+
+# Models are large binaries fetched by scripts/download-model.sh. They live in
+# MODELS_DIR, outside the repo, but guard against a stray copy landing here.
+*.gguf
+models/

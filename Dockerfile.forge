@@ -1,0 +1,47 @@
+# forge guardrail proxy.
+#
+# Built from PyPI rather than from forge's own git checkout so that "update" is
+# a one-line version bump in .env (scripts/update.sh does exactly that) instead
+# of a submodule dance.
+#
+# huggingface_hub ships in the same image on purpose: the model downloader and
+# the smoke test both run from this image, which keeps the stack down to two
+# images total instead of four.
+
+FROM python:3.13-slim
+
+ARG FORGE_VERSION
+# Fail the build early and loudly rather than silently installing "latest".
+RUN test -n "$FORGE_VERSION" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN pip install --no-cache-dir \
+        "forge-guardrails[anthropic]==${FORGE_VERSION}" \
+        "huggingface_hub[hf_xet]>=0.27" \
+    && useradd --create-home --uid 1000 forge \
+    && mkdir -p /work \
+    && chown -R forge:forge /work
+
+# Recorded in the image so `docker inspect` can answer "what is actually running"
+# without cross-referencing .env.
+LABEL org.opencontainers.image.title="qwen3.6-forge proxy" \
+      org.opencontainers.image.description="forge-guardrails proxy in front of llama-server" \
+      forge.version="${FORGE_VERSION}"
+
+# The helper scripts are COPIED, never bind-mounted. Docker Desktop resolves
+# bind sources on the Windows side, so a WSL-style source path (which is what
+# `./scripts` expands to here) mounts an EMPTY directory instead of failing —
+# see context/design/decisions.md. Baking them in removes that whole class of
+# bug and makes the image self-contained.
+COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py /work/scripts/
+
+WORKDIR /work
+USER forge
+
+EXPOSE 8081
+
+# --host/--port are fixed here; everything else comes from the compose command.
+ENTRYPOINT ["forge-proxy", "--host", "0.0.0.0", "--port", "8081"]
