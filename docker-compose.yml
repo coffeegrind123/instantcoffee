@@ -1,10 +1,86 @@
 name: qwen36-forge
 
+# Two interchangeable inference backends, one proxy in front of whichever is up.
+# The active one is chosen by COMPOSE_PROFILES in .env:
+#
+#   COMPOSE_PROFILES=ik        ik_llama.cpp + a Thireus recipe-built model
+#   COMPOSE_PROFILES=mainline  upstream llama.cpp + an unsloth GGUF
+#
+# They are NOT interchangeable at the model level: Thireus recipes use ik-only
+# quant types (iq4_ks, iq5_ks, iq6_k) that mainline cannot read, and the MTP
+# GGUF's speculative head is a mainline feature. Engine and weights are a
+# matched pair, so BACKEND_HOST must agree with COMPOSE_PROFILES.
+
 services:
   # ---------------------------------------------------------------------------
-  # llama-server — the actual inference engine, holding Qwen3.6-27B on the 4090.
+  # ik_llama.cpp (Thireus fork) — recipe-built, perplexity-optimised weights.
+  # ---------------------------------------------------------------------------
+  ikllama:
+    profiles: ["ik"]
+    build:
+      context: .
+      dockerfile: Dockerfile.ikllama
+      args:
+        IK_RELEASE: ${IK_RELEASE}
+        IK_VARIANT: ${IK_VARIANT}
+    image: qwen36-forge/ikllama:${IK_RELEASE}
+    container_name: qwen36-ikllama
+    restart: unless-stopped
+    gpus: all
+    ports:
+      - "${BIND_ADDR}:${LLAMA_PORT}:8080"
+    volumes:
+      - "${MODELS_DIR}:/models"
+    # A recipe model is 852 shards, all opened at once. The default 1024-fd
+    # limit is close enough to bite, and it surfaces mid-load as a confusing
+    # "too many open files" rather than anything mentioning shards.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # The shard filename encodes the recipe, so it is discovered at start rather
+    # than pinned in .env — one less thing to keep in sync after a recipe change.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -euo pipefail
+        shard=$$(ls /models/ik/*-00001-of-*.gguf 2>/dev/null | head -1)
+        if [ -z "$$shard" ]; then
+          echo "No model shards in /models/ik — run ./scripts/download-ik-model.sh" >&2
+          exit 1
+        fi
+        echo "Loading $$shard"
+        exec /opt/ik/llama-server \
+          -m "$$shard" \
+          --alias ${MODEL_ALIAS} \
+          --host 0.0.0.0 --port 8080 \
+          --jinja \
+          --reasoning-format deepseek \
+          --reasoning-budget ${REASONING_BUDGET} \
+          -ngl 99 \
+          -fa on \
+          -ctk ${IK_CACHE_TYPE_K} -ctv ${IK_CACHE_TYPE_V} \
+          -c ${CTX_SIZE} \
+          -b ${IK_BATCH} -ub ${IK_UBATCH} \
+          -amb ${IK_ATTN_MAX_BATCH} \
+          --parallel ${PARALLEL_SLOTS} \
+          --temp ${TEMPERATURE} --top-p ${TOP_P} --top-k ${TOP_K} --min-p ${MIN_P} \
+          --no-mmap \
+          --metrics \
+          ${IK_EXTRA_FLAGS}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      # 852 shards off a 9p mount is slower to load than one file.
+      start_period: 900s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Upstream llama.cpp — kept working for unsloth GGUFs (incl. the MTP variant).
   # ---------------------------------------------------------------------------
   llama:
+    profiles: ["mainline"]
     image: ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}
     container_name: qwen36-llama
     restart: unless-stopped
@@ -45,7 +121,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # forge — guardrail proxy. Clients talk to this, never to llama directly.
+  # forge — guardrail proxy. Clients talk to this, never to a backend directly.
   # ---------------------------------------------------------------------------
   forge:
     build:
@@ -56,15 +132,14 @@ services:
     image: qwen36-forge/proxy:${FORGE_VERSION}
     container_name: qwen36-forge
     restart: unless-stopped
-    depends_on:
-      llama:
-        condition: service_healthy
     ports:
       - "${BIND_ADDR}:${FORGE_PORT}:8081"
-    # --budget-mode manual + --budget-tokens pins the context budget to the same
-    # number llama-server was booted with, so forge never has to probe for it.
+    # No depends_on: which backend exists depends on the active profile, and
+    # compose cannot express that conditionally. forge boots fine against an
+    # absent backend anyway — with --budget-mode manual it never probes at
+    # startup — so it simply starts answering once the backend appears.
     command: >
-      --backend-url http://llama:8080
+      --backend-url http://${BACKEND_HOST}:8080
       --backend-capability ${FORGE_CAPABILITY}
       --budget-mode manual
       --budget-tokens ${CTX_SIZE}
@@ -85,8 +160,33 @@ services:
       retries: 3
 
   # ---------------------------------------------------------------------------
-  # One-shot model downloader. Not started by `up` — it lives behind a profile.
-  #   docker compose --profile tools run --rm downloader
+  # One-shot: fetch a Thireus recipe model (852 shards) for the ik backend.
+  #   docker compose --profile tools run --rm --user 0:0 ik-downloader
+  # ---------------------------------------------------------------------------
+  ik-downloader:
+    profiles: ["tools"]
+    image: qwen36-forge/ikllama:${IK_RELEASE}
+    build:
+      context: .
+      dockerfile: Dockerfile.ikllama
+      args:
+        IK_RELEASE: ${IK_RELEASE}
+        IK_VARIANT: ${IK_VARIANT}
+    entrypoint: ["/opt/download_ik_model.sh"]
+    environment:
+      IK_MODEL_NAME: ${IK_MODEL_NAME}
+      IK_RECIPE: ${IK_RECIPE}
+      HF_TOKEN: ${HF_TOKEN:-}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - "${MODELS_DIR}:/models"
+
+  # ---------------------------------------------------------------------------
+  # One-shot: fetch a single-file unsloth GGUF for the mainline backend.
+  #   docker compose --profile tools run --rm --user 0:0 downloader
   # ---------------------------------------------------------------------------
   downloader:
     profiles: ["tools"]
@@ -125,7 +225,7 @@ services:
         FORGE_VERSION: ${FORGE_VERSION}
     entrypoint: ["python", "/work/scripts/smoke_test.py"]
     environment:
-      LLAMA_URL: http://llama:8080
+      LLAMA_URL: http://${BACKEND_HOST}:8080
       FORGE_URL: http://forge:8081
       MODEL_ALIAS: ${MODEL_ALIAS}
       CTX_SIZE: ${CTX_SIZE}

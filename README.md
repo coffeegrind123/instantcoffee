@@ -3,6 +3,17 @@
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy.
 
+Two interchangeable backends. `COMPOSE_PROFILES` in `.env` picks one:
+
+| Profile | Engine | Weights | Why |
+| --- | --- | --- | --- |
+| **`ik`** (default) | ik_llama.cpp (Thireus fork) | recipe-built, 5.1 bpw / 15 GB | Per-tensor quantization optimised for perplexity — smaller *and* more precise than a 4-bit single file, which frees VRAM for context |
+| `mainline` | upstream llama.cpp | unsloth GGUF (incl. MTP) | Simpler, one file, and the only one that can do MTP speculative decoding |
+
+They are **not** mixable: Thireus recipes use ik-only quant types (`iq4_ks`,
+`iq5_ks`, `iq6_k`) that mainline cannot read, and MTP is a mainline feature.
+Engine and weights are a matched pair.
+
 ```
   Claude Code / opencode / aider / your code
                   │
@@ -16,8 +27,8 @@ behind the **forge** guardrail proxy.
                   │  OpenAI wire, tools forwarded verbatim
                   ▼
        ┌─────────────────────┐   llama-server     :8080
-       │  llama.cpp + CUDA   │   Qwen3.6-27B UD-Q4_K_XL, --jinja native
-       │  (container, GPU)   │   function calling, 64K context
+       │  ik_llama.cpp  OR   │   Qwen3.6-27B, --jinja native function
+       │  llama.cpp (CUDA)   │   calling, 64K context
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -39,7 +50,7 @@ that port is exposed only for debugging and metrics.
 ```bash
 git clone <this repo> && cd qwen3.6-forge
 
-# Edit MODELS_DIR in .env first if D: is not where you want ~18 GB to land.
+# Edit MODELS_DIR in .env first if D: is not where you want ~15 GB to land.
 ./scripts/setup.sh
 ```
 
@@ -64,7 +75,8 @@ Then point Claude Code at it:
 | `./scripts/update.sh` | Update llama.cpp **and** forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `./scripts/claude-local.sh` | Launch Claude Code against the local model, primed for it |
-| `./scripts/download-model.sh` | (Re-)fetch the GGUF named in `.env` |
+| `./scripts/download-ik-model.sh` | Fetch the recipe model for the `ik` backend (852 shards, resumable) |
+| `./scripts/download-model.sh` | Fetch the single-file GGUF for the `mainline` backend |
 
 ## Updating
 

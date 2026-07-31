@@ -1,0 +1,71 @@
+# ik_llama.cpp (Thireus fork) + the GGUF Tool Suite.
+#
+# Uses the fork's prebuilt Ubuntu CUDA release rather than compiling from
+# source: the "cudart" archives bundle the CUDA runtime, so the only thing that
+# has to come from the host is the driver, which the nvidia container runtime
+# injects. That turns a 30-60 minute CUDA build into a 1.3 GB download.
+#
+# Why this image exists at all: the Thireus recipes mix ik-only quant types
+# (iq4_ks, iq5_ks, iq6_k, ...) that mainline llama.cpp cannot read. The model
+# and the engine are a matched pair — this image is useless with an unsloth
+# GGUF, and the mainline image is useless with a recipe-built one.
+
+FROM ubuntu:24.04
+
+ARG IK_RELEASE
+ARG IK_VARIANT=ubuntu-cuda-12.8-x64-avx2
+
+RUN test -n "$IK_RELEASE" || (echo "IK_RELEASE build-arg is required" >&2; exit 1)
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# curl/unzip: fetch the release. git: clone the tool suite.
+# The rest are what quant_downloader.sh probes for at runtime — sha256sum,
+# gpg (shard signature verification), bzip2, xxd, xxhsum, python.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl unzip git bash coreutils \
+        python3 python3-minimal gnupg bzip2 xxd xxhash \
+        libgomp1 procps \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# ik_llama.cpp binaries + bundled CUDA runtime (libcublas, libcublasLt,
+# libcudart ship inside the archive — only the driver comes from the host).
+#
+# The archive nests everything under build/bin/, but that has varied between
+# releases, so the binary is located rather than assumed and the directory is
+# flattened into /opt/ik. A wrong guess here fails at image build time with a
+# clear message instead of at container start with a linker error.
+RUN curl -fL --retry 5 --retry-delay 5 -o /tmp/ik.zip \
+      "https://github.com/Thireus/ik_llama.cpp/releases/download/${IK_RELEASE}/ik_llama-cudart-${IK_RELEASE}-bin-${IK_VARIANT}.zip" \
+    && mkdir -p /tmp/ikx /opt/ik \
+    && unzip -q /tmp/ik.zip -d /tmp/ikx \
+    && server="$(find /tmp/ikx -type f -name llama-server | head -1)" \
+    && if [ -z "$server" ]; then \
+         echo "llama-server not found in the release archive:" >&2; \
+         find /tmp/ikx -maxdepth 3 >&2; exit 1; \
+       fi \
+    && mv "$(dirname "$server")"/* /opt/ik/ \
+    && chmod +x /opt/ik/llama-server \
+    && rm -rf /tmp/ik.zip /tmp/ikx \
+    && /opt/ik/llama-server --version 2>&1 | head -3 || true
+
+# The bundled CUDA runtime now sits directly next to the binaries.
+ENV LD_LIBRARY_PATH=/opt/ik
+
+# GGUF Tool Suite — recipes + quant_downloader.sh. LFS smudge is skipped
+# because the large files are fetched per-recipe, not from the repo itself.
+RUN GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 \
+      https://github.com/Thireus/GGUF-Tool-Suite /opt/gguf-tool-suite
+
+COPY scripts/download_ik_model.sh /opt/download_ik_model.sh
+RUN chmod +x /opt/download_ik_model.sh
+
+LABEL org.opencontainers.image.title="ik_llama.cpp server (Thireus)" \
+      ik.release="${IK_RELEASE}" \
+      ik.variant="${IK_VARIANT}"
+
+WORKDIR /models
+EXPOSE 8080
+
+ENTRYPOINT ["/opt/ik/llama-server"]
