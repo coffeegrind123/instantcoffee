@@ -176,7 +176,7 @@ class Registry:
 # ── suite 1: speed ─────────────────────────────────────────────────────────
 
 
-def _measure_speed(reg: Registry) -> None:
+def _suite_speed(reg: Registry) -> None:
     """Measure prompt processing and token generation throughput.
 
     Uses a fixed prompt (~500 tokens of repeating varied words) and a
@@ -747,7 +747,7 @@ def main() -> int:
 
     # Phase 1: speed (always first — establishes baseline)
     print("── 1. Speed ──")
-    _measure_speed(reg)
+    _suite_speed(reg)
 
     # Phase 2-9: core capabilities
     suites: list[tuple[str, Callable]] = [
