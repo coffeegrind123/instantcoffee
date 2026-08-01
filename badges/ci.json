@@ -3,6 +3,6 @@
   "label": "ci",
   "message": "passing",
   "color": "brightgreen",
-  "namedLogo": "githubactions",
-  "style": "flat"
+  "style": "flat",
+  "namedLogo": "githubactions"
 }

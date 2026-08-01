@@ -65,9 +65,10 @@ def generate_scorecard(data: dict) -> str:
 
     # Overall summary line with shield.io badge
     score = overall.get("score", 0)
+    pct = int(round(score * 100))
     color = _score_color(score)
     badge_url = (
-        f"https://img.shields.io/badge/eval-{score:.0%}%20"
+        f"https://img.shields.io/badge/eval-{pct}%25%20"
         f"({overall.get('passed',0)}%2F{overall.get('total',0)})-{color}"
         f"?logo=pytest&style=flat"
     )

@@ -379,7 +379,7 @@ context/design/         why things are the way they are
 
 <!-- eval-scorecard-start -->
 
-![Eval](https://img.shields.io/badge/eval-82%%20(26%2F26)-green?logo=pytest&style=flat)
+![Eval](https://img.shields.io/badge/eval-82%25%20(26%2F26)-green?logo=pytest&style=flat)
 
 **Latest eval:** 82% — 26/26 tests pass (floor: 0.5)
 
