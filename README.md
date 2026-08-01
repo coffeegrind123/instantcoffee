@@ -368,9 +368,14 @@ scripts/
   pi-local.sh           launch the pi coding agent against forge
   claude-code-env.sh    source this to redirect the API only
 context/design/         why things are the way they are
+  decisions.md           all design decisions, flags, quant choice
+  eval-methodology.md    what the eval benches, how it scores
 ```
 
 ## Eval Results
+
+> **Full methodology:** [context/design/eval-methodology.md](context/design/eval-methodology.md) —
+> what each suite tests, where the benchmarks come from, how scoring works.
 
 <!-- eval-scorecard-start -->
 
