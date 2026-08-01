@@ -4,18 +4,8 @@
 [![Eval](https://img.shields.io/badge/eval-84%25%20(26%2F26)-green?logo=pytest&style=flat)](#eval-results)
 
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
-behind the **forge** guardrail proxy.
-
-Two interchangeable backends. `COMPOSE_PROFILES` in `.env` picks one:
-
-| Profile | Engine | Weights | Why |
-| --- | --- | --- | --- |
-| **`ik`** (default) | ik_llama.cpp (Thireus fork) | recipe-built, 5.1 bpw / 15 GB | Per-tensor quantization optimised for perplexity — smaller *and* more precise than a 4-bit single file, which frees VRAM for context |
-| `mainline` | upstream llama.cpp | unsloth GGUF (incl. MTP) | Simpler, one file, and the only one that can do MTP speculative decoding |
-
-They are **not** mixable: Thireus recipes use ik-only quant types (`iq4_ks`,
-`iq5_ks`, `iq6_k`) that mainline cannot read, and MTP is a mainline feature.
-Engine and weights are a matched pair.
+behind the **forge** guardrail proxy. One backend: upstream **llama.cpp** with
+an **unsloth GGUF** (MTP speculative decoding, single-file, mmap-friendly).
 
 ```
   Claude Code / opencode / aider / your code
@@ -30,8 +20,8 @@ Engine and weights are a matched pair.
                   │  OpenAI wire, tools forwarded verbatim
                   ▼
        ┌─────────────────────┐   llama-server     :8080
-       │  ik_llama.cpp  OR   │   Qwen3.6-27B, --jinja native function
-       │  llama.cpp (CUDA)   │   calling, 64K context
+       │  llama.cpp (CUDA)    │   Qwen3.6-27B, --jinja native function
+       │                      │   calling, 64K context
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -79,8 +69,7 @@ Then point Claude Code at it:
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `./scripts/claude-local.sh` | Launch Claude Code against the local model, primed for it |
 | `./scripts/pi-local.sh` | Launch the pi coding agent against the local model |
-| `./scripts/download-ik-model.sh` | Fetch the recipe model for the `ik` backend (852 shards, resumable) |
-| `./scripts/download-model.sh` | Fetch the single-file GGUF for the `mainline` backend |
+| `./scripts/download-model.sh` | Fetch the GGUF (resumable) |
 
 ## Updating
 
@@ -342,7 +331,6 @@ of being bind-mounted.
 versions.lock           what update.sh last verified (generated)
 docker-compose.yml      llama + forge, plus tools-profile one-shots
 Dockerfile.forge        forge proxy image, pinned to FORGE_VERSION
-Dockerfile.ikllama      ik_llama.cpp image (recipe weights, CUDA)
 .github/workflows/ci.yml  CI pipeline (lint, build, verify)
 badges/                 shield.io endpoint JSON for dynamic badges
 results/
@@ -363,7 +351,6 @@ scripts/
   bench.sh              prompt processing + generation speed benchmark
   slot-cache.sh         save/restore KV cache for warm restarts
   download_model.py     resumable GGUF fetch
-  download-ik-model.sh  fetch recipe model shards for the ik backend
   claude-local.sh       launch Claude Code primed for the local model
   pi-local.sh           launch the pi coding agent against forge
   claude-code-env.sh    source this to redirect the API only

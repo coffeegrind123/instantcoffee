@@ -44,10 +44,11 @@ jobs:
 
       - name: .env key validation
         run: |
-          required=( COMPOSE_PROFILES BACKEND_HOST CTX_SIZE NGL FLASH_ATTN
+          required=( CTX_SIZE NGL FLASH_ATTN
                      LLAMA_EXTRA_FLAGS TEMPERATURE TOP_P TOP_K MIN_P
                      REASONING_BUDGET FORGE_CAPABILITY FORGE_REASONING_REPLAY
-                     CACHE_PROMPT CACHE_RAM MODEL_ALIAS LLAMA_PORT FORGE_PORT )
+                     CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
+                     LLAMA_PORT FORGE_PORT )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then
@@ -59,8 +60,7 @@ jobs:
 
       - name: Docker Compose config validation
         run: |
-          docker compose --profile ik config > /dev/null && echo "ik: OK"
-          docker compose --profile mainline config > /dev/null && echo "mainline: OK"
+          docker compose config > /dev/null && echo "compose: OK"
           docker compose --profile tools config > /dev/null && echo "tools: OK"
 
   # ── build + dry-run + badge (single job so docker load works) ──────────

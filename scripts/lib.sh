@@ -115,8 +115,3 @@ forge_latest_version() {
     | json_eval 'import sys,json; print(json.load(sys.stdin)["info"]["version"])'
 }
 
-# Latest ik_llama.cpp release tag from the Thireus fork.
-ik_latest_release() {
-  curl -fsSL "https://api.github.com/repos/Thireus/ik_llama.cpp/releases/latest" \
-    | json_eval 'import sys,json; print(json.load(sys.stdin).get("tag_name",""))'
-}

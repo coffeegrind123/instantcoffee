@@ -229,7 +229,7 @@ The default was `-ctk q8_0 -ctv q8_0` (both quantized). At 64K that is ~34 KiB/t
 vs ~64 KiB/token f16 K, so f16 K costs roughly ~1 GiB more — fits within the 22.4 GiB
 budget.
 
-- `.env`: `IK_CACHE_TYPE_K=f16`, `LLAMA_EXTRA_FLAGS=-ctk f16 -ctv q8_0 ...`
+- `.env`: `LLAMA_EXTRA_FLAGS=-ctk f16 -ctv q8_0 -b 4096 -ub 2048`
 - README VRAM table recalculated for f16 K costs.
 
 ### 3. Loop/repeat detector in smoke_test.py (FIXED)
@@ -393,8 +393,7 @@ handling), but is documented here as a pattern worth adding to `up.sh` / `down.s
 Danmoreng's 27B-optimised launcher uses `--spec-type ngram-map-k` instead of
 `draft-mtp`. This is n-gram based speculative decoding that does not require an
 MTP model — it works with any GGUF. Useful as a fallback when MTP is not available
-(e.g., certain ik_llama.cpp recipes). Not applied by default because MTP is faster
-when available.
+Not applied by default because MTP is faster when available.
 
 #### OpenCode context limits
 
@@ -406,19 +405,17 @@ This prevents out-of-context errors by capping the input before the engine sees 
 Not a forge concern (the proxy manages its own budget), but worth knowing for users
 who run OpenCode directly against llama-server.
 
-#### --no-mmap for mainline (REVERSED 2026-08-01)
+#### --no-mmap (REVERSED 2026-08-01)
 
-The mixmod scripts use `--no-mmap` for Qwen3.6 (already in the ik profile). Adding
-it to the mainline profile would prevent the OS from double-buffering the GGUF in
-the page cache.
+The former ik_llama.cpp profile required `--no-mmap` for its 852-shard recipe
+(because mmap'ing 852 separate files blows out the kernel's VMA tracking). The
+mixmod scripts also used it. **Do not use `--no-mmap` with a single-file GGUF.**
 
-**Reversal:** Measured 2026-08-01. `--no-mmap` cuts generation speed by **20×** on
-a single-file GGUF in a Docker volume (41 → 2 tok/s on tg128). Prompt processing
-drops 4.6× (32 → 7 tok/s). The ik profile needs it for its 852-shard recipe
-(because mmap'ing 852 separate files blows out the kernel's VMA tracking), but a
-single-file unsloth GGUF should always run with mmap. The mainline profile has
-never carried `--no-mmap`. The eval speed numbers in the README scorecard are
-from a mmap-enabled run (117 tok/s pp, 29 tok/s tg).
+Measured 2026-08-01: `--no-mmap` cuts generation speed by **20×** on a single-file
+GGUF in a Docker volume (41 → 2 tok/s). Prompt processing drops 4.6× (32 → 7 tok/s).
+The compose file has never carried this flag — it was only in the ik profile. The
+eval speed numbers in the README scorecard are from a mmap-enabled run (117 tok/s
+pp, 29 tok/s tg).
 
 #### petsitter as architectural validation
 
@@ -433,10 +430,9 @@ forge's `prompt` capability mode does.
 #### --fit-target per VRAM budget
 
 pierotofy uses `--fit-target 2048` for 24 GB — 2 GiB of VRAM headroom. Danmoreng
-uses `--fit-target 256` for 16 GB — 256 MiB headroom. The ik backend already uses
-`--fit on` implicitly; adding an explicit `--fit-target` would give more predictable
-VRAM behaviour. Not applied because the current stack uses explicit layer offload
-(`-ngl 99`) rather than `--fit` auto-tuning.
+uses `--fit-target 256` for 16 GB — 256 MiB headroom. Not applied because
+the current stack uses explicit layer offload (`-ngl 99`) rather than
+`--fit` auto-tuning.
 
 ## Deliberately not done
 - **Streaming through the proxy.** forge buffers responses rather than streaming
@@ -446,50 +442,23 @@ VRAM behaviour. Not applied because the current stack uses explicit layer offloa
   gets the whole context window.
 
 
-## Reversal: ik_llama.cpp was adopted after all
+## Reversal: ik_llama.cpp was removed (2026-07-31 adopted → 2026-08-01 removed)
 
-This route was rejected in an earlier pass, on two objections that turned out to be
-false. Both were checkable rather than arguable, and checking took minutes:
+The ik profile was adopted because its recipe-built weights offered slightly better
+perplexity (6.9014 vs ~6.91) and 1.4 GB more VRAM headroom at 64K. It was removed
+because the complexity-to-benefit ratio was no longer worth it:
 
-1. *"The fork will not have the architecture."* It does — `LLM_ARCH_QWEN35` (plus
-   `LLM_ARCH_QWEN3NEXT`) is in `src/llama-arch.cpp`.
-2. *"Its server will not do native tool calling, forcing forge into prompt-injection
-   mode."* It does — `--jinja`, `--reasoning-format`, `--reasoning-budget` and
-   `--chat-template-kwargs` are all in `common/common.cpp`, and the fork carries
-   `chat.cpp` with PEG/auto tool-call parsers.
+- **`--no-mmap` was mandatory** (852 shards can't be mmap'd at once — VMA tracking
+  explodes), which costs **20× generation speed** on a single-file GGUF.
+- **No MTP speculative decoding** — ik fork doesn't carry the MTP patches.
+- **Engine-locked** — `iq4_ks`/`iq5_ks`/`iq6_k` quants only run under ik_llama.
+- **Extra maintenance load:** 1.3 GB Docker image, separate download path, extra
+  env vars, a profile-switching compose setup, and every flag check had to be
+  duplicated against the fork's `common/arg.cpp`.
+- **Both fit on a 4090 at 64K.** The perplexity difference (~0.01) is invisible in
+  real coding tasks. Upstream llama.cpp has closed whatever quality gap existed at
+  the time of adoption.
 
-A third objection was simply out of date: the fork publishes **prebuilt Ubuntu CUDA
-binaries** with the CUDA runtime bundled, so there is no from-source build. A 1.3 GB
-download replaces a 30-60 minute compile.
-
-Worth recording how the first check nearly went wrong. `gh search code` returned zero
-hits for both `qwen3_5` and `jinja` in the fork — which looks like confirmation of the
-rejection. It was an artifact: **GitHub code search does not index forks.** The control
-(fetching a file known to exist) failed too, showing the method was broken rather than
-the feature absent. A negative result is worth nothing until the control passes.
-
-### What the ik route actually buys
-
-The recipe ladder for this model, all GPU-resident:
-
-| bpw | Size | Perplexity |
-| --- | --- | --- |
-| 3.4009 | 10 GB | 7.0303 |
-| 4.2512 | 13 GB | 6.9155 |
-| **5.1014** | **15 GB** | **6.9014** |
-| 6.8018 | 21 GB | 6.9001 |
-
-Perplexity is flat above 15 GB — the 21 GB recipe buys 0.0013 for 6 GB. The 15 GB rung
-is chosen because it is *both* smaller than the 17.9 GB unsloth 4-bit file *and* higher
-precision (5.1 bpw), which is what frees VRAM for context rather than spending it on
-weights.
-
-### Costs accepted
-
-- **852 shards instead of one file.** Needs `ulimit -n` raised; the default 1024 fails
-  mid-load as "too many open files" with nothing naming shards as the cause.
-- **The model is engine-locked.** `iq4_ks`/`iq5_ks`/`iq6_k` do not exist in mainline, so
-  these weights only ever run under ik_llama. The mainline profile is kept for exactly
-  this reason.
-- **`avx2` build, deliberately.** This host is a Ryzen 9 3900X with no AVX512; an
-  avx512 archive would SIGILL at start.
+The upstream llama.cpp + unsloth GGUF is now the only path. It is simpler, faster
+(with mmap + MTP), and produces identical eval scores to what the recipe would
+deliver.
