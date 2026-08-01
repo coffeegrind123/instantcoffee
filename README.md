@@ -1,7 +1,7 @@
 # qwen3.6-forge
 
 [![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.6-forge/actions)
-[![Eval](https://img.shields.io/badge/eval-run%20locally-lightgrey?logo=pytest&style=flat)](#eval-results)
+[![Eval](https://img.shields.io/badge/eval-82%25%20(26%2F26)-green?logo=pytest&style=flat)](#eval-results)
 
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy.

@@ -113,7 +113,7 @@ def _badge_url_for(suites: dict, name: str) -> str:
     )
 
 
-def update_readme(scorecard: str) -> bool:
+def update_readme(scorecard: str, data: dict) -> bool:
     """Replace the scorecard section in README.md. Returns True on success."""
     try:
         readme = README_FILE.read_text("utf-8")
@@ -129,6 +129,24 @@ def update_readme(scorecard: str) -> bool:
         print(f"  {MARKER_START}", file=sys.stderr)
         print(f"  {MARKER_END}", file=sys.stderr)
         return False
+
+    # Also update the top-of-README eval badge to match
+    overall = data.get("overall", {})
+    score = overall.get("score", 0)
+    pct = int(round(score * 100))
+    passed = overall.get("passed", 0)
+    total = overall.get("total", 0)
+    color = _score_color(score)
+    badge_url = (
+        f"https://img.shields.io/badge/"
+        f"eval-{pct}%25%20({passed}%2F{total})-{color}"
+        f"?logo=pytest&style=flat"
+    )
+    readme = re.sub(
+        r'\[!\[Eval\]\(https://img\.shields\.io/badge/eval-[^)]+\)\]',
+        f'[![Eval]({badge_url})]',
+        readme, count=1,
+    )
 
     new_section = f"{MARKER_START}\n\n{scorecard}\n\n{MARKER_END}"
     updated = readme[:start] + new_section + readme[end + len(MARKER_END):]
@@ -216,7 +234,7 @@ def main() -> int:
 
     ok = True
     if args.write:
-        ok = update_readme(scorecard) and ok
+        ok = update_readme(scorecard, data) and ok
     if args.badges:
         write_badges(data)
 
