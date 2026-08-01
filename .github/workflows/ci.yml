@@ -100,10 +100,9 @@ jobs:
           docker run --rm --entrypoint python qwen36-forge/proxy:ci
           -c "import ast; tree=ast.parse(open('/work/scripts/eval.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; suites=[n for n in fns if n.startswith('_suite')]; print('suites:',suites); assert len(suites)==9, f'expected 9 suites, got {len(suites)}'"
 
-      - name: Verify gen-readme-scorecard.py imports
+      - name: Verify gen-readme-scorecard.py imports (host-side, not in image)
         run: >
-          docker run --rm --entrypoint python qwen36-forge/proxy:ci
-          -c "import ast; tree=ast.parse(open('/work/scripts/gen-readme-scorecard.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('scorecard fns:',fns); assert 'generate_scorecard' in fns"
+          python -c "import ast; tree=ast.parse(open('scripts/gen-readme-scorecard.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('scorecard fns:',fns); assert 'generate_scorecard' in fns"
 
       # ── badge (main push only) ────────────────────────────────────────
       - name: Generate CI badge
