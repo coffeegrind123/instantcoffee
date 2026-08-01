@@ -406,12 +406,19 @@ This prevents out-of-context errors by capping the input before the engine sees 
 Not a forge concern (the proxy manages its own budget), but worth knowing for users
 who run OpenCode directly against llama-server.
 
-#### --no-mmap for mainline
+#### --no-mmap for mainline (REVERSED 2026-08-01)
 
 The mixmod scripts use `--no-mmap` for Qwen3.6 (already in the ik profile). Adding
 it to the mainline profile would prevent the OS from double-buffering the GGUF in
-the page cache. Not applied because the mainline profile uses `:ro` mount and mmap
-is harmless there, but worth adding if memory pressure appears.
+the page cache.
+
+**Reversal:** Measured 2026-08-01. `--no-mmap` cuts generation speed by **20×** on
+a single-file GGUF in a Docker volume (41 → 2 tok/s on tg128). Prompt processing
+drops 4.6× (32 → 7 tok/s). The ik profile needs it for its 852-shard recipe
+(because mmap'ing 852 separate files blows out the kernel's VMA tracking), but a
+single-file unsloth GGUF should always run with mmap. The mainline profile has
+never carried `--no-mmap`. The eval speed numbers in the README scorecard are
+from a mmap-enabled run (117 tok/s pp, 29 tok/s tg).
 
 #### petsitter as architectural validation
 

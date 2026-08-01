@@ -48,10 +48,12 @@ tokens, divides `prompt_tokens / elapsed_seconds` for prefill speed and
 `token_generation_tps` is capped at 100 tok/s → 1.0. These are throughput
 scores, not pass/fail — a model delivering 50 tok/s decode gets 0.50.
 
-**What good looks like:** On a 4090 with direct-attached NVMe, expect
-400–1000 tok/s prefill and 40–70 tok/s generation. The current scores
-(7/2 tok/s) reflect `--no-mmap` over a Docker volume — real-world
-performance on bare metal is 5–10× higher.
+**What good looks like:** On a 4090 with a Docker volume and mmap, expect
+100–400 tok/s prefill and 25–50 tok/s generation. The current 117/29 tok/s
+is within expectations for this hardware. **Do not use `--no-mmap`** with a
+single-file GGUF — it kills generation speed by ~20× (measured: 41→2 tok/s
+with the flag). The ik recipe backend needs it for 852-shard loading; the
+mainline single-file GGUF should never carry it.
 
 ### 2. Code Generation (`codegen`)
 

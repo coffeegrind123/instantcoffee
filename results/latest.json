@@ -1,27 +1,27 @@
 {
   "suites": {
     "speed": {
-      "score": 0.341,
+      "score": 0.468,
       "passed": 3,
       "total": 3,
       "tests": [
         {
           "test": "prompt_processing_tps",
-          "score": 0.006517919969998135,
+          "score": 0.11724641969295514,
           "passed": true,
-          "detail": "7 tok/s (521 tokens in 79.9s)",
-          "pp_tps": 7,
+          "detail": "117 tok/s (521 tokens in 4.4s)",
+          "pp_tps": 117,
           "pt": 521,
-          "elapsed_s": 79.9
+          "elapsed_s": 4.4
         },
         {
           "test": "token_generation_tps",
-          "score": 0.016013315857193115,
+          "score": 0.2880526241976633,
           "passed": true,
-          "detail": "2 tok/s (128 tokens in 79.9s)",
-          "tg_tps": 2,
+          "detail": "29 tok/s (128 tokens in 4.4s)",
+          "tg_tps": 29,
           "ct": 128,
-          "elapsed_s": 79.9
+          "elapsed_s": 4.4
         },
         {
           "test": "no_loop",
@@ -163,7 +163,7 @@
           "test": "produces_output",
           "score": 1.0,
           "passed": true,
-          "detail": "length=1222"
+          "detail": "length=2043"
         },
         {
           "test": "correct_answer",
@@ -207,7 +207,7 @@
           "test": "recall_after_distraction",
           "score": 1.0,
           "passed": true,
-          "detail": "response='The project name is **NeutronStar**.'"
+          "detail": "response='NeutronStar'"
         },
         {
           "test": "no_severe_loop",
@@ -232,11 +232,11 @@
     }
   },
   "overall": {
-    "score": 0.821,
+    "score": 0.835,
     "passed": 26,
     "total": 26
   },
-  "_ran_at": "2026-08-01T17:40:55Z",
+  "_ran_at": "2026-08-01T18:22:07Z",
   "_model": "Qwen3.6-27B UD-Q4_K_XL",
-  "_speed": "7 tok/s pp, 2 tok/s tg (Docker volume, --no-mmap)"
+  "_speed": "117 tok/s pp, 29 tok/s tg (Docker volume, mmap enabled)"
 }

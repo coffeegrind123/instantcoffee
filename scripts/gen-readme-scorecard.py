@@ -144,7 +144,7 @@ def update_readme(scorecard: str, data: dict) -> bool:
         f"?logo=pytest&style=flat"
     )
     readme = re.sub(
-        r'\[!\[Eval\]\(https://img\.shields\.io/badge/eval-[^)]+\)\]',
+        r'\[!\[Eval\]\(https://img\.shields\.io/badge/eval-[^\[\]]+\)\]',
         f'[![Eval]({badge_url})]',
         readme, count=1,
     )

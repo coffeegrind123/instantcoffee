@@ -1,7 +1,7 @@
 # qwen3.6-forge
 
 [![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.6-forge/actions)
-[![Eval](https://img.shields.io/badge/eval-82%25%20(26%2F26)-green?logo=pytest&style=flat)](#eval-results)
+[![Eval](https://img.shields.io/badge/eval-84%25%20(26%2F26)-green?logo=pytest&style=flat)](#eval-results)
 
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy.
@@ -379,9 +379,9 @@ context/design/         why things are the way they are
 
 <!-- eval-scorecard-start -->
 
-![Eval](https://img.shields.io/badge/eval-82%25%20(26%2F26)-green?logo=pytest&style=flat)
+![Eval](https://img.shields.io/badge/eval-84%25%20(26%2F26)-green?logo=pytest&style=flat)
 
-**Latest eval:** 82% — 26/26 tests pass (floor: 0.5)
+**Latest eval:** 84% — 26/26 tests pass (floor: 0.5)
 
 | Suite | Score | Passed | Bar |
 | --- | --- | --- | --- |
@@ -392,7 +392,7 @@ context/design/         why things are the way they are
 | reasoning | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/reasoning-100%-brightgreen?style=flat-square) |
 | refactor | [████████████████████] 1.00 | 1/1 | ![](https://img.shields.io/badge/refactor-100%-brightgreen?style=flat-square) |
 | review | [█████████████░░░░░░░] 0.67 | 1/1 | ![](https://img.shields.io/badge/review-67%-yellow?style=flat-square) |
-| speed | [██████░░░░░░░░░░░░░░] 0.34 | 3/3 | ![](https://img.shields.io/badge/speed-34%-orange?style=flat-square) |
+| speed | [█████████░░░░░░░░░░░] 0.47 | 3/3 | ![](https://img.shields.io/badge/speed-47%-orange?style=flat-square) |
 | tools | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/tools-73%-green?style=flat-square) |
 
 
