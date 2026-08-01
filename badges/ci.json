@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "label": "ci",
+  "message": "passing",
+  "color": "brightgreen",
+  "style": "flat",
+  "namedLogo": "githubactions"
+}

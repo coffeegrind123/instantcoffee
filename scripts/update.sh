@@ -55,6 +55,26 @@ if [[ -z "$NEW_IK" ]]; then
   NEW_IK="$CUR_IK"
 fi
 
+# --- QAT GGUF check (HN thread finding) --------------------------------------
+# unsloth's QAT (Quantization-Aware Training) line holds bfloat16-level quality
+# at Q4 memory. As of the HN thread (June 2026) it only covered Gemma 4, but if
+# unsloth/Qwen3.6-27B-*qat* appears it likely beats UD-Q4_K_XL at the same size
+# rung. This check flags it so the operator knows to evaluate.
+QAT_HINT=""
+if command -v huggingface-cli >/dev/null 2>&1; then
+  QAT_HINT="$(huggingface-cli api list-models --author unsloth \
+    --search "Qwen3.6-27B qat" --limit 3 2>/dev/null \
+    | python3 -c "import sys,json; ds=[d['id'] for d in json.load(sys.stdin)]; print(ds[0] if ds else '')" \
+    2>/dev/null || true)"
+fi
+# Fall back to a known pattern match against the model name in .env
+if [[ -z "$QAT_HINT" ]] && [[ "$(env_get GGUF_FILE)" == *UD-Q4_K_XL* ]]; then
+  QAT_HINT="(check huggingface.co/unsloth for Qwen3.6-27B-*-qat-GGUF)"
+fi
+if [[ -n "$QAT_HINT" ]]; then
+  dim "QAT hint: consider a QAT quant if available — ${QAT_HINT}"
+fi
+
 printf '\n  %-22s %-22s %s\n' "component" "current" "latest"
 printf '  %-22s %-22s %s\n' "----------------------" "----------------------" "----------------------"
 printf '  %-22s %-22s %s\n' "llama.cpp (image)" "$CUR_LLAMA" "$NEW_LLAMA"

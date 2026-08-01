@@ -27,10 +27,13 @@ services:
     container_name: qwen36-ikllama
     restart: unless-stopped
     gpus: all
+    environment:
+      - LLAMA_SET_ROWS=1
     ports:
       - "${BIND_ADDR}:${LLAMA_PORT}:8080"
     volumes:
       - "${MODELS_DIR}:/models"
+      - slot-cache:/slots
     # A recipe model is 852 shards, all opened at once. The default 1024-fd
     # limit is close enough to bite, and it surfaces mid-load as a confusing
     # "too many open files" rather than anything mentioning shards.
@@ -57,8 +60,11 @@ services:
           --jinja \
           --reasoning-format deepseek \
           --reasoning-budget ${REASONING_BUDGET} \
+          --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}" \
+          --chat-template-kwargs '{"preserve_thinking": true}' \
           -ngl 99 \
           -fa on \
+          -kvu \
           -ctk ${IK_CACHE_TYPE_K} -ctv ${IK_CACHE_TYPE_V} \
           -c ${CTX_SIZE} \
           -b ${IK_BATCH} -ub ${IK_UBATCH} \
@@ -66,6 +72,13 @@ services:
           --parallel ${PARALLEL_SLOTS} \
           --temp ${TEMPERATURE} --top-p ${TOP_P} --top-k ${TOP_K} --min-p ${MIN_P} \
           --no-mmap \
+          --cache-prompt \
+          --cache-ram ${CACHE_RAM} \
+          --cache-reuse ${CACHE_REUSE} \
+          --slot-prompt-similarity ${SLOT_PROMPT_SIMILARITY} \
+          --slot-save-path /slots \
+          --ctx-checkpoints ${CTX_CHECKPOINTS} \
+          --checkpoint-min-step ${CHECKPOINT_MIN_STEP} \
           --metrics \
           ${IK_EXTRA_FLAGS}
     healthcheck:
@@ -85,10 +98,13 @@ services:
     container_name: qwen36-llama
     restart: unless-stopped
     gpus: all
+    environment:
+      - LLAMA_SET_ROWS=1
     ports:
       - "${BIND_ADDR}:${LLAMA_PORT}:8080"
     volumes:
       - "${MODELS_DIR}:/models:ro"
+      - slot-cache:/slots
     # --jinja is what turns on native function calling. Without it llama.cpp
     # ignores the `tools` parameter entirely and forge has nothing to guard.
     command: >
@@ -99,16 +115,26 @@ services:
       --jinja
       --reasoning-format deepseek
       --reasoning-budget ${REASONING_BUDGET}
+      --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}"
+      --chat-template-kwargs '{"preserve_thinking": true}'
       -ngl ${NGL}
       -fa ${FLASH_ATTN}
+      -kvu
       -c ${CTX_SIZE}
       -np ${PARALLEL_SLOTS}
       --no-context-shift
-      ${SPEC_TYPE:+--spec-type ${SPEC_TYPE} --spec-draft-n-max ${SPEC_DRAFT_N_MAX}}
+      ${SPEC_TYPE:+--spec-type ${SPEC_TYPE} --spec-draft-n-max ${SPEC_DRAFT_N_MAX} --spec-draft-n-min ${SPEC_DRAFT_N_MIN} --spec-draft-p-min ${SPEC_DRAFT_P_MIN}}
       --temp ${TEMPERATURE}
       --top-p ${TOP_P}
       --top-k ${TOP_K}
       --min-p ${MIN_P}
+      --cache-prompt
+      --cache-ram ${CACHE_RAM}
+      --cache-reuse ${CACHE_REUSE}
+      --slot-prompt-similarity ${SLOT_PROMPT_SIMILARITY}
+      --slot-save-path /slots
+      --ctx-checkpoints ${CTX_CHECKPOINTS}
+      --checkpoint-min-step ${CHECKPOINT_MIN_STEP}
       --metrics
       ${LLAMA_EXTRA_FLAGS}
     healthcheck:
@@ -229,3 +255,51 @@ services:
       FORGE_URL: http://forge:8081
       MODEL_ALIAS: ${MODEL_ALIAS}
       CTX_SIZE: ${CTX_SIZE}
+
+  # ---------------------------------------------------------------------------
+  # One-shot coding evaluation. Runs INSIDE the compose network.
+  #   docker compose --profile tools run --rm eval
+  # ---------------------------------------------------------------------------
+  eval:
+    profiles: ["tools"]
+    image: qwen36-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/eval.py"]
+    environment:
+      FORGE_URL: http://forge:8081
+      MODEL_ALIAS: ${MODEL_ALIAS}
+      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
+      EVAL_REPEAT_THRESHOLD: ${EVAL_REPEAT_THRESHOLD:-3}
+      EVAL_SCORE_FLOOR: ${EVAL_SCORE_FLOOR:-0.5}
+
+  # ---------------------------------------------------------------------------
+  # One-shot coding evaluation (extended). Runs INSIDE the compose network.
+  #   docker compose --profile tools run --rm eval-harness
+  # ---------------------------------------------------------------------------
+  eval-harness:
+    profiles: ["tools"]
+    image: qwen36-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/eval_harness.py"]
+    environment:
+      LLAMA_URL: http://${BACKEND_HOST}:8080
+      FORGE_URL: http://forge:8081
+      MODEL_ALIAS: ${MODEL_ALIAS}
+      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
+      EVAL_REPEAT_THRESHOLD: ${EVAL_REPEAT_THRESHOLD:-3}
+      EVAL_SCORE_FLOOR: ${EVAL_SCORE_FLOOR:-0.5}
+
+# ---------------------------------------------------------------------------
+# Named volumes
+# ---------------------------------------------------------------------------
+volumes:
+  slot-cache:
+    name: qwen36-slot-cache

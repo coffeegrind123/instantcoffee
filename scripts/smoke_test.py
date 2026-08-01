@@ -58,6 +58,37 @@ WEATHER_TOOL_ANTHROPIC = {
 
 PROMPT = "What is the weather in Paris right now? Use the tool."
 
+
+# --- loop / repeat detection ---
+# From rhdunn's promptfoo assert (HN thread, June 2026).
+# Flags output that repeats a fixed substring ≥threshold times — catches a
+# sampling regression that the tool-call assert alone would miss.
+
+REPEAT_THRESHOLD = int(os.environ.get("SMOKE_REPEAT_THRESHOLD", "3"))
+
+
+def _count_repeats(text: str, length: int) -> int:
+    n = len(text)
+    pattern = text[n - length : n]
+    count = 1  # Include the end of the string as matching the substring.
+    text = text[: -length]
+    while text.endswith(pattern):
+        text = text[: -length]
+        count = count + 1
+    return count
+
+
+def check_for_repeats(output: str, threshold: int = REPEAT_THRESHOLD) -> tuple[int, int]:
+    """Return (max_repeat_count, substring_length) or (0, 0) if none found."""
+    count = 0
+    length = 0
+    for n in range(1, (len(output) // 2) + 1):
+        n_count = _count_repeats(output, n)
+        if n_count > count:
+            count = n_count
+            length = n
+    return count, length
+
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -194,6 +225,7 @@ def check_openai_tool_call() -> None:
         f"{usage.get('completion_tokens', '?')} completion tokens",
     )
     record("tool arguments parse as JSON", isinstance(args.get("city"), str), f"city={args.get('city')!r}")
+    _check_content_repeats(json.dumps(data), "OpenAI tool call")
 
 
 def check_anthropic_tool_call() -> None:
@@ -255,6 +287,21 @@ def check_plain_completion() -> None:
     data = json.loads(body)
     content = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
     record("forge plain completion", bool(content.strip()), f"{content.strip()[:80]!r}")
+    _check_content_repeats(content, "plain completion")
+
+
+def _check_content_repeats(content: str, label: str) -> None:
+    """Assert that generated content does not contain degenerate repeats."""
+    count, length = check_for_repeats(content)
+    if count >= REPEAT_THRESHOLD:
+        record(
+            f"no repeat loop ({label})",
+            False,
+            f"output repeats {count}× with length {length} "
+            f"(threshold={REPEAT_THRESHOLD}) — possible sampling regression",
+        )
+    else:
+        record(f"no repeat loop ({label})", True, "")
 
 
 def main() -> int:

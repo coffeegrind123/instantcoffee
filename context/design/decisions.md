@@ -9,6 +9,23 @@ observed values are kept so a future reader can tell what has gone stale.
 `Qwen/Qwen3.6-27B` (released 2026-04-24), served from `unsloth/Qwen3.6-27B-MTP-GGUF`
 (the MTP variant of the same UD-Q4_K_XL quant — see the settings review below).
 
+### Why 27B dense, not the 35B-A3B MoE
+
+The HN thread (June 2026, "Ask HN: Has anyone replaced Claude/GPT with a local
+model for daily coding?") surfaced a strong independent consensus: **the 27B
+dense model beats the 35B-A3B MoE for real coding work**, despite the MoE being
+~3× faster at token generation. Every operator who compared them directly
+converged on 27B for quality-sensitive coding.
+
+The rule of thumb that explains it: `sqrt(total × active)` approximates the
+effective-dense parameter count for an MoE. `sqrt(35 × 10) ≈ 18.7`, well below
+the dense 27B. The MoE is faster, but for raw code generation quality the dense
+model is the right choice. This is not re-litigated; the decision is recorded
+here so future model discussions start from it.
+
+Named data points from the thread: jborak, bluejay2387, mgsram, c16, henrixd,
+stared, electronsoup, and amarshall all independently converged on this choice.
+
 Facts pulled from the model's own `config.json` rather than assumed:
 
 | Property | Value | Consequence |
@@ -167,10 +184,252 @@ Three external configurations were reviewed. Flags were checked against
   length of 2 is aggressive for code, where short token sequences repeat legitimately
   (indentation, `});`). Available via `LLAMA_EXTRA_FLAGS` if repetition loops show up.
 
+**Deferred for experiment: top-n sigma sampler.** Der_Einzige on the HN thread
+(June 2026) claims setting llama.cpp's `--sampling-top-n-sigma 1` with temperature
+at any value eliminates long-context degeneration, which is framed as "mostly a
+sampling problem." 0xbadcafebee independently agrees loop-elimination is mostly
+sampler tuning. Zero cost to A/B test via `LLAMA_EXTRA_FLAGS`:
+`LLAMA_EXTRA_FLAGS=-ctk f16 -ctv q8_0 -b 4096 -ub 2048 --sampling-top-n-sigma 1`.
+Skeptical (Qwen publishes its own presets and this is not among them), but worth
+a two-line experiment if loop/repeat issues persist despite the smoke-test repeat
+detector and K-f16 cache.
+
 **Note on a third-party spec sheet.** One reference circulated for this model lists
 `head_dim=80, q_heads=64, kv_heads=64`. Qwen's published `config.json` says
 `head_dim=256, 24 Q heads, 4 KV heads`. Any KV-cache sizing derived from the former
 is wrong — the real per-token cost is ~4x what those numbers imply.
+
+## HN thread findings (2026-07-31)
+
+The "Ask HN: Has anyone replaced Claude/GPT with a local model for daily coding?"
+thread (June 2026, 1318 points, 563 comments) was read in full and cross-checked
+against this stack. Seven actionable changes landed here. The ones that touch the
+documented bottleneck ("every turn re-reads the whole conversation") are #1 and #2.
+
+### 1. preserve_thinking + FORGE_REASONING_REPLAY=full (FIXED)
+
+Qwen3.6 was trained for `--chat-template-kwargs '{"preserve_thinking": true}'`.
+Without it, the Jinja template strips prior-turn reasoning, so every agentic turn
+forces a full KV re-prefill — exactly the "no prompt caching, re-reads everything"
+behaviour in the README. The deeper thread (lambda, chakspak, havfo, stymaar)
+confirmed this is not a forge/cache_control problem but a template/engine one.
+
+- `--chat-template-kwargs '{"preserve_thinking": true}'` added to both backends
+  in `docker-compose.yml`.
+- `FORGE_REASONING_REPLAY` promoted from `none` to `full` so prior thinking
+  actually reaches the backend instead of being dropped.
+- Trade-off: thinking stays in the context window (higher per-turn token cost),
+  but reduces re-prefill and can avoid re-doing reasoning on later turns.
+
+### 2. K-f16, V-q8_0 KV cache (FIXED)
+
+lloyd-christmas (R9700, Qwen): "quantizing k leads to broken json on tool calls,
+which is fairly unrecoverable." girvo: F16-K/Q8-V "got rid of a lot of the loops."
+The default was `-ctk q8_0 -ctv q8_0` (both quantized). At 64K that is ~34 KiB/token
+vs ~64 KiB/token f16 K, so f16 K costs roughly ~1 GiB more — fits within the 22.4 GiB
+budget.
+
+- `.env`: `IK_CACHE_TYPE_K=f16`, `LLAMA_EXTRA_FLAGS=-ctk f16 -ctv q8_0 ...`
+- README VRAM table recalculated for f16 K costs.
+
+### 3. Loop/repeat detector in smoke_test.py (FIXED)
+
+rhdunn ships a promptfoo Python assert that flags output where a fixed substring
+repeats ≥3×. The smoke test already asserts on `tool_calls` but not on degeneracy;
+a repeat check catches a sampling regression the tool-call assert misses. Directly
+ported: `_count_repeats` / `check_for_repeats` / `_check_content_repeats` wired
+into both the plain completion and OpenAI tool-call checks.
+
+### 4. Edit-tool hygiene in the priming prompt (FIXED)
+
+- nicman23: edit failures are "almost always trailing white spaces"
+- geophile: "updated AGENTS.md to limit editing (as opposed to rewriting) and
+  that helps a little"
+- adyavanapalli's harness problem (hash-anchor each line for diffs) — harness-side
+
+Added four concrete rules to `~/claude-prompt.txt` (strip trailing whitespace,
+prefer targeted edits, retry tool calls directly before re-reading, re-read on
+second failure).
+
+### 5. 27B-dense over 35B-A3B MoE confirmed (DOCUMENTED)
+
+Jborak, bluejay2387, mgsram, c16, henrixd, stared, electronsoup all independently
+converged: 27B dense beats the 35B-A3B MoE for real coding despite ~3× lower tok/s.
+Rule of thumb from amarshall: sqrt(35×10)≈18.7 effective-dense for MoE — below the
+dense 27B. Recorded in the model section above so it is not re-litigated.
+
+### 6. QAT GGUF awareness in update.sh (FIXED)
+
+kpw94 flags unsloth's QAT line (Gemma 4) as holding bfloat16-level quality at Q4
+memory. Thread only names Gemma, but `update.sh --check` now prints a hint if
+`unsloth/Qwen3.6-27B-*-qat-GGUF` exists on HuggingFace, so the operator knows
+to evaluate it.
+
+### 7. top-n sigma sampler (DOCUMENTED, not applied)
+
+Der_Einzige's contrarian claim: set llama.cpp's `--sampling-top-n-sigma 1`,
+temperature can be anything; "long context generation is a sampling problem."
+0xbadcafebee independently agrees loop-elimination is mostly sampler tuning.
+Recorded in the rejected/deferred section above. Zero cost to A/B test via
+`LLAMA_EXTRA_FLAGS`; not applied by default because Qwen publishes its own
+presets and this is not among them.
+
+### Context worth knowing (not changes, confirmed alignment)
+
+- **petsitter (kristopolous)** is literally this forge: a middleman validator
+  between harness and inference engine with stackable "tricks." Validates the
+  architecture; forge could grow a whitespace-normalization trick.
+- **Harness system-prompt mutation kills prefix caching.** LoganDark notes
+  OpenCode does this; Claude Code also injects a per-turn system-reminder, so
+  no harness path gets prefix caching regardless of engine settings. Reinforces
+  preserve_thinking as the correct approach over hoping for prefix hits.
+- **64K is right at the thread's pain floor.** Quality/speed degrade past ~100K
+  even on 256K windows (bluejay2387); yieldcrv "can't operate in 65,000 windows
+  any more." Mitigations people converged on — `/new` early, decompose into
+  atomic TODOs, name specific files — should go in the README's priming section.
+- **Frontier-plans/local-implements** (willisrocks, bijowo1676, garethsprice,
+  mgsram) is the dominant real-world hybrid pattern.
+
+## GitHub research (2026-08-01)
+
+Seven public repos were reviewed for Qwen3.6 + llama.cpp configurations beyond the
+three already consulted for the initial settings review. The findings below were
+checked against `common/arg.cpp` at b10200 before adoption.
+
+### Repos consulted
+
+| Repo | Stars | Relevance |
+| --- | --- | --- |
+| `Danmoreng/local-qwen3-coder-env` | 92 | Optimised 16GB/24GB launchers, `LLAMA_SET_ROWS=1`, `--fit-target` per VRAM budget |
+| `rndhouse/mixmod` | 43 | GPT-5.5→Qwen3.6-27B supervisor pipeline, `-kvu`, `--spec-draft-n-max 6` |
+| `day50-dev/petsitter` | 37 | Middleware proxy with stackable tricks — validates forge's architecture |
+| `pierotofy/LocalCodingLLM` | 27 | `--cache-prompt` + `--slot-save-path`, `--fit-target 2048`, OpenCode config |
+| `rcarmo/llama-cpp` | — | Qwen cache sweep benchmarks, `--spec-draft-threads`, `--no-cache-idle-slots` |
+| `loops-and-spells/pi-setup` | — | Slot save-on-exit/restore-on-start wrapper pattern |
+| `sasasin/dotfiles` | 6 | Most detailed single-user config: `--cache-reuse 128`, `--slot-prompt-similarity 0.20`, `--ctx-checkpoints 24`, `--checkpoint-min-step 256` |
+
+### Applied
+
+#### LLAMA_SET_ROWS=1
+
+Environment variable that enables a ggml fast path for `ggml_cpy()`. Unsloth
+documents it as "makes llama.cpp a little bit faster! Use it!" Zero cost — set in
+both backend services in `docker-compose.yml`.
+
+#### -kvu / --kv-unified
+
+Uses a single unified KV buffer shared across all sequences. Enabled by default when
+slots are auto, but the mixmod scripts explicitly set it. With `-np 1` (one slot),
+the unified buffer is simpler and more memory-efficient. Added to both backends.
+
+#### --cache-prompt + --slot-save-path
+
+**The single biggest performance finding.** `--cache-prompt` enables persistent KV
+cache to disk so warm restarts skip re-prefill entirely. `--slot-save-path` is where
+the save files land. Used by pierotofy, sasasin, rcarmo, and pi-setup.
+
+Combined with `--cache-reuse 64` and `--slot-prompt-similarity 0.20`: the engine
+compares incoming prompts against cached entries and reuses matching KV segments
+instead of recomputing. The similarity threshold is tuned per sasasin's config.
+
+Slot files are stored in a Docker named volume (`qwen36-slot-cache`) so they survive
+container rebuilds but don't pollute the model directory.
+
+Caveat: `--cache-prompt` uses the `--cache-ram` budget (default 8192 MiB). At 64K
+context with f16 K/q8 V, a full slot is ~4 GiB. 8 GiB holds one full slot plus
+checkpoint overhead. If you see OOM, lower `CACHE_RAM` or `CTX_CHECKPOINTS`.
+
+#### --ctx-checkpoints + --checkpoint-min-step
+
+KV cache checkpointing: the engine saves snapshots so it can rewind without
+recomputing from scratch. Critical for agentic loops where the harness resends the
+same prefix with a different suffix.
+
+Upstream defaults: 32 checkpoints, 8192 token minimum spacing. The sasasin config
+uses 24 checkpoints with 256 token minimum — far more aggressive, tuned for
+agentic workloads. This stack uses 16 checkpoints at 256-token spacing as a
+conservative starting point.
+
+Trade-off: each checkpoint costs VRAM proportional to the KV cache size. 16
+checkpoints of a ~4 GiB slot (64K context, f16 K) is impractically large, but
+checkpoints use copy-on-write deltas rather than full copies, so real cost is
+far lower.
+
+#### --reasoning-budget-message
+
+sasasin uses: `"Reasoning budget reached. Stop thinking and provide the final
+answer now."` This is cleaner than the engine default — it explicitly tells the
+model to stop thinking and deliver output. Added to both backends.
+
+#### MTP tuning: --spec-draft-n-min + --spec-draft-p-min
+
+- `--spec-draft-n-min 0` (auto): lets the engine fall back to no drafting when
+  acceptance is low, rather than wasting compute.
+- `--spec-draft-p-min 0.75`: minimum per-token acceptance probability. Higher
+  values draft less aggressively. Qwen's public presets use 0.75.
+
+The mixmod repo runs `--spec-draft-n-max 6` on Q4_K_M (a smaller quant than our
+default UD-Q4_K_XL). Kept at 2 here but worth raising on a smaller quant.
+
+### Documented (not applied)
+
+#### Slot save/restore wrapper pattern
+
+The pi-setup repo (`loops-and-spells/pi-setup`) wraps llama-server with a trap
+handler that saves all active slots on exit and restores them on startup via the
+`/slots` API. This means a container restart resumes conversations instantly with
+no re-prefill at all.
+
+```
+# On exit: POST /slots?action=save&id_slot=0 {"filename":"slot_0.session"}
+# On start: POST /slots?action=restore&id_slot=0 {"filename":"slot_0.session"}
+```
+
+This is not baked into the compose file (it needs a wrapper script with trap
+handling), but is documented here as a pattern worth adding to `up.sh` / `down.sh`.
+
+#### --ngram-map-k speculative decoding
+
+Danmoreng's 27B-optimised launcher uses `--spec-type ngram-map-k` instead of
+`draft-mtp`. This is n-gram based speculative decoding that does not require an
+MTP model — it works with any GGUF. Useful as a fallback when MTP is not available
+(e.g., certain ik_llama.cpp recipes). Not applied by default because MTP is faster
+when available.
+
+#### OpenCode context limits
+
+pierotofy's OpenCode config sets explicit context limits per model:
+```json
+"limit": { "context": 65536, "input": 47014, "output": 18432 }
+```
+This prevents out-of-context errors by capping the input before the engine sees it.
+Not a forge concern (the proxy manages its own budget), but worth knowing for users
+who run OpenCode directly against llama-server.
+
+#### --no-mmap for mainline
+
+The mixmod scripts use `--no-mmap` for Qwen3.6 (already in the ik profile). Adding
+it to the mainline profile would prevent the OS from double-buffering the GGUF in
+the page cache. Not applied because the mainline profile uses `:ro` mount and mmap
+is harmless there, but worth adding if memory pressure appears.
+
+#### petsitter as architectural validation
+
+kristopolous's petsitter is a Python proxy that sits between harness and inference
+engine with stackable "tricks" (system prompt injection, pre-hook message transform,
+post-hook validation/retry/transform). Its existence validates forge's architecture
+from the opposite direction — petsitter is a community-built version of the same
+concept. The `tool_call.py` trick (inject JSON-RPC instructions for models without
+native tool support, parse responses, convert to OpenAI format) is precisely what
+forge's `prompt` capability mode does.
+
+#### --fit-target per VRAM budget
+
+pierotofy uses `--fit-target 2048` for 24 GB — 2 GiB of VRAM headroom. Danmoreng
+uses `--fit-target 256` for 16 GB — 256 MiB headroom. The ik backend already uses
+`--fit on` implicitly; adding an explicit `--fit-target` would give more predictable
+VRAM behaviour. Not applied because the current stack uses explicit layer offload
+(`-ngl 99`) rather than `--fit` auto-tuning.
 
 ## Deliberately not done
 - **Streaming through the proxy.** forge buffers responses rather than streaming

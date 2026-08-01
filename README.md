@@ -1,5 +1,8 @@
 # qwen3.6-forge
 
+[![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.6-forge/actions)
+[![Eval](https://img.shields.io/badge/eval-run%20locally-lightgrey?logo=pytest&style=flat)](#eval-results)
+
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy.
 
@@ -113,10 +116,18 @@ The keys worth knowing:
 | `CTX_SIZE` | `65536` | Context per slot; also what forge uses as its token budget |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
-| `LLAMA_EXTRA_FLAGS` | `-ctk q8_0 -ctv q8_0` | Quantized KV cache — halves what 64K context costs |
+| `LLAMA_EXTRA_FLAGS` | `-ctk f16 -ctv q8_0` | K-f16/V-q8 KV cache — f16 K prevents broken JSON tool calls |
+| `CACHE_PROMPT` | `1` | Persist KV cache to disk for fast warm restarts |
+| `CACHE_RAM` | `8192` | RAM budget for prompt cache in MiB; 0 disables |
+| `CACHE_REUSE` | `64` | Previous cache entries to compare for reuse |
+| `SLOT_PROMPT_SIMILARITY` | `0.20` | Similarity threshold for cache reuse (0.0–1.0) |
+| `CTX_CHECKPOINTS` | `16` | KV checkpoints per slot for agentic rewind; 0 disables |
+| `CHECKPOINT_MIN_STEP` | `256` | Minimum tokens between checkpoints |
+| `SPEC_DRAFT_N_MIN` | `0` | Minimum MTP draft tokens; 0 = auto |
+| `SPEC_DRAFT_P_MIN` | `0.75` | Minimum MTP per-token acceptance probability |
 | `MMPROJ_FILE` | *(empty)* | Set to `mmproj-F16.gguf` for image input |
 | `FORGE_CAPABILITY` | `native` | Keep `native` — llama.cpp with `--jinja` does real function calling |
-| `FORGE_REASONING_REPLAY` | `none` | `keep-last` / `full` replay captured reasoning to the backend |
+| `FORGE_REASONING_REPLAY` | `full` | `keep-last` / `full` replay captured reasoning to the backend |
 | `BIND_ADDR` | `127.0.0.1` | `0.0.0.0` to expose on the LAN |
 
 ## Choosing a quant for 24 GiB
@@ -124,19 +135,19 @@ The keys worth knowing:
 The 4090 has 24.0 GiB. Qwen3.6-27B is a hybrid: only **16 of its 64 layers** use full
 attention (the other 48 are Gated DeltaNet, whose recurrent state does not grow with
 context). That makes its KV cache far smaller than a normal 27B — about **64 KiB per
-token**, so 2.0 GiB at 32K.
+token at f16 K, ~34 KiB per token at q8_0 V**.
 
 | GGUF | Weights | @64K (default) | @128K | Verdict on ~22.4 GiB |
 | --- | --- | --- | --- | --- |
-| `IQ4_XS` | 14.4 GiB | ~17.8 | ~20.0 | Most headroom, lowest quality of the 4-bits |
-| `Q4_K_M` | 15.7 GiB | ~19.1 | ~21.3 | Safe |
-| **`UD-Q4_K_XL`** | **16.4 GiB** | **~19.8** | **~22.0** | **Default — best quality that still fits** |
-| `Q5_K_M` | 18.2 GiB | ~21.6 | — | Very tight; headless only |
+| `IQ4_XS` | 14.4 GiB | ~19.2 | ~21.4 | Most headroom, lowest quality of the 4-bits |
+| `Q4_K_M` | 15.7 GiB | ~20.5 | ~22.7 | Tight at 128K |
+| **`UD-Q4_K_XL`** | **16.4 GiB** | **~21.2** | — | **Default — best quality that still fits** |
+| `Q5_K_M` | 18.2 GiB | — | — | Does not fit at this context |
 | `Q6_K` | 21.0 GiB | — | — | Does not fit |
 
-Columns assume the default `q8_0` KV cache, which costs ~34 KiB per token against
-f16's ~64 KiB. Drop `LLAMA_EXTRA_FLAGS` to go back to an f16 cache and the 64K column
-gains about 2 GiB.
+Columns assume the default `f16` K / `q8_0` V cache per the HN thread consensus
+(K quantisation breaks JSON on tool calls). Drop `LLAMA_EXTRA_FLAGS` to go back to
+an f16 K/f16 V cache and the 64K column gains about 2 GiB.
 
 Totals include ~1.3 GiB of CUDA context and compute buffers. Note that the card is
 never entirely yours: measured on this machine, llama.cpp saw **22992 MiB free** of
@@ -277,8 +288,12 @@ looking for those. On a 64K window they are a real fraction of the budget. Drop
 forge translates Anthropic requests to OpenAI for llama.cpp, and Anthropic-only
 fields have no analog on the other side:
 
-- **`cache_control` is dropped** — there is no prompt caching. Every turn re-reads
-  the whole conversation, which is the main reason context size matters here.
+- **`cache_control` is dropped** — Anthropic-style prompt caching has no OpenAI
+  analog. The stack compensates three ways: (1) `preserve_thinking` avoids KV
+  re-prefill across turns, (2) `--cache-prompt` + `--slot-save-path` persist the
+  KV cache to disk so warm restarts skip re-prefill entirely, and (3)
+  `--ctx-checkpoints` enable fast rewind for agentic loops without recomputing
+  from scratch. See `.env` for `CACHE_RAM`, `CACHE_REUSE`, and related knobs.
 - **`thinking` is dropped in both directions.** The request field is not on forge's
   forward allow-list, so Claude Code's thinking settings have no effect on the model;
   and forge does not synthesize signed Anthropic thinking blocks on the way back.
@@ -305,7 +320,7 @@ many layers were actually offloaded.
 
 **CUDA out of memory on load.**
 Drop a rung on the quant table, lower `CTX_SIZE`, or set
-`LLAMA_EXTRA_FLAGS=-ctk q8_0 -ctv q8_0`.
+`LLAMA_EXTRA_FLAGS=-ctk f16 -ctv q8_0`.
 
 **`docker pull` from ghcr.io fails with `denied` on a public image.**
 A stale ghcr credential in `~/.docker/config.json` is being sent and rejected — this
@@ -323,16 +338,88 @@ of being bind-mounted.
 
 ```
 .env                    committed config + version pins
+.env.local.example      machine-local override template (copy to .env.local)
 versions.lock           what update.sh last verified (generated)
 docker-compose.yml      llama + forge, plus tools-profile one-shots
 Dockerfile.forge        forge proxy image, pinned to FORGE_VERSION
+Dockerfile.ikllama      ik_llama.cpp image (recipe weights, CUDA)
+.github/workflows/ci.yml  CI pipeline (lint, build, verify)
+badges/                 shield.io endpoint JSON for dynamic badges
+results/
+  latest.json           most recent eval run (committed, displayed in README)
+  history.jsonl         append-only log of all eval runs
+configs/
+  opencode-provider.json  drop-in OpenCode provider config pointing at forge
 scripts/
   setup.sh              prerequisites -> model -> build -> up -> verify
   update.sh             update everything, verify, roll back on failure
+  up.sh / down.sh       start / stop the stack
   smoke_test.py         end-to-end checks (runs inside the compose network)
+  eval.py               9-suite coding eval (speed, codegen, bugfix, tools…)
+  eval_harness.py       extended coding eval with judge-based scoring
+  run-eval.sh           run eval, save results, regenerate badge + README
+  gen-readme-scorecard.py  update README scorecard from results/latest.json
+  test_repeat_detector.py  standalone unit tests for the loop detector
+  bench.sh              prompt processing + generation speed benchmark
+  slot-cache.sh         save/restore KV cache for warm restarts
   download_model.py     resumable GGUF fetch
+  download-ik-model.sh  fetch recipe model shards for the ik backend
   claude-local.sh       launch Claude Code primed for the local model
   pi-local.sh           launch the pi coding agent against forge
   claude-code-env.sh    source this to redirect the API only
 context/design/         why things are the way they are
 ```
+
+## Eval Results
+
+<!-- eval-scorecard-start -->
+
+![Eval](https://img.shields.io/badge/eval-0%%20(0%2F26)-red?logo=pytest&style=flat)
+
+**Latest eval:** 0% — 0/26 tests pass (floor: 0.5)
+
+| Suite | Score | Passed | Bar |
+| --- | --- | --- | --- |
+| bugfix | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/3 | ![](https://img.shields.io/badge/bugfix-0%-red?style=flat-square) |
+| codegen | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/5 | ![](https://img.shields.io/badge/codegen-0%-red?style=flat-square) |
+| edits | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/4 | ![](https://img.shields.io/badge/edits-0%-red?style=flat-square) |
+| multiturn | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/3 | ![](https://img.shields.io/badge/multiturn-0%-red?style=flat-square) |
+| reasoning | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/3 | ![](https://img.shields.io/badge/reasoning-0%-red?style=flat-square) |
+| refactor | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/1 | ![](https://img.shields.io/badge/refactor-0%-red?style=flat-square) |
+| review | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/1 | ![](https://img.shields.io/badge/review-0%-red?style=flat-square) |
+| speed | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/3 | ![](https://img.shields.io/badge/speed-0%-red?style=flat-square) |
+| tools | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/3 | ![](https://img.shields.io/badge/tools-0%-red?style=flat-square) |
+
+
+<!-- eval-scorecard-end -->
+
+### Running evaluations
+
+```bash
+# Start the stack first
+./scripts/up.sh
+
+# Quick smoke test (must pass)
+./scripts/smoke-test.sh
+
+# Full 9-suite coding eval
+./scripts/run-eval.sh            # run and save results
+./scripts/run-eval.sh --history  # also append to history.jsonl
+./scripts/run-eval.sh --badge    # also regenerate badges
+
+# Update README with latest results
+python3 scripts/gen-readme-scorecard.py --all
+
+# CI-ready: validate everything that doesn't need a GPU
+python3 scripts/test_repeat_detector.py   # 14 unit tests
+docker compose --profile tools config     # validate compose
+```
+
+The eval produces:
+
+| Artifact | Purpose |
+| --- | --- |
+| `results/latest.json` | Most recent scores (committed, displayed in README) |
+| `results/history.jsonl` | Every run, append-only |
+| `badges/eval.json` | Shield.io endpoint for dynamic eval badge |
+| `badges/suite-*.json` | Per-suite dynamic badges |

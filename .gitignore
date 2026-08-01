@@ -8,3 +8,4 @@
 # MODELS_DIR, outside the repo, but guard against a stray copy landing here.
 *.gguf
 models/
+__pycache__/

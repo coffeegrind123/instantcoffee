@@ -1,0 +1,99 @@
+{
+  "suites": {
+    "speed": {
+      "score": 0,
+      "passed": 0,
+      "total": 3,
+      "tests": [
+        {"test": "prompt_processing_tps", "score": 0, "passed": false, "detail": "pending — run ./scripts/run-eval.sh with stack up"},
+        {"test": "token_generation_tps", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "no_loop", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "codegen": {
+      "score": 0,
+      "passed": 0,
+      "total": 5,
+      "tests": [
+        {"test": "fibonacci", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "binary_search", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "is_palindrome", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "group_anagrams", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "merge_sorted", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "bugfix": {
+      "score": 0,
+      "passed": 0,
+      "total": 3,
+      "tests": [
+        {"test": "off_by_one", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "empty_list_guard", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "mutable_default", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "edits": {
+      "score": 0,
+      "passed": 0,
+      "total": 4,
+      "tests": [
+        {"test": "python_fn", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "indented_class", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "trailing_ws", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "mixed_tabs", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "tools": {
+      "score": 0,
+      "passed": 0,
+      "total": 3,
+      "tests": [
+        {"test": "single_call", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "json_valid", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "multi_tool_selection", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "reasoning": {
+      "score": 0,
+      "passed": 0,
+      "total": 3,
+      "tests": [
+        {"test": "produces_output", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "correct_answer", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "no_loop", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "review": {
+      "score": 0,
+      "passed": 0,
+      "total": 1,
+      "tests": [
+        {"test": "security_issues_found", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "multiturn": {
+      "score": 0,
+      "passed": 0,
+      "total": 3,
+      "tests": [
+        {"test": "recall", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "recall_after_distraction", "score": 0, "passed": false, "detail": "pending"},
+        {"test": "no_severe_loop", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    },
+    "refactor": {
+      "score": 0,
+      "passed": 0,
+      "total": 1,
+      "tests": [
+        {"test": "dict_refactor", "score": 0, "passed": false, "detail": "pending"}
+      ]
+    }
+  },
+  "overall": {
+    "score": 0.0,
+    "passed": 0,
+    "total": 26,
+    "_note": "Run ./scripts/run-eval.sh with the stack running to populate real results"
+  }
+}

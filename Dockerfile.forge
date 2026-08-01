@@ -36,7 +36,7 @@ LABEL org.opencontainers.image.title="qwen3.6-forge proxy" \
 # `./scripts` expands to here) mounts an EMPTY directory instead of failing —
 # see context/design/decisions.md. Baking them in removes that whole class of
 # bug and makes the image self-contained.
-COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py /work/scripts/
+COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/eval_harness.py scripts/eval.py /work/scripts/
 
 WORKDIR /work
 USER forge
