@@ -374,28 +374,11 @@ context/design/         why things are the way they are
 
 <!-- eval-scorecard-start -->
 
-![Eval](https://img.shields.io/badge/eval-9%%20(3%2F23)-red?logo=pytest&style=flat)
+![Eval](https://img.shields.io/badge/eval-0%%20(0%2F26)-red?logo=pytest&style=flat)
 
-**Latest eval:** 9% — 3/23 tests pass (floor: 0.5)
+**Latest eval:** 0% — 0/26 tests pass (floor: 0.5)
 
-> **Note:** These results are from a **Qwen3-0.6B placeholder** — a 594 MB model used to
-> validate the eval pipeline end-to-end. It is 45× smaller than the actual Qwen3.6-27B
-> target and cannot perform meaningful coding, tool calling, or reasoning. The important
-> result: all 9 suites and 23 tests executed with no infra failures. Run
-> `./scripts/run-eval.sh` with the real 27B model loaded to get representative scores.
-
-| Suite | Score | Passed | Bar |
-| --- | --- | --- | --- |
-| bugfix | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/3 | ![](https://img.shields.io/badge/bugfix-0%-red?style=flat-square) |
-| codegen | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/5 | ![](https://img.shields.io/badge/codegen-0%-red?style=flat-square) |
-| edits | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/4 | ![](https://img.shields.io/badge/edits-0%-red?style=flat-square) |
-| multiturn | [██████░░░░░░░░░░░░░░] 0.33 | 1/3 | ![](https://img.shields.io/badge/multiturn-33%-orange?style=flat-square) |
-| reasoning | [██████░░░░░░░░░░░░░░] 0.33 | 1/3 | ![](https://img.shields.io/badge/reasoning-33%-orange?style=flat-square) |
-| refactor | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/1 | ![](https://img.shields.io/badge/refactor-0%-red?style=flat-square) |
-| review | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/1 | ![](https://img.shields.io/badge/review-0%-red?style=flat-square) |
-| speed | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 1/1 | ![](https://img.shields.io/badge/speed-0%-red?style=flat-square) |
-| tools | [░░░░░░░░░░░░░░░░░░░░] 0.00 | 0/2 | ![](https://img.shields.io/badge/tools-0%-red?style=flat-square) |
-
+_No eval results yet. Run `./scripts/run-eval.sh` after starting the stack with Qwen3.6-27B loaded._
 
 <!-- eval-scorecard-end -->
 

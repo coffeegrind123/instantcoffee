@@ -80,8 +80,12 @@ def generate_scorecard(data: dict) -> str:
     )
     lines.append("")
 
-    if not suites:
-        lines.append("_No eval results yet. Run `./scripts/run-eval.sh` after starting the stack._")
+    if not suites or all(
+        all(t.get("detail") == "pending" for t in s.get("tests", []))
+        for s in suites.values()
+    ):
+        lines.append("_No eval results yet. Run `./scripts/run-eval.sh` after starting the stack "
+                      "with Qwen3.6-27B loaded._")
         return "\n".join(lines)
 
     # Per-suite table
