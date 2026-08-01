@@ -78,7 +78,10 @@ def _http(url: str, payload: dict | None = None, timeout: float = 300.0,
 
 def _chat(messages: list[dict], tools: list[dict] | None = None,
           max_tokens: int = 2048, timeout: float = EVAL_TIMEOUT) -> dict:
-    p: dict = {"model": MODEL_ALIAS, "messages": messages, "max_tokens": max_tokens}
+    p: dict = {
+        "model": MODEL_ALIAS, "messages": messages, "max_tokens": max_tokens,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
     if tools:
         p["tools"] = tools
     s, b = _http(f"{FORGE_URL}/v1/chat/completions", p, timeout=timeout)
@@ -91,7 +94,8 @@ def _chat(messages: list[dict], tools: list[dict] | None = None,
 
 
 def _content(r: dict) -> str:
-    return (r.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+    msg = (r.get("choices") or [{}])[0].get("message", {})
+    return msg.get("content") or msg.get("reasoning_content") or ""
 
 
 def _tool_calls(r: dict) -> list[dict]:

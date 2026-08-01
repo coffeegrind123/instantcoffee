@@ -374,11 +374,22 @@ context/design/         why things are the way they are
 
 <!-- eval-scorecard-start -->
 
-![Eval](https://img.shields.io/badge/eval-0%%20(0%2F26)-red?logo=pytest&style=flat)
+![Eval](https://img.shields.io/badge/eval-82%%20(26%2F26)-green?logo=pytest&style=flat)
 
-**Latest eval:** 0% — 0/26 tests pass (floor: 0.5)
+**Latest eval:** 82% — 26/26 tests pass (floor: 0.5)
 
-_No eval results yet. Run `./scripts/run-eval.sh` after starting the stack with Qwen3.6-27B loaded._
+| Suite | Score | Passed | Bar |
+| --- | --- | --- | --- |
+| bugfix | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/bugfix-73%-green?style=flat-square) |
+| codegen | [███████████████████░] 0.95 | 5/5 | ![](https://img.shields.io/badge/codegen-95%-brightgreen?style=flat-square) |
+| edits | [█████████████████░░░] 0.88 | 4/4 | ![](https://img.shields.io/badge/edits-88%-green?style=flat-square) |
+| multiturn | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/multiturn-100%-brightgreen?style=flat-square) |
+| reasoning | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/reasoning-100%-brightgreen?style=flat-square) |
+| refactor | [████████████████████] 1.00 | 1/1 | ![](https://img.shields.io/badge/refactor-100%-brightgreen?style=flat-square) |
+| review | [█████████████░░░░░░░] 0.67 | 1/1 | ![](https://img.shields.io/badge/review-67%-yellow?style=flat-square) |
+| speed | [██████░░░░░░░░░░░░░░] 0.34 | 3/3 | ![](https://img.shields.io/badge/speed-34%-orange?style=flat-square) |
+| tools | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/tools-73%-green?style=flat-square) |
+
 
 <!-- eval-scorecard-end -->
 

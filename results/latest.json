@@ -1,229 +1,242 @@
 {
   "suites": {
     "speed": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 0.341,
+      "passed": 3,
       "total": 3,
       "tests": [
         {
           "test": "prompt_processing_tps",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.006517919969998135,
+          "passed": true,
+          "detail": "7 tok/s (521 tokens in 79.9s)",
+          "pp_tps": 7,
+          "pt": 521,
+          "elapsed_s": 79.9
         },
         {
           "test": "token_generation_tps",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.016013315857193115,
+          "passed": true,
+          "detail": "2 tok/s (128 tokens in 79.9s)",
+          "tg_tps": 2,
+          "ct": 128,
+          "elapsed_s": 79.9
         },
         {
           "test": "no_loop",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": ""
         }
       ]
     },
     "codegen": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 0.95,
+      "passed": 5,
       "total": 5,
       "tests": [
         {
           "test": "fibonacci",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": 6,
+          "detail": "6/6 tests passed",
+          "total": 6
         },
         {
           "test": "binary_search",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": 6,
+          "detail": "6/6 tests passed",
+          "total": 6
         },
         {
           "test": "is_palindrome",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": 6,
+          "detail": "6/6 tests passed",
+          "total": 6
         },
         {
           "test": "group_anagrams",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.75,
+          "passed": 3,
+          "detail": "3/4 tests passed",
+          "total": 4
         },
         {
           "test": "merge_sorted",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": 6,
+          "detail": "6/6 tests passed",
+          "total": 6
         }
       ]
     },
     "bugfix": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 0.733,
+      "passed": 3,
       "total": 3,
       "tests": [
         {
           "test": "off_by_one",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.6,
+          "passed": true,
+          "detail": "patterns=0/2 tests=4/4"
         },
         {
           "test": "empty_list_guard",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.6,
+          "passed": true,
+          "detail": "patterns=0/1 tests=2/2"
         },
         {
           "test": "mutable_default",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "patterns=1/1 tests=3/3"
         }
       ]
     },
     "edits": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 0.875,
+      "passed": 4,
       "total": 4,
       "tests": [
         {
           "test": "python_fn",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "2/2 lines exact, got 2 lines"
         },
         {
           "test": "indented_class",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "4/4 lines exact, got 4 lines"
         },
         {
           "test": "trailing_ws",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "2/2 lines exact, got 2 lines"
         },
         {
           "test": "mixed_tabs",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.5,
+          "passed": true,
+          "detail": "1/2 lines exact, got 2 lines"
         }
       ]
     },
     "tools": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 0.733,
+      "passed": 3,
       "total": 3,
       "tests": [
         {
           "test": "single_call",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.5,
+          "passed": true,
+          "detail": "name=ok args={'city': 'Berlin'}"
         },
         {
           "test": "json_valid",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": ""
         },
         {
           "test": "multi_tool_selection",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.7,
+          "passed": true,
+          "detail": "first_call=calculate"
         }
       ]
     },
     "reasoning": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 1.0,
+      "passed": 3,
       "total": 3,
       "tests": [
         {
           "test": "produces_output",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "length=1222"
         },
         {
           "test": "correct_answer",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "got=132767 expected=132767"
         },
         {
           "test": "no_loop",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": ""
         }
       ]
     },
     "review": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 0.667,
+      "passed": 1,
       "total": 1,
       "tests": [
         {
           "test": "security_issues_found",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 0.6666666666666666,
+          "passed": true,
+          "detail": "2/3"
         }
       ]
     },
     "multiturn": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 1.0,
+      "passed": 3,
       "total": 3,
       "tests": [
         {
           "test": "recall",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "response='NeutronStar'"
         },
         {
           "test": "recall_after_distraction",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": "response='The project name is **NeutronStar**.'"
         },
         {
           "test": "no_severe_loop",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": ""
         }
       ]
     },
     "refactor": {
-      "score": 0.0,
-      "passed": 0,
+      "score": 1.0,
+      "passed": 1,
       "total": 1,
       "tests": [
         {
           "test": "dict_refactor",
-          "score": 0.0,
-          "passed": false,
-          "detail": "pending"
+          "score": 1.0,
+          "passed": true,
+          "detail": ""
         }
       ]
     }
   },
   "overall": {
-    "score": 0.0,
-    "passed": 0,
-    "total": 26,
-    "_note": "Run ./scripts/run-eval.sh with Qwen3.6-27B loaded to populate real results."
-  }
+    "score": 0.821,
+    "passed": 26,
+    "total": 26
+  },
+  "_ran_at": "2026-08-01T17:40:55Z",
+  "_model": "Qwen3.6-27B UD-Q4_K_XL",
+  "_speed": "7 tok/s pp, 2 tok/s tg (Docker volume, --no-mmap)"
 }
