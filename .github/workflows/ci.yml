@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   # ── lint + syntax ──────────────────────────────────────────────────────
   lint:
@@ -60,7 +63,7 @@ jobs:
           docker compose --profile mainline config > /dev/null && echo "mainline: OK"
           docker compose --profile tools config > /dev/null && echo "tools: OK"
 
-  # ── build ──────────────────────────────────────────────────────────────
+  # ── build + dry-run + badge (single job so docker load works) ──────────
   build:
     runs-on: ubuntu-latest
     needs: lint
@@ -82,19 +85,12 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Verify scripts in image
-        run: >
-          docker run --rm --entrypoint ls qwen36-forge/proxy:ci /work/scripts/
-          | tee /dev/stderr
-          | grep -q eval.py
+        run: |
+          docker run --rm --entrypoint ls qwen36-forge/proxy:ci /work/scripts/ \
+            | tee /dev/stderr \
+            | grep -q eval.py
 
-  # ── dry-run imports (no GPU in CI) ─────────────────────────────────────
-  smoke-dry:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Verify smoke_test.py imports and has expected functions
+      - name: Verify smoke_test.py imports and has check_for_repeats
         run: >
           docker run --rm --entrypoint python qwen36-forge/proxy:ci
           -c "import ast; tree=ast.parse(open('/work/scripts/smoke_test.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('smoke_test fns:',fns); assert 'check_for_repeats' in fns"
@@ -109,15 +105,9 @@ jobs:
           docker run --rm --entrypoint python qwen36-forge/proxy:ci
           -c "import ast; tree=ast.parse(open('/work/scripts/gen-readme-scorecard.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('scorecard fns:',fns); assert 'generate_scorecard' in fns"
 
-  # ── badge (main push only) ─────────────────────────────────────────────
-  badge:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    steps:
-      - uses: actions/checkout@v4
-
+      # ── badge (main push only) ────────────────────────────────────────
       - name: Generate CI badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           mkdir -p badges
           cat > badges/ci.json << 'ENDJSON'
@@ -131,7 +121,8 @@ jobs:
           }
           ENDJSON
 
-      - name: Commit badge (if changed)
+      - name: Commit badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
