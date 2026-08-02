@@ -9,3 +9,8 @@
 *.gguf
 models/
 __pycache__/
+
+# Harbor eval setup — clone harbor-framework/harbor yourself, then run
+#   ./harbor-adapter/install-into-harbor.sh <path-to-harbor>
+# The harbor checkout itself lives outside version control.
+harbor-eval/
