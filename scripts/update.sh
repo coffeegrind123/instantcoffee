@@ -48,19 +48,35 @@ fi
 NEW_FORGE="$(forge_latest_version || true)"
 [[ -n "$NEW_FORGE" ]] || die "could not read the latest forge-guardrails release from PyPI"
 
-# --- QAT GGUF check (HN thread finding) --------------------------------------
-QAT_HINT=""
-if command -v huggingface-cli >/dev/null 2>&1; then
-  QAT_HINT="$(huggingface-cli api list-models --author unsloth \
-    --search "Qwen3.6-27B qat" --limit 3 2>/dev/null \
-    | python3 -c "import sys,json; ds=[d['id'] for d in json.load(sys.stdin)]; print(ds[0] if ds else '')" \
-    2>/dev/null || true)"
-fi
-if [[ -z "$QAT_HINT" ]] && [[ "$(env_get GGUF_FILE)" == *UD-Q4_K_XL* ]]; then
-  QAT_HINT="(check huggingface.co/unsloth for Qwen3.6-27B-*-qat-GGUF)"
-fi
-if [[ -n "$QAT_HINT" ]]; then
-  dim "QAT hint: consider a QAT quant if available — ${QAT_HINT}"
+# --- GGUF drift check (2026-08-11 HN thread, Aurornis) -----------------------
+# "The quantized releases often change in the weeks following release as new
+# improvements are discovered." Nothing else in this repo would notice: GGUF_FILE
+# pins a *name*, and unsloth reuses the name when it reuploads better bytes. So
+# compare the Hub's LFS sha256 against what versions.lock recorded.
+#
+# REPORT ONLY, deliberately. It never re-downloads: the model on disk is 18 GB,
+# scripts/download_model.py returns early when the file already exists, and
+# replacing a working quant mid-update is a decision for a human. A drifted
+# quant is a notice, never an action, and never a reason to fail the update.
+MODEL_REPO_ID="$(env_get MODEL_REPO)"
+GGUF_NAME="$(env_get GGUF_FILE)"
+GGUF_REMOTE="$(hf_file_revision "$MODEL_REPO_ID" "$GGUF_NAME")"
+GGUF_SHA="${GGUF_REMOTE%% *}"
+GGUF_MODIFIED="${GGUF_REMOTE#* }"
+GGUF_KNOWN="$(lock_get model_file_sha256)"
+
+if [[ -z "$GGUF_SHA" ]]; then
+  dim "GGUF: could not reach the Hub — skipping the drift check"
+elif [[ -z "$GGUF_KNOWN" || "$GGUF_KNOWN" == "unknown" ]]; then
+  dim "GGUF: recording baseline ${GGUF_SHA:0:12} (repo modified ${GGUF_MODIFIED})"
+elif [[ "$GGUF_KNOWN" != "$GGUF_SHA" ]]; then
+  warn "GGUF DRIFT: ${GGUF_NAME} on the Hub no longer matches versions.lock."
+  warn "  locked ${GGUF_KNOWN:0:12}  ->  hub ${GGUF_SHA:0:12}  (modified ${GGUF_MODIFIED})"
+  warn "  unsloth reuploads quants under the same filename. Your local copy is"
+  warn "  untouched and this update will not refetch it. To take the new one:"
+  warn "    rm \"\$MODELS_DIR/${GGUF_NAME}\" && ./scripts/download-model.sh"
+else
+  dim "GGUF: ${GGUF_NAME} matches versions.lock (${GGUF_SHA:0:12})"
 fi
 
 printf '\n  %-22s %-22s %s\n' "component" "current" "latest"
@@ -133,6 +149,8 @@ llama_image_digest  = ${DIGEST}
 forge_version       = ${NEW_FORGE}
 model_repo          = $(env_get MODEL_REPO)
 model_file          = $(env_get GGUF_FILE)
+model_file_sha256   = ${GGUF_SHA:-unknown}
+model_repo_modified = ${GGUF_MODIFIED:-unknown}
 context_size        = $(env_get CTX_SIZE)
 verified            = $( ((VERIFY)) && echo "smoke test passed" || echo "not verified" )
 EOF

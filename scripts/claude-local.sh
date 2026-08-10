@@ -88,16 +88,41 @@ fi
 read -ra extra_args <<< "$(env_get CLAUDE_EXTRA_ARGS)"
 (( ${#extra_args[@]} )) && claude_flags+=("${extra_args[@]}")
 
+# Two things can want to append to the system prompt: the user's own file, and
+# the THINK_LANG fragment. `claude --help` documents --append-system-prompt as
+# taking one prompt and says nothing about repeating it, so they are joined into
+# a single argument rather than passed twice and hoping the last one does not win.
+appended=()
+
 PROMPT_FILE="$(env_get CLAUDE_SYSTEM_PROMPT_FILE)"
 PROMPT_FILE="${PROMPT_FILE/#\~/$HOME}"
 if [[ -n "$PROMPT_FILE" ]]; then
   if [[ -r "$PROMPT_FILE" ]]; then
-    claude_flags+=(--append-system-prompt "$(cat "$PROMPT_FILE")")
+    appended+=("$(cat "$PROMPT_FILE")")
   else
     # Loud, because a silently missing system prompt changes how the agent
     # behaves without changing anything you can see.
     warn "CLAUDE_SYSTEM_PROMPT_FILE=$PROMPT_FILE is not readable — starting without it"
   fi
+fi
+
+# THINK_LANG goes last so its "answer in the user's language" rule is the most
+# recent instruction in the prompt, not something an earlier file can override.
+THINK_FILE="$(think_prompt_path)"
+if [[ -n "$THINK_FILE" ]]; then
+  appended+=("$(cat "$THINK_FILE")")
+  THINK_NOTE=", thinking in $(env_get THINK_LANG)"
+else
+  THINK_NOTE=""
+fi
+
+if (( ${#appended[@]} )); then
+  joined=""
+  for chunk in "${appended[@]}"; do
+    [[ -n "$joined" ]] && joined+=$'\n\n'
+    joined+="$chunk"
+  done
+  claude_flags+=(--append-system-prompt "$joined")
 fi
 
 if (( PRINT_ONLY )); then
@@ -109,7 +134,7 @@ if (( PRINT_ONLY )); then
   exit 0
 fi
 
-echo "Claude Code -> ${BASE}  (model: ${MODEL}, ${MCP_NOTE})"
+echo "Claude Code -> ${BASE}  (model: ${MODEL}, ${MCP_NOTE}${THINK_NOTE})"
 # ANTHROPIC_API_KEY is cleared rather than overridden: forge rejects a request
 # carrying two credentials instead of choosing one.
 exec env -u ANTHROPIC_API_KEY "${env_vars[@]}" claude "${claude_flags[@]}" "${ARGS[@]}"

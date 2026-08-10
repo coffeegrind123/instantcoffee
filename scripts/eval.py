@@ -57,6 +57,30 @@ EVAL_TIMEOUT = float(os.environ.get("EVAL_TIMEOUT", "900"))
 REPEAT_THRESHOLD = int(os.environ.get("EVAL_REPEAT_THRESHOLD", "3"))
 SCORE_FLOOR = float(os.environ.get("EVAL_SCORE_FLOOR", "0.5"))
 
+# Thinking is OFF by default, and has been since this file was written — every
+# committed score in results/ and in the README describes the no-thinking path,
+# while a real Claude Code session runs with thinking on under REASONING_BUDGET.
+# Keeping the default preserves comparability with results/history.jsonl; the
+# switch exists so the gap can be measured instead of assumed. Whichever way it
+# is set, the mode is stamped into the JSON so a run cannot later be mistaken
+# for the other kind.
+EVAL_THINKING = os.environ.get("EVAL_THINKING", "off").strip().lower() in (
+    "1", "on", "true", "yes")
+
+# Optional system message prepended to every request — how a THINK_LANG
+# fragment gets scored. Neither llama-server nor forge can inject one
+# (see prompts/README.md), so the eval does it the same way the launchers do.
+_SYS_FILE = os.environ.get("EVAL_SYSTEM_PROMPT_FILE", "").strip()
+if _SYS_FILE:
+    _p = Path(_SYS_FILE)
+    if not _p.is_file():
+        # Scoring a run that silently lost its system prompt would produce a
+        # number that looks like a measurement and is not one.
+        raise SystemExit(f"EVAL_SYSTEM_PROMPT_FILE={_SYS_FILE} does not exist")
+    EVAL_SYSTEM_PROMPT = _p.read_text(encoding="utf-8").strip()
+else:
+    EVAL_SYSTEM_PROMPT = os.environ.get("EVAL_SYSTEM_PROMPT", "").strip()
+
 # ── helpers ────────────────────────────────────────────────────────────────
 
 
@@ -78,9 +102,11 @@ def _http(url: str, payload: dict | None = None, timeout: float = 300.0,
 
 def _chat(messages: list[dict], tools: list[dict] | None = None,
           max_tokens: int = 2048, timeout: float = EVAL_TIMEOUT) -> dict:
+    if EVAL_SYSTEM_PROMPT and not (messages and messages[0].get("role") == "system"):
+        messages = [{"role": "system", "content": EVAL_SYSTEM_PROMPT}, *messages]
     p: dict = {
         "model": MODEL_ALIAS, "messages": messages, "max_tokens": max_tokens,
-        "chat_template_kwargs": {"enable_thinking": False},
+        "chat_template_kwargs": {"enable_thinking": EVAL_THINKING},
     }
     if tools:
         p["tools"] = tools
@@ -175,6 +201,11 @@ class Registry:
         out["overall"] = {"score": round(sum(scores) / len(scores), 3) if scores else 0,
                           "passed": sum(1 for r in self.results if r.passed),
                           "total": len(scores)}
+        # Provenance: two runs of this file can now differ in regime, and a
+        # score without its regime is not comparable to anything.
+        out["config"] = {"thinking": "on" if EVAL_THINKING else "off",
+                         "system_prompt": _SYS_FILE or None,
+                         "model": MODEL_ALIAS}
         return out
 
 # ── suite 1: speed ─────────────────────────────────────────────────────────
@@ -745,6 +776,8 @@ def main() -> int:
     print(f"\n{'='*60}")
     print(f"qwen3.6-forge eval — {MODEL_ALIAS}")
     print(f"forge: {FORGE_URL}  timeout: {EVAL_TIMEOUT}s  floor: {SCORE_FLOOR}")
+    print(f"thinking: {'on' if EVAL_THINKING else 'off'}"
+          f"  system-prompt: {_SYS_FILE or 'none'}")
     print(f"{'='*60}\n")
 
     reg = Registry()

@@ -28,6 +28,7 @@ jobs:
         run: |
           for f in scripts/smoke_test.py scripts/eval.py \
                    scripts/eval_harness.py scripts/test_repeat_detector.py \
+                   scripts/ab_think_lang.py scripts/test_cjk_detector.py \
                    scripts/download_model.py scripts/gen-readme-scorecard.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
@@ -42,13 +43,27 @@ jobs:
       - name: Repeat detector unit tests
         run: python scripts/test_repeat_detector.py
 
+      - name: CJK leak detector unit tests
+        run: python scripts/test_cjk_detector.py
+
+      # A fragment that is empty, or that forgets to pin the output language,
+      # would quietly turn THINK_LANG into "answer in Chinese".
+      - name: System-prompt fragments are well formed
+        run: |
+          for f in prompts/think-*.md; do
+            test -s "$f" || { echo "EMPTY: $f"; exit 1; }
+            grep -qi "user's language\|English" "$f" \
+              || { echo "$f does not pin the output language"; exit 1; }
+            echo "  $f: OK"
+          done
+
       - name: .env key validation
         run: |
           required=( CTX_SIZE NGL FLASH_ATTN
                      LLAMA_EXTRA_FLAGS TEMPERATURE TOP_P TOP_K MIN_P
                      REASONING_BUDGET FORGE_CAPABILITY FORGE_REASONING_REPLAY
                      CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
-                     LLAMA_PORT FORGE_PORT )
+                     LLAMA_PORT FORGE_PORT THINK_LANG EVAL_THINKING )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then
@@ -89,6 +104,16 @@ jobs:
           docker run --rm --entrypoint ls qwen36-forge/proxy:ci /work/scripts/ \
             | tee /dev/stderr \
             | grep -q eval.py
+
+      # The A/B harness reads the fragment from inside the image, so a missing
+      # COPY would only surface as a run-time crash on a machine with a GPU.
+      - name: Verify prompt fragments in image
+        run: |
+          docker run --rm --entrypoint ls qwen36-forge/proxy:ci /work/prompts/ \
+            | tee /dev/stderr \
+            | grep -q think-zh.md
+          docker run --rm --entrypoint python qwen36-forge/proxy:ci \
+            /work/scripts/ab_think_lang.py --help > /dev/null && echo "ab harness: OK"
 
       - name: Verify smoke_test.py imports and has check_for_repeats
         run: >

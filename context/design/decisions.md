@@ -462,3 +462,219 @@ because the complexity-to-benefit ratio was no longer worth it:
 The upstream llama.cpp + unsloth GGUF is now the only path. It is simpler, faster
 (with mmap + MTP), and produces identical eval scores to what the recipe would
 deliver.
+
+## HN thread findings (2026-08-11)
+
+The "Muse Glimmer: 30B-parameter model optimized for always-on local agent
+workflows" thread (2026-08-11, 978 points, 553 comments) was read in full and
+cross-checked against this stack. It is a Meta-release thread, but Qwen3.6-27B is
+the model everyone in it benchmarks against, so a lot of it is about the model
+this repo actually serves.
+
+Three changes landed. Several more were checked and deliberately not made; those
+are recorded here too so they are not re-litigated on the next read.
+
+### 1. THINK_LANG — reason in Mandarin, answer in English (ADDED, then ENABLED)
+
+dannyw: *"Qwen thinking is really good in Mandarin; and probably natively trained
+the most there. Try a system prompt requiring it to think in Mandarin, while
+still delivering the response in the user's language."*
+
+kadoban asked the obvious follow-up — *"Is the quality of the thinking better or
+is it just shorter since Mandarin is more compact?"* — and **nobody answered it**.
+No measurement was posted anywhere in the thread.
+
+It was therefore built as a measurable option defaulting to off, and then
+**switched on the same day by operator decision, ahead of the measurement**
+(`THINK_LANG=zh`). That ordering is recorded deliberately: this is the one
+setting in this repo currently resting on a community claim rather than on a
+number produced on this hardware. `scripts/ab-think-lang.sh` exists to close
+that gap, and a non-zero exit from it is an instruction to set `THINK_LANG=off`,
+not an open question. Everything else in this file was verified before adoption.
+
+What makes it specifically attractive on *this* stack, beyond the general claim:
+forge does not synthesize signed Anthropic thinking blocks on the way back, and
+`MAX_THINKING_TOKENS=0` stops the client asking for them, so **the user never sees
+the thinking block at all**. Reasoning in another language therefore has no
+readability cost here that it would have on a stack that renders the trace. The
+whole trade is token cost versus answer quality.
+
+Where it had to go, and why it is client-side — verified 2026-08-11, not assumed:
+
+- **llama-server cannot do it.** `-sys` / `--system-prompt` exist in
+  `common/arg.cpp` at b10200, but registered
+  `.set_examples({LLAMA_EXAMPLE_COMPLETION, LLAMA_EXAMPLE_CLI, LLAMA_EXAMPLE_DIFFUSION, LLAMA_EXAMPLE_MTMD})`.
+  `LLAMA_EXAMPLE_SERVER` is absent, and `tools/server/server.cpp` never reads
+  `params.system_prompt`. Passing `-sys` to llama-server is an argument error.
+- **forge cannot do it either.** `forge-proxy --help` at 0.8.2 exposes no
+  system-prompt or injection option; its only prompt surgery is
+  `--backend-capability prompt` and `--inject-respond-tool`.
+
+So `prompts/think-zh.md` is appended by the launchers, through
+`claude --append-system-prompt` and `pi --append-system-prompt` — both confirmed
+present on the installed binaries. `claude --help` does not document repeating
+the flag, so `claude-local.sh` joins the user's own prompt file and the fragment
+into one argument rather than passing it twice and hoping.
+
+The fragment is written against the failure mode, not the feature: a model that
+reasons in Chinese and then writes a Chinese character into an `old_string`, a
+file path, or an identifier has produced a patch that does not apply. It pins
+prose, code, quoted text and **tool-call arguments** to English explicitly, and
+tells the model to keep literals verbatim inside the reasoning rather than
+translating them.
+
+### 2. The A/B harness that decides it (ADDED)
+
+`scripts/ab_think_lang.py` runs the same six objectively-scored tasks with and
+without the fragment, **with thinking enabled in both arms**, and reports:
+
+| axis | why |
+| --- | --- |
+| mean score | the "better thinking?" half of kadoban's question |
+| reasoning chars, completion tokens, wall seconds | the "just shorter?" half |
+| CJK characters in visible output | prose leakage — wrong, but cosmetic |
+| CJK characters in **tool-call arguments** | a call that cannot succeed |
+
+The last row is the go/no-go: a leak there exits non-zero and the verdict says
+not to adopt, no matter how good the score looks. `--repeat` (default 3) runs the
+set multiple times per arm because sampling at `TEMPERATURE=0.6` is stochastic,
+and `--min-delta` (default 0.05) is the band inside which a score difference is
+declared noise rather than a result.
+
+Scorers are exact only — integers, code executed against assertions, byte-exact
+strings. No LLM judge, because a judge adds its own variance to a measurement
+whose entire purpose is separating a real effect from noise.
+
+`scripts/test_cjk_detector.py` covers the detector without a GPU (runs in CI). It
+tests both directions: 12 strings that must flag, including fullwidth punctuation
+and the ideographic space, and 10 that must not, including accented Latin,
+Cyrillic, Greek, emoji and box-drawing characters. A leak detector that also
+flags `café` would reject a working config.
+
+### 3. eval.py could not measure any of this (FIXED)
+
+Wiring the above surfaced a pre-existing blind spot. `scripts/eval.py` has always
+sent `chat_template_kwargs={"enable_thinking": false}` on every request. So
+**every committed number in `results/` and in the README scorecard describes the
+no-thinking path**, while a real Claude Code session against this stack runs with
+thinking on under `REASONING_BUDGET=4096`. Nothing in the repo said so.
+
+That matters more given what this thread says about Qwen's thinking specifically
+— naasking: *"Qwen finds the answer relatively quickly but then second guesses
+itself multiple times for another 20,000+ tokens"*; petu: *"Qwen3.6 is very token
+inefficient with its thinking. Quantized versions often get into loops"*;
+seanmcdirmid: *"I find my results are better without thinking because of
+overthinking."* Those are claims about the exact path the eval was not testing.
+
+- `EVAL_THINKING` (default `off`) now controls it. The default is unchanged on
+  purpose: flipping it would silently break comparability with every row in
+  `results/history.jsonl`.
+- `EVAL_SYSTEM_PROMPT_FILE` lets the eval score the stack as `THINK_LANG=zh`
+  would actually run it.
+- Both are stamped into `results/latest.json` under `config`, so a run can never
+  be mistaken for the other kind after the fact.
+
+### 4. GGUF drift check (ADDED, report-only)
+
+Aurornis: *"The quantized releases often change in the weeks following release as
+new improvements are discovered, so either use a tool that checks HuggingFace for
+new versions or manually check back."*
+
+Nothing here would have noticed. `GGUF_FILE` pins a **filename**, and unsloth
+reuses the filename when it uploads better bytes. `update.sh` now compares the
+Hub's LFS `sha256` for the pinned file against `model_file_sha256` in
+`versions.lock` and warns on a mismatch.
+
+It is **report-only and never refetches**. The local copy is ~18 GB,
+`download_model.py` already returns early when the file exists, and swapping a
+working quant mid-update is a human's decision. The warning prints the exact
+command to take the new one; nothing runs it for you.
+
+This replaced a QAT-hint block that could never fire — it shelled out to
+`huggingface-cli api list-models`, which is not a subcommand of that CLI, so the
+branch always fell through to a hardcoded string. Dead code that looked like a
+check.
+
+Verified live 2026-08-11 against the real Hub API, in both directions: a
+deliberately wrong sha in `versions.lock` produces the drift warning, and the
+real sha (`4085665ee36d…`) reports a match.
+
+### Corroborated — already true here, recorded so it is not re-litigated
+
+- **Capping the thinking budget.** bitexploder runs a custom proxy for
+  Qwen3.6-35B-A3B that injects *"Time to wrap it up bud! Get to work"* into the
+  thinking stream at 2K tokens: *"In my experience it is almost never
+  productively thinking past that point, just spinning in circles."* cyanydeez
+  names the mechanism this stack already uses: *"Llamacpp provides reasoning
+  budget and message. You can use the message to redirect it."* That is exactly
+  `REASONING_BUDGET=4096` plus `REASONING_BUDGET_MESSAGE`. No change — but see
+  the rejection below on the specific number.
+- **Replaying the thinking.** bitexploder: *"I also reinject all of the
+  thinking."* Already `FORGE_REASONING_REPLAY=full` since 2026-07-31.
+- **pi as the harness.** bitexploder: *"use an extremely simple harness. Pi is
+  good. Pi's default tools almost exactly match what Qwen says they tested the
+  model with (likely meaning that tool set is also what they trained it with).
+  So, in my experience bigger harnesses don't have a noticeable improvement on
+  tasks."* seanmcdirmid independently: *"Goose was the only harness that didn't
+  bloat context too much with system prompts (like openclaw)."* skohan runs
+  Qwen3.6-27B Q4 with pi on 32 GB VRAM. This is direct support for
+  `scripts/pi-local.sh` and for its `-nc` flag.
+- **Loops on quantized Qwen** (petu) support both the repeat detector and the
+  f16-K decision from the previous thread.
+
+### Considered and rejected
+
+- **Serving Muse Glimmer 30B instead.** Apache 2.0, dense 30B, official ~17 GB
+  4-bit quant, 131K context, and by several accounts a much terser reasoner
+  (andy99: *"No unessential parts of speech… its effective tok/s is way higher
+  because it doesn't waste them"*). It also beats Qwen on tool calling, which is
+  one of this stack's weaker suites. But khimaros posts the number that matters
+  for agentic coding: **Terminal Bench 51.7 vs Qwen3.6-27B's 60.7**. This repo
+  serves one model on one GPU with one slot; trading nine points of the closest
+  available proxy for agentic coding to gain terseness is not a trade worth
+  making here. Watch item, not a change.
+- **Dropping `REASONING_BUDGET` to 2048** on bitexploder's figure. That number is
+  from **35B-A3B**, a different model with a different reasoning profile, and it
+  was tuned for a hand-built proxy. Now that `EVAL_THINKING=on` exists, this is
+  measurable on 27B rather than adoptable by assertion. Left at 4096 until
+  measured.
+- **Disabling thinking entirely** (seanmcdirmid, and *"many harnesses disable
+  thinking on Qwen anyways because it interferes with tool calling"*). Same
+  reasoning: `REASONING_BUDGET=0` is one edit and now a measurable arm. Not
+  adopted on an assertion.
+- **The `Qwen3.6-27B-Fable-Fus-711-UnHeretic-NM-DAU-NEO-MAX-NEO` finetune.**
+  BoredomIsFun claims it matches vanilla Qwen at coding while writing far better
+  prose. SwellJoe, who actually ran it: *"it wrote security bugs into the code…
+  it exhibited looping behavior in some configurations in llama.cpp,
+  configurations I regularly use with the regular 27B, and it failed to write
+  unit tests without being prompted."* The negative report is concrete and names
+  the failure modes; the positive one is a vibe. Security bugs and llama.cpp
+  looping are both disqualifying for a coding stack.
+- **Qwen3.8** — *"releases this week"* per scrlk, unreleased as of this thread.
+  When it lands it is a `MODEL_REPO` / `GGUF_FILE` change plus a re-run of the
+  eval, nothing structural. Same for the `ThinkingCap` and `Bonsai` Qwen3.6-27B
+  post-trains that dofm and andy99 mention; ThinkingCap in particular targets
+  terser reasoning, which is the same goal as THINK_LANG by a different route.
+
+### Not applicable to this stack
+
+- **YaRN/rope context extension.** 0xc133 extends Muse Glimmer to 256K with
+  `--rope-scaling yarn --rope-scale 2 --yarn-orig-ctx 131072`. Irrelevant here:
+  Qwen3.6-27B's native context is already 262,144, and this stack caps at 65,536
+  because of **VRAM**, not because of the model. There is nothing to extend —
+  the constraint is the 24 GiB card.
+- **`--spec-type draft-dflash`** (rao-v, cmrdporcupine) is Muse's speculative
+  head. This stack uses `draft-mtp`, which is Qwen's.
+- **llama-server router mode / llama-swap** (rancor, computershit). One model,
+  one slot, by design.
+- **`--no-mmproj`** (jakswa, to reclaim VRAM). `MMPROJ_FILE` is empty here, so no
+  projector is ever loaded.
+- **Ollama** (cube00's *"Friends Don't Let Friends Use Ollama"*). Already
+  llama-server; see "The backends".
+
+### Observed while testing, not acted on
+
+`update.sh --check` run on 2026-08-11 reports **llama.cpp `server-cuda-b10335`**
+(pinned: `b10200`) and **forge-guardrails 0.9.0** (pinned: `0.8.2`) available.
+Both are deliberately left alone: applying them requires the GPU host, since the
+update only counts as verified once the smoke test passes on real hardware.

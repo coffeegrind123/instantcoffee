@@ -109,6 +109,16 @@ fi
 # Drop the flag when you want the project's conventions loaded.
 pi_flags=(--provider forge --model "$MODEL" -nc)
 
+# THINK_LANG fragment, if one is selected. pi's --help documents
+# --append-system-prompt as taking "text or file contents" and as repeatable,
+# but the file is read here anyway so the same bytes reach both clients.
+THINK_FILE="$(think_prompt_path)"
+THINK_NOTE=""
+if [[ -n "$THINK_FILE" ]]; then
+  pi_flags+=(--append-system-prompt "$(cat "$THINK_FILE")")
+  THINK_NOTE=", thinking in $(env_get THINK_LANG)"
+fi
+
 if (( PRINT_ONLY )); then
   printf 'pi'; printf ' %q' "${pi_flags[@]}"; printf '\n'
   exit 0
@@ -120,5 +130,5 @@ command -v pi >/dev/null 2>&1 \
 curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
   || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
-echo "pi -> ${BASE}  (model: ${MODEL}, context files off)"
+echo "pi -> ${BASE}  (model: ${MODEL}, context files off${THINK_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

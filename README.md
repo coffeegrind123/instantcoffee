@@ -69,7 +69,8 @@ Then point Claude Code at it:
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `./scripts/claude-local.sh` | Launch Claude Code against the local model, primed for it |
 | `./scripts/pi-local.sh` | Launch the pi coding agent against the local model |
-| `./scripts/download-model.sh` | Fetch the GGUF (resumable) |
+| `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
+| `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 
 ## Updating
 
@@ -104,6 +105,7 @@ The keys worth knowing:
 | `GGUF_FILE` | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | See the VRAM table |
 | `CTX_SIZE` | `65536` | Context per slot; also what forge uses as its token budget |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
+| `THINK_LANG` | `zh` | Reason in Mandarin, answer in English. `off` disables. Unmeasured on this hardware — see below |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
 | `LLAMA_EXTRA_FLAGS` | `-ctk f16 -ctv q8_0` | K-f16/V-q8 KV cache — f16 K prevents broken JSON tool calls |
 | `CACHE_PROMPT` | `1` | Persist KV cache to disk for fast warm restarts |
@@ -294,6 +296,60 @@ fields have no analog on the other side:
   not to type itself out.
 - **The model name is ignored** end to end. `ANTHROPIC_MODEL` is a label.
 
+## Thinking in another language
+
+`THINK_LANG=zh` appends `prompts/think-zh.md` to the client's system prompt,
+which asks the model to reason in Simplified Chinese while keeping everything
+that leaves the thinking block — prose, code, quoted text, and tool-call
+arguments — in the user's language.
+
+The claim comes from the 2026-08-11 HN thread: Qwen reasons best and most
+cheaply in Mandarin because that is what it was most natively trained on. The
+follow-up question in that thread — *better thinking, or just shorter?* — was
+never answered, and nobody posted a measurement.
+
+**This is on by default here, by operator decision, ahead of that measurement.**
+It is running on a community claim, not a local result. `THINK_LANG=off` in
+`.env` reverts it, and the A/B below is how you find out whether it earns its
+place.
+
+It costs nothing in readability on this stack specifically: forge does not
+synthesize Anthropic thinking blocks on the way back, so you never see the
+reasoning trace anyway. The real risk is the opposite one — a model reasoning in
+Chinese that then writes a Chinese character into an `old_string` or a file path
+has produced a patch that does not apply.
+
+That is what the A/B harness checks:
+
+```bash
+./scripts/up.sh                       # the stack must be running
+./scripts/ab-think-lang.sh --repeat 3 # ~36 requests, both arms, thinking on
+```
+
+It runs six objectively-scored tasks with and without the fragment and prints:
+
+| metric | baseline | think-lang |
+| --- | --- | --- |
+| mean score | … | … |
+| mean reasoning chars | … | … |
+| CJK in visible output | 0 | … |
+| CJK in tool args | 0 | … |
+
+Any Chinese in tool-call arguments exits non-zero and the verdict tells you not
+to adopt it, whatever the score did. Since it is already on, treat a non-zero
+exit as a signal to set `THINK_LANG=off` rather than as advice you can defer.
+
+`claude-local.sh` and `pi-local.sh` print `thinking in zh` in their launch banner
+whenever it is active, so a session can never be running it silently.
+
+Neither llama-server nor forge can inject a system prompt — verified, with the
+receipts, in `prompts/README.md` — so this is applied by the launchers, and by
+`eval.py` when you set `EVAL_SYSTEM_PROMPT_FILE`.
+
+Adding another language is a file: drop `prompts/think-<code>.md` and set
+`THINK_LANG=<code>`. An unknown code fails the launch loudly rather than starting
+a session without the prompt it was told to use.
+
 ## Troubleshooting
 
 **Tool calls never come back / the model "won't use tools".**
@@ -338,6 +394,9 @@ results/
   history.jsonl         append-only log of all eval runs
 configs/
   opencode-provider.json  drop-in OpenCode provider config pointing at forge
+prompts/
+  think-zh.md           reason in Mandarin, answer in the user's language
+  README.md             why this is applied client-side and not in the engine
 scripts/
   setup.sh              prerequisites -> model -> build -> up -> verify
   update.sh             update everything, verify, roll back on failure
@@ -347,7 +406,10 @@ scripts/
   eval_harness.py       extended coding eval with judge-based scoring
   run-eval.sh           run eval, save results, regenerate badge + README
   gen-readme-scorecard.py  update README scorecard from results/latest.json
+  ab_think_lang.py      A/B a thinking-language prompt: quality, cost, leakage
+  ab-think-lang.sh      runner for the above (resolves the fragment from .env)
   test_repeat_detector.py  standalone unit tests for the loop detector
+  test_cjk_detector.py     standalone unit tests for the CJK leak detector
   bench.sh              prompt processing + generation speed benchmark
   slot-cache.sh         save/restore KV cache for warm restarts
   download_model.py     resumable GGUF fetch
@@ -404,8 +466,18 @@ python3 scripts/gen-readme-scorecard.py --all
 
 # CI-ready: validate everything that doesn't need a GPU
 python3 scripts/test_repeat_detector.py   # 14 unit tests
+python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 docker compose --profile tools config     # validate compose
 ```
+
+**The scorecard measures the no-thinking path.** `eval.py` sends
+`enable_thinking: false` and always has, so every number above — and every row in
+`results/history.jsonl` — describes the model with reasoning off, while a real
+Claude Code session runs with it on under `REASONING_BUDGET`. To measure what you
+actually run, set `EVAL_THINKING=on` (in `.env` or on the command line). The mode
+and any system prompt are recorded under `config` in `results/latest.json`, so
+the two kinds of run can never be confused after the fact. Keep the default when
+you want a score comparable to the committed history.
 
 The eval produces:
 

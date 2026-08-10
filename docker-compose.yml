@@ -156,6 +156,30 @@ services:
       EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
       EVAL_REPEAT_THRESHOLD: ${EVAL_REPEAT_THRESHOLD:-3}
       EVAL_SCORE_FLOOR: ${EVAL_SCORE_FLOOR:-0.5}
+      # Thinking is off by default here — every committed score was measured
+      # that way. Both knobs are stamped into the result JSON.
+      EVAL_THINKING: ${EVAL_THINKING:-off}
+      EVAL_SYSTEM_PROMPT_FILE: ${EVAL_SYSTEM_PROMPT_FILE:-}
+
+  # ---------------------------------------------------------------------------
+  # One-shot A/B of a THINK_LANG fragment. Runs INSIDE the compose network.
+  #   ./scripts/ab-think-lang.sh          (preferred — resolves the fragment)
+  #   docker compose --profile tools run --rm ab-think-lang --repeat 3
+  # Thinking is forced ON in both arms, which the standard eval does not do.
+  # ---------------------------------------------------------------------------
+  ab-think-lang:
+    profiles: ["tools"]
+    image: qwen36-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/ab_think_lang.py"]
+    environment:
+      FORGE_URL: http://forge:8081
+      MODEL_ALIAS: ${MODEL_ALIAS}
+      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
 
   # ---------------------------------------------------------------------------
   # One-shot coding evaluation (extended). Runs INSIDE the compose network.

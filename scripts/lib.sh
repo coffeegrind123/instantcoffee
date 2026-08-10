@@ -59,6 +59,24 @@ env_set() {
   sed -i -E "s|^([[:space:]]*${key}=).*$|\1${value}|" "$file"
 }
 
+# --- system-prompt fragments -------------------------------------------------
+# Path of the prompt fragment selected by THINK_LANG, or nothing when off.
+#
+# This is client-side on purpose, and not by preference: llama-server's -sys is
+# registered only for the completion/cli/diffusion/mtmd examples (verified in
+# common/arg.cpp at b10200 — LLAMA_EXAMPLE_SERVER is absent and server.cpp never
+# reads params.system_prompt), and forge 0.8.2 has no system-prompt flag at all.
+# The launchers are the only place left that can do it. See prompts/README.md.
+think_prompt_path() {
+  local lang; lang="$(env_get THINK_LANG)"
+  [[ -z "$lang" || "$lang" == "off" ]] && return 0
+  local p="$REPO_ROOT/prompts/think-${lang}.md"
+  # Loud rather than silent: a system prompt that fails to load changes how the
+  # agent behaves without changing anything you can see.
+  [[ -r "$p" ]] || die "THINK_LANG=$lang but $p is missing or unreadable"
+  printf '%s' "$p"
+}
+
 # --- json --------------------------------------------------------------------
 # Prefer host python3; fall back to a throwaway container so the scripts work on
 # a machine that has Docker but no Python.
@@ -113,5 +131,46 @@ llama_tag_exists() {
 forge_latest_version() {
   curl -fsSL "https://pypi.org/pypi/forge-guardrails/json" \
     | json_eval 'import sys,json; print(json.load(sys.stdin)["info"]["version"])'
+}
+
+# --- huggingface -------------------------------------------------------------
+# Content hash of one file in a model repo, so a re-uploaded quant is visible.
+# unsloth revises quants in the weeks after a release (2026-08-11 HN thread,
+# Aurornis), and nothing in this repo would otherwise notice: GGUF_FILE pins a
+# *name*, and the name does not change when the bytes behind it do.
+#
+# REPORT ONLY. This never downloads anything and is never wired into the
+# downloader — scripts/download_model.py returns early whenever the target file
+# already exists, and an 18 GB refetch is a decision for a human to make.
+#
+# Echoes "<lfs-sha256> <repo-lastModified>", or nothing when the API is
+# unreachable or the file is not in the repo.
+hf_file_revision() {
+  local repo="$1" file="$2"
+  curl -fsSL --max-time 20 "https://huggingface.co/api/models/${repo}?blobs=true" 2>/dev/null \
+    | HF_FILE="$file" json_eval '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+want = os.environ["HF_FILE"]
+for s in d.get("siblings") or []:
+    if s.get("rfilename") == want:
+        sha = (s.get("lfs") or {}).get("sha256", "")
+        if sha:
+            print(sha, d.get("lastModified", ""))
+        raise SystemExit(0)
+' 2>/dev/null || true
+}
+
+# Value of a key in versions.lock ("key = value" lines), or nothing.
+lock_get() {
+  local key="$1" file="$REPO_ROOT/versions.lock"
+  [[ -f "$file" ]] || return 0
+  awk -v k="$key" -F= '
+    $1 ~ "^[[:space:]]*"k"[[:space:]]*$" {
+      sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit
+    }' "$file"
 }
 
