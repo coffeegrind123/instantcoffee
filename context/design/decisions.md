@@ -1039,3 +1039,58 @@ follow here: the KV-quant line was adopted from a community thread with a
 confident technical rationale attached, and never measured on this hardware. It
 was wrong in the most expensive possible way — silently, and only under real
 load.
+
+### headroom measured: it saves nothing here, and the reason is structural
+
+Two A/B runs on the GPU host, `lossless` and `ccr`, `--repeat 1`, cache disabled
+for the run. Identical verdicts:
+
+```
+prompt tokens 4599 -> 4599 (+0.0%)
+score         0.889 -> 0.889   (ccr run: 0.778 -> 0.778)
+recall        1.000 -> 1.000
+NO CHANGE — under 5% of prompt tokens saved on this workload.
+```
+
+The ground truth is `usage.prompt_tokens` reported by llama.cpp, not headroom's
+own accounting: the recall tasks sent **11940 / 22196 / 6532** tokens in *both*
+arms, to the token. Nothing reached the model any smaller. Quality and recall
+were untouched (1.000 in both arms, all three needles found), so compression is
+inert here rather than harmful.
+
+`ccr` did fire two transforms (`router:text:0.88`, `router:text:0.91`) and its
+CCR store held **139 original tokens against 101 compressed** — it is nibbling
+at fragments, not the 22K-token log it was pointed at.
+
+**The likely cause is structural.** `DEFAULT_EXCLUDE_TOOLS` in
+`headroom/config.py` excludes tool results by name:
+
+    Read, Glob, Grep, Write, Edit, WebSearch, WebFetch, headroom_retrieve
+    read, glob, grep, write, ...        (lowercase variants)
+
+pi's built-in tools are `read`, `bash`, `edit`, `write`. **The tool outputs
+worth compressing in a real pi session are on headroom's exclusion list by
+name**, and the exclusion exists for a good reason upstream (recompressing CCR
+content writes a marker the agent can never redeem, #1077). This is a genuine
+mismatch between what headroom is tuned for and what this stack generates, not
+a knob left at the wrong value.
+
+`HEADROOM_ENABLED` stays 1 per operator decision. It is on, it is measured, and
+what it currently buys is recorded here as 0%. The next thing to test is
+`--protect-tool-results` / an `exclude_tools` override through
+`HEADROOM_EXTRA_FLAGS`, which is the documented lever for changing that set.
+
+### Two harness bugs the first runs exposed
+
+- **headroom's semantic cache invalidated the entire first A/B.** The bypass arm
+  populated it, the compressed arm served hits, every task returned in 0.0s with
+  identical scores, and compression never executed. A cached response also
+  carries no `x-headroom-tokens-*` headers, which is what the INCONCLUSIVE guard
+  keys on — so the guard caught it and refused to report a pass. That guard
+  earned its place on its first outing. `ab-headroom.sh` now restarts headroom
+  with `--no-cache` for the duration and restores it from an EXIT trap.
+- **`codegen` scored 0.00 "no code" as a pure artefact.** `REASONING_BUDGET=4096`
+  exceeded the task's 3072 `max_tokens`, so the model could spend its whole
+  allowance thinking and emit no answer. Raised to `AB_TASK_MAX_TOKENS=6144` and
+  it scores 1.00. The same flaw was in the think-lang A/B. `bugfix` still fails
+  at 6144, in both arms, so that one is the model.

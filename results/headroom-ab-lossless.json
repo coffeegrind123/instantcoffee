@@ -1,0 +1,57 @@
+{
+  "model": "qwen3.6-27b",
+  "headroom_url": "http://headroom:8787",
+  "repeat": 1,
+  "min_delta": 0.05,
+  "bypass": {
+    "name": "bypass",
+    "n": 9,
+    "score": 0.889,
+    "seconds": 21.0,
+    "prompt_tokens": 4599.1,
+    "completion_tokens": 916.7,
+    "hr_before": 23043,
+    "hr_after": 23043,
+    "hr_saved": 0,
+    "compression_failures": 0,
+    "errors": 0,
+    "transforms": [],
+    "per_task": {
+      "math": 1.0,
+      "logic": 1.0,
+      "codegen": 1.0,
+      "bugfix": 0.0,
+      "edit": 1.0,
+      "toolcall": 1.0,
+      "recall-json": 1.0,
+      "recall-log": 1.0,
+      "recall-code": 1.0
+    }
+  },
+  "headroom": {
+    "name": "headroom",
+    "n": 9,
+    "score": 0.889,
+    "seconds": 19.47,
+    "prompt_tokens": 4599.1,
+    "completion_tokens": 990.4,
+    "hr_before": 23043,
+    "hr_after": 23043,
+    "hr_saved": 0,
+    "compression_failures": 0,
+    "errors": 0,
+    "transforms": [],
+    "per_task": {
+      "math": 1.0,
+      "logic": 1.0,
+      "codegen": 1.0,
+      "bugfix": 0.0,
+      "edit": 1.0,
+      "toolcall": 1.0,
+      "recall-json": 1.0,
+      "recall-log": 1.0,
+      "recall-code": 1.0
+    }
+  },
+  "verdict": "prompt tokens 4599 -> 4599 (+0.0%), score 0.889 -> 0.889 (+0.000), recall 1.000 -> 1.000 (+0.000), wall 21.0s -> 19.5s. NO CHANGE — under 5% of prompt tokens saved on this workload. Another hop in the path is not worth that. Leave HEADROOM_ENABLED=0."
+}

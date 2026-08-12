@@ -40,6 +40,35 @@ info "A/B: headroom compression vs the same stack bypassed"
 dim  "recovery mode: $(env_get HEADROOM_RECOVERY)   target ratio: ${RATIO:-auto}"
 dim  "a run measures the mode headroom is CURRENTLY running — restart it after changing .env"
 
+# headroom's semantic cache has to be OFF for the duration, or this measures
+# nothing. Learned the hard way on the first real run: the bypass arm populates
+# the cache, the compressed arm then gets hits, every task returns in 0.0s with
+# an identical score, and compression never executes — the verdict came back
+# INCONCLUSIVE with "prompt tokens 4599 -> 4599". A cached response also carries
+# no x-headroom-tokens-* headers, which is what the guard keys on.
+#
+# So the proxy is restarted with --no-cache for the run and restored afterwards.
+# It is a small container (~10s), unlike llama, so this is cheap. Normal
+# sessions keep caching, which is a real win there and only a hazard here.
+restore_headroom() {
+  info "Restoring headroom to its configured flags"
+  HEADROOM_EXTRA_FLAGS="$(env_get HEADROOM_EXTRA_FLAGS)" \
+    compose up -d --force-recreate headroom >/dev/null 2>&1 \
+    || warn "could not restore headroom — ./scripts/headroom.sh up"
+}
+trap restore_headroom EXIT
+
+info "Restarting headroom with --no-cache for the run"
+HEADROOM_EXTRA_FLAGS="$(env_get HEADROOM_EXTRA_FLAGS) --no-cache" \
+  compose up -d --force-recreate headroom >/dev/null 2>&1 \
+  || die "could not restart headroom with --no-cache"
+for _ in $(seq 1 30); do
+  curl -fsS -m 5 -o /dev/null "http://${HOST}:${PORT}/health" 2>/dev/null && break
+  sleep 2
+done
+curl -fsS -m 5 -o /dev/null "http://${HOST}:${PORT}/health" 2>/dev/null \
+  || die "headroom did not come back up with --no-cache"
+
 (( SAVE )) && mkdir -p "$REPO_ROOT/results"
 
 set +e

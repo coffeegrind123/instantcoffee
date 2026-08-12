@@ -57,6 +57,13 @@ TIMEOUT = float(os.environ.get("EVAL_TIMEOUT", "900"))
 # growing a second, subtly different copy of them.
 REQUEST_HEADERS: dict[str, str] = {}
 
+# Code tasks need room for a full reasoning trace AND the answer. Both arms run
+# with thinking ON, and REASONING_BUDGET defaults to 4096, so a 3072 cap could be
+# spent entirely on thinking — which scores as "no code" and looks like a model
+# that cannot write code. Observed on the GPU host 2026-08-12 for both codegen
+# and bugfix. Keep this comfortably above REASONING_BUDGET.
+TASK_MAX_TOKENS = int(os.environ.get("AB_TASK_MAX_TOKENS", "6144"))
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FRAGMENT = REPO_ROOT / "prompts" / "think-zh.md"
 
@@ -288,7 +295,7 @@ def task_codegen(system: str | None) -> tuple[float, str, Reply]:
               "list of [start, end] pairs and returns them merged and sorted by "
               "start. Overlapping and touching intervals merge. Return only the "
               "function in a single Python code block, no prose."}], system,
-            max_tokens=3072)
+            max_tokens=TASK_MAX_TOKENS)
     if r.error:
         return 0.0, r.error, r
     code = extract_code(r)
@@ -324,7 +331,7 @@ def task_bugfix(system: str | None) -> tuple[float, str, Reply]:
               "running_max([3,1,4,1,5]) == [3,3,4,4,5]. It does not. Fix it and "
               "return only the corrected function in a single Python code "
               f"block, no prose.\n\n```python\n{BUGGY}```"}], system,
-            max_tokens=3072)
+            max_tokens=TASK_MAX_TOKENS)
     if r.error:
         return 0.0, r.error, r
     code = extract_code(r)

@@ -357,12 +357,23 @@ key, so every script follows it).
 ./scripts/ab-headroom.sh --save # what it costs in quality on this model
 ```
 
-Know what that default means. Every number in `results/` was produced **without**
-it — `eval.py` talks straight to forge and always will — so the scorecard
-describes the model while a real session now runs through a compressor the
-scorecard never saw. headroom's accuracy claims (GSM8K unchanged, BFCL 97%) were
-established on frontier hosted models, not on a 4-bit 27B whose own tools suite
-scores 0.73. `ab-headroom.sh` is how you close that gap; nothing gates on it.
+**Measured on this stack (2026-08-12): it currently saves 0%.** Two A/B runs,
+`lossless` and `ccr`, both returned `prompt tokens 4599 -> 4599 (+0.0%)` with
+quality and recall unchanged. The prompt tokens actually reaching llama.cpp were
+identical with compression on and off — 11940 / 22196 / 6532 on the three recall
+tasks, to the token, in both arms. It is inert here, not harmful: all three
+needles were found either way.
+
+The reason looks structural rather than a mistuned knob. headroom's
+`DEFAULT_EXCLUDE_TOOLS` excludes tool results named `read`, `write`, `edit`,
+`grep`, `glob` — and pi's built-in tools are called exactly `read`, `bash`,
+`edit`, `write`. The outputs worth compressing in a real session are excluded by
+name. The lever to test next is `--protect-tool-results` / an `exclude_tools`
+override via `HEADROOM_EXTRA_FLAGS`.
+
+It stays on by default by operator decision, with that number on the record.
+Note also that every score in `results/` was produced **without** it — `eval.py`
+talks straight to forge and always will.
 
 ### Sized for this model, not for Opus
 
