@@ -32,16 +32,7 @@ require_cmd() {
 compose() {
   local env_files=".env"
   [[ -f "$REPO_ROOT/.env.local" ]] && env_files=".env,.env.local"
-
-  # headroom lives behind a compose profile so that turning it off leaves the
-  # container stopped rather than merely bypassed. Adding the profile here — in
-  # the one function every script goes through — is what makes HEADROOM_ENABLED
-  # a single switch: up, down, logs, ps and the smoke test all follow it, and
-  # none of them has to know the profile exists.
-  local profile=()
-  [[ "$(env_get HEADROOM_ENABLED)" == "1" ]] && profile=(--profile headroom)
-
-  ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" docker compose "${profile[@]}" "$@" )
+  ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" docker compose "$@" )
 }
 
 # Read one key out of the merged env, honouring .env.local overrides.
@@ -139,14 +130,6 @@ llama_tag_exists() {
 
 forge_latest_version() {
   curl -fsSL "https://pypi.org/pypi/forge-guardrails/json" \
-    | json_eval 'import sys,json; print(json.load(sys.stdin)["info"]["version"])'
-}
-
-# headroom ships a GHCR image, but only under sha-<commit> tags — there is no
-# semver tag to pin, so the PyPI release is the pinnable artifact and
-# Dockerfile.headroom builds from it. Same shape as forge.
-headroom_latest_version() {
-  curl -fsSL "https://pypi.org/pypi/headroom-ai/json" \
     | json_eval 'import sys,json; print(json.load(sys.stdin)["info"]["version"])'
 }
 

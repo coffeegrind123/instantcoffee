@@ -13,12 +13,6 @@ decoding, single-file, mmap-friendly).
                   │
                   │  OpenAI chat-completions (POST /v1/chat/completions)
                   ▼
-       ┌─────────────────────┐   headroom         :8787
-       │  headroom           │   context compression: JSON tool output,
-       │  (container)        │   logs, build spew. HEADROOM_ENABLED=0 removes it.
-       └──────────┬──────────┘
-                  │
-                  ▼
        ┌─────────────────────┐   forge proxy      :8081
        │  forge-guardrails   │   response validation, rescue parsing,
        │  (container)        │   retry-with-nudge, reasoning-replay policy
@@ -33,9 +27,8 @@ decoding, single-file, mmap-friendly).
               RTX 4090 / 24 GiB
 ```
 
-pi talks to **8787** (headroom) by default, or to **8081** (forge) with
-`HEADROOM_ENABLED=0`. Nothing should talk to 8080 directly except forge — that
-port is exposed only for debugging and metrics.
+pi talks to **8081** (forge). Nothing should talk to 8080 directly except forge —
+that port is exposed only for debugging and metrics.
 
 **This stack targets pi and nothing else.** Claude Code support was removed
 (2026-08-12): it cost a launcher, an Anthropic-wire smoke test, a Harbor agent
@@ -82,13 +75,11 @@ Then start a session:
 | `./scripts/down.sh` | Stop the stack |
 | `./scripts/logs.sh llama` | Tail llama-server (watch the model load here) |
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
-| `./scripts/update.sh` | Update llama.cpp, forge **and** headroom, restart, verify, roll back on failure |
+| `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `./scripts/pi-local.sh` | Launch pi against the local model |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
-| `./scripts/headroom.sh status` | Is compression in the path, and configured how |
-| `./scripts/ab-headroom.sh` | A/B compression before routing pi through it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 
 ## Updating
@@ -102,9 +93,7 @@ One command updates every pinned component:
 1. Resolves the newest llama.cpp CUDA build from the `org.opencontainers.image.version`
    annotation on ghcr's floating `server-cuda` tag, then pins the **immutable
    per-build tag** (`server-cuda-b10200`), never the floating one.
-2. Resolves the newest `forge-guardrails` and `headroom-ai` from PyPI. headroom
-   is only rebuilt if this machine has ever built it — an opt-in component does
-   not get to make its dependencies a mandatory cost of every update.
+2. Resolves the newest `forge-guardrails` from PyPI.
 3. Shows a current-vs-latest table and asks before touching anything.
 4. Pulls, rebuilds, restarts, and runs the smoke test.
 5. **If the smoke test fails, the previous pins are restored and the stack is brought
@@ -144,10 +133,6 @@ The keys worth knowing:
 | `PI_MAX_TOKENS` | `8192` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
 | `PI_CONTEXT_FILES` | `0` | `1` loads `AGENTS.md`; `0` passes `-nc` |
 | `PI_EXTRA_ARGS` | *(empty)* | Flags your own `pi` alias would add — aliases do not expand in scripts |
-| `HEADROOM_ENABLED` | `1` | Routes pi through the compression proxy and starts it with the stack. `0` removes it |
-| `HEADROOM_VERSION` | `0.34.0` | `headroom-ai` release from PyPI |
-| `HEADROOM_RECOVERY` | `lossless` | `lossless` / `ccr` / `lossy` — see below |
-| `HEADROOM_TARGET_RATIO` | *(empty)* | Kompress keep-ratio; empty lets it decide |
 | `MCP2CLI_ENABLED` | `1` | Loads the `mcp-tools` skill so pi can call MCP servers as a CLI. `0` disables |
 | `MCP2CLI_VERSION` | `3.3.1` | mcp2cli release |
 | `MCP_SDK_VERSION` | `1.29.0` | MCP Python SDK pin — must stay `<2`, see below |
@@ -252,8 +237,7 @@ What it writes, and why each field:
   It comes from `PI_MAX_TOKENS`, and `LLAMA_EXTRA_FLAGS` carries the same number
   as `-n` so the server enforces it even if a client forgets to ask.
 - **`baseUrl` host** — the script uses `host.docker.internal` when it detects it
-  is running inside a container, `localhost` otherwise. It points at headroom by
-  default, and straight at forge when `HEADROOM_ENABLED=0`.
+  is running inside a container, `localhost` otherwise.
 
 **Not using pi's `/llama` integration.** pi can manage its own llama.cpp router
 and models. That would bypass forge completely and lose every guardrail this
@@ -301,10 +285,10 @@ Servers are declared in `mcp/servers.json`, `stdio` or `url`, one line each. An
 `auth_header` value takes `env:VAR` and `file:/path` prefixes, so no credential
 goes in the committed file — CI rejects a literal one.
 
-Unlike headroom, this is on without a measurement gate in front of it: the cost
-is bounded and known — the skill description, and nothing else until the model
-chooses to call a server — so there is nothing to weigh. It needs `uv` on PATH;
-`MCP2CLI_ENABLED=0` turns it off, and `pi-local.sh` says which state it is in.
+This is on without a measurement gate in front of it because the cost is bounded
+and known — the skill description, and nothing else until the model chooses to
+call a server. It needs `uv` on PATH; `MCP2CLI_ENABLED=0` turns it off, and
+`pi-local.sh` says which state it is in.
 
 Two things that were measured rather than assumed, on 2026-08-12:
 
@@ -337,94 +321,6 @@ Two things that were measured rather than assumed, on 2026-08-12:
   restarts skip re-prefill), `preserve_thinking` (no KV re-prefill across
   agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
   `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
-
-## Compression with headroom (optional, off)
-
-[headroom](https://github.com/headroomlabs-ai/headroom) compresses tool output,
-logs and JSON before they reach the model. Its headline numbers are about saving
-money on hosted APIs; here the binding constraint is a 64K window and prefill
-time on one 4090, which is a better fit than the pitch — and headroom documents
-that case itself.
-
-**It is on by default.** `./scripts/up.sh` starts it, `./scripts/pi-local.sh`
-routes through it, and `HEADROOM_ENABLED=0` takes it out of the path and leaves
-the container stopped (`scripts/lib.sh` adds the compose profile from that one
-key, so every script follows it).
-
-```bash
-./scripts/headroom.sh status    # in the path, and configured how
-./scripts/headroom.sh savings   # what it has actually saved
-./scripts/ab-headroom.sh --save # what it costs in quality on this model
-```
-
-**Measured on this stack: it forwards tool payloads byte-identical.** An echo
-upstream recorded 37750 body bytes / 36546 chars of tool content with and
-without compression — while the response header advertised
-`x-headroom-transforms: router:search:0.77`. The capability is real and
-reachable (`POST /v1/compress` on the same messages saves 2097 tokens, 23%);
-only the proxy request path declines to apply it. Confirmed three ways: llama's
-`usage.prompt_tokens`, a direct probe, and the wire.
-
-**Earlier measurement, same conclusion (2026-08-12): 0% saved.** Two A/B runs,
-`lossless` and `ccr`, both returned `prompt tokens 4599 -> 4599 (+0.0%)` with
-quality and recall unchanged. The prompt tokens actually reaching llama.cpp were
-identical with compression on and off — 11940 / 22196 / 6532 on the three recall
-tasks, to the token, in both arms. It is inert here, not harmful: all three
-needles were found either way.
-
-The reason looks structural rather than a mistuned knob. headroom's
-`DEFAULT_EXCLUDE_TOOLS` excludes tool results named `read`, `write`, `edit`,
-`grep`, `glob` — and pi's built-in tools are called exactly `read`, `bash`,
-`edit`, `write`. The outputs worth compressing in a real session are excluded by
-name. The lever to test next is `--protect-tool-results` / an `exclude_tools`
-override via `HEADROOM_EXTRA_FLAGS`.
-
-It stays on by default by operator decision, with that number on the record.
-Note also that every score in `results/` was produced **without** it — `eval.py`
-talks straight to forge and always will.
-
-### Sized for this model, not for Opus
-
-| Decision | Why |
-| --- | --- |
-| `HEADROOM_RECOVERY=lossless` by default | Format-native compaction only: no CCR markers, and no `headroom_retrieve` tool injected into the request. Nothing the model sees becomes unrecoverable, and no extra tool schema competes with the real ones. `ccr` (lossy + retrieval tool) and `lossy` (no recovery at all) are opt-in, and the A/B is how you earn them. |
-| `HEADROOM_TARGET_RATIO` is the lever, not the model table | headroom sizes compression against the model's context window from LiteLLM's table. `qwen3.6-27b` is not in it, so it falls back to a **conservative 128K** — twice this stack's real window. forge's own `--budget-tokens ${CTX_SIZE}` remains the backstop. |
-| Built without the `[ml]` extra | `[ml]` pulls `torch` for the Kompress prose model. The GPU is entirely committed to the 27B next door, so that would be multiple GB for a compressor with nowhere to run. The compression that pays for itself in an agent loop — JSON, logs, build output — needs none of it. |
-| `-n 16384` on llama-server | headroom's OpenAI shim renames `max_tokens` to `max_completion_tokens` (a real GPT-5-era compatibility fix). llama.cpp does not read that key — it maps `max_tokens` to `n_predict` and copies unknown keys through unused — so without a server-side cap a compressed request would have **no generation limit**. Verified in `tools/server/server-common.cpp`, not assumed. |
-| In front of forge, not behind it | Behind forge, every retry-with-nudge would re-enter compression and hand llama.cpp different bytes per attempt, throwing away the prefix-KV reuse `--cache-reuse` exists for. |
-| Subscription tracking off | headroom classifies clients by user-agent and would otherwise poll `api.anthropic.com` for quota — pointless outbound traffic from a stack whose premise is that nothing leaves the machine. |
-
-### What the A/B actually measures
-
-`ab-headroom.sh` runs both arms **through headroom**, so the network path is
-identical; the control arm sends `x-headroom-bypass: true`, which headroom
-documents as the "do not touch my bytes" contract. The only variable is whether
-compression ran.
-
-It scores the six objective tasks the think-lang A/B uses (so a regression in
-ordinary coding ability shows up) plus three **recall** tasks built to be
-compressible — a 220-row JSON tool result, a 600-line log, and a long file read,
-each with one fact that has to survive. Those arrive as `tool` messages, not user
-messages, because headroom skips user messages by default and a payload pasted
-into the prompt would measure nothing.
-
-Recall is judged separately and more harshly than the mean: losing a needle in a
-compressed haystack is the specific thing compression can cost you, and it would
-otherwise average away against six tasks that were never compressible. A control
-arm that cannot answer either returns INCONCLUSIVE rather than a passing dead
-heat at zero.
-
-**MCP note.** headroom also ships an MCP server (`headroom_compress`,
-`headroom_retrieve`, `headroom_stats`) — unusable here, because pi has no MCP.
-That costs less than it sounds: CCR retrieval does *not* go through MCP. The
-proxy injects `headroom_retrieve` into the request's own tool array and answers
-the call itself, so reversibility is available over the plain proxy path. It is
-still off by default for the reason above — a 27B choosing to call it is a claim
-to measure, not to assume.
-
-Do not use `headroom wrap` here. It registers Serena at *user* scope in
-`~/.claude.json`, which leaks into every other project on the machine and drags
-in exactly the tool-schema bloat this stack avoids by using pi.
 
 ## Thinking in another language
 
@@ -520,13 +416,6 @@ A stale ghcr credential in `~/.docker/config.json` is being sent and rejected �
 fails even though the image is public. Fix with `docker logout ghcr.io`, or refresh it:
 `gh auth token | docker login ghcr.io -u <user> --password-stdin`.
 
-**`pi-local.sh` says headroom is not answering.**
-pi routes at 8787 by default. `./scripts/up.sh` starts that container along with
-the rest, so this usually means the stack is not up, or headroom was stopped on
-its own with `./scripts/headroom.sh down`. Bring it back with
-`./scripts/headroom.sh up`, or set `HEADROOM_ENABLED=0` to go straight to forge.
-`./scripts/headroom.sh status` prints which of the two you are in.
-
 **`AttributeError: 'Tool' object has no attribute 'inputSchema'` from an MCP call.**
 The mcp2cli install lost its SDK pin. MCP Python SDK 2.0.0 renamed that field
 and mcp2cli 3.3.1 still reads the old name. `./scripts/mcp.sh --install`
@@ -545,9 +434,8 @@ of being bind-mounted.
 .env                    committed config + version pins
 .env.local.example      machine-local override template (copy to .env.local)
 versions.lock           what update.sh last verified (generated)
-docker-compose.yml      llama + forge, plus tools- and headroom-profile services
+docker-compose.yml      llama + forge, plus tools-profile one-shots
 Dockerfile.forge        forge proxy image, pinned to FORGE_VERSION
-Dockerfile.headroom     headroom image, pinned to HEADROOM_VERSION
 .github/workflows/ci.yml  CI pipeline (lint, build, verify)
 badges/                 shield.io endpoint JSON for dynamic badges
 results/
@@ -571,10 +459,6 @@ scripts/
   gen-readme-scorecard.py  update README scorecard from results/latest.json
   ab_think_lang.py      A/B a thinking-language prompt: quality, cost, leakage
   ab-think-lang.sh      runner for the above (resolves the fragment from .env)
-  ab_headroom.py        A/B compression: tokens saved, quality, needle recall
-  ab-headroom.sh        runner for the above
-  headroom.sh           up / down / status / savings for the compression proxy
-  headroom-entrypoint.sh  baked into the headroom image; validates HEADROOM_RECOVERY
   test_repeat_detector.py  standalone unit tests for the loop detector
   test_cjk_detector.py     standalone unit tests for the CJK leak detector
   bench.sh              prompt processing + generation speed benchmark
@@ -648,11 +532,6 @@ actually run, set `EVAL_THINKING=on` (in `.env` or on the command line). The mod
 and any system prompt are recorded under `config` in `results/latest.json`, so
 the two kinds of run can never be confused after the fact. Keep the default when
 you want a score comparable to the committed history.
-
-**The scorecard also measures the stack without headroom.** `eval.py` talks
-straight to `forge:8081` and always will — the committed history is about the
-model, not about a compressor in front of it. Use `./scripts/ab-headroom.sh` to
-measure compression; it is a separate number and should stay one.
 
 The eval produces:
 

@@ -23,9 +23,6 @@ import urllib.request
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080").rstrip("/")
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
-# Optional third hop. Empty unless the headroom profile is running, so the
-# default smoke test measures exactly the stack the committed results describe.
-HEADROOM_URL = os.environ.get("HEADROOM_URL", "").rstrip("/")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.6-27b")
 CTX_SIZE = int(os.environ.get("CTX_SIZE", "32768"))
 
@@ -90,14 +87,9 @@ def record(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-def http_with_headers(
-    url: str, payload: dict | None = None, timeout: float = 15.0,
-    headers: dict | None = None,
-) -> tuple[int, str, dict[str, str]]:
-    """Return (status, body, response headers). Never raises on an error status.
-
-    Response headers are lower-cased so callers can look them up literally.
-    """
+def http(url: str, payload: dict | None = None, timeout: float = 15.0,
+         headers: dict | None = None) -> tuple[int, str]:
+    """Return (status, body). Never raises on an HTTP error status."""
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
         url,
@@ -107,20 +99,11 @@ def http_with_headers(
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            got = {k.lower(): v for k, v in resp.headers.items()}
-            return resp.status, resp.read().decode(errors="replace"), got
+            return resp.status, resp.read().decode(errors="replace")
     except urllib.error.HTTPError as exc:
-        got = {k.lower(): v for k, v in (exc.headers or {}).items()}
-        return exc.code, exc.read().decode(errors="replace"), got
+        return exc.code, exc.read().decode(errors="replace")
     except Exception as exc:  # connection refused, DNS, timeout
-        return 0, f"{type(exc).__name__}: {exc}", {}
-
-
-def http(url: str, payload: dict | None = None, timeout: float = 15.0,
-         headers: dict | None = None) -> tuple[int, str]:
-    """Return (status, body). Never raises on an HTTP error status."""
-    status, body, _ = http_with_headers(url, payload, timeout, headers)
-    return status, body
+        return 0, f"{type(exc).__name__}: {exc}"
 
 
 # Cold-load budget. 900s was the old default and it is not enough: the model is
@@ -243,62 +226,6 @@ def check_openai_tool_call() -> None:
     _check_content_repeats(json.dumps(data), "OpenAI tool call")
 
 
-def check_headroom_tool_call() -> None:
-    """The same tool call again, but through headroom in front of forge.
-
-    Only runs when HEADROOM_URL is set. A compression proxy that quietly drops
-    the `tools` array, or mangles a tool-call argument on the way through,
-    looks exactly like a model that stopped calling tools — so the check that
-    matters is the same one, one hop further out.
-    """
-    started = time.monotonic()
-    status, body, resp_headers = http_with_headers(
-        f"{HEADROOM_URL}/v1/chat/completions",
-        {
-            "model": MODEL_ALIAS,
-            "messages": [{"role": "user", "content": PROMPT}],
-            "tools": [WEATHER_TOOL_OPENAI],
-            "max_tokens": 2048,
-        },
-        timeout=INFER_TIMEOUT,
-    )
-    elapsed = time.monotonic() - started
-
-    if status != 200:
-        record("headroom tool call", False, f"status={status} body={body[:400]}")
-        return
-    try:
-        data = json.loads(body)
-    except json.JSONDecodeError:
-        record("headroom tool call", False, f"non-JSON body: {body[:400]}")
-        return
-
-    msg = (data.get("choices") or [{}])[0].get("message", {})
-    calls = msg.get("tool_calls") or []
-    if not calls:
-        record("headroom tool call", False,
-               f"no tool_calls through headroom; content={str(msg.get('content'))[:200]!r}")
-        return
-
-    fn = calls[0].get("function", {})
-    try:
-        args = json.loads(fn.get("arguments") or "{}")
-    except json.JSONDecodeError:
-        args = {"<unparseable>": fn.get("arguments")}
-    record("headroom tool call", fn.get("name") == "get_weather",
-           f"{fn.get('name')}({args}) in {elapsed:.1f}s")
-
-    # Its own accounting headers, printed as evidence that compression is
-    # actually in the path rather than the proxy being a plain relay.
-    before = resp_headers.get("x-headroom-tokens-before")
-    after = resp_headers.get("x-headroom-tokens-after")
-    record(
-        "headroom reports token accounting",
-        before is not None and after is not None,
-        f"before={before} after={after} transforms={resp_headers.get('x-headroom-transforms')}",
-    )
-
-
 def check_plain_completion() -> None:
     """A toolless request must still come back as ordinary text."""
     status, body = http(
@@ -334,10 +261,7 @@ def _check_content_repeats(content: str, label: str) -> None:
 
 
 def main() -> int:
-    print(f"\nqwen3.6-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}")
-    if HEADROOM_URL:
-        print(f"  headroom: {HEADROOM_URL}")
-    print()
+    print(f"\nqwen3.6-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
 
     print("Reachability")
     llama_up = wait_for(f"{LLAMA_URL}/health", "llama-server")
@@ -352,11 +276,6 @@ def main() -> int:
         print("\nInference through forge")
         check_plain_completion()
         check_openai_tool_call()
-
-    if llama_up and forge_up and HEADROOM_URL:
-        print("\nInference through headroom")
-        if wait_for(f"{HEADROOM_URL}/health", "headroom proxy", timeout=180):
-            check_headroom_tool_call()
 
     failed = [n for n, ok, _ in _results if not ok]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")

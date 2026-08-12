@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Update everything: llama-server (pinned llama.cpp build), forge, and headroom
-# when it is enabled or has been built here before.
+# Update everything: llama-server (pinned llama.cpp build) and forge.
 #
 #   ./scripts/update.sh            check, apply, restart, verify
 #   ./scripts/update.sh --check    report what is available, change nothing
@@ -31,7 +30,6 @@ require_cmd docker curl
 
 CUR_LLAMA="$(env_get LLAMA_TAG)"
 CUR_FORGE="$(env_get FORGE_VERSION)"
-CUR_HEADROOM="$(env_get HEADROOM_VERSION)"
 
 info "Resolving upstream versions"
 
@@ -49,14 +47,6 @@ fi
 
 NEW_FORGE="$(forge_latest_version || true)"
 [[ -n "$NEW_FORGE" ]] || die "could not read the latest forge-guardrails release from PyPI"
-
-# A PyPI hiccup on headroom is a notice rather than a failure — a compression
-# proxy being one release behind must not be able to block a forge update.
-NEW_HEADROOM="$(headroom_latest_version || true)"
-if [[ -z "$NEW_HEADROOM" ]]; then
-  warn "could not read the latest headroom-ai release from PyPI — keeping $CUR_HEADROOM"
-  NEW_HEADROOM="$CUR_HEADROOM"
-fi
 
 # --- GGUF drift check (2026-08-11 HN thread, Aurornis) -----------------------
 # "The quantized releases often change in the weeks following release as new
@@ -92,13 +82,11 @@ fi
 printf '\n  %-22s %-22s %s\n' "component" "current" "latest"
 printf '  %-22s %-22s %s\n' "----------------------" "----------------------" "----------------------"
 printf '  %-22s %-22s %s\n' "llama.cpp (image)" "$CUR_LLAMA" "$NEW_LLAMA"
-printf '  %-22s %-22s %s\n' "forge-guardrails" "$CUR_FORGE" "$NEW_FORGE"
-printf '  %-22s %-22s %s\n\n' "headroom-ai" "$CUR_HEADROOM" "$NEW_HEADROOM"
+printf '  %-22s %-22s %s\n\n' "forge-guardrails" "$CUR_FORGE" "$NEW_FORGE"
 
 CHANGED=0
 [[ "$NEW_LLAMA" != "$CUR_LLAMA" ]] && CHANGED=1
 [[ "$NEW_FORGE" != "$CUR_FORGE" ]] && CHANGED=1
-[[ "$NEW_HEADROOM" != "$CUR_HEADROOM" ]] && CHANGED=1
 
 if (( CHECK_ONLY )); then
   (( CHANGED )) && info "Updates available. Run without --check to apply." \
@@ -120,15 +108,8 @@ fi
 BACKUP="$REPO_ROOT/.env.bak"
 cp "$REPO_ROOT/.env" "$BACKUP"
 
-# Rebuild headroom when it is in the path (HEADROOM_ENABLED=1) or when this
-# machine has built it before. Skipping it otherwise keeps a disabled
-# component's dependencies from becoming a mandatory cost of every update.
-HEADROOM_BUILT=0
-docker image inspect "qwen36-forge/headroom:${CUR_HEADROOM}" >/dev/null 2>&1 && HEADROOM_BUILT=1
-[[ "$(env_get HEADROOM_ENABLED)" == "1" ]] && HEADROOM_BUILT=1
-
 rollback() {
-  warn "Rolling back to llama=$CUR_LLAMA forge=$CUR_FORGE headroom=$CUR_HEADROOM"
+  warn "Rolling back to llama=$CUR_LLAMA forge=$CUR_FORGE"
   cp "$BACKUP" "$REPO_ROOT/.env"
   compose up -d --build 2>&1 | tail -5 || warn "rollback restart also failed — inspect manually"
   die "Update rolled back. The stack is running the previous pins."
@@ -136,7 +117,6 @@ rollback() {
 
 env_set LLAMA_TAG "$NEW_LLAMA"
 env_set FORGE_VERSION "$NEW_FORGE"
-env_set HEADROOM_VERSION "$NEW_HEADROOM"
 
 info "Pulling llama.cpp $NEW_LLAMA"
 compose pull llama || rollback
@@ -145,26 +125,12 @@ info "Building forge $NEW_FORGE"
 # --pull refreshes the python base image too, so security updates land here.
 compose build --pull forge || rollback
 
-if (( HEADROOM_BUILT )); then
-  info "Building headroom $NEW_HEADROOM"
-  compose build --pull headroom || rollback
-else
-  dim "headroom is disabled and has never been built here — skipping it"
-fi
-
-# compose() adds --profile headroom by itself when HEADROOM_ENABLED=1, so this
-# one line brings up whichever set of services is actually configured.
 info "Restarting the stack"
 compose up -d --remove-orphans || rollback
 
 # --- verify ------------------------------------------------------------------
 if (( VERIFY )); then
   info "Verifying (model reload takes a few minutes on a cold start)"
-  # When pi is routed through headroom, an update that leaves headroom broken is
-  # an update that broke inference — so the check has to cover that hop too.
-  if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
-    export HEADROOM_SMOKE_URL="http://headroom:8787"
-  fi
   if ! compose --profile tools run --rm smoketest; then
     rollback
   fi
@@ -181,8 +147,6 @@ updated_utc         = $(date -u +%Y-%m-%dT%H:%M:%SZ)
 llama_image         = ghcr.io/ggml-org/llama.cpp:${NEW_LLAMA}
 llama_image_digest  = ${DIGEST}
 forge_version       = ${NEW_FORGE}
-headroom_version    = ${NEW_HEADROOM}
-headroom_built      = $( ((HEADROOM_BUILT)) && echo yes || echo "no (profile never used here)" )
 model_repo          = $(env_get MODEL_REPO)
 model_file          = $(env_get GGUF_FILE)
 model_file_sha256   = ${GGUF_SHA:-unknown}
@@ -192,6 +156,6 @@ verified            = $( ((VERIFY)) && echo "smoke test passed" || echo "not ver
 EOF
 
 rm -f "$BACKUP"
-ok "Updated to llama=$NEW_LLAMA forge=$NEW_FORGE headroom=$NEW_HEADROOM"
+ok "Updated to llama=$NEW_LLAMA forge=$NEW_FORGE"
 dim "versions.lock rewritten — commit it to keep the setup reproducible:"
 dim "  git -C $REPO_ROOT commit -am 'chore: update llama.cpp $NEW_LLAMA, forge $NEW_FORGE'"

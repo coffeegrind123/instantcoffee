@@ -31,18 +31,9 @@ done
 MODEL="$(env_get MODEL_ALIAS)"
 CTX="$(env_get CTX_SIZE)"
 MAX_TOKENS="$(env_get PI_MAX_TOKENS)"
-: "${MAX_TOKENS:=16384}"
+: "${MAX_TOKENS:=8192}"
 
-# Which proxy pi talks to. headroom, when enabled, sits in front of forge and
-# forge still does every guardrail — the route lengthens, it does not change
-# hands. Anything else in .env stays authoritative for both.
-if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
-  PORT="$(env_get HEADROOM_PORT)"
-  ROUTE="headroom -> forge"
-else
-  PORT="$(env_get FORGE_PORT)"
-  ROUTE="forge"
-fi
+PORT="$(env_get FORGE_PORT)"
 
 # Published ports bind to the host's loopback; inside a container the host is
 # reachable as host.docker.internal instead.
@@ -120,7 +111,7 @@ fi
 # --- launch ------------------------------------------------------------------
 pi_flags=(--provider forge --model "$MODEL")
 
-# -nc skips AGENTS.md/CLAUDE.md discovery. On a 64K local window those files are
+# -nc skips AGENTS.md/CLAUDE.md discovery. On a 32K local window those files are
 # a real fraction of the budget, and pi walks parent directories to find them.
 # PI_CONTEXT_FILES=1 loads them anyway.
 CTX_FILES_NOTE="context files off"
@@ -178,14 +169,10 @@ fi
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 
-# Whichever proxy is in front has to answer before pi starts, or the first
-# request fails inside pi's UI where the cause is much harder to see.
-if ! curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null; then
-  if [[ "$ROUTE" == headroom* ]]; then
-    die "headroom is not answering at ${BASE} — start it with ./scripts/headroom.sh up (or set HEADROOM_ENABLED=0)"
-  fi
-  die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
-fi
+# forge has to answer before pi starts, or the first request fails inside pi's
+# UI where the cause is much harder to see.
+curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
+  || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
-echo "pi -> ${BASE} via ${ROUTE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

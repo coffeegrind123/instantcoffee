@@ -48,17 +48,3 @@ Results land in:
 |---|---|
 | `harbor-eval/jobs/` | Harbor's own job output |
 | `results/harbor-pi-latest.json` | Extracted summary |
-
-## Through headroom
-
-To measure the stack the way a compressed session actually runs, point the base
-URL at headroom instead — everything else is unchanged:
-
-```bash
-./scripts/headroom.sh up
-FORGE_PORT=8787 ./harbor-adapter/run-local.sh
-```
-
-Keep the two sets of numbers apart. A Harbor score measured through a
-compressor is not comparable to one measured without it, and nothing in the
-output file records which one you ran.

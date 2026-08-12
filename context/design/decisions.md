@@ -1152,3 +1152,38 @@ again (`content='' tool_calls=True`). forge then spends its retry budget on it,
 and the client times out even though llama returned 200 in 45s. Reproduced at
 5K and 22K token payloads. This is unrelated to headroom and is why the real
 agent shape could not be measured end to end.
+
+### headroom removed (2026-08-12, operator decision)
+
+Deleted: `Dockerfile.headroom`, `scripts/headroom.sh`,
+`scripts/headroom-entrypoint.sh`, `scripts/ab_headroom.py`,
+`scripts/ab-headroom.sh`, the compose service and its `ab-headroom` one-shot,
+the `headroom-state` volume, the `HEADROOM_*` keys, the compose-profile
+injection in `lib.sh`, the smoke test's third hop, and the `update.sh` version
+tracking. `ab_think_lang.py` was unwound back to its own shape, keeping only
+`AB_TASK_MAX_TOKENS` — that one was a real bug fix (a 3072 cap under a 4096
+reasoning budget scored working code as "no code") and stands on its own.
+
+The reason is in the three entries above, and it is not that headroom is a bad
+tool. It is that on this stack it moved **zero bytes**, measured four ways:
+llama's `usage.prompt_tokens` across two A/B runs, a direct probe, and finally
+an echo upstream that recorded byte-identical request bodies (37750 bytes,
+36546 chars of tool content) with compression on and off — while the response
+header advertised `x-headroom-transforms: router:search:0.77`. Its own
+`/v1/compress` endpoint compresses the same messages by 23%, so the capability
+is real; the proxy request path simply never applied it.
+
+Against zero benefit it cost: a 4.86 GB image (1.28 GB before the `[ml]` extra
+became mandatory), an extra network hop, ~700 MB of resident memory, one
+**OOM-killed llama** and the 40-minute cold reload that followed, plus a
+semantic cache that silently served stale responses and invalidated a whole A/B
+run before it was noticed.
+
+What is kept, deliberately: `results/headroom-ab-lossless.json` and
+`results/headroom-ab-ccr.json`. Deleting the evidence for a decision leaves the
+decision looking arbitrary to whoever reads this next.
+
+The `-n` generation cap in `LLAMA_EXTRA_FLAGS` also stays. It was added because
+headroom renames `max_tokens` to `max_completion_tokens` and llama.cpp reads
+only the former — but it is the right backstop regardless of what is upstream,
+since any client that sends the newer key would otherwise get no cap at all.

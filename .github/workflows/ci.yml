@@ -29,7 +29,6 @@ jobs:
           for f in scripts/smoke_test.py scripts/eval.py \
                    scripts/eval_harness.py scripts/test_repeat_detector.py \
                    scripts/ab_think_lang.py scripts/test_cjk_detector.py \
-                   scripts/ab_headroom.py \
                    scripts/download_model.py scripts/gen-readme-scorecard.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
@@ -40,8 +39,6 @@ jobs:
           for f in scripts/*.sh harbor-adapter/*.sh; do
             bash -n "$f" && echo "  $f: OK"
           done
-          # The headroom entrypoint runs under the image's /bin/sh, not bash.
-          sh -n scripts/headroom-entrypoint.sh && echo "  headroom-entrypoint.sh: OK (sh)"
 
       # The stack targets pi only. A reintroduced Claude Code launcher, env key
       # or wire-format check would go unnoticed otherwise until someone tried to
@@ -80,8 +77,6 @@ jobs:
                      CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
                      LLAMA_PORT FORGE_PORT THINK_LANG EVAL_THINKING
                      PI_MAX_TOKENS PI_CONTEXT_FILES
-                     HEADROOM_ENABLED HEADROOM_VERSION HEADROOM_PORT
-                     HEADROOM_RECOVERY
                      MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION )
           missing=0
           for key in "${required[@]}"; do
@@ -163,11 +158,11 @@ jobs:
         run: |
           docker compose config > /dev/null && echo "compose: OK"
           docker compose --profile tools config > /dev/null && echo "tools: OK"
-          docker compose --profile headroom config > /dev/null && echo "headroom: OK"
 
-      # -n is what stops a generation running unbounded when headroom renames
-      # max_tokens to a key llama.cpp does not read. It has to match the cap pi
-      # is told about, or the two disagree silently.
+      # -n is the server-side generation cap: a client that sends
+      # max_completion_tokens instead of max_tokens gets no limit at all, since
+      # llama.cpp reads only the latter. It has to match the cap pi is told
+      # about, or the two disagree silently.
       - name: Generation cap agrees between llama-server and pi
         run: |
           # Piped, not <(...): grep -P against a process-substitution fd was
@@ -215,32 +210,6 @@ jobs:
             | grep -q think-zh.md
           docker run --rm --entrypoint python qwen36-forge/proxy:ci \
             /work/scripts/ab_think_lang.py --help > /dev/null && echo "ab harness: OK"
-          # ab_headroom.py imports ab_think_lang as a sibling module, so this
-          # also proves both landed in the same directory inside the image.
-          docker run --rm --entrypoint python qwen36-forge/proxy:ci \
-            /work/scripts/ab_headroom.py --help > /dev/null && echo "headroom ab harness: OK"
-
-      # Not loaded and nothing is run from it: this is here to catch a version
-      # pin that no longer resolves on PyPI, or an extra that stops building on
-      # python 3.13 — both of which would otherwise surface on the GPU host.
-      - name: Build headroom image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.headroom
-          build-args: HEADROOM_VERSION=${{ vars.HEADROOM_VERSION || '0.34.0' }}
-          load: true
-          tags: qwen36-forge/headroom:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Verify headroom entrypoint rejects a bad recovery mode
-        run: |
-          docker run --rm -e HEADROOM_RECOVERY=nonsense qwen36-forge/headroom:ci \
-            && { echo "entrypoint accepted an invalid HEADROOM_RECOVERY"; exit 1; } \
-            || echo "  invalid recovery mode rejected: OK"
-          docker run --rm --entrypoint headroom qwen36-forge/headroom:ci \
-            proxy --help > /dev/null && echo "  headroom proxy --help: OK"
 
       - name: Verify smoke_test.py imports and has check_for_repeats
         run: >

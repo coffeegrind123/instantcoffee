@@ -97,86 +97,6 @@ services:
       retries: 3
 
   # ---------------------------------------------------------------------------
-  # headroom — context compression, in front of forge.
-  #
-  #   pi -> headroom :8787 -> forge :8081 -> llama :8080
-  #
-  # In FRONT of forge, not between forge and llama, for two reasons: forge's
-  # retry-with-nudge loop would otherwise re-enter compression on every attempt
-  # and hand llama.cpp different bytes each time, throwing away the prefix-KV
-  # reuse that --cache-reuse / --slot-prompt-similarity exist for; and forge's
-  # --budget-tokens accounting is only meaningful if it sees the request that
-  # is actually sent.
-  #
-  # In the "headroom" profile, which scripts/lib.sh activates whenever
-  # HEADROOM_ENABLED=1 (the default). One key therefore means one thing: in the
-  # path and running, or neither. Set it to 0 and up/down/logs/ps stop seeing
-  # this service at all.
-  # ---------------------------------------------------------------------------
-  headroom:
-    profiles: ["headroom"]
-    build:
-      context: .
-      dockerfile: Dockerfile.headroom
-      args:
-        HEADROOM_VERSION: ${HEADROOM_VERSION}
-    image: qwen36-forge/headroom:${HEADROOM_VERSION}
-    container_name: qwen36-headroom
-    restart: unless-stopped
-    depends_on:
-      forge:
-        condition: service_healthy
-    ports:
-      - "${BIND_ADDR}:${HEADROOM_PORT}:8787"
-    environment:
-      # Upstream. Both wires point at forge: pi uses the OpenAI one, and the
-      # Anthropic one is set so that a stray /v1/messages request cannot escape
-      # to api.anthropic.com from a stack whose whole premise is that nothing
-      # leaves the machine.
-      OPENAI_TARGET_API_URL: http://forge:8081
-      ANTHROPIC_TARGET_API_URL: http://forge:8081
-      # The dashboard's reachability probe HEADs the upstream base URL; forge
-      # answers /health, not HEAD /. Skipping it avoids a permanent, wrong
-      # "upstream down" banner.
-      HEADROOM_SKIP_UPSTREAM_CHECK: "1"
-      # Measured on 0.34.0 from a non-loopback source (a browser on the host
-      # reaches the container through Docker's gateway, so it never looks like
-      # 127.0.0.1): /dashboard, /stats, /stats-history and /metrics all answer
-      # 200, and /settings answers 404 — it stays loopback-only, and
-      # HEADROOM_PROXY_TRUSTED_DASHBOARD_CLIENT_CIDRS did NOT change that, so
-      # it is deliberately not set here. Reach /settings with:
-      #   docker exec qwen36-headroom python -c "import urllib.request; \
-      #     print(urllib.request.urlopen('http://127.0.0.1:8787/settings').read())"
-      #
-      # NOTE: headroom's own startup banner warns that /v1/* is unauthenticated
-      # on a non-loopback bind. What limits exposure here is BIND_ADDR
-      # (127.0.0.1 by default) — exactly as it does for llama and forge, which
-      # are equally unauthenticated. Set HEADROOM_PROXY_TOKEN if you publish
-      # this on a LAN.
-      # Read by scripts/headroom-entrypoint.sh, which maps them onto headroom's
-      # own switches. See .env for what the values mean.
-      HEADROOM_RECOVERY: ${HEADROOM_RECOVERY}
-      HEADROOM_TARGET_RATIO: ${HEADROOM_TARGET_RATIO}
-    command: >
-      --openai-api-url http://forge:8081
-      --provider-name forge
-      --no-subscription-tracking
-      --no-telemetry
-      ${HEADROOM_EXTRA_FLAGS}
-    volumes:
-      - headroom-state:/home/headroom/.headroom
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=4).status==200 else 1)"
-      interval: 15s
-      timeout: 6s
-      start_period: 60s
-      retries: 3
-
-  # ---------------------------------------------------------------------------
   # One-shot: fetch a single-file unsloth GGUF.
   #   docker compose --profile tools run --rm --user 0:0 downloader
   # ---------------------------------------------------------------------------
@@ -220,10 +140,6 @@ services:
       FORGE_URL: http://forge:8081
       MODEL_ALIAS: ${MODEL_ALIAS}
       CTX_SIZE: ${CTX_SIZE}
-      # Empty unless scripts/smoke-test.sh exports it (it does when
-      # HEADROOM_ENABLED=1), which keeps the default run measuring the same
-      # two-hop stack every committed result was measured on.
-      HEADROOM_URL: ${HEADROOM_SMOKE_URL:-}
 
   # ---------------------------------------------------------------------------
   # One-shot coding evaluation. Runs INSIDE the compose network.
@@ -270,36 +186,6 @@ services:
       EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
 
   # ---------------------------------------------------------------------------
-  # One-shot A/B of headroom compression. Runs INSIDE the compose network.
-  #   ./scripts/ab-headroom.sh          (preferred — checks the stack first)
-  #   docker compose --profile tools run --rm ab-headroom --repeat 2
-  #
-  # Both arms go through headroom so the network path is identical; the control
-  # arm sends x-headroom-bypass, which headroom documents as the "do not touch
-  # my bytes" contract. Reuses the forge image because the scripts already live
-  # there — nothing about this needs the headroom package.
-  #
-  # In the "tools" profile, NOT "headroom": the headroom profile is active for
-  # the whole stack whenever HEADROOM_ENABLED=1, and a one-shot in it would be
-  # started by every `up`. Every other one-shot here lives in "tools" for the
-  # same reason.
-  # ---------------------------------------------------------------------------
-  ab-headroom:
-    profiles: ["tools"]
-    image: qwen36-forge/proxy:${FORGE_VERSION}
-    build:
-      context: .
-      dockerfile: Dockerfile.forge
-      args:
-        FORGE_VERSION: ${FORGE_VERSION}
-    entrypoint: ["python", "/work/scripts/ab_headroom.py"]
-    environment:
-      HEADROOM_URL: http://headroom:8787
-      FORGE_URL: http://forge:8081
-      MODEL_ALIAS: ${MODEL_ALIAS}
-      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
-
-  # ---------------------------------------------------------------------------
   # One-shot coding evaluation (extended). Runs INSIDE the compose network.
   #   docker compose --profile tools run --rm eval-harness
   # ---------------------------------------------------------------------------
@@ -326,8 +212,3 @@ services:
 volumes:
   slot-cache:
     name: qwen36-slot-cache
-  # CCR store, session stats and dashboard data. On a volume rather than in the
-  # container layer so a restart does not silently reset the savings numbers
-  # you are trying to read.
-  headroom-state:
-    name: qwen36-headroom-state

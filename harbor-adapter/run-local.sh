@@ -16,9 +16,6 @@
 # No adapter is installed into Harbor. pi speaks OpenAI-completions to forge and
 # Harbor's stock `pi` agent already supports the `openai` provider.
 #
-# Set FORGE_PORT=8787 to run the same sweep through headroom instead. The output
-# file does not record which path was used, so keep those numbers apart.
-#
 # Results land in:
 #   harbor-eval/jobs/               Harbor job output
 #   results/harbor-pi-latest.json   Extracted summary
@@ -86,7 +83,6 @@ BASE_URL="http://${FORGE_HOST}:${FORGE_PORT}/v1"
 
 echo "base URL:   $BASE_URL"
 echo "Harbor dir: $HARBOR_DIR"
-[ "$FORGE_PORT" != "8081" ] && echo "NOTE: not the default forge port — is this a headroom run?"
 echo ""
 echo "============================================================"
 echo "  Harbor eval: pi -> forge"
