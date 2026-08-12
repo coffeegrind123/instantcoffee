@@ -141,10 +141,16 @@ if [[ "$(env_get MCP2CLI_ENABLED)" == "1" ]]; then
     || die "MCP2CLI_ENABLED=1 but $SKILL_DIR/SKILL.md is missing"
   pi_flags+=(--skill "$SKILL_DIR")
   MCP_NOTE=", mcp via cli"
-  # Loud now rather than mid-session, when the model would read the failure as
-  # "the tool does not work" and quietly stop trying.
-  command -v uv >/dev/null 2>&1 \
-    || warn "uv is not on PATH — ./scripts/mcp.sh cannot install mcp2cli when the model reaches for it"
+  # Both of these are said now rather than mid-session, where the model would
+  # read a slow or failing install as "the tool does not work" and quietly stop
+  # reaching for it.
+  if ! command -v uv >/dev/null 2>&1; then
+    warn "uv is not on PATH — ./scripts/mcp.sh cannot install mcp2cli when the model reaches for it."
+    warn "Install uv, or set MCP2CLI_ENABLED=0 to stop offering the skill."
+  elif [[ ! -x "${HOME}/.local/bin/mcp2cli" ]] && ! command -v mcp2cli >/dev/null 2>&1; then
+    dim "mcp2cli is not installed yet — the first MCP call will install it (~30s)."
+    dim "Do it now instead with: ./scripts/mcp.sh --install"
+  fi
 fi
 
 # Replayed from .env because bash does not expand aliases inside scripts.

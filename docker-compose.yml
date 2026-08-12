@@ -104,9 +104,10 @@ services:
   # --budget-tokens accounting is only meaningful if it sees the request that
   # is actually sent.
   #
-  # Behind the "headroom" profile, so the default stack is byte-identical to
-  # what every committed eval was measured on:
-  #   ./scripts/headroom.sh up
+  # In the "headroom" profile, which scripts/lib.sh activates whenever
+  # HEADROOM_ENABLED=1 (the default). One key therefore means one thing: in the
+  # path and running, or neither. Set it to 0 and up/down/logs/ps stop seeing
+  # this service at all.
   # ---------------------------------------------------------------------------
   headroom:
     profiles: ["headroom"]
@@ -267,15 +268,20 @@ services:
   # ---------------------------------------------------------------------------
   # One-shot A/B of headroom compression. Runs INSIDE the compose network.
   #   ./scripts/ab-headroom.sh          (preferred — checks the stack first)
-  #   docker compose --profile headroom run --rm ab-headroom --repeat 2
+  #   docker compose --profile tools run --rm ab-headroom --repeat 2
   #
   # Both arms go through headroom so the network path is identical; the control
   # arm sends x-headroom-bypass, which headroom documents as the "do not touch
   # my bytes" contract. Reuses the forge image because the scripts already live
   # there — nothing about this needs the headroom package.
+  #
+  # In the "tools" profile, NOT "headroom": the headroom profile is active for
+  # the whole stack whenever HEADROOM_ENABLED=1, and a one-shot in it would be
+  # started by every `up`. Every other one-shot here lives in "tools" for the
+  # same reason.
   # ---------------------------------------------------------------------------
   ab-headroom:
-    profiles: ["headroom"]
+    profiles: ["tools"]
     image: qwen36-forge/proxy:${FORGE_VERSION}
     build:
       context: .

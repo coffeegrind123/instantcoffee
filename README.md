@@ -13,9 +13,9 @@ decoding, single-file, mmap-friendly).
                   │
                   │  OpenAI chat-completions (POST /v1/chat/completions)
                   ▼
-       ┌─────────────────────┐   headroom         :8787   [optional, off]
+       ┌─────────────────────┐   headroom         :8787
        │  headroom           │   context compression: JSON tool output,
-       │  (container)        │   logs, build spew. Profile-gated.
+       │  (container)        │   logs, build spew. HEADROOM_ENABLED=0 removes it.
        └──────────┬──────────┘
                   │
                   ▼
@@ -33,9 +33,9 @@ decoding, single-file, mmap-friendly).
               RTX 4090 / 24 GiB
 ```
 
-pi talks to **8081** (forge), or to **8787** when headroom is enabled. Nothing
-should talk to 8080 directly except forge — that port is exposed only for
-debugging and metrics.
+pi talks to **8787** (headroom) by default, or to **8081** (forge) with
+`HEADROOM_ENABLED=0`. Nothing should talk to 8080 directly except forge — that
+port is exposed only for debugging and metrics.
 
 **This stack targets pi and nothing else.** Claude Code support was removed
 (2026-08-12): it cost a launcher, an Anthropic-wire smoke test, a Harbor agent
@@ -52,6 +52,8 @@ documented for.
 - ~20 GB of disk for the model, ~5 GB for images
 - `bash`, `curl`, and `docker` for the scripts (`python3` optional — the scripts fall
   back to a throwaway container when it is missing)
+- `uv` only for the two optional extras: MCP-as-a-CLI (`scripts/mcp.sh`) and the
+  Harbor eval runner. Nothing in the core stack needs it.
 
 ## Quick start
 
@@ -85,7 +87,7 @@ Then start a session:
 | `./scripts/pi-local.sh` | Launch pi against the local model |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
-| `./scripts/headroom.sh up` | Start the optional compression proxy |
+| `./scripts/headroom.sh status` | Is compression in the path, and configured how |
 | `./scripts/ab-headroom.sh` | A/B compression before routing pi through it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 
@@ -95,7 +97,7 @@ Then start a session:
 ./scripts/update.sh
 ```
 
-One command updates both components:
+One command updates every pinned component:
 
 1. Resolves the newest llama.cpp CUDA build from the `org.opencontainers.image.version`
    annotation on ghcr's floating `server-cuda` tag, then pins the **immutable
@@ -142,11 +144,11 @@ The keys worth knowing:
 | `PI_MAX_TOKENS` | `16384` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
 | `PI_CONTEXT_FILES` | `0` | `1` loads `AGENTS.md`; `0` passes `-nc` |
 | `PI_EXTRA_ARGS` | *(empty)* | Flags your own `pi` alias would add — aliases do not expand in scripts |
-| `HEADROOM_ENABLED` | `0` | `1` routes pi through the compression proxy |
+| `HEADROOM_ENABLED` | `1` | Routes pi through the compression proxy and starts it with the stack. `0` removes it |
 | `HEADROOM_VERSION` | `0.34.0` | `headroom-ai` release from PyPI |
 | `HEADROOM_RECOVERY` | `lossless` | `lossless` / `ccr` / `lossy` — see below |
 | `HEADROOM_TARGET_RATIO` | *(empty)* | Kompress keep-ratio; empty lets it decide |
-| `MCP2CLI_ENABLED` | `0` | `1` loads the `mcp-tools` skill so pi can call MCP servers as a CLI |
+| `MCP2CLI_ENABLED` | `1` | Loads the `mcp-tools` skill so pi can call MCP servers as a CLI. `0` disables |
 | `MCP2CLI_VERSION` | `3.3.1` | mcp2cli release |
 | `MCP_SDK_VERSION` | `1.29.0` | MCP Python SDK pin — must stay `<2`, see below |
 
@@ -236,8 +238,8 @@ What it writes, and why each field:
   It comes from `PI_MAX_TOKENS`, and `LLAMA_EXTRA_FLAGS` carries the same number
   as `-n` so the server enforces it even if a client forgets to ask.
 - **`baseUrl` host** — the script uses `host.docker.internal` when it detects it
-  is running inside a container, `localhost` otherwise. It points at headroom
-  instead of forge when `HEADROOM_ENABLED=1`.
+  is running inside a container, `localhost` otherwise. It points at headroom by
+  default, and straight at forge when `HEADROOM_ENABLED=0`.
 
 **Not using pi's `/llama` integration.** pi can manage its own llama.cpp router
 and models. That would bypass forge completely and lose every guardrail this
@@ -262,8 +264,8 @@ for those. Set `PI_CONTEXT_FILES=1` when you do want project conventions loaded.
 
 ## MCP, without MCP
 
-You can still reach MCP servers — just not by loading their schemas. Set
-`MCP2CLI_ENABLED=1` and the launcher passes pi a skill that teaches it about
+You can still reach MCP servers — just not by loading their schemas. This is
+**on by default**: the launcher passes pi a skill that teaches it about
 `./scripts/mcp.sh`, which fronts [mcp2cli](https://github.com/knowsuchagency/mcp2cli):
 
 ```bash
@@ -284,6 +286,11 @@ server for roughly 2 tokens per tool.
 Servers are declared in `mcp/servers.json`, `stdio` or `url`, one line each. An
 `auth_header` value takes `env:VAR` and `file:/path` prefixes, so no credential
 goes in the committed file — CI rejects a literal one.
+
+Unlike headroom, this is on without a measurement gate in front of it: the cost
+is bounded and known — the skill description, and nothing else until the model
+chooses to call a server — so there is nothing to weigh. It needs `uv` on PATH;
+`MCP2CLI_ENABLED=0` turns it off, and `pi-local.sh` says which state it is in.
 
 Two things that were measured rather than assumed, on 2026-08-12:
 
@@ -325,18 +332,23 @@ money on hosted APIs; here the binding constraint is a 64K window and prefill
 time on one 4090, which is a better fit than the pitch — and headroom documents
 that case itself.
 
+**It is on by default.** `./scripts/up.sh` starts it, `./scripts/pi-local.sh`
+routes through it, and `HEADROOM_ENABLED=0` takes it out of the path and leaves
+the container stopped (`scripts/lib.sh` adds the compose profile from that one
+key, so every script follows it).
+
 ```bash
-./scripts/headroom.sh up        # build + start it (profile-gated, does not touch the rest)
-./scripts/ab-headroom.sh        # measure it on this model
-# only if the verdict says so:
-#   set HEADROOM_ENABLED=1 in .env
+./scripts/headroom.sh status    # in the path, and configured how
 ./scripts/headroom.sh savings   # what it has actually saved
+./scripts/ab-headroom.sh --save # what it costs in quality on this model
 ```
 
-It is **off by default and stays off until measured**. Everything in `results/`
-was produced without it, a compressor in the path changes what the model sees,
-and headroom's accuracy claims were established on frontier models rather than
-on a 4-bit 27B whose own tools suite scores 0.73.
+Know what that default means. Every number in `results/` was produced **without**
+it — `eval.py` talks straight to forge and always will — so the scorecard
+describes the model while a real session now runs through a compressor the
+scorecard never saw. headroom's accuracy claims (GSM8K unchanged, BFCL 97%) were
+established on frontier hosted models, not on a 4-bit 27B whose own tools suite
+scores 0.73. `ab-headroom.sh` is how you close that gap; nothing gates on it.
 
 ### Sized for this model, not for Opus
 
@@ -457,6 +469,18 @@ A stale ghcr credential in `~/.docker/config.json` is being sent and rejected �
 fails even though the image is public. Fix with `docker logout ghcr.io`, or refresh it:
 `gh auth token | docker login ghcr.io -u <user> --password-stdin`.
 
+**`pi-local.sh` says headroom is not answering.**
+pi routes at 8787 by default. `./scripts/up.sh` starts that container along with
+the rest, so this usually means the stack is not up, or headroom was stopped on
+its own with `./scripts/headroom.sh down`. Bring it back with
+`./scripts/headroom.sh up`, or set `HEADROOM_ENABLED=0` to go straight to forge.
+`./scripts/headroom.sh status` prints which of the two you are in.
+
+**`AttributeError: 'Tool' object has no attribute 'inputSchema'` from an MCP call.**
+The mcp2cli install lost its SDK pin. MCP Python SDK 2.0.0 renamed that field
+and mcp2cli 3.3.1 still reads the old name. `./scripts/mcp.sh --install`
+reinstalls with `mcp==${MCP_SDK_VERSION}` and fixes it.
+
 **The bind-mount trap (Docker Desktop on Windows/WSL).**
 Docker Desktop resolves bind sources on the **Windows** side. A WSL-style path such as
 `/home/you/models` mounts an **empty directory** rather than failing, so the container
@@ -482,9 +506,13 @@ prompts/
   think-zh.md           reason in Mandarin, answer in the user's language
   README.md             why this is applied client-side and not in the engine
 scripts/
+  lib.sh                shared helpers, sourced by every script here
   setup.sh              prerequisites -> model -> build -> up -> verify
   update.sh             update everything, verify, roll back on failure
   up.sh / down.sh       start / stop the stack
+  logs.sh               tail llama or forge
+  smoke-test.sh         run smoke_test.py against the running stack
+  download-model.sh     runner for download_model.py
   smoke_test.py         end-to-end checks (runs inside the compose network)
   eval.py               9-suite coding eval (speed, codegen, bugfix, tools…)
   eval_harness.py       extended coding eval with judge-based scoring
@@ -506,9 +534,10 @@ scripts/
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
 harbor-adapter/         Harbor eval runner (stock pi agent, no adapter needed)
-context/design/         why things are the way they are
-  decisions.md           all design decisions, flags, quant choice
-  eval-methodology.md    what the eval benches, how it scores
+context/                why things are the way they are
+  README.md              index of the above, and the conventions it follows
+  design/decisions.md    all design decisions, flags, quant choice
+  design/eval-methodology.md  what the eval benches, how it scores
 ```
 
 ## Eval Results

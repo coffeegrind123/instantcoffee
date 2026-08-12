@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Update everything: llama-server (pinned llama.cpp build), forge, and headroom
-# when this machine has built it.
+# when it is enabled or has been built here before.
 #
 #   ./scripts/update.sh            check, apply, restart, verify
 #   ./scripts/update.sh --check    report what is available, change nothing
@@ -50,8 +50,8 @@ fi
 NEW_FORGE="$(forge_latest_version || true)"
 [[ -n "$NEW_FORGE" ]] || die "could not read the latest forge-guardrails release from PyPI"
 
-# headroom is optional and behind a compose profile, so a PyPI hiccup here is a
-# notice rather than a failure — it must not be able to block a forge update.
+# A PyPI hiccup on headroom is a notice rather than a failure — a compression
+# proxy being one release behind must not be able to block a forge update.
 NEW_HEADROOM="$(headroom_latest_version || true)"
 if [[ -z "$NEW_HEADROOM" ]]; then
   warn "could not read the latest headroom-ai release from PyPI — keeping $CUR_HEADROOM"
@@ -120,11 +120,12 @@ fi
 BACKUP="$REPO_ROOT/.env.bak"
 cp "$REPO_ROOT/.env" "$BACKUP"
 
-# Only rebuild headroom if this machine has actually built it before. It is an
-# optional profile; forcing a build here would make an opt-in component's
-# dependencies a mandatory cost of every update.
+# Rebuild headroom when it is in the path (HEADROOM_ENABLED=1) or when this
+# machine has built it before. Skipping it otherwise keeps a disabled
+# component's dependencies from becoming a mandatory cost of every update.
 HEADROOM_BUILT=0
 docker image inspect "qwen36-forge/headroom:${CUR_HEADROOM}" >/dev/null 2>&1 && HEADROOM_BUILT=1
+[[ "$(env_get HEADROOM_ENABLED)" == "1" ]] && HEADROOM_BUILT=1
 
 rollback() {
   warn "Rolling back to llama=$CUR_LLAMA forge=$CUR_FORGE headroom=$CUR_HEADROOM"
@@ -146,23 +147,22 @@ compose build --pull forge || rollback
 
 if (( HEADROOM_BUILT )); then
   info "Building headroom $NEW_HEADROOM"
-  compose --profile headroom build --pull headroom || rollback
+  compose build --pull headroom || rollback
 else
-  dim "headroom image has never been built here — skipping it (./scripts/headroom.sh up builds it)"
+  dim "headroom is disabled and has never been built here — skipping it"
 fi
 
+# compose() adds --profile headroom by itself when HEADROOM_ENABLED=1, so this
+# one line brings up whichever set of services is actually configured.
 info "Restarting the stack"
 compose up -d --remove-orphans || rollback
-if (( HEADROOM_BUILT )); then
-  compose --profile headroom up -d headroom || rollback
-fi
 
 # --- verify ------------------------------------------------------------------
 if (( VERIFY )); then
   info "Verifying (model reload takes a few minutes on a cold start)"
   # When pi is routed through headroom, an update that leaves headroom broken is
   # an update that broke inference — so the check has to cover that hop too.
-  if (( HEADROOM_BUILT )) && [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
+  if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
     export HEADROOM_SMOKE_URL="http://headroom:8787"
   fi
   if ! compose --profile tools run --rm smoketest; then

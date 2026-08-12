@@ -48,6 +48,11 @@ ok "models dir $MODELS_DIR"
 info "Building the forge image (forge $(env_get FORGE_VERSION))"
 compose build forge
 
+if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
+  info "Building the headroom image (headroom $(env_get HEADROOM_VERSION))"
+  compose build headroom
+fi
+
 # --- model -------------------------------------------------------------------
 if (( SKIP_MODEL )); then
   warn "Skipping the model download (--skip-model)"
@@ -69,9 +74,15 @@ if compose --profile tools run --rm smoketest; then
   ok "Ready."
   dim "  llama-server  http://$(env_get BIND_ADDR):$(env_get LLAMA_PORT)"
   dim "  forge proxy   http://$(env_get BIND_ADDR):$(env_get FORGE_PORT)"
+  if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
+    dim "  headroom      http://$(env_get BIND_ADDR):$(env_get HEADROOM_PORT)  (pi routes through this)"
+  fi
   echo
   dim "Start a session with:  ./scripts/pi-local.sh"
-  dim "Optional compression:  ./scripts/headroom.sh up && ./scripts/ab-headroom.sh"
+  if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
+    dim "Compression is on. What it costs on this model is unmeasured — find out with:"
+    dim "  ./scripts/ab-headroom.sh --save"
+  fi
 else
   echo
   die "Smoke test failed. Logs:  ./scripts/logs.sh"

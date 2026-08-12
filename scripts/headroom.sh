@@ -9,11 +9,12 @@
 #   ./scripts/headroom.sh dashboard   print the dashboard URL
 #   ./scripts/headroom.sh logs        tail it
 #
-# headroom is behind a compose profile and OFF by default. Turning it on is two
-# steps on purpose: bring the container up here, then set HEADROOM_ENABLED=1 in
-# .env so pi-local.sh actually routes through it. Running the container without
-# flipping the flag is a valid state — that is how the A/B harness measures it
-# without changing what a normal session does.
+# HEADROOM_ENABLED=1 (the default) does two things at once: scripts/lib.sh adds
+# the compose profile, so up.sh/down.sh/logs.sh already include headroom, and
+# pi-local.sh routes pi through it. This script is for the times you want to
+# touch only that container — a restart after changing HEADROOM_RECOVERY, or
+# reading what it has saved. Running it with HEADROOM_ENABLED=0 is also valid:
+# that is how ab-headroom.sh measures compression without a session using it.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -40,10 +41,12 @@ case "$cmd" in
     for _ in $(seq 1 60); do
       if hr_ready; then
         ok "headroom is up at ${BASE}"
-        if [[ "$(env_get HEADROOM_ENABLED)" != "1" ]]; then
-          warn "HEADROOM_ENABLED is not 1 in .env — pi-local.sh still talks straight to forge."
-          dim  "Measure it first:  ./scripts/ab-headroom.sh"
-          dim  "Then adopt it:     set HEADROOM_ENABLED=1 in .env"
+        if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
+          dim "pi routes through it. What that costs on this model is unmeasured:"
+          dim "  ./scripts/ab-headroom.sh --save"
+        else
+          warn "HEADROOM_ENABLED=0 — pi still talks straight to forge. The container"
+          warn "is running anyway, which is what ab-headroom.sh needs."
         fi
         exit 0
       fi
@@ -94,7 +97,7 @@ case "$cmd" in
     ;;
 
   -h|--help|help)
-    sed -n '2,16p' "$0" | sed 's/^# \?//'
+    sed -n '2,17p' "$0" | sed 's/^# \?//'
     ;;
 
   *)

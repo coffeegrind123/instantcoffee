@@ -10,7 +10,8 @@
 models/
 __pycache__/
 
-# Harbor eval setup — clone harbor-framework/harbor yourself, then run
-#   ./harbor-adapter/install-into-harbor.sh <path-to-harbor>
-# The harbor checkout itself lives outside version control.
+# Harbor eval setup — clone harbor-framework/harbor yourself:
+#   git clone https://github.com/harbor-framework/harbor.git harbor-eval
+# No adapter is installed into it; pi uses Harbor's stock agent. The checkout
+# itself lives outside version control.
 harbor-eval/

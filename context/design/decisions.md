@@ -929,3 +929,26 @@ proving nothing. The frontmatter is instead checked against the Agent Skills
 spec in CI (name pattern, description length, non-trivial body). Whether the
 27B actually *reaches for* the skill mid-task is unmeasured, and is the next
 thing to look at once the GPU host is up.
+
+### Both switched on by default (2026-08-12, operator decision)
+
+`HEADROOM_ENABLED=1` and `MCP2CLI_ENABLED=1` are the shipped defaults.
+
+For MCP-as-a-CLI this needs no defence: the standing cost is the skill's name
+and description, and nothing else happens until the model chooses to call a
+server.
+
+headroom is the one worth being precise about, because it was built with an
+"off until measured" gate and that gate is now removed. The consequence, stated
+plainly rather than buried: **`eval.py` talks straight to `forge:8081` and always
+will, so every number in `results/` describes the model with no compressor in
+the path, while a real session now runs through one.** The two are no longer the
+same configuration. `scripts/ab-headroom.sh` is the instrument that closes the
+gap, it still exists, and nothing gates on it.
+
+Turning it on also had to make it actually work: headroom sat behind a compose
+profile, so `up.sh` would not have started it and `pi-local.sh` would have died
+on a health check. Rather than sprinkle `--profile headroom` through six
+scripts, `compose()` in `scripts/lib.sh` adds the profile when
+`HEADROOM_ENABLED=1`. That keeps the key meaning one thing — in the path and
+running, or neither — for up, down, logs, ps and the smoke test alike.

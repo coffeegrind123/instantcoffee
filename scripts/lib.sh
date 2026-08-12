@@ -32,7 +32,16 @@ require_cmd() {
 compose() {
   local env_files=".env"
   [[ -f "$REPO_ROOT/.env.local" ]] && env_files=".env,.env.local"
-  ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" docker compose "$@" )
+
+  # headroom lives behind a compose profile so that turning it off leaves the
+  # container stopped rather than merely bypassed. Adding the profile here — in
+  # the one function every script goes through — is what makes HEADROOM_ENABLED
+  # a single switch: up, down, logs, ps and the smoke test all follow it, and
+  # none of them has to know the profile exists.
+  local profile=()
+  [[ "$(env_get HEADROOM_ENABLED)" == "1" ]] && profile=(--profile headroom)
+
+  ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" docker compose "${profile[@]}" "$@" )
 }
 
 # Read one key out of the merged env, honouring .env.local overrides.

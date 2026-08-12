@@ -43,7 +43,7 @@ dim  "a run measures the mode headroom is CURRENTLY running — restart it after
 (( SAVE )) && mkdir -p "$REPO_ROOT/results"
 
 set +e
-compose --profile headroom run --rm ab-headroom "${PASSTHRU[@]}" 2>&1 \
+compose --profile tools run --rm ab-headroom "${PASSTHRU[@]}" 2>&1 \
   | tee /tmp/qwen36-ab-headroom.txt
 STATUS="${PIPESTATUS[0]}"
 set -e
