@@ -123,7 +123,16 @@ def http(url: str, payload: dict | None = None, timeout: float = 15.0,
     return status, body
 
 
-def wait_for(url: str, label: str, timeout: float = 900.0) -> bool:
+# Cold-load budget. 900s was the old default and it is not enough: the model is
+# 17.9 GB and the Docker Desktop bind mount from the Windows side was measured
+# at 10-12 MB/s on this machine (`dd` from a throwaway container, twice, once
+# under memory pressure and once not), which puts a cold load at ~24 minutes.
+# A timeout shorter than the load reports "llama-server unreachable" for a
+# server that is working exactly as intended.
+LOAD_TIMEOUT = float(os.environ.get("SMOKE_LOAD_TIMEOUT", "2700"))
+
+
+def wait_for(url: str, label: str, timeout: float = LOAD_TIMEOUT) -> bool:
     """Poll a health endpoint until it answers 200 or the deadline passes."""
     deadline = time.monotonic() + timeout
     last = ""
@@ -133,6 +142,7 @@ def wait_for(url: str, label: str, timeout: float = 900.0) -> bool:
             return record(f"{label} reachable", True, url)
         last = f"status={status} {body[:120]}"
         time.sleep(5)
+
     return record(f"{label} reachable", False, f"timed out after {timeout:.0f}s — {last}")
 
 

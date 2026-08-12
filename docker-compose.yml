@@ -54,7 +54,11 @@ services:
       timeout: 5s
       # A 27B GGUF takes a while to read off disk and upload to VRAM on a cold
       # start. start_period keeps those minutes from counting as failures.
-      start_period: 600s
+      # 600s was too short here: 17.9 GB over a Docker Desktop bind mount
+      # measured at 10-12 MB/s is a ~24 minute cold load, so the container was
+      # being marked unhealthy while loading normally. Warm restarts are far
+      # faster (the file is in the host's cache), so this only bites once.
+      start_period: 2400s
       retries: 5
 
   # ---------------------------------------------------------------------------

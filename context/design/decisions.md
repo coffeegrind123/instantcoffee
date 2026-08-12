@@ -952,3 +952,90 @@ on a health check. Rather than sprinkle `--profile headroom` through six
 scripts, `compose()` in `scripts/lib.sh` adds the profile when
 `HEADROOM_ENABLED=1`. That keeps the key meaning one thing — in the path and
 running, or neither — for up, down, logs, ps and the smoke test alike.
+
+### Measured on the GPU host, 2026-08-12: the cold-load budget was wrong
+
+First real bring-up of the pi-only stack. `setup.sh --skip-model` built both
+images, pulled llama.cpp, started all three containers, and then failed its
+smoke test with `llama-server reachable — timed out after 900s`, while
+llama-server itself was answering `503 {"error":"Loading model"}` — that is, a
+server working exactly as intended, reported as unreachable.
+
+Two numbers settled it, both measured rather than assumed:
+
+- **The mount does 10–12 MB/s.** `dd` from a throwaway alpine container against
+  `//d/llm-models`, 200 MiB at an offset, twice: 9.4 MB/s while the stack was
+  under memory pressure, 12.2 MB/s after it was relieved. At 17.9 GB that is a
+  **~24 minute cold load**. The old 900s smoke-test wait and 600s
+  `start_period` were both under it, so the first start could never pass.
+  Corrected to 2700s (`SMOKE_LOAD_TIMEOUT`) and 2400s.
+- **A stalled load and a slow load look identical from the outside.** The first
+  attempt was not merely slow: CPU sat at 213% with VRAM flat at 2720 MiB across
+  three samples a minute apart, which is thrashing, not progress. The cause was
+  memory pressure — a runaway `ugrep` at 5.8 GB RSS and still growing, plus nine
+  idle agent sessions, leaving 1.8 GB free of 22 GB. The model is mmap'd, so its
+  pages were being evicted as fast as they faulted in. Killing the one runaway
+  took available memory from 8.6 GB to 13.4 GB.
+
+The distinguishing signal is VRAM: with `-ngl 999` a healthy load climbs, a
+thrashing one does not. `docker stats` BlockIO is useless here — a bind mount
+from the Windows side does not go through the container's block device, so that
+counter stays near zero either way. Both are now in the README's troubleshooting
+section, because "first start takes 25 minutes" and "the load is wedged" want
+opposite responses and the obvious instruments do not tell them apart.
+
+### The KV cache quantization was costing 65x (2026-08-12, measured)
+
+The first real workload on the GPU host exposed something the repo had been
+asserting confidently and wrongly since it was written.
+
+`.env` carried `-ctk f16 -ctv q8_0` with this justification: *"This model's
+256-wide heads are in the CUDA flash-attention head-size table for both decode
+and prefill kernels regardless of cache quant."* That claim is false on
+`b10200`. With a quantized V cache, **prefill leaves the GPU**:
+
+| KV cache | prompt processing | 12K-token request |
+| --- | --- | --- |
+| `-ctk f16 -ctv q8_0` | 26–140 tok/s, falling with length | never finished in 600s |
+| f16 / f16 | **1806–2040 tok/s** | **6.9 s**, correct answer |
+
+The signature was a doubling per chunk — 16s, 43s, 86s, 172s for successive
+2048-token blocks — with `nvidia-smi` reporting 0% GPU utilisation while the
+process sat in state `R`. Decode was unaffected throughout (61–73 tok/s), which
+is why the problem hid: short smoke-test prompts and short chat turns look fine,
+and only a real tool-output-sized prompt exposes it.
+
+It cannot be worked around by disabling flash attention: llama.cpp refuses to
+start with `V cache quantization requires flash_attn`. So on this build the
+choice is f16/f16 or nothing.
+
+Consequences, all now in `.env` and `README.md`:
+
+- **`CTX_SIZE` 65536 → 32768.** f16/f16 is ~132 KiB/token against ~98 KiB with a
+  quantized V, and f16/f16 at 64K does not fit a 24 GiB card. Measured at 32K:
+  21566 MiB of 24564 MiB, ~3 GiB spare. A 32K window that answers in seconds
+  beats a 64K window that times out.
+- **`-b 4096 -ub 2048` removed.** Adopted from "two independent public Qwen3.6
+  configs" on the theory that the default `-ub 512` leaves the GPU idle. It cost
+  ~850 MiB of VRAM and changed nothing once prefill was actually on the GPU.
+- **`PI_MAX_TOKENS` 16384 → 8192**, and the `-n` backstop with it, since half of
+  a 32K window is no longer a sane single-reply cap.
+- **`SPEC_TYPE=draft-mtp` kept.** Tested with it off: prefill was identical, so
+  MTP was not implicated. It stays for the decode win (draft acceptance 1.00,
+  mean length 3.0 in the logs).
+
+Two smaller findings from the same session:
+
+- **`CACHE_REUSE` does nothing on this model.** llama-server logs
+  `cache_reuse is not supported by this context, it will be disabled` at every
+  start — the hybrid Gated DeltaNet layers carry recurrent state that cannot be
+  partially reused. The key is left in place, now labelled, so it is not
+  mistaken for an optimisation that is running.
+- **The committed `speed 0.47` eval score was measuring this bug**, not the
+  model. Every scorecard in `results/` predates the fix.
+
+The general lesson is the one this file already argues for elsewhere and did not
+follow here: the KV-quant line was adopted from a community thread with a
+confident technical rationale attached, and never measured on this hardware. It
+was wrong in the most expensive possible way — silently, and only under real
+load.

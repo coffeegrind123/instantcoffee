@@ -124,11 +124,11 @@ The keys worth knowing:
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
 | `GGUF_FILE` | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | See the VRAM table |
-| `CTX_SIZE` | `65536` | Context per slot; also what forge uses as its token budget |
+| `CTX_SIZE` | `32768` | Context per slot; also what forge uses as its token budget. Capped by the f16 KV cache — see below |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
 | `THINK_LANG` | `zh` | Reason in Mandarin, answer in English. `off` disables. Unmeasured on this hardware — see below |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
-| `LLAMA_EXTRA_FLAGS` | `-ctk f16 -ctv q8_0` | K-f16/V-q8 KV cache — f16 K prevents broken JSON tool calls |
+| `LLAMA_EXTRA_FLAGS` | `-n 8192 --load-mode none` | `--load-mode none` disables mmap (mandatory on a 9p bind mount); `-n` is the server-side generation cap. **No KV quantization** — see below |
 | `CACHE_PROMPT` | `1` | Persist KV cache to disk for fast warm restarts |
 | `CACHE_RAM` | `8192` | RAM budget for prompt cache in MiB; 0 disables |
 | `CACHE_REUSE` | `64` | Previous cache entries to compare for reuse |
@@ -141,7 +141,7 @@ The keys worth knowing:
 | `FORGE_CAPABILITY` | `native` | Keep `native` — llama.cpp with `--jinja` does real function calling |
 | `FORGE_REASONING_REPLAY` | `full` | `keep-last` / `full` replay captured reasoning to the backend |
 | `BIND_ADDR` | `127.0.0.1` | `0.0.0.0` to expose on the LAN |
-| `PI_MAX_TOKENS` | `16384` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
+| `PI_MAX_TOKENS` | `8192` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
 | `PI_CONTEXT_FILES` | `0` | `1` loads `AGENTS.md`; `0` passes `-nc` |
 | `PI_EXTRA_ARGS` | *(empty)* | Flags your own `pi` alias would add — aliases do not expand in scripts |
 | `HEADROOM_ENABLED` | `1` | Routes pi through the compression proxy and starts it with the stack. `0` removes it |
@@ -156,25 +156,39 @@ The keys worth knowing:
 
 The 4090 has 24.0 GiB. Qwen3.6-27B is a hybrid: only **16 of its 64 layers** use full
 attention (the other 48 are Gated DeltaNet, whose recurrent state does not grow with
-context). That makes its KV cache far smaller than a normal 27B — about **64 KiB per
-token at f16 K, ~34 KiB per token at q8_0 V**.
+context). That makes its KV cache far smaller than a normal 27B.
 
-| GGUF | Weights | @64K (default) | @128K | Verdict on ~22.4 GiB |
-| --- | --- | --- | --- | --- |
-| `IQ4_XS` | 14.4 GiB | ~19.2 | ~21.4 | Most headroom, lowest quality of the 4-bits |
-| `Q4_K_M` | 15.7 GiB | ~20.5 | ~22.7 | Tight at 128K |
-| **`UD-Q4_K_XL`** | **16.4 GiB** | **~21.2** | — | **Default — best quality that still fits** |
-| `Q5_K_M` | 18.2 GiB | — | — | Does not fit at this context |
-| `Q6_K` | 21.0 GiB | — | — | Does not fit |
+**The KV cache must be f16/f16 here, and that is what sets the context size.**
+Measured on this machine on 2026-08-12, not inherited from a guide:
 
-Columns assume the default `f16` K / `q8_0` V cache per the HN thread consensus
-(K quantisation breaks JSON on tool calls). Drop `LLAMA_EXTRA_FLAGS` to go back to
-an f16 K/f16 V cache and the 64K column gains about 2 GiB.
+| KV cache | Prompt processing | 12K-token request |
+| --- | --- | --- |
+| `-ctk f16 -ctv q8_0` | 26–140 tok/s, **falling** as the prompt grows (GPU at 0%) | never finished inside forge's 600s timeout |
+| f16 / f16 (what this repo now uses) | **1806 tok/s** | **6.9 s**, correct answer |
 
-Totals include ~1.3 GiB of CUDA context and compute buffers. Note that the card is
-never entirely yours: measured on this machine, llama.cpp saw **22992 MiB free** of
-24563 MiB with an ordinary Windows desktop running, so budget against ~22.4 GiB
-rather than 24. Check yours with:
+A quantized V cache takes prefill off the GPU on build `b10200` — roughly a **65×**
+penalty on every prompt, which is exactly the workload a coding agent generates. It
+cannot be worked around by disabling flash attention either: llama.cpp refuses to
+start with `V cache quantization requires flash_attn`. So the choice is f16/f16, and
+f16/f16 costs about **132 KiB per token** against ~98 KiB with a quantized V.
+
+That is why `CTX_SIZE` is **32768** rather than 65536 — a 32K window that answers in
+seconds beats a 64K window that times out.
+
+| GGUF | Weights | @32K f16/f16 | Verdict on ~22.4 GiB |
+| --- | --- | --- | --- |
+| `IQ4_XS` | 14.4 GiB | ~19.8 | Most headroom, lowest quality of the 4-bits |
+| `Q4_K_M` | 15.7 GiB | ~21.1 | Fits |
+| **`UD-Q4_K_XL`** | **16.4 GiB** | **~21.6 (measured 21566 MiB)** | **Default — best quality that still fits** |
+| `Q5_K_M` | 18.2 GiB | — | Does not fit |
+| `Q6_K` | 21.0 GiB | — | Does not fit |
+
+Totals include ~1.3 GiB of CUDA context and compute buffers. `-b`/`-ub` are
+deliberately left at their defaults: raising them to `4096`/`2048` cost ~850 MiB of
+VRAM for a prompt-processing win that does not exist once prefill is actually on the
+GPU. Note that the card is never entirely yours: measured here, llama.cpp saw
+**22992 MiB free** of 24563 MiB with an ordinary Windows desktop running, so budget
+against ~22.4 GiB rather than 24. Check yours with:
 
 ```bash
 docker compose run --rm --no-deps llama --list-devices
@@ -454,6 +468,24 @@ Run `./scripts/smoke-test.sh`. It asserts on `tool_calls` specifically, because
 llama.cpp *silently ignores* the `tools` parameter when `--jinja` is missing — which
 looks identical to a model that is bad at tool calling. The smoke test prints the raw
 response body when this happens.
+
+**The first start takes ~25 minutes and the container shows `unhealthy`.**
+Expected on this machine, and not a fault. The GGUF is 17.9 GB and it is read
+over a Docker Desktop bind mount from the Windows side, which was measured here
+at **10–12 MB/s** (`dd` from a throwaway container against the same mount, twice)
+— about 24 minutes for a cold load. `start_period` and the smoke test's
+`SMOKE_LOAD_TIMEOUT` are sized for that. Warm restarts are much faster because
+the host has the file cached. Watch real progress with `./scripts/logs.sh llama`
+rather than the health status.
+
+**The load stalls: high CPU, no progress, VRAM flat.**
+Memory pressure, not a slow disk. The model is mmap'd, so if the VM has little
+free memory its pages are evicted as fast as they fault in and the load thrashes
+indefinitely. Check with `free -m` (and `docker run --rm --privileged alpine
+free -m` for the Docker VM). Seen here with a runaway 5.8 GB `ugrep` on the box:
+killing it took *available* from 8.6 GB to 13.4 GB and the load proceeded. VRAM
+that is not climbing (`docker exec qwen36-llama nvidia-smi`) is the tell —
+distinguish it from a slow-but-progressing load before restarting anything.
 
 **It is unbearably slow (< 1 tok/s).**
 The GPU is not attached and it is running on CPU. Check `docker info | grep -i nvidia`
