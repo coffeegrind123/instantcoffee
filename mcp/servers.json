@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Registry of MCP servers reachable through scripts/mcp.sh.",
+    "",
+    "pi has no MCP support and this stack does not want it: a single MCP server can",
+    "publish hundreds of tool schemas into a 64K window before the first message.",
+    "mcp2cli turns those servers into a CLI instead, so a schema only enters the",
+    "context when the model asks for that one tool.",
+    "",
+    "Each entry needs exactly one of:",
+    "  stdio  a command mcp2cli spawns and speaks MCP to over stdio",
+    "  url    an HTTP/SSE MCP endpoint",
+    "",
+    "Optional per entry:",
+    "  description  one line, shown by ./scripts/mcp.sh --servers",
+    "  transport    auto | sse | streamable   (url entries only; default auto)",
+    "  auth_header  Name:Value — supports env:VAR and file:/path for the value,",
+    "               so no credential has to be written into this committed file",
+    "  env          {\"KEY\": \"VALUE\"} passed to a stdio server's environment",
+    "",
+    "Keys starting with _ are ignored."
+  ],
+
+  "servers": {
+    "everything": {
+      "stdio": "npx -y @modelcontextprotocol/server-everything",
+      "description": "MCP reference server (13 demo tools). Verifies the plumbing without touching anything real."
+    }
+  }
+}

@@ -29,8 +29,20 @@ for a in "$@"; do
 done
 
 MODEL="$(env_get MODEL_ALIAS)"
-PORT="$(env_get FORGE_PORT)"
 CTX="$(env_get CTX_SIZE)"
+MAX_TOKENS="$(env_get PI_MAX_TOKENS)"
+: "${MAX_TOKENS:=16384}"
+
+# Which proxy pi talks to. headroom, when enabled, sits in front of forge and
+# forge still does every guardrail — the route lengthens, it does not change
+# hands. Anything else in .env stays authoritative for both.
+if [[ "$(env_get HEADROOM_ENABLED)" == "1" ]]; then
+  PORT="$(env_get HEADROOM_PORT)"
+  ROUTE="headroom -> forge"
+else
+  PORT="$(env_get FORGE_PORT)"
+  ROUTE="forge"
+fi
 
 # Published ports bind to the host's loopback; inside a container the host is
 # reachable as host.docker.internal instead.
@@ -45,7 +57,8 @@ MODELS_JSON="${PI_DIR}/models.json"
 # providers here too, and clobbering someone's whole model config to add one
 # local entry would be rude.
 mkdir -p "$PI_DIR"
-MODEL="$MODEL" BASE_URL="${BASE}/v1" CTX="$CTX" MODELS_JSON="$MODELS_JSON" \
+MODEL="$MODEL" BASE_URL="${BASE}/v1" CTX="$CTX" MAX_TOKENS="$MAX_TOKENS" \
+MODELS_JSON="$MODELS_JSON" \
 python3 - <<'PY'
 import json, os, pathlib
 
@@ -82,8 +95,9 @@ providers["forge"] = {
             "contextWindow": int(os.environ["CTX"]),
             # Well under contextWindow on purpose: with --no-context-shift a
             # request that would overflow fails loudly, and an agentic loop's
-            # prompt grows every turn.
-            "maxTokens": 16384,
+            # prompt grows every turn. Comes from PI_MAX_TOKENS so it cannot
+            # drift from the -n backstop in LLAMA_EXTRA_FLAGS.
+            "maxTokens": int(os.environ["MAX_TOKENS"]),
             "input": ["text"],
             # Left false deliberately. Qwen reasons server-side under
             # --reasoning-budget and forge keeps it out of history, so there is
@@ -104,10 +118,41 @@ if (( INSTALL_ONLY )); then
 fi
 
 # --- launch ------------------------------------------------------------------
+pi_flags=(--provider forge --model "$MODEL")
+
 # -nc skips AGENTS.md/CLAUDE.md discovery. On a 64K local window those files are
 # a real fraction of the budget, and pi walks parent directories to find them.
-# Drop the flag when you want the project's conventions loaded.
-pi_flags=(--provider forge --model "$MODEL" -nc)
+# PI_CONTEXT_FILES=1 loads them anyway.
+CTX_FILES_NOTE="context files off"
+if [[ "$(env_get PI_CONTEXT_FILES)" == "1" ]]; then
+  CTX_FILES_NOTE="context files on"
+else
+  pi_flags+=(-nc)
+fi
+
+# MCP servers, reached as a CLI rather than as MCP. --skill is additive and takes
+# an absolute path, so the skill travels with the repo instead of being installed
+# into ~/.pi — nothing outside this checkout is touched, and it still applies when
+# pi is started in another project's directory.
+MCP_NOTE=""
+if [[ "$(env_get MCP2CLI_ENABLED)" == "1" ]]; then
+  SKILL_DIR="$REPO_ROOT/skills/mcp-tools"
+  [[ -r "$SKILL_DIR/SKILL.md" ]] \
+    || die "MCP2CLI_ENABLED=1 but $SKILL_DIR/SKILL.md is missing"
+  pi_flags+=(--skill "$SKILL_DIR")
+  MCP_NOTE=", mcp via cli"
+  # Loud now rather than mid-session, when the model would read the failure as
+  # "the tool does not work" and quietly stop trying.
+  command -v uv >/dev/null 2>&1 \
+    || warn "uv is not on PATH — ./scripts/mcp.sh cannot install mcp2cli when the model reaches for it"
+fi
+
+# Replayed from .env because bash does not expand aliases inside scripts.
+EXTRA_ARGS="$(env_get PI_EXTRA_ARGS)"
+if [[ -n "$EXTRA_ARGS" ]]; then
+  read -r -a extra <<< "$EXTRA_ARGS"
+  pi_flags+=("${extra[@]}")
+fi
 
 # THINK_LANG fragment, if one is selected. pi's --help documents
 # --append-system-prompt as taking "text or file contents" and as repeatable,
@@ -127,8 +172,14 @@ fi
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 
-curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
-  || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
+# Whichever proxy is in front has to answer before pi starts, or the first
+# request fails inside pi's UI where the cause is much harder to see.
+if ! curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null; then
+  if [[ "$ROUTE" == headroom* ]]; then
+    die "headroom is not answering at ${BASE} — start it with ./scripts/headroom.sh up (or set HEADROOM_ENABLED=0)"
+  fi
+  die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
+fi
 
-echo "pi -> ${BASE}  (model: ${MODEL}, context files off${THINK_NOTE})"
+echo "pi -> ${BASE} via ${ROUTE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

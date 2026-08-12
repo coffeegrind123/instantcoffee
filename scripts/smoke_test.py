@@ -23,6 +23,9 @@ import urllib.request
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080").rstrip("/")
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
+# Optional third hop. Empty unless the headroom profile is running, so the
+# default smoke test measures exactly the stack the committed results describe.
+HEADROOM_URL = os.environ.get("HEADROOM_URL", "").rstrip("/")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.6-27b")
 CTX_SIZE = int(os.environ.get("CTX_SIZE", "32768"))
 
@@ -41,18 +44,6 @@ WEATHER_TOOL_OPENAI = {
             },
             "required": ["city"],
         },
-    },
-}
-
-WEATHER_TOOL_ANTHROPIC = {
-    "name": "get_weather",
-    "description": "Get the current weather for a city.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "city": {"type": "string", "description": "City name"},
-        },
-        "required": ["city"],
     },
 }
 
@@ -99,9 +90,14 @@ def record(name: str, ok: bool, detail: str = "") -> bool:
     return ok
 
 
-def http(url: str, payload: dict | None = None, timeout: float = 15.0,
-         headers: dict | None = None) -> tuple[int, str]:
-    """Return (status, body). Never raises on an HTTP error status."""
+def http_with_headers(
+    url: str, payload: dict | None = None, timeout: float = 15.0,
+    headers: dict | None = None,
+) -> tuple[int, str, dict[str, str]]:
+    """Return (status, body, response headers). Never raises on an error status.
+
+    Response headers are lower-cased so callers can look them up literally.
+    """
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
         url,
@@ -111,11 +107,20 @@ def http(url: str, payload: dict | None = None, timeout: float = 15.0,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode(errors="replace")
+            got = {k.lower(): v for k, v in resp.headers.items()}
+            return resp.status, resp.read().decode(errors="replace"), got
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode(errors="replace")
+        got = {k.lower(): v for k, v in (exc.headers or {}).items()}
+        return exc.code, exc.read().decode(errors="replace"), got
     except Exception as exc:  # connection refused, DNS, timeout
-        return 0, f"{type(exc).__name__}: {exc}"
+        return 0, f"{type(exc).__name__}: {exc}", {}
+
+
+def http(url: str, payload: dict | None = None, timeout: float = 15.0,
+         headers: dict | None = None) -> tuple[int, str]:
+    """Return (status, body). Never raises on an HTTP error status."""
+    status, body, _ = http_with_headers(url, payload, timeout, headers)
+    return status, body
 
 
 def wait_for(url: str, label: str, timeout: float = 900.0) -> bool:
@@ -228,46 +233,60 @@ def check_openai_tool_call() -> None:
     _check_content_repeats(json.dumps(data), "OpenAI tool call")
 
 
-def check_anthropic_tool_call() -> None:
-    """The path Claude Code uses: Anthropic Messages wire format."""
+def check_headroom_tool_call() -> None:
+    """The same tool call again, but through headroom in front of forge.
+
+    Only runs when HEADROOM_URL is set. A compression proxy that quietly drops
+    the `tools` array, or mangles a tool-call argument on the way through,
+    looks exactly like a model that stopped calling tools — so the check that
+    matters is the same one, one hop further out.
+    """
     started = time.monotonic()
-    status, body = http(
-        f"{FORGE_URL}/v1/messages",
+    status, body, resp_headers = http_with_headers(
+        f"{HEADROOM_URL}/v1/chat/completions",
         {
             "model": MODEL_ALIAS,
-            "max_tokens": 2048,
             "messages": [{"role": "user", "content": PROMPT}],
-            "tools": [WEATHER_TOOL_ANTHROPIC],
+            "tools": [WEATHER_TOOL_OPENAI],
+            "max_tokens": 2048,
         },
         timeout=INFER_TIMEOUT,
-        headers={"x-api-key": "local", "anthropic-version": "2023-06-01"},
     )
     elapsed = time.monotonic() - started
 
     if status != 200:
-        record("forge Anthropic tool call", False, f"status={status} body={body[:400]}")
+        record("headroom tool call", False, f"status={status} body={body[:400]}")
         return
-
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
-        record("forge Anthropic tool call", False, f"non-JSON body: {body[:400]}")
+        record("headroom tool call", False, f"non-JSON body: {body[:400]}")
         return
 
-    blocks = data.get("content") or []
-    uses = [b for b in blocks if b.get("type") == "tool_use"]
-    if not uses:
-        kinds = [b.get("type") for b in blocks]
-        record("forge Anthropic tool call", False, f"no tool_use block; got {kinds}")
+    msg = (data.get("choices") or [{}])[0].get("message", {})
+    calls = msg.get("tool_calls") or []
+    if not calls:
+        record("headroom tool call", False,
+               f"no tool_calls through headroom; content={str(msg.get('content'))[:200]!r}")
         return
 
+    fn = calls[0].get("function", {})
+    try:
+        args = json.loads(fn.get("arguments") or "{}")
+    except json.JSONDecodeError:
+        args = {"<unparseable>": fn.get("arguments")}
+    record("headroom tool call", fn.get("name") == "get_weather",
+           f"{fn.get('name')}({args}) in {elapsed:.1f}s")
+
+    # Its own accounting headers, printed as evidence that compression is
+    # actually in the path rather than the proxy being a plain relay.
+    before = resp_headers.get("x-headroom-tokens-before")
+    after = resp_headers.get("x-headroom-tokens-after")
     record(
-        "forge Anthropic tool call",
-        uses[0].get("name") == "get_weather",
-        f"{uses[0].get('name')}({uses[0].get('input')}) in {elapsed:.1f}s",
+        "headroom reports token accounting",
+        before is not None and after is not None,
+        f"before={before} after={after} transforms={resp_headers.get('x-headroom-transforms')}",
     )
-    record("stop_reason is tool_use", data.get("stop_reason") == "tool_use",
-           f"stop_reason={data.get('stop_reason')!r}")
 
 
 def check_plain_completion() -> None:
@@ -305,7 +324,10 @@ def _check_content_repeats(content: str, label: str) -> None:
 
 
 def main() -> int:
-    print(f"\nqwen3.6-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
+    print(f"\nqwen3.6-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}")
+    if HEADROOM_URL:
+        print(f"  headroom: {HEADROOM_URL}")
+    print()
 
     print("Reachability")
     llama_up = wait_for(f"{LLAMA_URL}/health", "llama-server")
@@ -320,7 +342,11 @@ def main() -> int:
         print("\nInference through forge")
         check_plain_completion()
         check_openai_tool_call()
-        check_anthropic_tool_call()
+
+    if llama_up and forge_up and HEADROOM_URL:
+        print("\nInference through headroom")
+        if wait_for(f"{HEADROOM_URL}/health", "headroom proxy", timeout=180):
+            check_headroom_tool_call()
 
     failed = [n for n, ok, _ in _results if not ok]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")

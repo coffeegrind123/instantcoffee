@@ -1,33 +1,35 @@
 #!/usr/bin/env bash
 #
-# Run Harbor evaluation against the local qwen3.6-forge stack.
+# Run Harbor evaluation against the local qwen3.6-forge stack, with pi.
 #
-#   ./harbor-eval/adapter/run-local.sh                 # quick smoke (5 tasks, 1 attempt)
-#   ./harbor-eval/adapter/run-local.sh --full          # full terminal-bench sweep
-#   ./harbor-eval/adapter/run-local.sh --agent pi      # use pi.dev harness instead of Claude Code
-#   ./harbor-eval/adapter/run-local.sh --agent both    # run both harnesses, compare
-#   ./harbor-eval/adapter/run-local.sh --tasks 10      # run N tasks
-#   ./harbor-eval/adapter/run-local.sh --dataset terminal-bench@2.0
+#   ./harbor-adapter/run-local.sh                 # smoke run (5 tasks, 1 attempt)
+#   ./harbor-adapter/run-local.sh --full          # every task, 3 attempts
+#   ./harbor-adapter/run-local.sh --tasks 10      # run N tasks
+#   ./harbor-adapter/run-local.sh --dataset terminal-bench@2.0
+#   ./harbor-adapter/run-local.sh --dry-run       # print the command, run nothing
 #
 # Prerequisites:
 #   1. The forge stack must be running (./scripts/up.sh)
-#   2. Harbor must be cloned and the forge adapter installed:
-#        ./harbor-eval/adapter/install-into-harbor.sh ./harbor-eval
+#   2. Harbor must be cloned:
+#        git clone https://github.com/harbor-framework/harbor.git harbor-eval
+#
+# No adapter is installed into Harbor. pi speaks OpenAI-completions to forge and
+# Harbor's stock `pi` agent already supports the `openai` provider.
+#
+# Set FORGE_PORT=8787 to run the same sweep through headroom instead. The output
+# file does not record which path was used, so keep those numbers apart.
 #
 # Results land in:
-#   harbor-eval/jobs/           Harbor job output
-#   results/harbor-latest.json  Extracted summary
-#   results/harbor-history.jsonl Append-only log
+#   harbor-eval/jobs/               Harbor job output
+#   results/harbor-pi-latest.json   Extracted summary
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HARBOR_DIR="$REPO_ROOT/harbor-eval"
-ADAPTER_DIR="$SCRIPT_DIR"
 
 # ---- defaults ----
-AGENT="claude"          # claude | pi | both
 DATASET="terminal-bench@2.0"
 N_TASKS="5"
 N_CONCURRENT="1"
@@ -41,8 +43,6 @@ DRY_RUN=0
 # ---- parse args ----
 while [ $# -gt 0 ]; do
   case "$1" in
-    --agent=*)     AGENT="${1#*=}" ;;
-    --agent)       AGENT="$2"; shift ;;
     --dataset=*)   DATASET="${1#*=}" ;;
     --dataset)     DATASET="$2"; shift ;;
     --tasks=*)     N_TASKS="${1#*=}" ;;
@@ -57,20 +57,17 @@ while [ $# -gt 0 ]; do
     --include)     INCLUDE_TASK="$2"; shift ;;
     --full)        FULL_SWEEP=1 ;;
     --dry-run)     DRY_RUN=1 ;;
-    -h|--help)
-      sed -n '3,20p' "$0" | sed 's/^# \?//'
-      exit 0
-      ;;
-    *) echo "unknown option: $1"; exit 1 ;;
+    -h|--help)     sed -n '3,25p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
   shift
 done
 
-# Full sweep overrides
+# Full sweep overrides. n-concurrent stays at 1: one GPU, one slot.
 if (( FULL_SWEEP )); then
-  N_TASKS=""                    # all tasks
+  N_TASKS=""
   N_ATTEMPTS="3"
-  N_CONCURRENT="1"              # keep low — one GPU, one slot
+  N_CONCURRENT="1"
 fi
 
 # ---- preflight ----
@@ -80,186 +77,98 @@ if [ ! -f "$HARBOR_DIR/src/harbor/agents/factory.py" ]; then
   exit 1
 fi
 
-# Ensure adapter is installed
-if ! grep -q "FORGE_CLAUDE" "$HARBOR_DIR/src/harbor/models/agent/name.py" 2>/dev/null; then
-  echo "--- Installing forge adapter into Harbor ---"
-  bash "$SCRIPT_DIR/install-into-harbor.sh" "$HARBOR_DIR"
+# Harbor runs each trial in its own container, so the stack is always reachable
+# as the Docker host rather than as localhost.
+FORGE_HOST="${FORGE_HOST:-host.docker.internal}"
+FORGE_PORT="${FORGE_PORT:-8081}"
+MODEL_ID="${MODEL_ID:-qwen3.6-27b}"
+BASE_URL="http://${FORGE_HOST}:${FORGE_PORT}/v1"
+
+echo "base URL:   $BASE_URL"
+echo "Harbor dir: $HARBOR_DIR"
+[ "$FORGE_PORT" != "8081" ] && echo "NOTE: not the default forge port — is this a headroom run?"
+echo ""
+echo "============================================================"
+echo "  Harbor eval: pi -> forge"
+echo "  model=openai/${MODEL_ID}  dataset=$DATASET"
+echo "  tasks=${N_TASKS:-all}  concurrent=$N_CONCURRENT  attempts=$N_ATTEMPTS"
+echo "============================================================"
+echo ""
+
+ARGS=(
+  run
+  --dataset "$DATASET"
+  --agent pi
+  --model "openai/${MODEL_ID}"
+  --n-concurrent "$N_CONCURRENT"
+  --n-attempts "$N_ATTEMPTS"
+  --agent-timeout-multiplier "$TIMEOUT_MULTIPLIER"
+  --jobs-dir "$HARBOR_DIR/jobs"
+)
+[ -n "$N_TASKS" ] && ARGS+=(--n-tasks "$N_TASKS")
+if [ -n "$MAX_RETRIES" ] && [ "$MAX_RETRIES" != "0" ]; then
+  ARGS+=(--max-retries "$MAX_RETRIES" --retry-include ApiRateLimitError)
+fi
+[ -n "$INCLUDE_TASK" ] && ARGS+=(--include-task-name "$INCLUDE_TASK")
+
+if (( DRY_RUN )); then
+  echo "[DRY RUN] would execute:"
+  echo "  cd $HARBOR_DIR && \\"
+  echo "    OPENAI_BASE_URL=$BASE_URL OPENAI_API_KEY=local \\"
+  echo "    uv run harbor ${ARGS[*]}"
+  exit 0
 fi
 
-# Resolve forge URL: prefer host.docker.internal when running inside Docker,
-# localhost otherwise.
-if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
-  FORGE_HOST="${FORGE_HOST:-host.docker.internal}"
-else
-  FORGE_HOST="${FORGE_HOST:-host.docker.internal}"
+cd "$HARBOR_DIR"
+OPENAI_BASE_URL="$BASE_URL" OPENAI_API_KEY=local uv run harbor "${ARGS[@]}"
+
+# ---- extract ----
+latest="$(ls -1dt "$HARBOR_DIR/jobs"/*/ 2>/dev/null | head -1 || true)"
+if [ -z "$latest" ]; then
+  echo "WARNING: no job directory found" >&2
+  exit 0
 fi
-FORGE_URL="${FORGE_URL:-http://${FORGE_HOST}:8081}"
-FORGE_OPENAI_URL="${FORGE_OPENAI_URL:-http://${FORGE_HOST}:8081/v1}"
 
-# ---- helpers ----
-run_harbor() {
-  local agent="$1"
-  local model="$2"
-  local label="$3"
-  local extra_env="${4:-}"
-
-  echo ""
-  echo "============================================================"
-  echo "  Harbor eval: $label"
-  echo "  agent=$agent  model=$model  dataset=$DATASET"
-  echo "  tasks=${N_TASKS:-all}  concurrent=$N_CONCURRENT  attempts=$N_ATTEMPTS"
-  echo "  forge: $FORGE_URL"
-  echo "============================================================"
-  echo ""
-
-  if (( DRY_RUN )); then
-    echo "[DRY RUN] would execute:"
-    echo "  cd $HARBOR_DIR && $extra_env uv run harbor run \\"
-    echo "    --dataset $DATASET \\"
-    echo "    --agent $agent \\"
-    echo "    --model $model \\"
-    echo "    --n-concurrent $N_CONCURRENT \\"
-    echo "    --n-attempts $N_ATTEMPTS \\"
-    echo "    --agent-timeout-multiplier $TIMEOUT_MULTIPLIER \\"
-    echo "    --jobs-dir $HARBOR_DIR/jobs \\"
-    echo "    ${N_TASKS:+--n-tasks $N_TASKS} \\"
-    echo "    ${MAX_RETRIES:+--max-retries $MAX_RETRIES --retry-include ApiRateLimitError} \\"
-    echo "    ${INCLUDE_TASK:+--include-task-name $INCLUDE_TASK}"
-    return
-  fi
-
-  cd "$HARBOR_DIR"
-
-  # Build args array
-  ARGS=(
-    run
-    --dataset "$DATASET"
-    --agent "$agent"
-    --model "$model"
-    --n-concurrent "$N_CONCURRENT"
-    --n-attempts "$N_ATTEMPTS"
-    --agent-timeout-multiplier "$TIMEOUT_MULTIPLIER"
-    --jobs-dir "$HARBOR_DIR/jobs"
-  )
-  [ -n "$N_TASKS" ] && ARGS+=(--n-tasks "$N_TASKS")
-  if [ -n "$MAX_RETRIES" ] && [ "$MAX_RETRIES" != "0" ]; then
-    ARGS+=(--max-retries "$MAX_RETRIES" --retry-include ApiRateLimitError)
-  fi
-  [ -n "$INCLUDE_TASK" ] && ARGS+=(--include-task-name "$INCLUDE_TASK")
-
-  # shellcheck disable=SC2086
-  env $extra_env uv run harbor "${ARGS[@]}"
-}
-
-extract_results() {
-  local label="$1"
-  local results_file="$REPO_ROOT/results/harbor-${label}-latest.json"
-
-  latest=$(ls -1dt "$HARBOR_DIR/jobs"/*/ 2>/dev/null | head -1 || true)
-  if [ -z "$latest" ]; then
-    echo "WARNING: no job directory found"
-    return
-  fi
-
-  python3 -c "
-import json, sys, os
+RESULTS_FILE="$REPO_ROOT/results/harbor-pi-latest.json"
+JOB_DIR="$latest" OUT_FILE="$RESULTS_FILE" python3 - <<'PY'
+import json, os
 from pathlib import Path
 
-job_dir = Path('$latest')
-results = {'label': '$label', 'job_dir': str(job_dir), 'tasks': []}
+job_dir = Path(os.environ["JOB_DIR"])
+out_file = Path(os.environ["OUT_FILE"])
+results = {"label": "pi", "job_dir": str(job_dir), "tasks": []}
 
-# Walk trials
-for trial_dir in sorted(job_dir.glob('*/')):
-    result_file = trial_dir / 'result.json'
+for trial_dir in sorted(job_dir.glob("*/")):
+    result_file = trial_dir / "result.json"
     if not result_file.exists():
         continue
     try:
         data = json.loads(result_file.read_text())
-        results['tasks'].append({
-            'task': trial_dir.name,
-            'reward': data.get('reward'),
-            'score': data.get('score'),
-            'passed': data.get('passed'),
-            'duration_s': data.get('duration_s'),
-        })
     except (json.JSONDecodeError, OSError):
         continue
+    results["tasks"].append({
+        "task": trial_dir.name,
+        "reward": data.get("reward"),
+        "score": data.get("score"),
+        "passed": data.get("passed"),
+        "duration_s": data.get("duration_s"),
+    })
 
-# Summary stats
-tasks = results['tasks']
-if tasks:
-    rewards = [t['reward'] for t in tasks if t['reward'] is not None]
-    results['summary'] = {
-        'tasks_completed': len(tasks),
-        'mean_reward': sum(rewards) / len(rewards) if rewards else 0,
-        'passed': sum(1 for t in tasks if t.get('passed')),
-    }
-
-os.makedirs('$REPO_ROOT/results', exist_ok=True)
-with open('$results_file', 'w') as f:
-    json.dump(results, f, indent=2)
-print(f'Results saved to $results_file')
-print(f'Tasks: {len(tasks)}, Mean reward: {results[\"summary\"][\"mean_reward\"]:.3f}, Passed: {results[\"summary\"][\"passed\"]}')
-"
+tasks = results["tasks"]
+rewards = [t["reward"] for t in tasks if t["reward"] is not None]
+results["summary"] = {
+    "tasks_completed": len(tasks),
+    "mean_reward": (sum(rewards) / len(rewards)) if rewards else 0,
+    "passed": sum(1 for t in tasks if t.get("passed")),
 }
 
-# ---- main ----
-echo "forge URL:  $FORGE_URL"
-echo "Harbor dir: $HARBOR_DIR"
-echo ""
-
-case "$AGENT" in
-  claude)
-    run_harbor "forge-claude" "forge/qwen3.6-27b" \
-      "Claude Code → forge" \
-      "ANTHROPIC_BASE_URL=$FORGE_URL ANTHROPIC_AUTH_TOKEN=local"
-    extract_results "claude"
-    ;;
-
-  pi)
-    # pi uses the OpenAI-compatible endpoint on forge.
-    # Stock pi agent with openai provider — env vars forward automatically.
-    run_harbor "pi" "openai/qwen3.6-27b" \
-      "pi.dev → forge (OpenAI compat)" \
-      "OPENAI_BASE_URL=$FORGE_OPENAI_URL OPENAI_API_KEY=local"
-    extract_results "pi"
-    ;;
-
-  both)
-    echo "=== Phase 1/2: Claude Code harness ==="
-    run_harbor "forge-claude" "forge/qwen3.6-27b" \
-      "Claude Code → forge" \
-      "ANTHROPIC_BASE_URL=$FORGE_URL ANTHROPIC_AUTH_TOKEN=local"
-    extract_results "claude"
-
-    echo ""
-    echo "=== Phase 2/2: pi.dev harness ==="
-    run_harbor "pi" "openai/qwen3.6-27b" \
-      "pi.dev → forge (OpenAI compat)" \
-      "OPENAI_BASE_URL=$FORGE_OPENAI_URL OPENAI_API_KEY=local"
-    extract_results "pi"
-
-    # Side-by-side summary
-    echo ""
-    echo "=== Comparison ==="
-    for label in claude pi; do
-      f="$REPO_ROOT/results/harbor-${label}-latest.json"
-      if [ -f "$f" ]; then
-        python3 -c "
-import json
-d = json.load(open('$f'))
-s = d.get('summary', {})
-print(f\"  {d['label']:10s}  tasks={s.get('tasks_completed',0):>3}  reward={s.get('mean_reward',0):.3f}  passed={s.get('passed',0)}\")
-"
-      fi
-    done
-    ;;
-
-  *)
-    echo "ERROR: unknown agent '$AGENT'. Use 'claude', 'pi', or 'both'." >&2
-    exit 1
-    ;;
-esac
+out_file.parent.mkdir(parents=True, exist_ok=True)
+out_file.write_text(json.dumps(results, indent=2))
+s = results["summary"]
+print(f"Results saved to {out_file}")
+print(f"Tasks: {s['tasks_completed']}, mean reward: {s['mean_reward']:.3f}, "
+      f"passed: {s['passed']}")
+PY
 
 echo ""
 echo "done. jobs at: $HARBOR_DIR/jobs/"

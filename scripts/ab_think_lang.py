@@ -51,6 +51,12 @@ FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.6-27b")
 TIMEOUT = float(os.environ.get("EVAL_TIMEOUT", "900"))
 
+# Rebindable by another harness that reuses this task set. ab_headroom.py points
+# FORGE_URL at the compression proxy and puts the bypass header in here, which
+# is what lets both A/B runs score the same six tasks the same way instead of
+# growing a second, subtly different copy of them.
+REQUEST_HEADERS: dict[str, str] = {}
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FRAGMENT = REPO_ROOT / "prompts" / "think-zh.md"
 
@@ -98,17 +104,20 @@ def cjk_sample(text: str, limit: int = 40) -> str:
 # ── transport ──────────────────────────────────────────────────────────────
 
 
-def _http(url: str, payload: dict, timeout: float) -> tuple[int, str]:
+def _http(url: str, payload: dict, timeout: float) -> tuple[int, str, dict]:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json", **REQUEST_HEADERS},
+        method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read().decode(errors="replace")
+            got = {k.lower(): v for k, v in r.headers.items()}
+            return r.status, r.read().decode(errors="replace"), got
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode(errors="replace")
+        got = {k.lower(): v for k, v in (e.headers or {}).items()}
+        return e.code, e.read().decode(errors="replace"), got
     except Exception as e:
-        return 0, f"{type(e).__name__}: {e}"
+        return 0, f"{type(e).__name__}: {e}", {}
 
 
 @dataclass
@@ -121,6 +130,9 @@ class Reply:
     completion_tokens: int = 0
     seconds: float = 0.0
     error: str = ""
+    # Response headers, kept so a proxy in the path can be measured from its
+    # own accounting (x-headroom-tokens-*) rather than from a guess.
+    headers: dict = field(default_factory=dict)
 
     @property
     def tool_arg_text(self) -> str:
@@ -142,6 +154,11 @@ def ask(messages: list[dict], system: str | None, tools: list | None = None,
     msgs = list(messages)
     if system:
         msgs = [{"role": "system", "content": system}, *msgs]
+    return _ask_messages(msgs, tools, max_tokens)
+
+
+def _ask_messages(msgs: list[dict], tools: list | None = None,
+                  max_tokens: int = 2048) -> Reply:
     payload: dict = {
         "model": MODEL_ALIAS,
         "messages": msgs,
@@ -153,15 +170,18 @@ def ask(messages: list[dict], system: str | None, tools: list | None = None,
         payload["tools"] = tools
 
     t0 = time.time()
-    status, body = _http(f"{FORGE_URL}/v1/chat/completions", payload, TIMEOUT)
+    status, body, resp_headers = _http(
+        f"{FORGE_URL}/v1/chat/completions", payload, TIMEOUT)
     elapsed = time.time() - t0
 
     if status != 200:
-        return Reply(seconds=elapsed, error=f"status={status} {body[:200]}")
+        return Reply(seconds=elapsed, error=f"status={status} {body[:200]}",
+                     headers=resp_headers)
     try:
         data = json.loads(body)
     except json.JSONDecodeError:
-        return Reply(seconds=elapsed, error=f"non-JSON: {body[:200]}")
+        return Reply(seconds=elapsed, error=f"non-JSON: {body[:200]}",
+                     headers=resp_headers)
 
     msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
     content = msg.get("content") or ""
@@ -188,6 +208,7 @@ def ask(messages: list[dict], system: str | None, tools: list | None = None,
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
         seconds=elapsed,
+        headers=resp_headers,
     )
 
 

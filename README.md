@@ -4,14 +4,20 @@
 [![Eval](https://img.shields.io/badge/eval-84%25%20(26%2F26)-green?logo=pytest&style=flat)](#eval-results)
 
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
-behind the **forge** guardrail proxy. One backend: upstream **llama.cpp** with
-an **unsloth GGUF** (MTP speculative decoding, single-file, mmap-friendly).
+behind the **forge** guardrail proxy, driven by the **pi** coding agent. One
+backend: upstream **llama.cpp** with an **unsloth GGUF** (MTP speculative
+decoding, single-file, mmap-friendly).
 
 ```
-  Claude Code / opencode / aider / your code
+              pi  (scripts/pi-local.sh)
                   │
-                  │  Anthropic Messages API  (POST /v1/messages)
                   │  OpenAI chat-completions (POST /v1/chat/completions)
+                  ▼
+       ┌─────────────────────┐   headroom         :8787   [optional, off]
+       │  headroom           │   context compression: JSON tool output,
+       │  (container)        │   logs, build spew. Profile-gated.
+       └──────────┬──────────┘
+                  │
                   ▼
        ┌─────────────────────┐   forge proxy      :8081
        │  forge-guardrails   │   response validation, rescue parsing,
@@ -27,8 +33,17 @@ an **unsloth GGUF** (MTP speculative decoding, single-file, mmap-friendly).
               RTX 4090 / 24 GiB
 ```
 
-Clients talk to **8081** (forge). Nothing should talk to 8080 directly except forge —
-that port is exposed only for debugging and metrics.
+pi talks to **8081** (forge), or to **8787** when headroom is enabled. Nothing
+should talk to 8080 directly except forge — that port is exposed only for
+debugging and metrics.
+
+**This stack targets pi and nothing else.** Claude Code support was removed
+(2026-08-12): it cost a launcher, an Anthropic-wire smoke test, a Harbor agent
+subclass, an SDK dependency, and a set of `.env` keys, all to serve a client
+whose fixed prompt-and-tool-schema overhead is the worst possible fit for a 64K
+local window. forge still *serves* `/v1/messages`, so an Anthropic-shaped client
+would work — it is simply not what anything here is tuned, measured, or
+documented for.
 
 ## Requirements
 
@@ -51,10 +66,10 @@ git clone <this repo> && cd qwen3.6-forge
 both services, and then runs the end-to-end smoke test. It is idempotent — re-run it
 any time.
 
-Then point Claude Code at it:
+Then start a session:
 
 ```bash
-./scripts/claude-local.sh
+./scripts/pi-local.sh
 ```
 
 ## Day-to-day
@@ -65,12 +80,14 @@ Then point Claude Code at it:
 | `./scripts/down.sh` | Stop the stack |
 | `./scripts/logs.sh llama` | Tail llama-server (watch the model load here) |
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
-| `./scripts/update.sh` | Update llama.cpp **and** forge, restart, verify, roll back on failure |
+| `./scripts/update.sh` | Update llama.cpp, forge **and** headroom, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
-| `./scripts/claude-local.sh` | Launch Claude Code against the local model, primed for it |
-| `./scripts/pi-local.sh` | Launch the pi coding agent against the local model |
+| `./scripts/pi-local.sh` | Launch pi against the local model |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
+| `./scripts/headroom.sh up` | Start the optional compression proxy |
+| `./scripts/ab-headroom.sh` | A/B compression before routing pi through it |
+| `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 
 ## Updating
 
@@ -83,7 +100,9 @@ One command updates both components:
 1. Resolves the newest llama.cpp CUDA build from the `org.opencontainers.image.version`
    annotation on ghcr's floating `server-cuda` tag, then pins the **immutable
    per-build tag** (`server-cuda-b10200`), never the floating one.
-2. Resolves the newest `forge-guardrails` from PyPI.
+2. Resolves the newest `forge-guardrails` and `headroom-ai` from PyPI. headroom
+   is only rebuilt if this machine has ever built it — an opt-in component does
+   not get to make its dependencies a mandatory cost of every update.
 3. Shows a current-vs-latest table and asks before touching anything.
 4. Pulls, rebuilds, restarts, and runs the smoke test.
 5. **If the smoke test fails, the previous pins are restored and the stack is brought
@@ -120,6 +139,16 @@ The keys worth knowing:
 | `FORGE_CAPABILITY` | `native` | Keep `native` — llama.cpp with `--jinja` does real function calling |
 | `FORGE_REASONING_REPLAY` | `full` | `keep-last` / `full` replay captured reasoning to the backend |
 | `BIND_ADDR` | `127.0.0.1` | `0.0.0.0` to expose on the LAN |
+| `PI_MAX_TOKENS` | `16384` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
+| `PI_CONTEXT_FILES` | `0` | `1` loads `AGENTS.md`; `0` passes `-nc` |
+| `PI_EXTRA_ARGS` | *(empty)* | Flags your own `pi` alias would add — aliases do not expand in scripts |
+| `HEADROOM_ENABLED` | `0` | `1` routes pi through the compression proxy |
+| `HEADROOM_VERSION` | `0.34.0` | `headroom-ai` release from PyPI |
+| `HEADROOM_RECOVERY` | `lossless` | `lossless` / `ccr` / `lossy` — see below |
+| `HEADROOM_TARGET_RATIO` | *(empty)* | Kompress keep-ratio; empty lets it decide |
+| `MCP2CLI_ENABLED` | `0` | `1` loads the `mcp-tools` skill so pi can call MCP servers as a CLI |
+| `MCP2CLI_VERSION` | `3.3.1` | mcp2cli release |
+| `MCP_SDK_VERSION` | `1.29.0` | MCP Python SDK pin — must stay `<2`, see below |
 
 ## Choosing a quant for 24 GiB
 
@@ -149,77 +178,21 @@ rather than 24. Check yours with:
 docker compose run --rm --no-deps llama --list-devices
 ```
 
-## Using it with Claude Code
-
-```bash
-source scripts/claude-code-env.sh   # must be sourced, not executed
-claude
-```
-
-It sets `ANTHROPIC_BASE_URL` to the forge proxy plus a dummy `ANTHROPIC_AUTH_TOKEN`,
-and unsets `ANTHROPIC_API_KEY` — forge refuses any request carrying *two* credentials,
-and a leftover key in the environment is the usual way that happens. Open a new shell
-to go back to the hosted API.
-
-forge serves the Anthropic Messages API on `/v1/messages` and the OpenAI
-chat-completions API on `/v1/chat/completions`, so opencode, Continue, aider and
-anything else OpenAI-shaped work against the same port.
-
-### The primed launcher
-
-`claude-code-env.sh` only redirects the API. `claude-local.sh` also trims what Claude
-Code *sends*, which is what actually matters on a 64K local window:
-
-```bash
-./scripts/claude-local.sh              # start a primed session
-./scripts/claude-local.sh -c           # any claude flag passes through
-./scripts/claude-local.sh --print-only # show the exact command without running it
-```
-
-| What it sets | Why |
-| --- | --- |
-| `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` | Ignores every MCP server. The single biggest context win — one server can publish hundreds of tool schemas that load before your first message. Set `CLAUDE_DISABLE_MCP=0` to keep them. |
-| `MAX_THINKING_TOKENS=0` | Cosmetic, not a saving. forge forwards an allow-list to the backend and `thinking` is not on it, so the field is dropped and never reaches llama-server — it costs no model context either way. This just stops the client asking for something the backend cannot honor. **To change how much Qwen actually thinks, set `REASONING_BUDGET` in `.env`.** |
-| `DISABLE_PROMPT_CACHING=1` | `cache_control` is dropped in translation anyway; this stops Claude Code building cache blocks that go nowhere. |
-| `API_TIMEOUT_MS=1800000` | Must outlast forge's own `--backend-timeout` (600s), or the client gives up on a request the server is still working on. |
-| `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` | Subagents nest 3 deep by default. Each level is another full context on one GPU serving one slot. |
-| `ANTHROPIC_*_MODEL` | One model fills every role, including the small/fast one. |
-
-### If you have a `claude` shell alias
-
-**Bash expands aliases only in interactive shells**, so an alias in `.bash_aliases`
-has *no effect* from inside these scripts. `claude-local.sh` would otherwise launch
-the bare binary and silently drop your usual flags. Replay them from `.env` instead:
-
-```
-CLAUDE_EXTRA_ARGS=--permission-mode bypassPermissions
-CLAUDE_SYSTEM_PROMPT_FILE=~/claude-prompt.txt
-```
-
-`--print-only` shows exactly what will run, so you can confirm your flags survived.
-
-Sourcing `claude-code-env.sh` and then typing `claude` is the other way round: that
-*is* an interactive shell, so your alias applies normally and only the API is
-redirected.
-
-### One-liner
-
-If you would rather add another alias next to your existing ones:
-
-```bash
-alias flaude='ANTHROPIC_BASE_URL=http://localhost:8081 ANTHROPIC_AUTH_TOKEN=local ANTHROPIC_MODEL=qwen3.6-27b ANTHROPIC_SMALL_FAST_MODEL=qwen3.6-27b ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3.6-27b DISABLE_PROMPT_CACHING=1 MAX_THINKING_TOKENS=0 API_TIMEOUT_MS=1800000 CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ~/.local/bin/claude --strict-mcp-config --mcp-config "{\"mcpServers\":{}}" --model qwen3.6-27b --permission-mode bypassPermissions --append-system-prompt "$(cat ~/claude-prompt.txt)"'
-```
-
-Use `host.docker.internal` instead of `localhost` if you run Claude Code inside a
-container. Note this calls `~/.local/bin/claude` directly, so it does not recurse
-through your existing `claude` alias.
-
 ## Using it with pi (pi.dev)
 
 ```bash
 ./scripts/pi-local.sh                 # start a session
 ./scripts/pi-local.sh --install-only  # just write the provider config
 ./scripts/pi-local.sh -p "summarize"  # any pi flag passes through
+./scripts/pi-local.sh --print-only    # show the exact command without running it
+```
+
+The launch banner states the route, the model, whether context files are loaded
+and whether a thinking-language fragment is active — so a session can never be
+running something you did not ask for without saying so:
+
+```
+pi -> http://localhost:8081 via forge  (model: qwen3.6-27b, context files off, thinking in zh)
 ```
 
 pi has no "point at a proxy" flag — custom providers live in
@@ -252,7 +225,7 @@ What it writes, and why each field:
 - **`openai-completions`, not `anthropic-messages`.** forge speaks both, but the
   OpenAI endpoint is the short path (pi → forge → llama.cpp). Routing via
   Anthropic would add a translation hop that drops `cache_control` and
-  `thinking` for no gain.
+  `thinking` for no gain. It is also the only path anything here is measured on.
 - **`apiKey: "local"`** — pi hides models it considers unauthenticated, so even a
   keyless local server needs a placeholder.
 - **`compat` both false** — llama.cpp's chat templates don't know the `developer`
@@ -260,41 +233,153 @@ What it writes, and why each field:
   docs flag this for exactly this class of server.
 - **`maxTokens` well under `contextWindow`** — with `--no-context-shift` an
   overflowing request fails loudly, and an agent loop's prompt grows every turn.
+  It comes from `PI_MAX_TOKENS`, and `LLAMA_EXTRA_FLAGS` carries the same number
+  as `-n` so the server enforces it even if a client forgets to ask.
 - **`baseUrl` host** — the script uses `host.docker.internal` when it detects it
-  is running inside a container, `localhost` otherwise.
+  is running inside a container, `localhost` otherwise. It points at headroom
+  instead of forge when `HEADROOM_ENABLED=1`.
 
 **Not using pi's `/llama` integration.** pi can manage its own llama.cpp router
 and models. That would bypass forge completely and lose every guardrail this
 repo exists to provide, so the model is registered as a plain custom provider
 instead.
 
-pi is minimal by design — no MCP, no sub-agents — so it needs far less trimming
-than Claude Code. The one flag that matters is `-nc`, which the script passes:
-it skips `AGENTS.md`/`CLAUDE.md` discovery, and pi walks parent directories
-looking for those. On a 64K window they are a real fraction of the budget. Drop
-`-nc` from the script when you do want project conventions loaded.
+### Why pi, and what that costs
+
+pi is minimal by design: **no MCP** (its README says so outright — "build CLI
+tools with READMEs, or build an extension that adds MCP support"), no
+sub-agents. On a 64K local window that is the feature, not the limitation. A
+single MCP server can publish hundreds of tool schemas that load before your
+first message, and that budget is gone before the model has read anything.
+
+What you give up is real and worth stating: no MCP servers, no sub-agent
+fan-out, and no ecosystem of Claude Code plugins. What you get back is nearly
+the whole window for the actual session.
+
+The one flag that matters is `-nc`, which the launcher passes by default: it
+skips `AGENTS.md`/`CLAUDE.md` discovery, and pi walks parent directories looking
+for those. Set `PI_CONTEXT_FILES=1` when you do want project conventions loaded.
+
+## MCP, without MCP
+
+You can still reach MCP servers — just not by loading their schemas. Set
+`MCP2CLI_ENABLED=1` and the launcher passes pi a skill that teaches it about
+`./scripts/mcp.sh`, which fronts [mcp2cli](https://github.com/knowsuchagency/mcp2cli):
+
+```bash
+./scripts/mcp.sh --servers                    # what is registered
+./scripts/mcp.sh everything --search sum      # find a tool
+./scripts/mcp.sh everything get-sum --help    # that one tool's arguments
+./scripts/mcp.sh everything get-sum --a 20 --b 22
+#=> The sum of 20 and 22 is 42.
+```
+
+The economics are the whole point. Wiring an MCP server into a client puts every
+tool's schema in the prompt on every turn, forever. Here the always-on cost is
+the skill's name and description — about 60 tokens, because pi loads a skill's
+body only when a task matches — and a tool's schema enters the context only when
+the model asks for that one tool with `<tool> --help`. `--compact` lists a whole
+server for roughly 2 tokens per tool.
+
+Servers are declared in `mcp/servers.json`, `stdio` or `url`, one line each. An
+`auth_header` value takes `env:VAR` and `file:/path` prefixes, so no credential
+goes in the committed file — CI rejects a literal one.
+
+Two things that were measured rather than assumed, on 2026-08-12:
+
+- **`uv tool install mcp2cli` is broken as of today.** The MCP Python SDK
+  released 2.0.0, which renames `Tool.inputSchema` to `input_schema`; mcp2cli
+  3.3.1 still reads the old name, so an unpinned install resolves 2.0.0 and every
+  call dies with `AttributeError` before it reaches the server. `MCP_SDK_VERSION`
+  pins `mcp==1.29.0` and `scripts/mcp.sh` installs with that pin. CI fails if the
+  pin moves to 2.x.
+- **mcp2cli's persistent sessions did not work here.** `--session-start` returns
+  "session daemon did not start in time". Each call therefore spawns the server
+  (~5s for an `npx` one). The skill tells the model to batch questions rather
+  than reach for sessions.
 
 ### What does not survive the trip
 
-forge translates Anthropic requests to OpenAI for llama.cpp, and Anthropic-only
-fields have no analog on the other side:
-
-- **`cache_control` is dropped** — Anthropic-style prompt caching has no OpenAI
-  analog. The stack compensates three ways: (1) `preserve_thinking` avoids KV
-  re-prefill across turns, (2) `--cache-prompt` + `--slot-save-path` persist the
-  KV cache to disk so warm restarts skip re-prefill entirely, and (3)
-  `--ctx-checkpoints` enable fast rewind for agentic loops without recomputing
-  from scratch. See `.env` for `CACHE_RAM`, `CACHE_REUSE`, and related knobs.
-- **`thinking` is dropped in both directions.** The request field is not on forge's
-  forward allow-list, so Claude Code's thinking settings have no effect on the model;
-  and forge does not synthesize signed Anthropic thinking blocks on the way back.
-  Qwen still reasons under `--reasoning-budget 4096` — that is the only control, and
-  it lives in `.env` as `REASONING_BUDGET`.
 - **Streaming is not incremental.** forge accepts `stream=true` and returns SSE, but
   inference completes before the events are emitted, because rescue parsing and
   retries need the whole response. Expect the reply to land at once after a pause,
   not to type itself out.
-- **The model name is ignored** end to end. `ANTHROPIC_MODEL` is a label.
+- **The model name is ignored** end to end. It is a label; llama.cpp serves
+  whatever GGUF it was started with.
+- **`reasoning_effort` and the `developer` role are not implemented** by
+  llama.cpp's chat templates, which is why the provider entry declares both as
+  unsupported. Thinking is controlled server-side by `REASONING_BUDGET` and
+  nowhere else.
+- **Prompt caching is not an API-level feature here.** There is no
+  `cache_control` on the OpenAI wire; the stack gets the same effect from
+  `--cache-prompt` + `--slot-save-path` (KV cache persisted to disk, so warm
+  restarts skip re-prefill), `preserve_thinking` (no KV re-prefill across
+  agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
+  `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
+
+## Compression with headroom (optional, off)
+
+[headroom](https://github.com/headroomlabs-ai/headroom) compresses tool output,
+logs and JSON before they reach the model. Its headline numbers are about saving
+money on hosted APIs; here the binding constraint is a 64K window and prefill
+time on one 4090, which is a better fit than the pitch — and headroom documents
+that case itself.
+
+```bash
+./scripts/headroom.sh up        # build + start it (profile-gated, does not touch the rest)
+./scripts/ab-headroom.sh        # measure it on this model
+# only if the verdict says so:
+#   set HEADROOM_ENABLED=1 in .env
+./scripts/headroom.sh savings   # what it has actually saved
+```
+
+It is **off by default and stays off until measured**. Everything in `results/`
+was produced without it, a compressor in the path changes what the model sees,
+and headroom's accuracy claims were established on frontier models rather than
+on a 4-bit 27B whose own tools suite scores 0.73.
+
+### Sized for this model, not for Opus
+
+| Decision | Why |
+| --- | --- |
+| `HEADROOM_RECOVERY=lossless` by default | Format-native compaction only: no CCR markers, and no `headroom_retrieve` tool injected into the request. Nothing the model sees becomes unrecoverable, and no extra tool schema competes with the real ones. `ccr` (lossy + retrieval tool) and `lossy` (no recovery at all) are opt-in, and the A/B is how you earn them. |
+| `HEADROOM_TARGET_RATIO` is the lever, not the model table | headroom sizes compression against the model's context window from LiteLLM's table. `qwen3.6-27b` is not in it, so it falls back to a **conservative 128K** — twice this stack's real window. forge's own `--budget-tokens ${CTX_SIZE}` remains the backstop. |
+| Built without the `[ml]` extra | `[ml]` pulls `torch` for the Kompress prose model. The GPU is entirely committed to the 27B next door, so that would be multiple GB for a compressor with nowhere to run. The compression that pays for itself in an agent loop — JSON, logs, build output — needs none of it. |
+| `-n 16384` on llama-server | headroom's OpenAI shim renames `max_tokens` to `max_completion_tokens` (a real GPT-5-era compatibility fix). llama.cpp does not read that key — it maps `max_tokens` to `n_predict` and copies unknown keys through unused — so without a server-side cap a compressed request would have **no generation limit**. Verified in `tools/server/server-common.cpp`, not assumed. |
+| In front of forge, not behind it | Behind forge, every retry-with-nudge would re-enter compression and hand llama.cpp different bytes per attempt, throwing away the prefix-KV reuse `--cache-reuse` exists for. |
+| Subscription tracking off | headroom classifies clients by user-agent and would otherwise poll `api.anthropic.com` for quota — pointless outbound traffic from a stack whose premise is that nothing leaves the machine. |
+
+### What the A/B actually measures
+
+`ab-headroom.sh` runs both arms **through headroom**, so the network path is
+identical; the control arm sends `x-headroom-bypass: true`, which headroom
+documents as the "do not touch my bytes" contract. The only variable is whether
+compression ran.
+
+It scores the six objective tasks the think-lang A/B uses (so a regression in
+ordinary coding ability shows up) plus three **recall** tasks built to be
+compressible — a 220-row JSON tool result, a 600-line log, and a long file read,
+each with one fact that has to survive. Those arrive as `tool` messages, not user
+messages, because headroom skips user messages by default and a payload pasted
+into the prompt would measure nothing.
+
+Recall is judged separately and more harshly than the mean: losing a needle in a
+compressed haystack is the specific thing compression can cost you, and it would
+otherwise average away against six tasks that were never compressible. A control
+arm that cannot answer either returns INCONCLUSIVE rather than a passing dead
+heat at zero.
+
+**MCP note.** headroom also ships an MCP server (`headroom_compress`,
+`headroom_retrieve`, `headroom_stats`) — unusable here, because pi has no MCP.
+That costs less than it sounds: CCR retrieval does *not* go through MCP. The
+proxy injects `headroom_retrieve` into the request's own tool array and answers
+the call itself, so reversibility is available over the plain proxy path. It is
+still off by default for the reason above — a 27B choosing to call it is a claim
+to measure, not to assume.
+
+Do not use `headroom wrap` here. It registers Serena at *user* scope in
+`~/.claude.json`, which leaks into every other project on the machine and drags
+in exactly the tool-schema bloat this stack avoids by using pi.
 
 ## Thinking in another language
 
@@ -313,9 +398,9 @@ It is running on a community claim, not a local result. `THINK_LANG=off` in
 `.env` reverts it, and the A/B below is how you find out whether it earns its
 place.
 
-It costs nothing in readability on this stack specifically: forge does not
-synthesize Anthropic thinking blocks on the way back, so you never see the
-reasoning trace anyway. The real risk is the opposite one — a model reasoning in
+It costs nothing in readability on this stack specifically: the provider entry
+declares `reasoning: false`, so pi never renders a thinking trace and you would
+not be reading it anyway. The real risk is the opposite one — a model reasoning in
 Chinese that then writes a Chinese character into an `old_string` or a file path
 has produced a patch that does not apply.
 
@@ -339,8 +424,8 @@ Any Chinese in tool-call arguments exits non-zero and the verdict tells you not
 to adopt it, whatever the score did. Since it is already on, treat a non-zero
 exit as a signal to set `THINK_LANG=off` rather than as advice you can defer.
 
-`claude-local.sh` and `pi-local.sh` print `thinking in zh` in their launch banner
-whenever it is active, so a session can never be running it silently.
+`pi-local.sh` prints `thinking in zh` in its launch banner whenever it is
+active, so a session can never be running it silently.
 
 Neither llama-server nor forge can inject a system prompt — verified, with the
 receipts, in `prompts/README.md` — so this is applied by the launchers, and by
@@ -385,15 +470,14 @@ of being bind-mounted.
 .env                    committed config + version pins
 .env.local.example      machine-local override template (copy to .env.local)
 versions.lock           what update.sh last verified (generated)
-docker-compose.yml      llama + forge, plus tools-profile one-shots
+docker-compose.yml      llama + forge, plus tools- and headroom-profile services
 Dockerfile.forge        forge proxy image, pinned to FORGE_VERSION
+Dockerfile.headroom     headroom image, pinned to HEADROOM_VERSION
 .github/workflows/ci.yml  CI pipeline (lint, build, verify)
 badges/                 shield.io endpoint JSON for dynamic badges
 results/
   latest.json           most recent eval run (committed, displayed in README)
   history.jsonl         append-only log of all eval runs
-configs/
-  opencode-provider.json  drop-in OpenCode provider config pointing at forge
 prompts/
   think-zh.md           reason in Mandarin, answer in the user's language
   README.md             why this is applied client-side and not in the engine
@@ -408,14 +492,20 @@ scripts/
   gen-readme-scorecard.py  update README scorecard from results/latest.json
   ab_think_lang.py      A/B a thinking-language prompt: quality, cost, leakage
   ab-think-lang.sh      runner for the above (resolves the fragment from .env)
+  ab_headroom.py        A/B compression: tokens saved, quality, needle recall
+  ab-headroom.sh        runner for the above
+  headroom.sh           up / down / status / savings for the compression proxy
+  headroom-entrypoint.sh  baked into the headroom image; validates HEADROOM_RECOVERY
   test_repeat_detector.py  standalone unit tests for the loop detector
   test_cjk_detector.py     standalone unit tests for the CJK leak detector
   bench.sh              prompt processing + generation speed benchmark
   slot-cache.sh         save/restore KV cache for warm restarts
   download_model.py     resumable GGUF fetch
-  claude-local.sh       launch Claude Code primed for the local model
-  pi-local.sh           launch the pi coding agent against forge
-  claude-code-env.sh    source this to redirect the API only
+  pi-local.sh           launch pi against the stack (the only client)
+  mcp.sh                call an MCP server as a CLI (wraps mcp2cli)
+mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
+skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
+harbor-adapter/         Harbor eval runner (stock pi agent, no adapter needed)
 context/design/         why things are the way they are
   decisions.md           all design decisions, flags, quant choice
   eval-methodology.md    what the eval benches, how it scores
@@ -473,11 +563,16 @@ docker compose --profile tools config     # validate compose
 **The scorecard measures the no-thinking path.** `eval.py` sends
 `enable_thinking: false` and always has, so every number above — and every row in
 `results/history.jsonl` — describes the model with reasoning off, while a real
-Claude Code session runs with it on under `REASONING_BUDGET`. To measure what you
+pi session runs with it on under `REASONING_BUDGET`. To measure what you
 actually run, set `EVAL_THINKING=on` (in `.env` or on the command line). The mode
 and any system prompt are recorded under `config` in `results/latest.json`, so
 the two kinds of run can never be confused after the fact. Keep the default when
 you want a score comparable to the committed history.
+
+**The scorecard also measures the stack without headroom.** `eval.py` talks
+straight to `forge:8081` and always will — the committed history is about the
+model, not about a compressor in front of it. Use `./scripts/ab-headroom.sh` to
+measure compression; it is a separate number and should stay one.
 
 The eval produces:
 

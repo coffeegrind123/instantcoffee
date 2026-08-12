@@ -29,6 +29,7 @@ jobs:
           for f in scripts/smoke_test.py scripts/eval.py \
                    scripts/eval_harness.py scripts/test_repeat_detector.py \
                    scripts/ab_think_lang.py scripts/test_cjk_detector.py \
+                   scripts/ab_headroom.py \
                    scripts/download_model.py scripts/gen-readme-scorecard.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
@@ -36,9 +37,23 @@ jobs:
 
       - name: Shell syntax checks
         run: |
-          for f in scripts/*.sh; do
+          for f in scripts/*.sh harbor-adapter/*.sh; do
             bash -n "$f" && echo "  $f: OK"
           done
+          # The headroom entrypoint runs under the image's /bin/sh, not bash.
+          sh -n scripts/headroom-entrypoint.sh && echo "  headroom-entrypoint.sh: OK (sh)"
+
+      # The stack targets pi only. A reintroduced Claude Code launcher, env key
+      # or wire-format check would go unnoticed otherwise until someone tried to
+      # run it against a 64K window.
+      - name: No Claude Code support has crept back in
+        run: |
+          for f in scripts/claude-local.sh scripts/claude-code-env.sh \
+                   harbor-adapter/forge_claude.py; do
+            test ! -e "$f" || { echo "REMOVED FILE IS BACK: $f"; exit 1; }
+          done
+          ! grep -qE '^CLAUDE_' .env || { echo ".env has CLAUDE_* keys again"; exit 1; }
+          echo "  pi-only: OK"
 
       - name: Repeat detector unit tests
         run: python scripts/test_repeat_detector.py
@@ -63,7 +78,11 @@ jobs:
                      LLAMA_EXTRA_FLAGS TEMPERATURE TOP_P TOP_K MIN_P
                      REASONING_BUDGET FORGE_CAPABILITY FORGE_REASONING_REPLAY
                      CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
-                     LLAMA_PORT FORGE_PORT THINK_LANG EVAL_THINKING )
+                     LLAMA_PORT FORGE_PORT THINK_LANG EVAL_THINKING
+                     PI_MAX_TOKENS PI_CONTEXT_FILES
+                     HEADROOM_ENABLED HEADROOM_VERSION HEADROOM_PORT
+                     HEADROOM_RECOVERY
+                     MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then
@@ -73,10 +92,92 @@ jobs:
           done
           exit $missing
 
+      # The skill is the only thing that tells the model ./scripts/mcp.sh
+      # exists, and pi is lenient about malformed skills — it does not fail, it
+      # just quietly does not offer them. So validate the frontmatter here
+      # instead of finding out mid-session.
+      - name: Agent skills are well formed
+        run: |
+          python - <<'EOF'
+          import re, sys, pathlib
+          bad = 0
+          for p in pathlib.Path("skills").glob("*/SKILL.md"):
+              err = 0
+              text = p.read_text(encoding="utf-8")
+              m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+              if not m:
+                  print(f"{p}: no YAML frontmatter"); bad = 1; continue
+              fm = dict(
+                  (k.strip(), v.strip())
+                  for k, v in (l.split(":", 1) for l in m.group(1).splitlines() if ":" in l)
+              )
+              name, desc = fm.get("name", ""), fm.get("description", "")
+              if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name) or len(name) > 64:
+                  print(f"{p}: invalid name {name!r}"); err = 1
+              if not desc or len(desc) > 1024:
+                  print(f"{p}: description missing or over 1024 chars"); err = 1
+              if len(text) - m.end() < 200:
+                  print(f"{p}: body is suspiciously short"); err = 1
+              bad |= err
+              if not err:
+                  print(f"  {p}: OK (name={name}, description={len(desc)} chars)")
+          sys.exit(bad)
+          EOF
+
+      # A server entry with both transports, or neither, only fails when the
+      # model reaches for it mid-task.
+      - name: MCP server registry is well formed
+        run: |
+          python - <<'EOF'
+          import json, sys
+          reg = json.load(open("mcp/servers.json", encoding="utf-8"))
+          bad = 0
+          servers = {k: v for k, v in (reg.get("servers") or {}).items() if not k.startswith("_")}
+          for name, e in servers.items():
+              has = [k for k in ("stdio", "url") if e.get(k)]
+              if len(has) != 1:
+                  print(f"  {name}: needs exactly one of stdio/url, has {has}"); bad = 1
+              else:
+                  print(f"  {name}: OK ({has[0]})")
+              for v in ([e["auth_header"]] if isinstance(e.get("auth_header"), str)
+                        else (e.get("auth_header") or [])):
+                  # A literal secret in a committed file is the failure mode worth
+                  # catching automatically; env:/file: indirection is the fix.
+                  if ":env:" not in v and ":file:" not in v:
+                      print(f"  {name}: auth_header must use env: or file:, not a literal"); bad = 1
+          sys.exit(bad)
+          EOF
+
+      # The pin is what keeps mcp2cli working at all: SDK 2.0.0 renamed
+      # Tool.inputSchema to input_schema and mcp2cli 3.3.1 still reads the old
+      # name, so an unpinned install breaks every MCP call.
+      - name: MCP SDK stays pinned below 2.0
+        run: |
+          v=$(grep -oP '(?<=^MCP_SDK_VERSION=).*' .env)
+          case "$v" in
+            1.*) echo "  mcp SDK pinned at $v: OK" ;;
+            *)   echo "MCP_SDK_VERSION=$v — mcp2cli 3.3.1 needs mcp<2 (Tool.inputSchema)"; exit 1 ;;
+          esac
+
       - name: Docker Compose config validation
         run: |
           docker compose config > /dev/null && echo "compose: OK"
           docker compose --profile tools config > /dev/null && echo "tools: OK"
+          docker compose --profile headroom config > /dev/null && echo "headroom: OK"
+
+      # -n is what stops a generation running unbounded when headroom renames
+      # max_tokens to a key llama.cpp does not read. It has to match the cap pi
+      # is told about, or the two disagree silently.
+      - name: Generation cap agrees between llama-server and pi
+        run: |
+          # Piped, not <(...): grep -P against a process-substitution fd was
+          # observed returning no match for a pattern that matches on a pipe.
+          n_flag=$(grep '^LLAMA_EXTRA_FLAGS=' .env | grep -oP '(?<=-n )[0-9]+' || true)
+          pi_max=$(grep -oP '(?<=^PI_MAX_TOKENS=)[0-9]+' .env || true)
+          test -n "$n_flag" || { echo "LLAMA_EXTRA_FLAGS has no -n cap"; exit 1; }
+          test "$n_flag" = "$pi_max" \
+            || { echo "-n $n_flag != PI_MAX_TOKENS $pi_max"; exit 1; }
+          echo "  generation cap: $n_flag on both sides: OK"
 
   # ── build + dry-run + badge (single job so docker load works) ──────────
   build:
@@ -114,6 +215,32 @@ jobs:
             | grep -q think-zh.md
           docker run --rm --entrypoint python qwen36-forge/proxy:ci \
             /work/scripts/ab_think_lang.py --help > /dev/null && echo "ab harness: OK"
+          # ab_headroom.py imports ab_think_lang as a sibling module, so this
+          # also proves both landed in the same directory inside the image.
+          docker run --rm --entrypoint python qwen36-forge/proxy:ci \
+            /work/scripts/ab_headroom.py --help > /dev/null && echo "headroom ab harness: OK"
+
+      # Not loaded and nothing is run from it: this is here to catch a version
+      # pin that no longer resolves on PyPI, or an extra that stops building on
+      # python 3.13 — both of which would otherwise surface on the GPU host.
+      - name: Build headroom image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.headroom
+          build-args: HEADROOM_VERSION=${{ vars.HEADROOM_VERSION || '0.34.0' }}
+          load: true
+          tags: qwen36-forge/headroom:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify headroom entrypoint rejects a bad recovery mode
+        run: |
+          docker run --rm -e HEADROOM_RECOVERY=nonsense qwen36-forge/headroom:ci \
+            && { echo "entrypoint accepted an invalid HEADROOM_RECOVERY"; exit 1; } \
+            || echo "  invalid recovery mode rejected: OK"
+          docker run --rm --entrypoint headroom qwen36-forge/headroom:ci \
+            proxy --help > /dev/null && echo "  headroom proxy --help: OK"
 
       - name: Verify smoke_test.py imports and has check_for_repeats
         run: >

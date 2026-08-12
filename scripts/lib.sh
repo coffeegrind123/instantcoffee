@@ -133,6 +133,14 @@ forge_latest_version() {
     | json_eval 'import sys,json; print(json.load(sys.stdin)["info"]["version"])'
 }
 
+# headroom ships a GHCR image, but only under sha-<commit> tags — there is no
+# semver tag to pin, so the PyPI release is the pinnable artifact and
+# Dockerfile.headroom builds from it. Same shape as forge.
+headroom_latest_version() {
+  curl -fsSL "https://pypi.org/pypi/headroom-ai/json" \
+    | json_eval 'import sys,json; print(json.load(sys.stdin)["info"]["version"])'
+}
+
 # --- huggingface -------------------------------------------------------------
 # Content hash of one file in a model repo, so a re-uploaded quant is visible.
 # unsloth revises quants in the weeks after a release (2026-08-11 HN thread,

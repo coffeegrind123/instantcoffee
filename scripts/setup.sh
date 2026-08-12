@@ -70,7 +70,8 @@ if compose --profile tools run --rm smoketest; then
   dim "  llama-server  http://$(env_get BIND_ADDR):$(env_get LLAMA_PORT)"
   dim "  forge proxy   http://$(env_get BIND_ADDR):$(env_get FORGE_PORT)"
   echo
-  dim "Point Claude Code at it with:  source scripts/claude-code-env.sh"
+  dim "Start a session with:  ./scripts/pi-local.sh"
+  dim "Optional compression:  ./scripts/headroom.sh up && ./scripts/ab-headroom.sh"
 else
   echo
   die "Smoke test failed. Logs:  ./scripts/logs.sh"

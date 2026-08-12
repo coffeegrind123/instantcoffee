@@ -150,9 +150,13 @@ the remote.
 `scripts/smoke_test.py` runs inside the compose network so it exercises the same
 service names forge uses, rather than the host port mapping. It checks reachability,
 `/props` (context size and that a tool-aware chat template actually loaded), a plain
-completion, an **OpenAI-format tool call**, and an **Anthropic-format tool call** —
-the last being the path Claude Code takes. `update.sh` runs it after every update and
-rolls back the pins if it fails.
+completion, and an **OpenAI-format tool call** — the path pi takes. When headroom
+is enabled it repeats the tool call one hop further out. `update.sh` runs it after
+every update and rolls back the pins if it fails.
+
+> Superseded 2026-08-12. It also checked an **Anthropic-format tool call**,
+> which was the path Claude Code took. That check went with Claude Code support
+> — see "pi only, and headroom" at the end of this file.
 
 ## Settings taken from other public Qwen3.6 rigs
 
@@ -493,9 +497,8 @@ that gap, and a non-zero exit from it is an instruction to set `THINK_LANG=off`,
 not an open question. Everything else in this file was verified before adoption.
 
 What makes it specifically attractive on *this* stack, beyond the general claim:
-forge does not synthesize signed Anthropic thinking blocks on the way back, and
-`MAX_THINKING_TOKENS=0` stops the client asking for them, so **the user never sees
-the thinking block at all**. Reasoning in another language therefore has no
+the pi provider entry declares `reasoning: false`, so **the user never sees the
+thinking block at all**. Reasoning in another language therefore has no
 readability cost here that it would have on a stack that renders the trace. The
 whole trade is token cost versus answer quality.
 
@@ -510,11 +513,9 @@ Where it had to go, and why it is client-side — verified 2026-08-11, not assum
   system-prompt or injection option; its only prompt surgery is
   `--backend-capability prompt` and `--inject-respond-tool`.
 
-So `prompts/think-zh.md` is appended by the launchers, through
-`claude --append-system-prompt` and `pi --append-system-prompt` — both confirmed
-present on the installed binaries. `claude --help` does not document repeating
-the flag, so `claude-local.sh` joins the user's own prompt file and the fragment
-into one argument rather than passing it twice and hoping.
+So `prompts/think-zh.md` is appended by the launcher, through
+`pi --append-system-prompt` — confirmed present on the installed binary, which
+documents it as taking "text or file contents" and as repeatable.
 
 The fragment is written against the failure mode, not the feature: a model that
 reasons in Chinese and then writes a Chinese character into an `old_string`, a
@@ -556,8 +557,8 @@ flags `café` would reject a working config.
 Wiring the above surfaced a pre-existing blind spot. `scripts/eval.py` has always
 sent `chat_template_kwargs={"enable_thinking": false}` on every request. So
 **every committed number in `results/` and in the README scorecard describes the
-no-thinking path**, while a real Claude Code session against this stack runs with
-thinking on under `REASONING_BUDGET=4096`. Nothing in the repo said so.
+no-thinking path**, while a real session against this stack runs with thinking on
+under `REASONING_BUDGET=4096`. Nothing in the repo said so.
 
 That matters more given what this thread says about Qwen's thinking specifically
 — naasking: *"Qwen finds the answer relatively quickly but then second guesses
@@ -678,3 +679,253 @@ real sha (`4085665ee36d…`) reports a match.
 (pinned: `b10200`) and **forge-guardrails 0.9.0** (pinned: `0.8.2`) available.
 Both are deliberately left alone: applying them requires the GPU host, since the
 update only counts as verified once the smoke test passes on real hardware.
+
+---
+
+## 2026-08-12 — pi only, and headroom
+
+Two changes, one theme: everything in the path should be something this stack is
+actually measured on.
+
+### Claude Code removed
+
+Deleted: `scripts/claude-local.sh`, `scripts/claude-code-env.sh`, the
+`forge-claude` Harbor agent subclass and its installer, the Anthropic-format
+smoke-test check, the `CLAUDE_*` keys in `.env`, and `configs/opencode-provider.json`
+(a third client nothing here targets either).
+
+Why, beyond "pick one client": Claude Code's cost on a 64K local window is
+structural rather than incidental. Its system prompt plus tool schemas spend a
+five-figure token count before the first user message, and the single biggest
+thing `claude-local.sh` did was disable every MCP server to claw that back. pi's
+overhead is a fraction of it. Keeping both meant two launchers, two wire
+formats, two smoke-test paths and two sets of `.env` keys, all so the worse fit
+could stay supported.
+
+What was **not** removed: forge still serves `/v1/messages`. The route is pure
+Python conversion in `forge/proxy/convert_anthropic.py` and costs nothing to
+leave in place. An Anthropic-shaped client would still work; it is simply not
+what anything here is tuned, measured or documented for.
+
+`Dockerfile.forge` dropped the `[anthropic]` extra. Verified against the 0.8.2
+wheel rather than assumed: the only `import anthropic` in the package is inside
+`forge/clients/anthropic.py`, which `forge/proxy/proxy.py` imports lazily,
+function-locally, in the branch that handles an Anthropic-shaped *backend*.
+Our backend is llama.cpp on the OpenAI wire, so it never runs, and
+`forge/clients/__init__.py` does not import it eagerly.
+
+### pi has no MCP — on purpose
+
+pi's own README, line 495: *"**No MCP.** Build CLI tools with READMEs, or build
+an extension that adds MCP support."* Confirmed against the installed binary:
+`pi --help` has no MCP flag anywhere.
+
+That is worth stating plainly rather than treating as a gap, because it is the
+same win `claude-local.sh` was manufacturing with `--strict-mcp-config`. The
+cost is real — no MCP servers, no sub-agents, no plugin ecosystem — and the
+return is nearly the whole 64K window for the session itself.
+
+New `.env` keys, all previously hardcoded in the launcher: `PI_MAX_TOKENS`,
+`PI_CONTEXT_FILES` (whether `-nc` is passed), `PI_EXTRA_ARGS` (alias replay —
+bash does not expand aliases inside scripts, the same trap `CLAUDE_EXTRA_ARGS`
+existed for).
+
+### headroom, behind a profile, off by default
+
+[headroom](https://github.com/headroomlabs-ai/headroom) compresses tool output,
+logs and JSON before they reach the model. It is wired in **in front of forge**:
+
+    pi -> headroom :8787 -> forge :8081 -> llama :8080
+
+In front, not behind, for two reasons. forge's retry-with-nudge loop would
+otherwise re-enter compression on every attempt and hand llama.cpp different
+bytes each time, discarding the prefix-KV reuse that `--cache-reuse` and
+`--slot-prompt-similarity` exist for. And forge's `--budget-tokens` accounting
+is only meaningful if it sees the request that is actually sent.
+
+It is off by default and stays off until `./scripts/ab-headroom.sh` says
+otherwise. headroom's published accuracy numbers (GSM8K unchanged, BFCL 97%)
+were established on frontier hosted models; this is a 4-bit 27B whose own tools
+suite scores 0.73, and the failure mode of over-compression is not an error, it
+is a confident answer drawn from a view of the data that no longer contains the
+answer.
+
+Findings that shaped the wiring, all read out of the source rather than assumed:
+
+- **Unknown models default to a 128K context window.**
+  `crates/headroom-proxy/src/compression/model_limits.rs` falls back to 128K
+  with a one-time warning for any model id absent from LiteLLM's table.
+  `qwen3.6-27b` is absent. So headroom sizes its compression against twice this
+  stack's real window. `HEADROOM_TARGET_RATIO` is therefore the lever that
+  matters, and forge's `--budget-tokens ${CTX_SIZE}` stays the backstop.
+- **`max_tokens` is renamed and then silently ignored.**
+  `_normalize_openai_max_tokens` in `headroom/proxy/handlers/openai.py` pops
+  `max_tokens` and sets `max_completion_tokens` — a correct compatibility shim
+  for GPT-5/o-series, which reject the legacy key. llama.cpp does not read it:
+  `tools/server/server-common.cpp` maps `max_tokens` onto `n_predict` and copies
+  unrecognised keys through untouched (only `best_of` and `suffix` throw). The
+  cap would therefore vanish. Fixed at the server, not by hoping: `-n 16384` in
+  `LLAMA_EXTRA_FLAGS`, which `server-context.cpp` consults as
+  `global_params.n_predict` whenever a task arrives without one. Keep it equal
+  to `PI_MAX_TOKENS`.
+- **CCR does not require MCP.** headroom ships an MCP server, which pi cannot
+  use. It does not matter: `CCRToolInjector` puts `headroom_retrieve` into the
+  request's own tool array and `CCRResponseHandler` answers the call, so
+  reversibility is available over the plain proxy path. The MCP server is a
+  second, optional surface.
+- **`--lossless` is the right default here.** It applies format-native
+  compaction with a marker-free SmartCrusher and suppresses both the CCR markers
+  and the injected tool. Nothing the model sees becomes unrecoverable, and no
+  extra tool schema competes with the real ones — which matters at 0.73 on
+  tools. `HEADROOM_RECOVERY` exposes `lossless` / `ccr` / `lossy`; the
+  translation happens in `scripts/headroom-entrypoint.sh` and fails loudly on an
+  unknown value, because compose has no conditionals and two contradicting
+  booleans is a worse interface than one validated enum.
+- **Built without `[ml]`.** That extra pulls `torch>=2.12` for the Kompress
+  prose model. The GPU is fully committed to the 27B in the next container, so
+  it would be gigabytes for a compressor with nowhere to run. The compression
+  that pays for itself in an agent loop — JSON, logs, build output — is
+  SmartCrusher and format-native compaction, neither of which needs torch.
+- **Subscription tracking off.** `headroom/proxy/auth_policy.py` classifies
+  clients by user-agent prefix and arms a tracker that polls
+  `https://api.anthropic.com/api/oauth/usage`. Pointless outbound traffic from a
+  stack whose premise is that nothing leaves the machine.
+- **Pinned via PyPI, not GHCR.** headroom publishes images only under
+  `sha-<commit>` tags — the last 100 tags contain no semver at all — so the
+  pinnable artifact is the PyPI release and `Dockerfile.headroom` builds from
+  it, exactly as `Dockerfile.forge` does for forge.
+
+### The A/B harness
+
+`scripts/ab_headroom.py` runs **both arms through headroom** so the path is
+identical, and bypasses compression in the control arm with
+`x-headroom-bypass: true` — documented in
+`headroom/proxy/compression_decision.py` as the user's "do not touch my bytes"
+contract. The only difference between arms is whether compression ran.
+
+It reuses the six objectively-scored tasks from `ab_think_lang.py` (one copy, so
+the two A/Bs stay comparable) and adds three **recall** tasks: a 220-row JSON
+tool result, a 600-line log and a long file read, each with one fact that has to
+survive. They are delivered as `tool` messages because headroom skips user
+messages by default — a payload pasted into the prompt would measure nothing.
+
+Recall is scored separately and more harshly than the mean, because losing a
+needle is the specific thing compression costs and it would otherwise average
+away against six tasks that were never compressible. Two guards keep a
+non-result from reading as a pass: no `x-headroom-tokens-*` accounting on the
+compressed arm returns INCONCLUSIVE (nothing proves compression ran), and a
+control arm scoring under 0.2 on recall returns INCONCLUSIVE too (the tasks are
+failing before compression is a factor — most likely `AB_RECALL_MAX_TOKENS`
+against `REASONING_BUDGET`, since thinking tokens are completion tokens).
+
+`eval.py` still talks straight to `forge:8081` and always will. The committed
+scorecard is a number about the model; compression is a separate number and
+should stay one.
+
+### Not yet measured
+
+Nothing here has been run against the GPU host — the stack was down while this
+was written (`:8080` and `:8081` both silent). Every claim above is from source
+or from `--help` on an installed binary. The headroom numbers do not exist yet;
+`./scripts/ab-headroom.sh` is how they get made.
+
+### Verified on the built image (2026-08-12)
+
+The GPU host was unavailable, but the headroom container itself was built and
+run here, so these are observations rather than readings:
+
+- `Dockerfile.headroom` builds on `python:3.13-slim` with
+  `headroom-ai[proxy,code]==0.34.0`. No torch in the resolved set, as intended.
+  Startup banner reports `Code-Aware: ENABLED (AST-based)`, so the `[code]`
+  extra is doing its job.
+- `headroom proxy --help` on 0.34.0 carries every flag this repo passes:
+  `--lossless`, `--no-ccr`, `--openai-api-url`, `--provider-name`,
+  `--no-subscription-tracking`, `--target-ratio`.
+- `scripts/headroom-entrypoint.sh` exits 2 on an invalid `HEADROOM_RECOVERY`
+  and prints `recovery=lossless target_ratio=auto` on a good one. The proxy
+  reaches `/health` 200 with an unreachable upstream, which is what
+  `HEADROOM_SKIP_UPSTREAM_CHECK=1` is for.
+- Routing table at startup confirms `/v1/chat/completions` and `/v1/messages`
+  both pointing at the configured upstream rather than at any hosted API.
+- **Endpoint access from a non-loopback source** (which is what a browser on the
+  host is, since it arrives via the Docker gateway): `/dashboard`, `/stats`,
+  `/stats-history` and `/metrics` all answer 200. `/settings` answers 404 and
+  **stays** 404 with `HEADROOM_PROXY_TRUSTED_DASHBOARD_CLIENT_CIDRS` set to the
+  bridge range — so that variable is deliberately not set in compose. The first
+  draft set it with a confident comment about why it was needed; testing it is
+  what turned that into a wrong guess instead of a shipped one.
+
+---
+
+## 2026-08-12 — MCP as a CLI, not as MCP
+
+pi has no MCP and this stack does not want it, but "no MCP servers at all" is a
+real capability loss. `mcp2cli` closes it without reopening the context-window
+problem: it turns any MCP server (stdio, HTTP or SSE) into a CLI at runtime,
+so a tool's schema is only paid for at the moment the model asks for that tool.
+
+### Why mcp2cli and not mcpo
+
+The obvious alternative was **open-webui/mcpo** (4.3k★), which fronts an MCP
+server with a REST + OpenAPI service. Rejected on two grounds. It is a
+long-running HTTP service per server — more compose surface for something the
+model still has to discover by reading an OpenAPI document, which is the same
+schema cost in a different envelope. And a compose service cannot help pi
+anyway: pi runs on the host, and what it needs is a *command*, not a port.
+
+mcp2cli is also the option that agrees with pi's own position. pi's README says
+to build CLI tools with READMEs rather than wire up MCP; a CLI plus a skill is
+exactly that shape.
+
+### Shape
+
+- `mcp/servers.json` — committed registry, `stdio` or `url` per entry. The
+  indirection exists so the model types `./scripts/mcp.sh linear --search issue`
+  rather than a 60-character transport string it has to get right, and so
+  credentials stay as `env:VAR` / `file:/path` references. CI rejects a literal
+  secret in an `auth_header`.
+- `scripts/mcp.sh` — resolves a name to mcp2cli transport flags, installs the
+  pinned mcp2cli on first use, and passes everything else through verbatim.
+- `skills/mcp-tools/SKILL.md` — an Agent Skills package. pi keeps only a skill's
+  name and description in the system prompt (~60 tokens) and loads the body when
+  a task matches, which is the same progressive-disclosure property that makes
+  this worth doing at all. The skill teaches the cheap-to-expensive loop
+  (`--search` → `--list --compact` → `<tool> --help` → call) and explicitly
+  forbids dumping a server's full schema.
+- Loaded via `pi --skill <abs path>`, which is additive and takes an absolute
+  path — so the skill travels with the repo, nothing is written into `~/.pi`,
+  and it still applies when pi is started in another project's directory.
+
+### Measured, and it changed the design
+
+- **A plain `uv tool install mcp2cli` is broken today.** The MCP Python SDK
+  released **2.0.0**, renaming `Tool.inputSchema` to `input_schema`; mcp2cli
+  3.3.1 still reads the camelCase name, so the fresh install resolves 2.0.0 and
+  every MCP call dies with `AttributeError: 'Tool' object has no attribute
+  'inputSchema'` before reaching the server. Reproduced against the reference
+  server, then fixed by installing with `--with mcp==1.29.0` and reproduced
+  working. `MCP_SDK_VERSION` carries the pin and CI fails if it moves to 2.x.
+  Had this not been run before writing the docs, the repo would have shipped a
+  skill instructing the model to use a command that cannot work.
+- **Sessions do not work here.** `--session-start` returns "session daemon did
+  not start in time", and a call through `--session` returns nothing. So each
+  invocation spawns the server (~5s for an `npx` one); the skill says to batch
+  questions rather than reach for sessions.
+- **stdout/stderr are cleanly separated.** `Starting default (STDIO) server...`
+  goes to stderr and `--json` puts the full MCP envelope on stdout, so
+  `2>/dev/null` gives parseable output. Documented in the skill because the
+  model will otherwise assume the banner is part of the payload.
+- **Verified end to end** against `@modelcontextprotocol/server-everything`:
+  `--list --compact` returns 13 tool names on one line, `--search sum` finds
+  `get-sum` with its description, `get-sum --help` renders `--a`/`--b` from the
+  input schema, and `get-sum --a 20 --b 22` returns 42.
+
+### What was NOT verified
+
+pi's own skill loading. `pi --skill <dir> --list-models` starts cleanly with the
+skill path, but a control run with a deliberately malformed skill also started
+cleanly — so that test proves nothing about validation, and it is recorded as
+proving nothing. The frontmatter is instead checked against the Agent Skills
+spec in CI (name pattern, description length, non-trivial body). Whether the
+27B actually *reaches for* the skill mid-task is unmeasured, and is the next
+thing to look at once the GPU host is up.

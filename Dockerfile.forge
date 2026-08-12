@@ -18,8 +18,15 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# No [anthropic] extra. That extra pulls the Anthropic SDK, which forge imports
+# in exactly one place — a lazy, function-local import inside the branch that
+# handles an Anthropic-shaped *backend* (forge/proxy/proxy.py). This stack's
+# backend is llama.cpp on the OpenAI wire, so the import never runs. forge's
+# inbound /v1/messages route is unaffected either way: it is pure-python
+# conversion in forge/proxy/convert_anthropic.py and needs no SDK. Verified
+# against the 0.8.2 wheel, not assumed.
 RUN pip install --no-cache-dir \
-        "forge-guardrails[anthropic]==${FORGE_VERSION}" \
+        "forge-guardrails==${FORGE_VERSION}" \
         "huggingface_hub[hf_xet]>=0.27" \
     && useradd --create-home --uid 1000 forge \
     && mkdir -p /work \
@@ -36,7 +43,7 @@ LABEL org.opencontainers.image.title="qwen3.6-forge proxy" \
 # `./scripts` expands to here) mounts an EMPTY directory instead of failing —
 # see context/design/decisions.md. Baking them in removes that whole class of
 # bug and makes the image self-contained.
-COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/eval_harness.py scripts/eval.py scripts/ab_think_lang.py /work/scripts/
+COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/eval_harness.py scripts/eval.py scripts/ab_think_lang.py scripts/ab_headroom.py /work/scripts/
 
 # System-prompt fragments. They have to be inside the image for the same reason
 # the scripts are: neither llama-server nor forge can inject a system prompt, so

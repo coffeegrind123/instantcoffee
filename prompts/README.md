@@ -1,7 +1,7 @@
 # System-prompt fragments
 
-Text appended to the client's system prompt by `scripts/claude-local.sh` and
-`scripts/pi-local.sh` when `THINK_LANG` is set in `.env`.
+Text appended to the client's system prompt by `scripts/pi-local.sh` when
+`THINK_LANG` is set in `.env`.
 
 **These have to be applied client-side.** Verified against the real binaries on
 2026-08-11, not assumed:
@@ -17,9 +17,11 @@ Text appended to the client's system prompt by `scripts/claude-local.sh` and
   `--backend-capability prompt` (tool-call injection) and
   `--inject-respond-tool`.
 
-So the fragment is appended by the launcher, via `claude --append-system-prompt`
-and `pi --append-system-prompt`, both of which were checked with `--help` on the
-installed binaries.
+So the fragment is appended by the launcher, via `pi --append-system-prompt`,
+which was checked with `--help` on the installed binary. (headroom, when it is
+in the path, appends its own verbosity note to the end of the system prompt if
+`HEADROOM_OUTPUT_SHAPER=1` — it is off here, and turning it on would put two
+independent appenders on the same prompt.)
 
 | File | `THINK_LANG` | What it does |
 | --- | --- | --- |

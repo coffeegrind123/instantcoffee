@@ -59,7 +59,7 @@ SCORE_FLOOR = float(os.environ.get("EVAL_SCORE_FLOOR", "0.5"))
 
 # Thinking is OFF by default, and has been since this file was written — every
 # committed score in results/ and in the README describes the no-thinking path,
-# while a real Claude Code session runs with thinking on under REASONING_BUDGET.
+# while a real pi session runs with thinking on under REASONING_BUDGET.
 # Keeping the default preserves comparability with results/history.jsonl; the
 # switch exists so the gap can be measured instead of assumed. Whichever way it
 # is set, the mode is stamped into the JSON so a run cannot later be mistaken
