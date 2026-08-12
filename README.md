@@ -357,7 +357,15 @@ key, so every script follows it).
 ./scripts/ab-headroom.sh --save # what it costs in quality on this model
 ```
 
-**Measured on this stack (2026-08-12): it currently saves 0%.** Two A/B runs,
+**Measured on this stack: it forwards tool payloads byte-identical.** An echo
+upstream recorded 37750 body bytes / 36546 chars of tool content with and
+without compression — while the response header advertised
+`x-headroom-transforms: router:search:0.77`. The capability is real and
+reachable (`POST /v1/compress` on the same messages saves 2097 tokens, 23%);
+only the proxy request path declines to apply it. Confirmed three ways: llama's
+`usage.prompt_tokens`, a direct probe, and the wire.
+
+**Earlier measurement, same conclusion (2026-08-12): 0% saved.** Two A/B runs,
 `lossless` and `ccr`, both returned `prompt tokens 4599 -> 4599 (+0.0%)` with
 quality and recall unchanged. The prompt tokens actually reaching llama.cpp were
 identical with compression on and off — 11940 / 22196 / 6532 on the three recall

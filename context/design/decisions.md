@@ -1094,3 +1094,61 @@ what it currently buys is recorded here as 0%. The next thing to test is
   allowance thinking and emit no answer. Raised to `AB_TASK_MAX_TOKENS=6144` and
   it scores 1.00. The same flaw was in the think-lang A/B. `bugfix` still fails
   at 6144, in both arms, so that one is the model.
+
+### headroom, measured at the wire: it forwards tool payloads unchanged
+
+Chasing the 0% to the bottom. An echo upstream (a 30-line HTTP server standing
+in for forge, so no inference is involved) recorded exactly what headroom sends:
+
+| arm | body bytes | tool content |
+| --- | --- | --- |
+| bypassed | 37750 | 36546 chars |
+| compressed | **37750** | **36546 chars** |
+
+Byte-identical, with `--mode token`, `HEADROOM_RECOVERY=ccr`, `--no-cache`, the
+Kompress model installed, and the tool result as the **trailing** message (the
+real agent shape). The response header still advertises
+`x-headroom-transforms: router:search:0.77`.
+
+So headroom computes a 23% compression, reports it, and forwards the original
+bytes. Confirmed three independent ways: llama's `usage.prompt_tokens` in the
+A/B, the same via a direct probe, and now the wire itself.
+
+The capability is real and reachable — `POST /v1/compress` with the same messages
+returns **9183 -> 7086 tokens, 2097 saved**, tool content 36546 -> 28160 chars.
+It is only the proxy request path that declines to apply it. The leading
+candidate is the reversibility gate (`enforce_reversibility = role == "tool"` in
+the content router), which requires a redeemable CCR marker before tool output
+may be rewritten — but that is a hypothesis, not something measured, and two
+earlier confident explanations were already wrong:
+
+- **"DEFAULT_EXCLUDE_TOOLS blocks it."** Wrong. Excluded tools are protected only
+  from *lossy* compression, and `/v1/compress` compresses `read_logs` and
+  `fetch_logs` identically.
+- **"The frozen prefix blocks it."** Wrong, or at least insufficient.
+  `_strict_previous_turn_frozen_count` makes a trailing `tool` message mutable,
+  and the trailing-tool-result shape is still forwarded unchanged.
+
+### What was genuinely fixed, and what it cost
+
+The `[ml]` extra was missing and that was a real defect: without Kompress,
+`/debug/warmup` reports `kompress {"status": null, "deferred"}` and the first
+fall-through text payload does not degrade — it **blocks**, leaving a request
+that llama had already answered unreturned until the client gives up. Fixed by
+installing `[ml]` with CPU-only torch and baking
+`chopratejas/kompress-v2-base` into the image (`HF_HUB_OFFLINE=1` set *after*
+the download, so a cache miss fails fast instead of hanging).
+
+The cost was not free: the image went 1.28 GB -> 4.86 GB, and loading torch in
+the headroom container on a 22 GB VM already streaming a 17.9 GB model
+**OOM-killed llama** (`Exited (137)`), costing a 40-minute cold reload.
+
+### A separate stack bug found on the way
+
+With the tool result trailing and tools declared — every real agent turn —
+llama answers correctly when called **directly** (68s, "The FATAL line is..."),
+but through **forge** the model returns empty content and calls the same tool
+again (`content='' tool_calls=True`). forge then spends its retry budget on it,
+and the client times out even though llama returned 200 in 45s. Reproduced at
+5K and 22K token payloads. This is unrelated to headroom and is why the real
+agent shape could not be measured end to end.

@@ -28,24 +28,38 @@ ENV PYTHONUNBUFFERED=1 \
 # python_full_version < "3.14". That is also the interpreter its own docs point
 # at for the dashboard's cost figures.
 #
-# [proxy] and [code], deliberately NOT [all] or [ml]:
-#   [ml] pulls torch>=2.12 for the Kompress-v2-base text model. On this box the
-#   GPU is entirely committed to a 27B in the neighbouring container, so a
-#   multi-GB torch install would buy a compressor that has nowhere to run. The
-#   compression that pays for itself in an agent loop — JSON tool output, logs,
-#   build spew — is SmartCrusher and format-native compaction, neither of which
-#   needs torch. onnxruntime and transformers already come in with [proxy] for
-#   the content-detection paths.
-#   Add "headroom-ai[ml]==${HEADROOM_VERSION}" here if you later want Kompress
-#   prose compression and have measured that it is worth the image size.
+# [proxy,code,ml]. The [ml] extra is NOT optional, which cost a day to learn:
+# it carries Kompress-v2-base, and headroom's ContentRouter routes fall-through
+# text — logs, prose, anything not JSON or code — to Kompress by default. Built
+# without it, /debug/warmup reports kompress {"status": null, "deferred"}, and
+# the first compressible payload does not degrade gracefully: it BLOCKS. The
+# measured symptom was a request that llama.cpp had already answered in 24s
+# sitting unreturned until the client gave up.
 #
-# [code] is tree-sitter only (~2 MB) and enables the AST-aware compressor for
-# code in the live zone.
-RUN pip install --no-cache-dir \
-        "headroom-ai[proxy,code]==${HEADROOM_VERSION}" \
+# torch comes from the CPU index deliberately. The GPU is entirely committed to
+# a 27B in the neighbouring container, and the CUDA build would add gigabytes of
+# libraries that must never be used here.
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu "torch>=2.12" \
+    && pip install --no-cache-dir "headroom-ai[proxy,code,ml]==${HEADROOM_VERSION}" \
     && useradd --create-home --uid 1000 --home-dir /home/headroom headroom \
     && mkdir -p /home/headroom/.headroom \
     && chown -R headroom:headroom /home/headroom
+
+# Bake the model into the image rather than fetching it on first use. A runtime
+# fetch is both a hang risk (above) and a reason this container would need the
+# internet at all, which nothing else about this stack does.
+USER headroom
+RUN python -c "from huggingface_hub import snapshot_download; \
+      snapshot_download('chopratejas/kompress-v2-base')" \
+    && python -c "import os; print('kompress cached at', os.environ['HF_HOME'])"
+USER root
+
+# Only AFTER the model is in the image. Set earlier, these would have made the
+# build-time download itself fail. At runtime they mean a cache miss fails fast
+# instead of hanging a request on a network fetch, which is the failure this
+# whole section exists to prevent.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 LABEL org.opencontainers.image.title="qwen3.6-forge headroom" \
       org.opencontainers.image.description="headroom compression proxy in front of forge" \
