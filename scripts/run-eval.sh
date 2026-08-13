@@ -31,8 +31,13 @@ mkdir -p "$RESULTS_DIR" "$REPO_ROOT/badges"
 info "Running coding evaluation..."
 
 # Run eval inside the compose network. Exit code is non-zero on failures.
+#
+# --build for the same reason as smoke-test.sh: eval.py is COPYed into the image
+# and nothing mounts scripts/ over it, so an edited suite would otherwise score
+# with the code from the last build. A cached build is ~3s against an eval that
+# takes minutes, and a committed score measured by unknown code is worthless.
 set +e
-compose --profile tools run --rm eval 2>&1 | tee /tmp/qwen36-eval-output.txt
+compose --profile tools run --rm --build eval 2>&1 | tee /tmp/qwen36-eval-output.txt
 EVAL_EXIT="${PIPESTATUS[0]}"
 set -e
 

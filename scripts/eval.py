@@ -222,12 +222,38 @@ class Registry:
                           "total": len(scores)}
         # Provenance: two runs of this file can now differ in regime, and a
         # score without its regime is not comparable to anything.
+        #
+        # MODEL_ALIAS is NOT enough on its own. Swapping GGUF_FILE while keeping
+        # the alias is exactly how models get compared here, so two runs on
+        # different weights used to be indistinguishable in history.jsonl.
+        # Measured 2026-08-13: Fable-Fusion IQ4_XS scored 0.913 / 27-27 with all
+        # 27 test scores byte-identical to the unsloth run, and the only way to
+        # tell the rows apart afterwards was a saved copy. Ask the server what it
+        # actually loaded rather than trusting .env, which can drift from a
+        # container that has not been recreated yet.
         out["config"] = {"thinking": "on" if EVAL_THINKING else "off",
                          "system_prompt": _SYS_FILE or None,
-                         "model": MODEL_ALIAS}
+                         "model": MODEL_ALIAS,
+                         "gguf": _loaded_gguf()}
         return out
 
 # ── suite 1: speed ─────────────────────────────────────────────────────────
+
+
+def _loaded_gguf() -> str | None:
+    """Basename of the GGUF llama-server actually has open, or None.
+
+    Never fatal: provenance is worth having but not worth failing a completed
+    eval run over.
+    """
+    try:
+        s, b = _http(f"{LLAMA_URL}/props", timeout=15)
+        if s != 200:
+            return None
+        path = json.loads(b).get("model_path")
+        return path.rsplit("/", 1)[-1] if path else None
+    except Exception:
+        return None
 
 
 def _llama_chat(messages: list[dict], max_tokens: int,

@@ -1391,3 +1391,82 @@ llama-server starts **without** `-m`. That changes what happens at boot (nothing
 loaded, so forge's first request fails until a model is), which is a change to
 `up.sh` and the smoke test. Left alone deliberately while two models are being
 evaluated on this stack.
+
+## 2026-08-13 — Fable-Fusion tested and rejected, and two holes it exposed
+
+`DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF`
+→ `…-IQ4_XS.gguf`, 17,033,682,400 bytes (byte-exact against the `x-linked-size`
+header). Tested against the committed 0.913 / 27-27 baseline and **not adopted**.
+The stack is back on `unsloth/Qwen3.6-27B-MTP-GGUF`.
+
+### It loads, and the ablation did not break tool calling
+
+Cold load 9 minutes — faster than the incumbent's 20, because the file is
+smaller and nothing was competing for I/O. MTP/speculative active, n_ctx 32768,
+IQ4_XS 4.25 bpw, tool-call caps advertised, chat template 7764 chars (vs 8057).
+
+Smoke: **11/11, including `get_weather({'city': 'Paris'})`**. That was the real
+gate — nothing in the model card said the abliteration preserved tool calling,
+and it did.
+
+### The eval cannot tell the two models apart
+
+Overall 0.913, 27/27 — and **all 27 individual test scores identical to the
+baseline**, including every partial (0.6, 0.75, 0.5, 0.7). Not a stuck harness:
+the responses genuinely differed (`'NeutronStar'` vs `'The project name is
+NeutronStar.'`; one answer 1527 → 214 chars). The rubrics are simply too coarse
+to separate two models of this calibre.
+
+Treat that as a statement about the eval, not a finding about the models. It is
+the second time this suite has been shown blind to something that mattered — the
+first was the 65x prefill regression it scored 0.47 before and after.
+
+### Speed: measured properly, Fable-Fusion is slower
+
+The eval's speed suite said Fable was *faster* (decode 69.2 → 81.0 tok/s). It is
+one sample per model, and MTP draft acceptance is strongly content-dependent, so
+that row cannot carry the decision. Five runs of an identical probe (3000-token
+prompt, 256 generated, llama's own `timings`, per-run nonce):
+
+| | prefill median | decode median | decode range |
+| --- | --- | --- | --- |
+| unsloth UD-Q4_K_XL | 915 tok/s | **51.2 tok/s** | 47.5 – 52.3 |
+| Fable-Fusion IQ4_XS | 926 tok/s | **45.6 tok/s** | 45.3 – 49.5 |
+
+Decode is ~11% slower with barely-overlapping ranges; prefill is a wash. (Both
+prefill medians sit near 900 while the eval reports ~1700 on a 4030-token
+prompt — prefill throughput climbs with prompt size, so the two are not
+comparable. Only compare within a method.)
+
+**Verdict:** no measured advantage, a real decode cost, and its one
+distinguishing property — the decensoring — is not measured by anything in this
+repo. Rejected. The 0.4 GB smaller file does not buy that back.
+
+### Hole 1: eval provenance could not identify the weights
+
+`config` recorded `MODEL_ALIAS`, which is deliberately held constant when
+swapping GGUFs — so the two runs were indistinguishable in `history.jsonl` and
+only a manually saved copy made the comparison possible. `eval.py` now records
+`gguf`, read from llama's `/props` `model_path` rather than from `.env`, because
+`.env` can already name a model the running container has not loaded.
+
+### Hole 2: the tools image bakes the Python, and nothing rebuilt it
+
+`Dockerfile.forge:46` COPYs `eval.py`, `smoke_test.py`, `eval_harness.py`,
+`ab_think_lang.py` and `download_model.py` into the image; no service
+bind-mounts `scripts/` over `/work/scripts`. `run-eval.sh` and `smoke-test.sh`
+called `compose run` with no build, so **an edited suite silently scored with
+the code from the last image build**. Found by editing `eval.py` and watching
+`grep -c` return 0 inside the container.
+
+Both runners now pass `--build`. A fully cached build is ~3 s against an eval
+that takes minutes, and a committed score measured by unknown code is worth
+nothing.
+
+### Next candidate unchanged
+
+`bottlecapai/ThinkingCap-Qwen3.6-27B-GGUF` remains the better prospect: 15.7 GB,
+claims 50% fewer thinking tokens at equal accuracy with multi-seed CIs. Note in
+advance that **this eval will probably not detect that either** — it runs with
+`EVAL_THINKING=off` and scores no token-cost metric. Judging it needs the
+thinking-token measurement the A/B harness already does, not this suite.
