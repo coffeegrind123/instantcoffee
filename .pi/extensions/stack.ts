@@ -192,10 +192,34 @@ const CLIENT_ONLY_KEYS = new Set([
 const QUEUE_BACKED_TIMEOUT_MS = 8000;
 const DIRECT_TIMEOUT_MS = 8000;
 
+/** An HTTP error that kept its status and body, so callers can tell 503-loading
+ *  apart from 503-something-else without a second request. */
+class HttpError extends Error {
+	status: number;
+	body: string;
+	constructor(status: number, body: string) {
+		super(`HTTP ${status}`);
+		this.status = status;
+		this.body = body;
+	}
+}
+
 async function getJson<T>(url: string, timeoutMs = DIRECT_TIMEOUT_MS): Promise<T> {
 	const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	if (!res.ok) throw new HttpError(res.status, await res.text().catch(() => ""));
 	return (await res.json()) as T;
+}
+
+/**
+ * llama-server answers every endpoint with
+ *   503 {"error":{"message":"Loading model",...}}
+ * while it reads the GGUF. That is a normal 9-20 minute state on this box after
+ * any recreate, not a fault — and reporting it as "UNREACHABLE" sends people
+ * looking for a broken stack. It is also what a client sees as a bare
+ * "Backend returned 503" if it asks the model a question mid-load.
+ */
+function isLoading(reason: unknown): boolean {
+	return reason instanceof HttpError && reason.status === 503 && /loading model/i.test(reason.body);
 }
 
 async function getText(url: string, timeoutMs = DIRECT_TIMEOUT_MS): Promise<string> {
@@ -252,9 +276,9 @@ interface StackStatus {
 				loraCount: number | null;
 				queueWedged: boolean;
 		  }
-		| { ok: false; error: string };
+		| { ok: false; error: string; loading: boolean };
 	forge: { ok: true; health: string; models: string[] } | { ok: false; error: string };
-	containers: Array<{ service: string; name: string; state: string }>;
+	containers: Array<{ service: string; name: string; state: string; uptime: string }>;
 	vram: string | null;
 	settings: Array<[string, string]>;
 	generatedAt: number;
@@ -296,7 +320,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		getJson<any>(`${forgeUrl}/health`, DIRECT_TIMEOUT_MS),
 		getJson<any>(`${forgeUrl}/v1/models`, DIRECT_TIMEOUT_MS),
 		getJson<any[]>(`${llamaUrl}/lora-adapters`, QUEUE_BACKED_TIMEOUT_MS),
-		pi.exec("docker", ["ps", "--format", "{{.Names}}\t{{.State}}"], { timeout: 10_000 }),
+		pi.exec("docker", ["ps", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], { timeout: 10_000 }),
 		dockerVram(pi, compose),
 	]);
 
@@ -340,7 +364,11 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 				isTimeout(metricsR.reason),
 		};
 	} else {
-		llama = { ok: false, error: String(propsR.reason?.message ?? propsR.reason) };
+		llama = {
+			ok: false,
+			error: String((propsR.reason as any)?.message ?? propsR.reason),
+			loading: isLoading(propsR.reason),
+		};
 	}
 
 	let forge: StackStatus["forge"];
@@ -359,13 +387,14 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 
 	const containers: StackStatus["containers"] = [];
 	if (psR.status === "fulfilled" && psR.value.code === 0) {
-		const running = new Map<string, string>();
+		const running = new Map<string, { state: string; uptime: string }>();
 		for (const line of psR.value.stdout.split("\n")) {
-			const [name, state] = line.split("\t");
-			if (name) running.set(name.trim(), (state ?? "").trim());
+			const [name, state, status] = line.split("\t");
+			if (name) running.set(name.trim(), { state: (state ?? "").trim(), uptime: (status ?? "").trim() });
 		}
 		for (const [service, name] of compose.containers) {
-			containers.push({ service, name, state: running.get(name) ?? "not running" });
+			const r = running.get(name);
+			containers.push({ service, name, state: r?.state ?? "not running", uptime: r?.uptime ?? "" });
 		}
 	}
 
@@ -461,6 +490,13 @@ function statusLines(s: StackStatus): string[] {
 		} else if (l.metricsError) {
 			out.push(`         metrics unreadable: ${l.metricsError}`);
 		}
+	} else if (s.llama.loading) {
+		const c = s.containers.find((x) => x.service === "llama");
+		out.push(`llama    LOADING — reading the GGUF into VRAM${c?.uptime ? `  (container ${c.uptime.toLowerCase()})` : ""}`);
+		out.push(`         Normal after any recreate: ~9-20 min on this box.`);
+		out.push(`         Until it finishes every request fails with 503 "Loading model",`);
+		out.push(`         which a client shows as a bare "Backend returned 503".`);
+		out.push(`         Re-run /stack to check; ./scripts/logs.sh llama to watch.`);
 	} else {
 		out.push(`llama    UNREACHABLE at ${s.llamaUrl} — ${s.llama.error}`);
 	}
@@ -673,7 +709,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 
 		if (!target) {
 			const r = await pi.exec("bash", [script], { cwd: root!, timeout: 60_000 });
-			report("stack mode", tail(stripAnsi(r.stdout + r.stderr), 60), r.code === 0 ? "info" : "error");
+			report("stack mode", tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 60), r.code === 0 ? "info" : "error");
 			return;
 		}
 
@@ -696,7 +732,16 @@ export default function stackExtension(pi: ExtensionAPI) {
 		}
 
 		const applied = await pi.exec("bash", [script, target], { cwd: root!, timeout: 120_000 });
-		const lines = tail(stripAnsi(applied.stdout + applied.stderr), 40);
+		// "unchanged" lines are the majority and say nothing; the restart advice is
+		// answered by the prompt that follows, so both are dropped here.
+		const lines = cleanShellOutput(applied.stdout, applied.stderr, [
+			/\(unchanged\)\s*$/,
+			// Both are dim() output, and the continuation line is indented — anchor
+			// on optional leading space, not on column zero. Trimming the whole line
+			// instead would flatten the indented key tree that `/stack mode` prints.
+			/^\s*apply it with:/,
+			/^\s*or: docker compose/,
+		]);
 		if (applied.code !== 0) {
 			report(`stack mode ${target}`, [`mode.sh exited ${applied.code}`, ...lines], "error");
 			return;
@@ -720,7 +765,21 @@ export default function stackExtension(pi: ExtensionAPI) {
 			const r = await pi.exec("bash", ["-c", bash], { cwd: root!, timeout: 600_000 });
 			report(
 				`stack mode ${target}`,
-				[...lines, "", `recreate exit ${r.code}`, ...tail(stripAnsi(r.stdout + r.stderr), 12), "", "llama is loading; /stack will show it once /props answers."],
+				[
+					...lines,
+					"",
+					r.code === 0
+						? "llama recreated. It now spends ~9-20 min reading the GGUF, and every"
+						: `recreate FAILED (exit ${r.code})`,
+					...(r.code === 0
+						? [
+								'request until then fails with 503 "Loading model" — asking the model',
+								'anything now just returns "Backend returned 503".',
+								"",
+								"Check with /stack — it reports LOADING until the model is up.",
+							]
+						: tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 12)),
+				],
 				r.code === 0 ? "warn" : "error",
 			);
 		} finally {
@@ -1057,6 +1116,32 @@ export default function stackExtension(pi: ExtensionAPI) {
 function stripAnsi(text: string): string {
 	// eslint-disable-next-line no-control-regex
 	return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
+/**
+ * Turn lib.sh's console output into something that belongs in a TUI panel.
+ *
+ * Two problems with printing it raw. Its `==>` / `ok` / `warn` / dim prefixes
+ * are shell chrome that reads as noise once it is already inside a titled box.
+ * And info/ok/dim go to stdout while warn/die go to stderr, so concatenating
+ * the two streams reorders the transcript — which is how a run ended up showing
+ * "apply it with: mode.sh coding --restart" *above* the warning it answers, and
+ * above the restart that had already happened.
+ *
+ * `drop` removes advice that the caller is about to invalidate.
+ */
+function cleanShellOutput(stdout: string, stderr: string, drop: RegExp[] = []): string[] {
+	const clean = (text: string) =>
+		stripAnsi(text)
+			.split("\n")
+			.map((l) => l.replace(/^\s*(==>|ok|warn|err)\s+/, "").trimEnd())
+			.filter((l) => l.trim().length > 0)
+			.filter((l) => !drop.some((re) => re.test(l)));
+	// stderr last and labelled: it is the warnings, and they are the part worth
+	// reading after a wall of "unchanged".
+	const out = clean(stdout);
+	const errs = clean(stderr);
+	return errs.length ? [...out, ...errs] : out;
 }
 
 function tail(text: string, n: number): string[] {
