@@ -7,7 +7,7 @@ compatibility: Needs uv on PATH and the repo's mcp/servers.json. First call inst
 # MCP tools from the shell
 
 This agent has no MCP support, and that is deliberate: one MCP server can publish
-hundreds of tool schemas, and on a 64K window they would be spent before you read
+hundreds of tool schemas, and on a 32K window they would be spent before you read
 your first file. `./scripts/mcp.sh` gives you the same servers through the shell,
 so a schema only costs you tokens at the moment you decide to use that one tool.
 

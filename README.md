@@ -21,7 +21,7 @@ decoding, single-file, mmap-friendly).
                   ▼
        ┌─────────────────────┐   llama-server     :8080
        │  llama.cpp (CUDA)    │   Qwen3.6-27B, --jinja native function
-       │                      │   calling, 64K context
+       │                      │   calling, 32K context
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -33,8 +33,8 @@ that port is exposed only for debugging and metrics.
 **This stack targets pi and nothing else.** Claude Code support was removed
 (2026-08-12): it cost a launcher, an Anthropic-wire smoke test, a Harbor agent
 subclass, an SDK dependency, and a set of `.env` keys, all to serve a client
-whose fixed prompt-and-tool-schema overhead is the worst possible fit for a 64K
-local window. forge still *serves* `/v1/messages`, so an Anthropic-shaped client
+whose fixed prompt-and-tool-schema overhead is the worst possible fit for a
+32K local window. forge still *serves* `/v1/messages`, so an Anthropic-shaped client
 would work — it is simply not what anything here is tuned, measured, or
 documented for.
 
@@ -289,7 +289,7 @@ What it writes, and why each field:
         "supportsReasoningEffort": false
       },
       "models": [
-        { "id": "qwen3.6-27b", "contextWindow": 65536, "maxTokens": 16384 }
+        { "id": "qwen3.6-27b", "contextWindow": 32768, "maxTokens": 8192 }
       ]
     }
   }
@@ -321,7 +321,7 @@ instead.
 
 pi is minimal by design: **no MCP** (its README says so outright — "build CLI
 tools with READMEs, or build an extension that adds MCP support"), no
-sub-agents. On a 64K local window that is the feature, not the limitation. A
+sub-agents. On a 32K local window that is the feature, not the limitation. A
 single MCP server can publish hundreds of tool schemas that load before your
 first message, and that budget is gone before the model has read anything.
 
@@ -481,8 +481,10 @@ and that Docker Desktop has GPU support enabled. `./scripts/logs.sh llama` shows
 many layers were actually offloaded.
 
 **CUDA out of memory on load.**
-Drop a rung on the quant table, lower `CTX_SIZE`, or set
-`LLAMA_EXTRA_FLAGS=-ctk f16 -ctv q8_0`.
+Drop a rung on the quant table or lower `CTX_SIZE`. **Do not reach for
+`-ctk f16 -ctv q8_0`** — a quantized V cache buys ~2 GiB of VRAM and takes
+prefill off the GPU entirely (~65x slower, measured); it is why `CTX_SIZE` is
+32768 rather than 65536. See the quant section above.
 
 **`docker pull` from ghcr.io fails with `denied` on a public image.**
 A stale ghcr credential in `~/.docker/config.json` is being sent and rejected — this
@@ -504,6 +506,7 @@ of being bind-mounted.
 ## Layout
 
 ```
+.gitignore              .env.local, models, caches, the harbor checkout
 .env                    committed config + version pins
 .env.local.example      machine-local override template (copy to .env.local)
 versions.lock           what update.sh last verified (generated)
@@ -541,7 +544,9 @@ scripts/
   mcp.sh                call an MCP server as a CLI (wraps mcp2cli)
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
-harbor-adapter/         Harbor eval runner (stock pi agent, no adapter needed)
+harbor-adapter/
+  run-local.sh          Harbor eval runner (stock pi agent, no adapter needed)
+  README.md             why no adapter is needed
 context/                why things are the way they are
   README.md              index of the above, and the conventions it follows
   design/decisions.md    all design decisions, flags, quant choice

@@ -4,7 +4,7 @@
 #
 #   ./scripts/bench.sh                    # short benchmark
 #   ./scripts/bench.sh --prompt-len 4096  # custom prompt length
-#   ./scripts/bench.sh --full             # full sweep (pp 256..65536)
+#   ./scripts/bench.sh --full             # full sweep (pp 256..16384)
 #
 # Runs inside the compose network. Requires an active backend.
 
