@@ -22,7 +22,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -497,6 +497,7 @@ interface StatusEntry {
 
 const SUBCOMMANDS = [
 	"status",
+	"mode",
 	"env",
 	"set",
 	"up",
@@ -584,6 +585,10 @@ export default function stackExtension(pi: ExtensionAPI) {
 				const hits = [...env.keysInEnvFile].filter((k) => k.startsWith(parts[1])).sort();
 				return hits.length ? hits.slice(0, 40).map((k) => ({ value: `set ${k}=`, label: k })) : null;
 			}
+			if (parts[0] === "mode" && parts.length === 2) {
+				const hits = listModes().filter((m) => m.startsWith(parts[1]));
+				return hits.length ? hits.map((m) => ({ value: `mode ${m}`, label: m })) : null;
+			}
 			if (parts[0] === "slots" && parts.length === 2) {
 				const hits = ["save", "restore", "erase"].filter((a) => a.startsWith(parts[1]));
 				return hits.length ? hits.map((a) => ({ value: `slots ${a}`, label: a })) : null;
@@ -602,6 +607,8 @@ export default function stackExtension(pi: ExtensionAPI) {
 			switch (sub) {
 				case "status":
 					return showStatus(ctx);
+				case "mode":
+					return mode(ctx, rest);
 				case "env":
 					return showEnv(rest[0]);
 				case "set":
@@ -634,6 +641,88 @@ export default function stackExtension(pi: ExtensionAPI) {
 			const s = await collectStatus(pi, env, compose);
 			const bad = !s.llama.ok || !s.forge.ok;
 			report("stack", statusLines(s), bad ? "error" : "info");
+		} finally {
+			ctx.ui.setWorkingMessage?.(undefined);
+		}
+	}
+
+	/** Mode names, from modes/*.env — the same files scripts/mode.sh reads. */
+	function listModes(): string[] {
+		try {
+			return readdirSync(join(root!, "modes"))
+				.filter((f) => f.endsWith(".env"))
+				.map((f) => f.slice(0, -4))
+				.sort();
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Switching regimes is delegated to scripts/mode.sh rather than reimplemented
+	 * here. Two implementations of "what is prose mode" would drift, and the one
+	 * in the shell is the one that also works without pi running.
+	 */
+	async function mode(ctx: ExtensionCommandContext, rest: string[]) {
+		const script = join(root!, "scripts", "mode.sh");
+		if (!existsSync(script)) {
+			report("stack mode", [`missing ${script}`], "error");
+			return;
+		}
+		const target = rest[0];
+
+		if (!target) {
+			const r = await pi.exec("bash", [script], { cwd: root!, timeout: 60_000 });
+			report("stack mode", tail(stripAnsi(r.stdout + r.stderr), 60), r.code === 0 ? "info" : "error");
+			return;
+		}
+
+		const modes = listModes();
+		if (modes.length && !modes.includes(target)) {
+			report("stack mode", [`no such mode '${target}'`, `available: ${modes.join(", ")}`], "error");
+			return;
+		}
+
+		const ok = await ctx.ui.confirm(
+			`Switch to ${target} mode?`,
+			`Rewrites the ${target} keys in .env (model, sampling, thinking language).\n\n` +
+				`Nothing is live until llama is recreated — llama-server answers 501 to\n` +
+				`POST /props — and that is a ~9-20 minute cold load on this box.\n\n` +
+				`You will be asked separately whether to restart now.`,
+		);
+		if (!ok) {
+			ctx.ui.notify("Cancelled", "info");
+			return;
+		}
+
+		const applied = await pi.exec("bash", [script, target], { cwd: root!, timeout: 120_000 });
+		const lines = tail(stripAnsi(applied.stdout + applied.stderr), 40);
+		if (applied.code !== 0) {
+			report(`stack mode ${target}`, [`mode.sh exited ${applied.code}`, ...lines], "error");
+			return;
+		}
+
+		const restart = await ctx.ui.confirm(
+			`Recreate llama now?`,
+			`.env is on ${target}. Recreating loads the mode's model and sampling.\n` +
+				`Expect ~9-20 minutes before it answers again, and this session's model\n` +
+				`access goes away for that whole time.\n\nSay no to apply it later.`,
+		);
+		if (!restart) {
+			report(`stack mode ${target}`, [...lines, "", "Not restarted. Apply with: /stack restart llama"], "warn");
+			return;
+		}
+
+		ctx.ui.setWorkingMessage?.(`Recreating llama on ${target}…`);
+		try {
+			const bash =
+				`set -euo pipefail\nsource "${join(root!, "scripts", "lib.sh")}"\ncompose up -d --force-recreate llama\n`;
+			const r = await pi.exec("bash", ["-c", bash], { cwd: root!, timeout: 600_000 });
+			report(
+				`stack mode ${target}`,
+				[...lines, "", `recreate exit ${r.code}`, ...tail(stripAnsi(r.stdout + r.stderr), 12), "", "llama is loading; /stack will show it once /props answers."],
+				r.code === 0 ? "warn" : "error",
+			);
 		} finally {
 			ctx.ui.setWorkingMessage?.(undefined);
 		}
@@ -939,6 +1028,8 @@ export default function stackExtension(pi: ExtensionAPI) {
 	function showHelp() {
 		report("stack help", [
 			"/stack [status]           model, context, slots, throughput, GPU, forge, settings",
+			"/stack mode              which preset .env matches, and what differs",
+			"/stack mode coding|prose  switch regime, then offer the restart it needs",
 			"/stack env [FILTER]       every effective setting (.env + .env.local + exported)",
 			"/stack set KEY=VALUE      edit .env, and say exactly what must restart",
 			"/stack up | down          start / stop the stack via scripts/",
@@ -956,6 +1047,16 @@ export default function stackExtension(pi: ExtensionAPI) {
 			"and forge 0.8.2 is CLI-flag driven with no admin API.",
 		]);
 	}
+}
+
+/**
+ * lib.sh only emits colour when stdout is a TTY, which it is not under pi.exec —
+ * but a mode file or a future script could still carry escapes, and they render
+ * as literal garbage inside a TUI entry rather than as colour.
+ */
+function stripAnsi(text: string): string {
+	// eslint-disable-next-line no-control-regex
+	return text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 }
 
 function tail(text: string, n: number): string[] {

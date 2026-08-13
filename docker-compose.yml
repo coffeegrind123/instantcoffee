@@ -9,6 +9,11 @@ services:
     container_name: qwen36-llama
     restart: unless-stopped
     gpus: all
+    # llama-server runs as PID 1 and does not reap children. Twice on this box a
+    # recreate died with "PID <n> is zombie and can not be killed", leaving a
+    # container docker could neither stop nor replace until it was force-removed
+    # by hand. init: true puts a real init in front to forward signals and reap.
+    init: true
     environment:
       - LLAMA_SET_ROWS=1
     ports:
@@ -18,6 +23,14 @@ services:
       - slot-cache:/slots
     # --jinja is what turns on native function calling. Without it llama.cpp
     # ignores the `tools` parameter entirely and forge has nothing to guard.
+    #
+    # The creative samplers (xtc / dry / dynatemp / top-n-sigma / penalties) all
+    # default to llama.cpp's own "disabled" values, so a .env predating those
+    # keys still starts a server that behaves exactly as before.
+    #
+    # Do NOT put comments inside the folded block below: `#` is not a comment in
+    # a YAML folded scalar, it becomes part of the command line, and compose
+    # then rejects the whole service with "invalid command line string".
     command: >
       -m /models/${GGUF_FILE}
       --alias ${MODEL_ALIAS}
@@ -39,6 +52,19 @@ services:
       --top-p ${TOP_P}
       --top-k ${TOP_K}
       --min-p ${MIN_P}
+      --xtc-probability ${XTC_PROBABILITY:-0.0}
+      --xtc-threshold ${XTC_THRESHOLD:-0.1}
+      --dry-multiplier ${DRY_MULTIPLIER:-0.0}
+      --dry-base ${DRY_BASE:-1.75}
+      --dry-allowed-length ${DRY_ALLOWED_LENGTH:-2}
+      --dry-penalty-last-n ${DRY_PENALTY_LAST_N:--1}
+      --repeat-penalty ${REPEAT_PENALTY:-1.0}
+      --repeat-last-n ${REPEAT_LAST_N:-64}
+      --presence-penalty ${PRESENCE_PENALTY:-0.0}
+      --frequency-penalty ${FREQUENCY_PENALTY:-0.0}
+      --dynatemp-range ${DYNATEMP_RANGE:-0.0}
+      --dynatemp-exp ${DYNATEMP_EXP:-1.0}
+      --top-n-sigma ${TOP_N_SIGMA:--1.0}
       --cache-prompt
       --cache-ram ${CACHE_RAM}
       --cache-reuse ${CACHE_REUSE}

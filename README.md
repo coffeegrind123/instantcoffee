@@ -148,6 +148,112 @@ The keys worth knowing:
 | `MCP2CLI_VERSION` | `3.3.1` | mcp2cli release |
 | `MCP_SDK_VERSION` | `1.29.0` | MCP Python SDK pin — must stay `<2`, see below |
 
+## Creative writing, and what is *not* in the way
+
+Nothing in this stack filters content. That was checked rather than assumed, on
+2026-08-13:
+
+| Layer | Finding |
+| --- | --- |
+| forge | No content filtering. Its `guardrails/` are tool-call plumbing — response validation, retry nudges, step enforcement. Removing them breaks tool calling and unlocks nothing. |
+| pi | Its system prompt is mechanical: tool list, "show file paths", "be concise", cwd. **Zero** safety, refusal, or content language. `--system-prompt` replaces it wholesale anyway. |
+| chat template | No refusal text, no injected default system prompt. |
+| llama.cpp | No such feature exists. |
+
+So if an uncensored model is behaving timidly here, the cause is configuration,
+not a filter. The things that actually constrain output:
+
+1. **The sampler profile is tuned for code.** `TEMPERATURE=0.6` is Qwen's
+   "precise coding" preset, and XTC/DRY ship disabled.
+2. **The MTP quant caps your sampling range.** DavidAU's card asks for
+   `temp <= 1` and `repeat pen 1.0` on MTP quants, then separately recommends
+   `repeat pen 1.1-1.15` for chat/roleplay and regular GGUFs "for creative/
+   complex and/or temps over 1". Those two pieces of advice conflict, and the
+   card resolves it: **use the non-MTP quant for prose.**
+3. **`THINK_LANG=zh`** appends a long instruction block about reasoning language.
+   Not a filter, but it is dead weight in a fiction session — `THINK_LANG=off`.
+4. **pi loads the project's `AGENTS.md`/`CLAUDE.md` by default.** In a code repo
+   that injects coding conventions into a writing session — `PI_CONTEXT_FILES=0`.
+
+### Two modes
+
+The stack ships two regimes. A mode is just a file of `KEY=VALUE` lines in
+`modes/`; adding one means adding a file.
+
+```bash
+./scripts/mode.sh                    # which preset .env matches, and what differs
+./scripts/mode.sh --list
+./scripts/mode.sh prose              # rewrite .env
+./scripts/mode.sh prose --restart    # ...and recreate llama
+```
+
+From inside pi, the same thing — the extension shells out to that script rather
+than carrying a second definition of what "prose mode" means:
+
+```
+/stack mode                 # status
+/stack mode prose           # switch, then offer the restart it needs
+```
+
+| | `coding` | `prose` |
+| --- | --- | --- |
+| model | unsloth `UD-Q4_K_XL` | Fable-Fusion `IQ4_XS` (decensored) |
+| temperature | 0.6 | 1.0 |
+| DRY | off | 0.8 |
+| `THINK_LANG` | zh | off |
+
+`coding` is the regime the committed **0.913 / 27-27** scorecard was measured in
+— Qwen's published "precise coding" preset with every creative sampler at
+llama.cpp's disabled value. `prose` follows the Fable-Fusion card first and
+Qwen's general preset where that card is silent.
+
+**The one substitution, called out because it is not a card value:** the card
+asks for `smoothing_factor 1.5`, which is a KoboldCpp sampler llama.cpp does not
+implement, and offers `repeat pen 1.1-1.15` as the fallback — which the *same
+card* forbids on MTP quants. DRY penalises repeated sequences rather than
+repeated tokens, so it buys the same thing without touching rep pen. Set
+`DRY_MULTIPLIER=0.0` for pure card values.
+
+Note the temperature ceiling: the card caps MTP quants at `temp <= 1`. To go
+above that, switch to a regular (non-MTP) GGUF from the same repo.
+
+> **`max_tokens` bites in prose mode.** This is a thinking model with
+> `REASONING_BUDGET=4096`, so a request must leave room for the thinking block
+> *and* the prose. Measured: a "150 word noir scene" used 4212 chars of
+> reasoning and returned 913 chars of story — 1286 completion tokens. Ask for
+> `max_tokens=400` and you get an **empty** `content` and
+> `finish_reason=length`, because llama's `--reasoning-format deepseek` puts the
+> thinking in `reasoning_content` where a naive client never looks. Keep
+> `max_tokens` well above the reasoning budget, or set `REASONING_BUDGET=0` and
+> switch to Qwen's non-thinking preset (`temp 0.7, top_p 0.80, presence 1.5`).
+
+### The knobs
+
+Every sampler this build supports is wired through `.env`, and each ships at
+llama.cpp's **disabled** value, so `coding` reproduces the scorecard's regime
+exactly. The chain runs:
+
+```
+penalties -> dry -> top_n_sigma -> top_k -> typ_p -> top_p -> min_p -> xtc -> temperature
+```
+
+`prose` mode sets the first four already. The remaining dial worth reaching for
+is **XTC** ("exclude top choices"), which drops the most-probable tokens when
+several are plausible — the one sampler here aimed squarely at stopping prose
+collapsing into the same phrasings. Neither card mentions it, so it is left off:
+
+```bash
+XTC_PROBABILITY=0.5
+XTC_THRESHOLD=0.1
+```
+
+Prefer **DRY** over `REPEAT_PENALTY` for prose. A flat repeat penalty also
+punishes ordinary function words and flattens style — which is the problem
+`smoothing_factor` is usually reached for.
+
+> The model itself is not the limiter: Heretic/ARA took refusals from **99/100
+> to 4/100** on the base model, per the card's own measurement.
+
 ## Choosing a quant for 24 GiB
 
 The 4090 has 24.0 GiB. Qwen3.6-27B is a hybrid: only **16 of its 64 layers** use full
