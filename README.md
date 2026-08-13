@@ -368,9 +368,18 @@ should not be committed, put it in `.env.local`.
 
 ### Controlling the stack from inside pi: `/stack`
 
-`.pi/extensions/stack.ts` ships with the repo and auto-loads whenever pi runs
-here, so a session can inspect and drive the stack without dropping to a shell.
-Approve project-local files once (`-a`, or answer the trust prompt) and:
+`.pi/extensions/stack.ts` ships with the repo, and `pi-local.sh` loads it by
+absolute path — so `/stack` is there in **every** session the launcher starts,
+including sessions in a completely unrelated directory. The launch banner ends
+with `, /stack` when it is active.
+
+> Do not rely on pi's own `.pi/extensions/` auto-discovery for this. That is
+> scoped to the project pi was *started in* and needs that project trusted, so
+> starting anywhere else means no `/stack` — and because an unregistered
+> `/stack` is forwarded to the model as plain text, you get a confident,
+> invented answer instead of an error. If you launch `pi` directly rather than
+> through `pi-local.sh`, pass
+> `-e ~/qwen3.6-forge/.pi/extensions/stack.ts` yourself.
 
 ```
 /stack                     model, context, slots, throughput, GPU, forge, settings
@@ -416,11 +425,13 @@ wedged** and inference is down even though the container looks healthy and
 Every session prints what it is actually doing, so nothing is on silently:
 
 ```
-pi -> http://localhost:8081  (model: qwen3.6-27b, context files off, thinking in zh, mcp via cli)
+pi -> http://localhost:8081  (model: qwen3.6-27b, context files off, thinking in zh, mcp via cli, /stack)
 ```
 
 Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
-`mcp via cli` means the MCP skill is loaded; `context files off` means `-nc`.
+`mcp via cli` means the MCP skill is loaded; `context files off` means `-nc`;
+`/stack` means the stack extension loaded. If `/stack` is absent from the
+banner, the command will not exist in that session.
 
 ### Keeping pi current
 

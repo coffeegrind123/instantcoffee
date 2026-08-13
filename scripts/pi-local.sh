@@ -121,6 +121,27 @@ else
   pi_flags+=(-nc)
 fi
 
+# /stack, loaded by absolute path for the same reason --skill is below.
+#
+# Auto-discovery of .pi/extensions/ is scoped to the project pi was STARTED in,
+# and it also requires that project to be trusted. Both bite: started in another
+# project the extension is simply absent, and started here without -a it is
+# silently skipped — in which case `/stack` is not a command, so pi forwards the
+# text to the model and you get an invented answer about stack files rather than
+# an error. Verified both ways, 2026-08-13.
+#
+# -e is not additive to discovery in the harmful sense: loading the same path
+# twice (once discovered here, once explicit) registers ONE `/stack`, not
+# `/stack:1` and `/stack:2` — pi dedupes by path. Checked before relying on it.
+STACK_EXT="$REPO_ROOT/.pi/extensions/stack.ts"
+STACK_NOTE=""
+if [[ -r "$STACK_EXT" ]]; then
+  pi_flags+=(-e "$STACK_EXT")
+  STACK_NOTE=", /stack"
+else
+  warn "$STACK_EXT is missing — /stack will not be available this session."
+fi
+
 # MCP servers, reached as a CLI rather than as MCP. --skill is additive and takes
 # an absolute path, so the skill travels with the repo instead of being installed
 # into ~/.pi — nothing outside this checkout is touched, and it still applies when
@@ -206,5 +227,5 @@ fi
 curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
   || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"
