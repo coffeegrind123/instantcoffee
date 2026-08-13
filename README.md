@@ -1,7 +1,7 @@
 # qwen3.6-forge
 
 [![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.6-forge/actions)
-[![Eval](https://img.shields.io/badge/eval-83%25%20(23%2F26)-green?logo=pytest&style=flat)](#eval-results)
+[![Eval](https://img.shields.io/badge/eval-91%25%20(27%2F27)-brightgreen?logo=pytest&style=flat)](#eval-results)
 
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy, driven by the **pi** coding agent. One
@@ -478,28 +478,26 @@ context/                why things are the way they are
 ## Eval Results
 
 > **Full methodology:** [context/design/eval-methodology.md](context/design/eval-methodology.md) —
-> what each suite tests, where the benchmarks come from, how scoring works.
+> what each suite tests, where the benchmarks come from, how scoring wo<!-- eval-scorecard-start -->
 
-<!-- eval-scorecard-start -->
+![Eval](https://img.shields.io/badge/eval-91%25%20(27%2F27)-brightgreen?logo=pytest&style=flat)
 
-![Eval](https://img.shields.io/badge/eval-83%25%20(23%2F26)-green?logo=pytest&style=flat)
-
-**Latest eval:** 83% — 23/26 tests pass (floor: 0.5)
+**Latest eval:** 91% — 27/27 tests pass (floor: 0.5)
 
 | Suite | Score | Passed | Bar |
 | --- | --- | --- | --- |
 | bugfix | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/bugfix-73%-green?style=flat-square) |
 | codegen | [███████████████████░] 0.95 | 5/5 | ![](https://img.shields.io/badge/codegen-95%-brightgreen?style=flat-square) |
-| edits | [███████████████░░░░░] 0.75 | 3/4 | ![](https://img.shields.io/badge/edits-75%-green?style=flat-square) |
+| edits | [█████████████████░░░] 0.88 | 4/4 | ![](https://img.shields.io/badge/edits-88%-green?style=flat-square) |
 | multiturn | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/multiturn-100%-brightgreen?style=flat-square) |
 | reasoning | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/reasoning-100%-brightgreen?style=flat-square) |
 | refactor | [████████████████████] 1.00 | 1/1 | ![](https://img.shields.io/badge/refactor-100%-brightgreen?style=flat-square) |
 | review | [████████████████████] 1.00 | 1/1 | ![](https://img.shields.io/badge/review-100%-brightgreen?style=flat-square) |
-| speed | [██████████░░░░░░░░░░] 0.50 | 1/3 | ![](https://img.shields.io/badge/speed-50%-yellow?style=flat-square) |
+| speed | [████████████████████] 1.00 | 4/4 | ![](https://img.shields.io/badge/speed-100%-brightgreen?style=flat-square) |
 | tools | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/tools-73%-green?style=flat-square) |
 
 
-<!-- eval-scorecard-end -->
+<!-- eval-scorecard-end -->nd -->
 
 ### Running evaluations
 
@@ -524,14 +522,20 @@ python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 docker compose --profile tools config     # validate compose
 ```
 
-> **The speed suite cannot see a prefill regression.** `speed/prompt_processing_tps`
-> sends a **521-token** prompt and derives tok/s from end-to-end wall clock through
-> forge, so it is dominated by fixed per-request overhead. It scored 0.47 both
-> before and after a fix that made prefill ~65x faster. Measured directly against
-> llama on the same evening: **2246–2331 tok/s prefill, 44–46 tok/s generation** —
-> figures this row cannot produce. Do not read it as throughput.
+> **The speed suite measures the engine, not the proxy.** It queries llama-server
+> directly and scores `timings.prompt_per_second` / `timings.predicted_per_second`
+> — forge strips that block, and dividing token counts by end-to-end wall clock
+> measures proxy overhead rather than throughput. Prefill uses a **4000-word**
+> prompt with a unique per-run nonce, because llama caches prompt prefixes and a
+> repeated prompt reports a rate for work it never did (the suite fails the row
+> outright if `timings.cache_n` shows a hit). Proxy cost is its own row,
+> `proxy_overhead_s`, named for what it is.
 >
-> Individual rows also move at temperature 0.6 with no repeat mechanism:
+> This replaced a version that sent a 521-token prompt and derived both figures
+> from one wall clock: it scored 0.47 both before and after a fix that made
+> prefill ~65x faster, and could not have detected the regression.
+>
+> Individual rows still move at temperature 0.6 with no repeat mechanism:
 > `edits/mixed_tabs` scored 1.00, 0.50 and 0.00 across three runs of the same
 > build. Treat single-row changes as noise, not regressions.
 

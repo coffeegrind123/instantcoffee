@@ -34,24 +34,62 @@ means it produced nothing usable. Most real results land in between.
 
 ### 1. Speed (`speed`)
 
-**What it measures:** Raw inference throughput — how fast the model processes
-your prompt and generates tokens.
+**What it measures:** engine throughput — how fast llama-server actually
+processes a prompt and generates tokens — plus, separately, what the forge
+guardrail layer costs per call.
 
-**Methodology:** Sends a ~500-token prompt of varied repeating words (so the
-tokenizer doesn't compress them into fewer tokens), requests 128 completion
-tokens, divides `prompt_tokens / elapsed_seconds` for prefill speed and
-`completion_tokens / elapsed_seconds` for generation speed. This mirrors
-`llama-bench -p 512 -n 128` methodology used by bradrlaw/ai-server and
-0xSero/framework-research.
+**Methodology:** the speed suite is the one suite that talks to **llama-server
+directly**, bypassing forge, and it scores llama's own `timings` block rather
+than a stopwatch:
 
-**Scoring:** `prompt_processing_tps` is capped at 1000 tok/s → 1.0.
-`token_generation_tps` is capped at 100 tok/s → 1.0. These are throughput
-scores, not pass/fail — a model delivering 50 tok/s decode gets 0.50.
+| Test | Request | Scored on |
+| --- | --- | --- |
+| `prompt_processing_tps` | ~4000 words, 1 completion token | `timings.prompt_per_second` |
+| `token_generation_tps` | short prompt, 256 completion tokens | `timings.predicted_per_second` |
+| `proxy_overhead_s` | same tiny request via forge and via llama | the difference |
+| `no_loop` | the forge response above | degenerate-repeat detector |
 
-**What good looks like:** On a 4090 with a Docker volume and mmap, expect
-100–400 tok/s prefill and 25–50 tok/s generation. The current 117/29 tok/s
-is within expectations for this hardware. **Do not use `--no-mmap`** — it
-kills generation speed by ~20× (measured: 41→2 tok/s with the flag).
+Three details are load-bearing:
+
+- **forge strips `timings`.** Verified 2026-08-13: llama returns the block,
+  forge's response does not. There is no way to get engine throughput through
+  the proxy, which is why this suite is the exception to "everything goes
+  through forge".
+- **The prompt carries a per-run nonce.** llama caches prompt prefixes
+  (`--cache-prompt`), so a repeated prompt is served from cache and reports an
+  enormous prefill rate for work it never did. The suite also checks
+  `timings.cache_n` and fails the row outright if a meaningful share of the
+  prompt was cached, rather than recording the inflated number.
+- **Prefill and generation do not share a stopwatch.** Each is measured by its
+  own request, sized so the phase under test dominates.
+
+**Scoring:** `prompt_processing_tps` targets 1500 tok/s → 1.0
+(`EVAL_PP_TARGET`), `token_generation_tps` targets 60 tok/s → 1.0
+(`EVAL_TG_TARGET`). Both are grounded in measurements on this hardware rather
+than picked to flatter: prefill runs 2246–2331 tok/s and generation 44–46 tok/s
+with MTP speculative decoding. Prefill therefore scores 1.0 with headroom;
+generation sits near 0.75 so the row has somewhere to go. `proxy_overhead_s`
+scores 1.0 up to 2s of added latency and decays to 0 at 6s.
+
+**What good looks like:** ~2300 tok/s prefill, ~45 tok/s generation, and under
+1s of forge overhead on a small call.
+
+> **This suite was rewritten on 2026-08-13, and the reason matters.** The old
+> version sent a **521-token** prompt through forge and divided *both* figures
+> by *one* end-to-end wall clock — so each phase's number included the other's
+> time plus proxy overhead. It scored **0.47 before and after** a fix that made
+> prefill roughly **65× faster** (a quantized V cache was taking prefill off the
+> GPU entirely). At 521 tokens the measurement was dominated by fixed
+> per-request cost, and the collapse only appeared above a few thousand tokens.
+> The scorecard was not merely stale; it was structurally incapable of detecting
+> the worst performance bug this stack has had.
+>
+> The old note here also said **"Do not use `--no-mmap` — it kills generation
+> speed by ~20× (measured: 41→2 tok/s)"**. That advice is now inverted:
+> `MODELS_DIR` is a Docker Desktop bind mount, which is 9p, and demand-paging
+> the GGUF through it runs at ~0.05 MB/s and never finishes loading at all. The
+> stack runs `--load-mode none` (mmap off) and generation measures 44–46 tok/s,
+> so whatever produced the 41→2 figure was not reproducible here.
 
 ### 2. Code Generation (`codegen`)
 

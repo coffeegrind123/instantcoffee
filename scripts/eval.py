@@ -52,6 +52,25 @@ from typing import Any, Callable
 # ── config ────────────────────────────────────────────────────────────────
 
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
+# The speed suite talks to llama DIRECTLY. forge strips llama's `timings` block
+# (verified 2026-08-13: llama returns it, forge's response does not), and that
+# block is the only honest source of prompt-processing throughput — dividing
+# token counts by end-to-end wall clock measures proxy overhead, not the engine.
+LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080").rstrip("/")
+
+# Throughput targets a score of 1.0 is worth, for Qwen3.6-27B UD-Q4_K_XL on one
+# RTX 4090. Both are grounded in measurements taken on 2026-08-13 rather than
+# picked to flatter: prefill ran 2246-2331 tok/s and generation 44-46 tok/s with
+# MTP speculative decoding on. The prefill target sits just under what the box
+# actually does; the generation target sits above it, so the row has somewhere
+# to go when draft acceptance improves.
+SPEED_PP_TARGET = float(os.environ.get("EVAL_PP_TARGET", "1500"))
+SPEED_TG_TARGET = float(os.environ.get("EVAL_TG_TARGET", "60"))
+# Prompt size for the prefill measurement. 521 tokens — the old value — was far
+# too small to see anything: a quantized V cache once cost this stack ~65x on
+# prefill and the suite scored 0.47 before AND after the fix, because at that
+# size the number is dominated by fixed per-request overhead.
+SPEED_PP_TOKENS = int(os.environ.get("EVAL_PP_TOKENS", "4000"))
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.6-27b")
 EVAL_TIMEOUT = float(os.environ.get("EVAL_TIMEOUT", "900"))
 REPEAT_THRESHOLD = int(os.environ.get("EVAL_REPEAT_THRESHOLD", "3"))
@@ -211,54 +230,136 @@ class Registry:
 # ── suite 1: speed ─────────────────────────────────────────────────────────
 
 
-def _suite_speed(reg: Registry) -> None:
-    """Measure prompt processing and token generation throughput.
+def _llama_chat(messages: list[dict], max_tokens: int,
+                timeout: float = EVAL_TIMEOUT) -> dict:
+    """One completion straight to llama-server, bypassing forge.
 
-    Uses a fixed prompt (~500 tokens of repeating varied words) and a
-    small generation (128 tokens). Measures wall-clock time, extracts
-    prompt_tokens / completion_tokens from the usage block, and computes
-    tok/s for both phases.
-
-    This is the same methodology as llama-bench `pp512` / `tg128` but
-    exercised through the real forge proxy path.
+    Only the speed suite uses this. Everything else goes through forge, because
+    everything else is measuring the model as a client experiences it — but
+    throughput has to come from the engine's own clock.
     """
-    suite = "speed"
+    p = {
+        "model": MODEL_ALIAS, "messages": messages, "max_tokens": max_tokens,
+        "chat_template_kwargs": {"enable_thinking": EVAL_THINKING},
+    }
+    s, b = _http(f"{LLAMA_URL}/v1/chat/completions", p, timeout=timeout)
+    if s != 200:
+        return {"_error": f"status={s}", "_body": b[:400]}
+    try:
+        return json.loads(b)
+    except json.JSONDecodeError:
+        return {"_error": "non-JSON", "_body": b[:400]}
+
+
+def _filler(n_words: int, nonce: str) -> str:
+    """Varied prose of roughly n_words words, unique per run.
+
+    The nonce matters: llama-server caches prompt prefixes (--cache-prompt), and
+    a repeated prompt is served from cache with `timings.cache_n` covering most
+    of it. That reports an enormous prefill rate for work never done.
+    """
     words = ["function", "def", "class", "return", "import", "data", "process",
              "value", "result", "config", "module", "handler", "compute",
              "validate", "transform", "execute", "initialize", "finalize",
              "error", "success", "request", "response", "argument", "parameter"]
-    prompt = "Write a Python function that does the following: " + " ".join(
-        words[i % len(words)] for i in range(500))
+    body = " ".join(words[i % len(words)] for i in range(n_words))
+    return f"[run {nonce}] {body}"
 
-    started = time.monotonic()
-    resp = _chat([{"role": "user", "content": prompt}], max_tokens=128)
-    elapsed = time.monotonic() - started
 
+def _suite_speed(reg: Registry) -> None:
+    """Engine throughput, from llama's own timings block.
+
+    Three separate measurements, deliberately not sharing a stopwatch:
+
+      prompt_processing_tps  a large prompt (EVAL_PP_TOKENS words) with a
+                             1-token generation, scored on
+                             timings.prompt_per_second
+      token_generation_tps   a small prompt with a 256-token generation, scored
+                             on timings.predicted_per_second
+      proxy_overhead_s       the same small request through forge and through
+                             llama; the difference is what the guardrail layer
+                             costs per call
+
+    The old version of this suite divided BOTH figures by one end-to-end wall
+    clock through forge, on a 521-token prompt. That conflated prefill,
+    generation and proxy overhead into a single number for each, and was blind
+    to a ~65x prefill regression that lived in this stack for weeks.
+    """
+    suite = "speed"
+    nonce = f"{time.time():.3f}"
+
+    # --- prefill -----------------------------------------------------------
+    resp = _llama_chat(
+        [{"role": "user", "content": _filler(SPEED_PP_TOKENS, nonce)}],
+        max_tokens=1)
     if "_error" in resp:
-        reg.add(suite, "throughput", 0.0, resp["_error"])
+        reg.add(suite, "prompt_processing_tps", 0.0,
+                f"llama unreachable at {LLAMA_URL}: {resp['_error']}")
+        reg.add(suite, "token_generation_tps", 0.0,
+                f"llama unreachable at {LLAMA_URL}")
+        reg.add(suite, "proxy_overhead_s", 0.0, "skipped — llama unreachable")
+        reg.add(suite, "no_loop", 0.0, "skipped — llama unreachable")
         return
 
-    usage = resp.get("usage", {})
-    pt = usage.get("prompt_tokens", 0)
-    ct = usage.get("completion_tokens", 0)
-    pp_tps = pt / elapsed if pt and elapsed else 0
-    tg_tps = ct / elapsed if ct and elapsed else 0
+    t = resp.get("timings") or {}
+    pp_tps = float(t.get("prompt_per_second") or 0.0)
+    prompt_n = int(t.get("prompt_n") or 0)
+    cache_n = int(t.get("cache_n") or 0)
+    # A cache hit invalidates the measurement rather than improving it: the
+    # engine reports a rate for tokens it never processed. Say so instead of
+    # recording the inflated figure.
+    cached = cache_n > prompt_n * 0.25 if prompt_n else False
+    reg.add(suite, "prompt_processing_tps",
+            0.0 if cached else min(pp_tps / SPEED_PP_TARGET, 1.0),
+            (f"INVALID: {cache_n}/{prompt_n + cache_n} tokens served from prompt cache"
+             if cached else
+             f"{pp_tps:.0f} tok/s over {prompt_n} tokens (target {SPEED_PP_TARGET:.0f})"),
+            pp_tps=round(pp_tps), prompt_n=prompt_n, cache_n=cache_n)
 
-    reg.add(suite, "prompt_processing_tps", min(pp_tps / 1000, 1.0),
-            f"{pp_tps:.0f} tok/s ({pt} tokens in {elapsed:.1f}s)",
-            pp_tps=round(pp_tps), pt=pt, elapsed_s=round(elapsed, 1))
-    reg.add(suite, "token_generation_tps", min(tg_tps / 100, 1.0),
-            f"{tg_tps:.0f} tok/s ({ct} tokens in {elapsed:.1f}s)",
-            tg_tps=round(tg_tps), ct=ct, elapsed_s=round(elapsed, 1))
+    # --- generation --------------------------------------------------------
+    gen = _llama_chat(
+        [{"role": "user", "content":
+          f"[run {nonce}] Count from 1 to 200, comma separated. Nothing else."}],
+        max_tokens=256)
+    gt = (gen.get("timings") or {}) if "_error" not in gen else {}
+    tg_tps = float(gt.get("predicted_per_second") or 0.0)
+    predicted_n = int(gt.get("predicted_n") or 0)
+    reg.add(suite, "token_generation_tps", min(tg_tps / SPEED_TG_TARGET, 1.0),
+            f"{tg_tps:.1f} tok/s over {predicted_n} tokens (target {SPEED_TG_TARGET:.0f})",
+            tg_tps=round(tg_tps, 1), predicted_n=predicted_n)
 
-    # Check for loops in generated output
-    content = _content(resp)
+    # --- what the proxy costs ----------------------------------------------
+    # This is the number the old suite was accidentally reporting as throughput.
+    # It is worth having, named for what it is — but it has to be measured with
+    # a DIFFERENT prompt on each side. Sending the identical prompt twice makes
+    # the second call hit llama's prompt cache (--cache-prompt), and the test
+    # then reports whichever proxy happened to go second as ~0.5s FASTER than
+    # the engine it sits in front of. Observed while writing this: forge
+    # "measured" 0.27s against llama's 0.73s on the same bytes.
+    direct_probe = [{"role": "user",
+                     "content": f"[run {nonce} direct] Reply with exactly: OK"}]
+    forge_probe = [{"role": "user",
+                    "content": f"[run {nonce} viaproxy] Reply with exactly: OK"}]
+    t0 = time.monotonic()
+    _llama_chat(direct_probe, max_tokens=8)
+    direct_s = time.monotonic() - t0
+    t0 = time.monotonic()
+    via_forge = _chat(forge_probe, max_tokens=8)
+    forge_s = time.monotonic() - t0
+    overhead = max(0.0, forge_s - direct_s)
+    # 2s of guardrail overhead per call is the point where an agent loop starts
+    # to feel it; below that it is noise against inference time.
+    reg.add(suite, "proxy_overhead_s", 1.0 if overhead <= 2.0 else max(0.0, 1.0 - (overhead - 2.0) / 4.0),
+            f"forge {forge_s:.2f}s vs llama {direct_s:.2f}s (+{overhead:.2f}s)",
+            overhead_s=round(overhead, 2), forge_s=round(forge_s, 2),
+            direct_s=round(direct_s, 2))
+
+    # --- degenerate output --------------------------------------------------
+    content = _content(via_forge) if "_error" not in via_forge else ""
     count, length = _check_repeats(content)
     ok = count < REPEAT_THRESHOLD
     reg.add(suite, "no_loop", 1.0 if ok else 0.0,
             f"repeats={count}x len={length}" if not ok else "")
-
-# ── suite 2: code generation ───────────────────────────────────────────────
 
 
 CODING_TASKS = [

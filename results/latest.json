@@ -1,27 +1,35 @@
 {
   "suites": {
     "speed": {
-      "score": 0.5,
-      "passed": 1,
-      "total": 3,
+      "score": 1.0,
+      "passed": 4,
+      "total": 4,
       "tests": [
         {
           "test": "prompt_processing_tps",
-          "score": 0.14422451559440003,
-          "passed": false,
-          "detail": "144 tok/s (521 tokens in 3.6s)",
-          "pp_tps": 144,
-          "pt": 521,
-          "elapsed_s": 3.6
+          "score": 1.0,
+          "passed": true,
+          "detail": "1764 tok/s over 4030 tokens (target 1500)",
+          "pp_tps": 1764,
+          "prompt_n": 4030,
+          "cache_n": 0
         },
         {
           "test": "token_generation_tps",
-          "score": 0.3543327830342266,
-          "passed": false,
-          "detail": "35 tok/s (128 tokens in 3.6s)",
-          "tg_tps": 35,
-          "ct": 128,
-          "elapsed_s": 3.6
+          "score": 1.0,
+          "passed": true,
+          "detail": "69.2 tok/s over 256 tokens (target 60)",
+          "tg_tps": 69.2,
+          "predicted_n": 256
+        },
+        {
+          "test": "proxy_overhead_s",
+          "score": 1.0,
+          "passed": true,
+          "detail": "forge 0.31s vs llama 0.78s (+0.00s)",
+          "overhead_s": 0.0,
+          "forge_s": 0.31,
+          "direct_s": 0.78
         },
         {
           "test": "no_loop",
@@ -99,8 +107,8 @@
       ]
     },
     "edits": {
-      "score": 0.75,
-      "passed": 3,
+      "score": 0.875,
+      "passed": 4,
       "total": 4,
       "tests": [
         {
@@ -123,9 +131,9 @@
         },
         {
           "test": "mixed_tabs",
-          "score": 0.0,
-          "passed": false,
-          "detail": "0/2 lines exact, got 2 lines"
+          "score": 0.5,
+          "passed": true,
+          "detail": "1/2 lines exact, got 2 lines"
         }
       ]
     },
@@ -163,7 +171,7 @@
           "test": "produces_output",
           "score": 1.0,
           "passed": true,
-          "detail": "length=1612"
+          "detail": "length=1527"
         },
         {
           "test": "correct_answer",
@@ -207,7 +215,7 @@
           "test": "recall_after_distraction",
           "score": 1.0,
           "passed": true,
-          "detail": "response='NeutronStar'"
+          "detail": "response='The project name is NeutronStar.'"
         },
         {
           "test": "no_severe_loop",
@@ -232,9 +240,9 @@
     }
   },
   "overall": {
-    "score": 0.833,
-    "passed": 23,
-    "total": 26
+    "score": 0.913,
+    "passed": 27,
+    "total": 27
   },
   "config": {
     "thinking": "off",

@@ -156,6 +156,8 @@ services:
     entrypoint: ["python", "/work/scripts/eval.py"]
     environment:
       FORGE_URL: http://forge:8081
+      # The speed suite reads llama's own timings block, which forge strips.
+      LLAMA_URL: http://llama:8080
       MODEL_ALIAS: ${MODEL_ALIAS}
       EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
       EVAL_REPEAT_THRESHOLD: ${EVAL_REPEAT_THRESHOLD:-3}
