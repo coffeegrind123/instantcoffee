@@ -142,6 +142,26 @@ else
   warn "$STACK_EXT is missing — /stack will not be available this session."
 fi
 
+# pi-loop-mode lives in pi's USER settings, not in this checkout, because that is
+# the only scope pi loads from in every directory. Nothing here installs it — a
+# launcher that silently installs npm packages is a worse trade than a warning —
+# but a missing one is worth saying at startup rather than when /loop is typed
+# and turns out to be plain text the model answers.
+LOOP_VERSION="$(env_get PI_LOOP_MODE_VERSION)"
+LOOP_NOTE=""
+if [[ -n "$LOOP_VERSION" ]]; then
+  if pi list 2>/dev/null | grep -q "pi-loop-mode@${LOOP_VERSION}"; then
+    LOOP_NOTE=", /loop"
+  elif pi list 2>/dev/null | grep -q "pi-loop-mode@"; then
+    warn "pi-loop-mode is installed at a version other than the pinned ${LOOP_VERSION}."
+    warn "Match the pin with: pi install npm:pi-loop-mode@${LOOP_VERSION}"
+    LOOP_NOTE=", /loop (unpinned)"
+  else
+    dim "pi-loop-mode is not installed — /loop will not exist this session."
+    dim "Install it with: pi install npm:pi-loop-mode@${LOOP_VERSION}"
+  fi
+fi
+
 # MCP servers, reached as a CLI rather than as MCP. --skill is additive and takes
 # an absolute path, so the skill travels with the repo instead of being installed
 # into ~/.pi — nothing outside this checkout is touched, and it still applies when
@@ -227,5 +247,5 @@ fi
 curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
   || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE}${LOOP_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

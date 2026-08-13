@@ -1558,3 +1558,69 @@ Genuinely unresolved, each with the thing that would settle it:
   thinking-token measurement `ab_think_lang.py` already does.
 - **`/stack slots save|restore` is shipped but unexercised**, deliberately —
   running a save is what wedged llama's task queue once already.
+
+## 2026-08-13 — an unattended loop, and which package to trust with it
+
+Requirement: `/loop read @PLAN.md and implement` — keep iterating, survive
+compaction, continue the same run. Adopted **`pi-loop-mode@2.5.4`**, pinned in
+`.env` as `PI_LOOP_MODE_VERSION`, installed to pi's user settings.
+
+### Why not pi-agent-loop, the package that prompted this
+
+It works — `/loop` and `/loop-stop` register, and the source is clean. But it is
+three files with no context handling at all, and its peer dependency names the
+**old** pi package (`@mariozechner/pi-coding-agent`, versus our
+`@earendil-works/…`). npm installs that peer alongside and pi resolves it, so it
+loads; that was checked rather than assumed after the peer name suggested it
+would not.
+
+It is the wrong tool for the requirement all the same: nothing in it persists a
+loop across compaction, which is the part that matters at `CTX_SIZE=32768`.
+
+### What the catalog actually offers
+
+`pi.dev/packages?name=loop` returns 140 matches; the top 50 by downloads are
+mostly near-duplicates (goal loops, "ralph" loops, `/afk` loops). Sorting by
+downloads is not the useful filter. The useful ones were:
+
+- Does it target `@earendil-works/*` (our pi)?
+- Does loop state survive compaction?
+- Does completion depend on the model's own claim?
+
+That last one matters disproportionately with a 27B: a small model asserting
+"done" is not evidence.
+
+### Why pi-loop-mode
+
+- **Compaction survival.** State persists via `pi.appendEntry()` as session
+  entries and is restored from `ctx.sessionManager.getBranch()`. On context
+  pressure it builds a summary locally from loop state and touched files rather
+  than issuing another model call — the right design here, since a
+  summarization request against a saturated context is precisely what fails
+  under `--no-context-shift`.
+- **Built for weak models**: repetition/near-duplicate detection, a
+  degenerate-output kill switch, an escalation ladder of recovery strategies.
+- **Objective done-ness**: `--check "CMD"` trusts an exit code, not a claim.
+
+### Verified, not assumed
+
+Scratch project, a `PLAN.md` asking for `calc.py` + `test_calc.py`, run as
+`/loop start read @PLAN.md and implement it --max 2` against Qwen3.6-27B through
+forge. Result: both files written, `__pycache__` showing the tests were actually
+executed, `IMPROVEMENTS.md` backlog created, loop log recording `done` then
+`max_reached`. `python3 test_calc.py` exits 0 — the plan's own criterion.
+
+### Security review, because these run with full system access
+
+pi's own docs say to review before installing. Both candidates: **no**
+install-time lifecycle scripts (`preinstall`/`postinstall`/`prepare`), no
+network calls, no filesystem writes outside pi's API, no `eval`, no base64
+decoding, no `process.env` reads. `pi-loop-mode`'s single `child_process` use is
+`pi.exec("bash", ["-lc", state.checkCommand])` — the `--check` command the
+operator supplies. Nothing persisted from the trial runs: `pi -e npm:<pkg>`
+installs to a temp directory for that run only, and `pi list` was empty
+afterwards.
+
+Both were run before the second one was reviewed, which was the wrong order.
+Review first — the pin exists so an upgrade is a deliberate act with a re-review
+attached.

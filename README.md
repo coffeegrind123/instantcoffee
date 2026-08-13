@@ -95,6 +95,7 @@ cd ~/my-project && qpi
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
+| `pi install npm:pi-loop-mode@2.5.4` | One-time install of `/loop` (pinned in `.env`) |
 
 ## Updating
 
@@ -420,6 +421,52 @@ wedged** and inference is down even though the container looks healthy and
 > no client-side timeout — interrupting is the thing that breaks it — and it
 > re-probes the queue afterwards. Read the confirmation before saying yes.
 
+### Unattended loops: `/loop`
+
+`pi-loop-mode` (pinned in `.env` as `PI_LOOP_MODE_VERSION`) iterates the agent
+until you stop it. Install once — it goes into pi's **user** settings, which is
+the only scope pi loads from in every directory:
+
+```bash
+pi install npm:pi-loop-mode@2.5.4
+```
+
+Then, in the project you want worked on:
+
+```
+/loop start read @PLAN.md and implement it
+/loop start <goal> --check "python3 -m pytest -q"   # objective done-ness
+/loop start <goal> --max 20                          # cap the iterations
+/loop stop | /loop resume | /loop finish | /loop stats
+```
+
+**Why this one.** Three properties matter on a stack like this, and they were
+checked rather than taken from the README:
+
+- **It survives compaction, which is the whole point at `CTX_SIZE=32768`.**
+  Loop state is persisted as pi session entries and restored with
+  `restoreLoopState(ctx.sessionManager.getBranch())`, so a compaction does not
+  end the run. On context pressure it builds a *local* summary from loop state
+  and touched files instead of making another model call — which matters here,
+  because a summarization request against an already-saturated context is
+  exactly what fails under `--no-context-shift`.
+- **It is built for weak models.** Repetition and near-duplicate detection,
+  a degenerate-output kill switch, and an escalation ladder that injects
+  recovery strategies. A 27B local model does get stuck in ways a frontier
+  model does not.
+- **Done-ness can be objective.** `--check "CMD"` runs a shell command after
+  every iteration and believes the exit code, not the model's claim.
+
+Verified end to end on Qwen3.6-27B: given a `PLAN.md`, a two-iteration run
+produced a working module and a passing test, and `python3 test_calc.py` exited
+0 — the plan's own acceptance criterion.
+
+> **Third-party code runs with full system access.** Both this and the
+> alternative were reviewed before running: no install-time lifecycle scripts,
+> no network calls, no filesystem writes outside pi's own API. `pi-loop-mode`'s
+> single `pi.exec` is the documented `--check` command you supply yourself.
+> Re-review on upgrade — the pin exists for that reason.
+
 ### The launch banner
 
 Every session prints what it is actually doing, so nothing is on silently:
@@ -430,6 +477,7 @@ pi -> http://localhost:8081  (model: qwen3.6-27b, context files off, thinking in
 
 Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
 `mcp via cli` means the MCP skill is loaded; `context files off` means `-nc`;
+`/loop` means pi-loop-mode is installed at the pinned version;
 `/stack` means the stack extension loaded. If `/stack` is absent from the
 banner, the command will not exist in that session.
 
