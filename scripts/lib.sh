@@ -36,8 +36,16 @@ compose() {
 }
 
 # Read one key out of the merged env, honouring .env.local overrides.
+#
+# An exported variable wins over both files, so a per-invocation override works
+# the way anyone would expect it to:
+#     PI_CONTEXT_FILES=1 ./scripts/pi-local.sh
+# It previously did not — the value was read from .env only and the override was
+# ignored in silence, which is the worst way for a knob to not work. This also
+# matches how docker compose already resolves the same names.
 env_get() {
   local key="$1" val=""
+  if [[ -n "${!key+x}" ]]; then printf '%s' "${!key}"; return 0; fi
   for f in "$REPO_ROOT/.env" "$REPO_ROOT/.env.local"; do
     [[ -f "$f" ]] || continue
     local line

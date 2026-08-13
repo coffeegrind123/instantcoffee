@@ -169,6 +169,38 @@ fi
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 
+# --- keep pi current ---------------------------------------------------------
+# pi ships often and the stack is only ever tested against the current release.
+# Checked at most once per PI_UPDATE_INTERVAL_H hours (a stamp file), because a
+# registry round trip on every launch is latency you would feel and a network
+# dependency a local-model stack should not have.
+#
+# Fails SOFT, always: no npm, no network, a registry hiccup — warn and launch on
+# what is installed. An agent session must never be blocked by an update check.
+if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
+  STAMP="${HOME}/.pi/.last-update-check"
+  INTERVAL_H="$(env_get PI_UPDATE_INTERVAL_H)"; : "${INTERVAL_H:=24}"
+  AGE_H=$(( INTERVAL_H + 1 ))
+  [[ -f "$STAMP" ]] && AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$STAMP" 2>/dev/null || echo 0) ) / 3600 ))
+  if (( AGE_H >= INTERVAL_H )); then
+    if command -v npm >/dev/null 2>&1; then
+      CUR="$(pi --version 2>/dev/null | tr -d ' ')"
+      LATEST="$(timeout 20 npm view @earendil-works/pi-coding-agent version 2>/dev/null | tr -d ' ')"
+      mkdir -p "$(dirname "$STAMP")" && touch "$STAMP"
+      if [[ -n "$LATEST" && "$LATEST" != "$CUR" ]]; then
+        info "Updating pi ${CUR:-?} -> ${LATEST}"
+        if timeout 300 npm install -g --ignore-scripts @earendil-works/pi-coding-agent >/dev/null 2>&1; then
+          ok "pi $(pi --version 2>/dev/null)"
+        else
+          warn "pi update failed — continuing on ${CUR:-the installed version}"
+        fi
+      fi
+    else
+      warn "PI_AUTO_UPDATE=1 but npm is not on PATH — skipping the update check"
+    fi
+  fi
+fi
+
 # forge has to answer before pi starts, or the first request fails inside pi's
 # UI where the cause is much harder to see.
 curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \

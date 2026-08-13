@@ -61,10 +61,12 @@ git clone <this repo> && cd qwen3.6-forge
 both services, and then runs the end-to-end smoke test. It is idempotent — re-run it
 any time.
 
-Then start a session:
+Then start a session — pi works on your current directory, so `cd` to the
+project you want it to work on:
 
 ```bash
-./scripts/pi-local.sh
+cd ~/my-project
+~/qwen3.6-forge/scripts/pi-local.sh
 ```
 
 ## Day-to-day
@@ -77,7 +79,7 @@ Then start a session:
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
 | `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
-| `./scripts/pi-local.sh` | Launch pi against the local model |
+| `cd <project> && ~/qwen3.6-forge/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
@@ -133,6 +135,8 @@ The keys worth knowing:
 | `PI_MAX_TOKENS` | `8192` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
 | `PI_CONTEXT_FILES` | `0` | `1` loads `AGENTS.md`; `0` passes `-nc` |
 | `PI_EXTRA_ARGS` | *(empty)* | Flags your own `pi` alias would add — aliases do not expand in scripts |
+| `PI_AUTO_UPDATE` | `1` | Keep pi on the latest npm release; fails soft |
+| `PI_UPDATE_INTERVAL_H` | `24` | Hours between update checks |
 | `MCP2CLI_ENABLED` | `1` | Loads the `mcp-tools` skill so pi can call MCP servers as a CLI. `0` disables |
 | `MCP2CLI_VERSION` | `3.3.1` | mcp2cli release |
 | `MCP_SDK_VERSION` | `1.29.0` | MCP Python SDK pin — must stay `<2`, see below |
@@ -181,20 +185,89 @@ docker compose run --rm --no-deps llama --list-devices
 
 ## Using it with pi (pi.dev)
 
+### Starting a session in a project
+
+pi works on your **current directory**, so scope it by `cd`-ing there first and
+calling the launcher by its absolute path. Everything the launcher needs
+(prompt fragments, the MCP skill) is resolved absolutely, so it runs correctly
+from anywhere:
+
 ```bash
-./scripts/pi-local.sh                 # start a session
-./scripts/pi-local.sh --install-only  # just write the provider config
-./scripts/pi-local.sh -p "summarize"  # any pi flag passes through
-./scripts/pi-local.sh --print-only    # show the exact command without running it
+cd ~/my-project
+~/qwen3.6-forge/scripts/pi-local.sh
 ```
 
-The launch banner states the route, the model, whether context files are loaded
-and whether a thinking-language fragment is active — so a session can never be
-running something you did not ask for without saying so:
+pi then reads and edits files under `~/my-project`. Worth adding to your shell
+so you stop typing the path:
+
+```bash
+alias qpi='~/qwen3.6-forge/scripts/pi-local.sh'
+# then, in any project:  cd ~/my-project && qpi
+```
+
+Common variants — any pi flag passes straight through:
+
+```bash
+qpi                                  # interactive session
+qpi -c                               # continue the previous session here
+qpi -p "what does src/auth.py do?"   # one-shot, non-interactive, prints and exits
+qpi --print-only                     # show the exact command, run nothing
+qpi --install-only                   # just refresh ~/.pi/agent/models.json
+```
+
+### Changing settings for one session
+
+Any `.env` key can be overridden for a single launch by setting it in front of
+the command — the same way `docker compose` treats the shell environment:
+
+```bash
+PI_CONTEXT_FILES=1 qpi     # load this project's AGENTS.md / CLAUDE.md
+THINK_LANG=off qpi         # no Chinese-reasoning fragment this session
+MCP2CLI_ENABLED=0 qpi      # drop the MCP skill for this session
+```
+
+**`PI_CONTEXT_FILES=1` is the one to remember when working in a real project.**
+The launcher passes `-nc` by default, which stops pi walking parent directories
+for `AGENTS.md`/`CLAUDE.md` — cheap on a 32K window, but it also means your
+project's conventions are not loaded until you ask for them.
+
+For a permanent change, edit `.env`; for a permanent *machine-local* change that
+should not be committed, put it in `.env.local`.
+
+### The launch banner
+
+Every session prints what it is actually doing, so nothing is on silently:
 
 ```
-pi -> http://localhost:8081 via forge  (model: qwen3.6-27b, context files off, thinking in zh)
+pi -> http://localhost:8081  (model: qwen3.6-27b, context files off, thinking in zh, mcp via cli)
 ```
+
+Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
+`mcp via cli` means the MCP skill is loaded; `context files off` means `-nc`.
+
+### Keeping pi current
+
+`PI_AUTO_UPDATE=1` (the default) has the launcher check npm and upgrade pi in
+place. The check is rate-limited to once every `PI_UPDATE_INTERVAL_H` hours (24)
+via a stamp file, so you are not paying a registry round trip every session, and
+it **fails soft** in every direction — no npm, no network, or a failed install
+all warn and launch on the version already there. `PI_AUTO_UPDATE=0` pins it.
+
+### If it will not start
+
+`pi-local.sh` refuses to launch rather than dropping you into a session that
+cannot reach the model:
+
+```
+err  forge is not answering at http://localhost:8081 — start it with ./scripts/up.sh
+```
+
+`./scripts/up.sh` starts the stack. The **first** start after a cold boot takes
+~20 minutes: the model is 17.9 GB read over a Docker Desktop bind mount that
+measures 10–38 MB/s. `./scripts/logs.sh llama` shows real progress; the health
+status will say `starting` the whole time.
+
+### How the provider config is generated
 
 pi has no "point at a proxy" flag — custom providers live in
 `~/.pi/agent/models.json`. The script generates that entry from `.env`, so the
