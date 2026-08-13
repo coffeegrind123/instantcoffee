@@ -1,27 +1,27 @@
 {
   "suites": {
     "speed": {
-      "score": 0.468,
-      "passed": 3,
+      "score": 0.5,
+      "passed": 1,
       "total": 3,
       "tests": [
         {
           "test": "prompt_processing_tps",
-          "score": 0.11724641969295514,
-          "passed": true,
-          "detail": "117 tok/s (521 tokens in 4.4s)",
-          "pp_tps": 117,
+          "score": 0.14422451559440003,
+          "passed": false,
+          "detail": "144 tok/s (521 tokens in 3.6s)",
+          "pp_tps": 144,
           "pt": 521,
-          "elapsed_s": 4.4
+          "elapsed_s": 3.6
         },
         {
           "test": "token_generation_tps",
-          "score": 0.2880526241976633,
-          "passed": true,
-          "detail": "29 tok/s (128 tokens in 4.4s)",
-          "tg_tps": 29,
+          "score": 0.3543327830342266,
+          "passed": false,
+          "detail": "35 tok/s (128 tokens in 3.6s)",
+          "tg_tps": 35,
           "ct": 128,
-          "elapsed_s": 4.4
+          "elapsed_s": 3.6
         },
         {
           "test": "no_loop",
@@ -99,8 +99,8 @@
       ]
     },
     "edits": {
-      "score": 0.875,
-      "passed": 4,
+      "score": 0.75,
+      "passed": 3,
       "total": 4,
       "tests": [
         {
@@ -123,9 +123,9 @@
         },
         {
           "test": "mixed_tabs",
-          "score": 0.5,
-          "passed": true,
-          "detail": "1/2 lines exact, got 2 lines"
+          "score": 0.0,
+          "passed": false,
+          "detail": "0/2 lines exact, got 2 lines"
         }
       ]
     },
@@ -163,7 +163,7 @@
           "test": "produces_output",
           "score": 1.0,
           "passed": true,
-          "detail": "length=2043"
+          "detail": "length=1612"
         },
         {
           "test": "correct_answer",
@@ -180,15 +180,15 @@
       ]
     },
     "review": {
-      "score": 0.667,
+      "score": 1.0,
       "passed": 1,
       "total": 1,
       "tests": [
         {
           "test": "security_issues_found",
-          "score": 0.6666666666666666,
+          "score": 1.0,
           "passed": true,
-          "detail": "2/3"
+          "detail": "3/3"
         }
       ]
     },
@@ -232,11 +232,13 @@
     }
   },
   "overall": {
-    "score": 0.835,
-    "passed": 26,
+    "score": 0.833,
+    "passed": 23,
     "total": 26
   },
-  "_ran_at": "2026-08-01T18:22:07Z",
-  "_model": "Qwen3.6-27B UD-Q4_K_XL",
-  "_speed": "117 tok/s pp, 29 tok/s tg (Docker volume, mmap enabled)"
+  "config": {
+    "thinking": "off",
+    "system_prompt": null,
+    "model": "qwen3.6-27b"
+  }
 }

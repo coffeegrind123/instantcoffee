@@ -1254,3 +1254,58 @@ was nearly misdiagnosed as a regression of the first.
 `/free` was run and found nothing to reclaim: no abandoned sessions (all ten
 pts devices had been written within the threshold) and no runaway process. The
 pressure was our own configuration, not stray sessions.
+
+### The forge fix, corrected: --max-retries 0, not --inject-respond-tool
+
+`--inject-respond-tool` (committed in ae93ce0) did fix the correctness bug, but
+it was the wrong fix and the eval caught it. Making the model answer via
+`respond(message="...")` means every answer is a JSON tool call it has to
+generate and forge has to unwrap. Three configs, same two request shapes,
+measured 2026-08-13 on a healthy stack:
+
+| config | tool turn | answer turn |
+| --- | --- | --- |
+| `--max-retries 3`, no respond tool | 3.6s | 6.7s — **WRONG** (returned another tool call) |
+| `--max-retries 3` + respond tool | 1.3s | 5.1s — correct |
+| **`--max-retries 0`** | 1.7s | **0.8s — correct** |
+
+`--max-retries 0` is strictly better: forge makes one attempt, raises
+`ToolCallError`, and passes the text through unchanged. Rescue parsing still
+runs, so a malformed tool call is still recovered — only the nudge-and-retry
+loop is gone, and pi has its own agentic loop for anything needing another turn.
+
+The process failure is worth recording too: ae93ce0 shipped on a *functional*
+test (answer vs. no answer) with no latency measurement. The three-way
+comparison above should have run before that commit, not after the scorecard
+regressed.
+
+### The speed suite cannot see a prefill regression
+
+Three eval runs tonight, and the metric that should have screamed about a 65x
+prefill collapse barely moved:
+
+| run | overall | speed | prompt_processing detail |
+| --- | --- | --- | --- |
+| KV-quant bug, 64K ctx | 0.835 (26/26) | 0.468 | 117 tok/s (521 tokens in 4.4s) |
+| KV fixed + respond tool | 0.843 (24/26) | 0.420 | 75 tok/s (521 tokens in 6.9s) |
+| KV fixed + max-retries 0 | 0.833 (23/26) | 0.500 | 144 tok/s (521 tokens in 3.6s) |
+
+Overall is flat across all three — 0.833 to 0.843 is noise at temperature 0.6.
+**The suite scored 0.47 both before and after a fix that made prefill ~65x
+faster**, because `speed/prompt_processing_tps` sends a **521-token** prompt and
+derives tok/s from end-to-end wall clock through forge. At that size the number
+is dominated by fixed per-request overhead, and the KV-quant collapse only
+appeared above a few thousand tokens. Measured directly against llama the same
+evening: **2246-2331 tok/s prefill, 44-46 tok/s generation** — figures the suite
+cannot produce and does not resemble.
+
+So the committed scorecard was not merely stale, it was structurally unable to
+detect the worst bug in this stack's history. A prompt-processing test worth the
+name needs a prompt of at least a few thousand tokens and should read llama's
+own `timings.prompt_per_second` rather than dividing by wall clock. Not fixed
+here — recorded so the next person does not trust that row.
+
+`edits/mixed_tabs` also flipped to 0.00 this run after scoring 0.50 and 1.00 in
+the two before it. Single-sample tests at temperature 0.6 move around; the
+suite has no repeat mechanism, so individual rows should not be read as
+regressions.
