@@ -104,6 +104,35 @@ jobs:
           done
           exit $missing
 
+      # A mode is applied with env_set(), which refuses to append a key that is
+      # not already in .env — so a typo in modes/*.env fails at switch time, in
+      # front of whoever is trying to change regime, having already written some
+      # of the keys. Catch it here instead. Also guards the reverse drift: a key
+      # renamed in .env leaves every mode file silently pointing at nothing.
+      - name: Mode presets reference real .env keys
+        run: |
+          bad=0
+          for f in modes/*.env; do
+            [ -e "$f" ] || continue
+            while IFS= read -r key; do
+              grep -qE "^[[:space:]]*${key}=" .env || { echo "$f: '$key' is not in .env"; bad=1; }
+            done < <(grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$f" | sed 's/=.*//' | tr -d ' \t')
+            echo "  $f: $(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$f") keys"
+          done
+          exit $bad
+
+      # .env is rewritten by scripts/mode.sh, so a comment that asserts which
+      # regime is active goes stale the moment anyone switches. This repo shipped
+      # a block reading "CURRENTLY SET FOR PROSE" above the coding temperature.
+      # Describe the knob, not the current value.
+      - name: .env comments do not assert the active mode
+        run: |
+          if grep -nEi '^#.*(currently set|is currently (on|off))' .env; then
+            echo "The lines above claim a live state in a file that mode.sh rewrites."
+            exit 1
+          fi
+          echo "  no mode-state assertions in .env comments: OK"
+
       # The skill is the only thing that tells the model ./scripts/mcp.sh
       # exists, and pi is lenient about malformed skills — it does not fail, it
       # just quietly does not offer them. So validate the frontmatter here

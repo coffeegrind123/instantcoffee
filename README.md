@@ -738,6 +738,9 @@ scripts/
 modes/
   coding.env            the regime the committed scorecard was measured in
   prose.env             decensored model, card sampling, no thinking-language
+patches/
+  forge_merge_consecutive.py  build-time fix for a forge crash on structured
+                        message content; fails the build if forge changes
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh

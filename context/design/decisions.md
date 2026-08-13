@@ -1470,3 +1470,91 @@ claims 50% fewer thinking tokens at equal accuracy with multi-seed CIs. Note in
 advance that **this eval will probably not detect that either** — it runs with
 `EVAL_THINKING=off` and scores no token-cost metric. Judging it needs the
 thinking-token measurement the A/B harness already does, not this suite.
+
+## 2026-08-13 — corrections found in a repo audit
+
+### mmap: the 2026-08-01 entry above is superseded
+
+"#### --no-mmap (REVERSED 2026-08-01)" concludes **"Do not use `--no-mmap` with
+a single-file GGUF"**, measured at 20x slower generation in a *Docker volume*.
+The stack has since run `--load-mode none`, which disables mmap, and that entry
+was never updated — so the log argued against the flag the compose file uses.
+
+Both are right about their own case, and the difference is where the GGUF lives:
+
+- In a **Docker volume** (the 2026-08-01 measurement), mmap is much faster.
+- On the **9p bind mount** this box actually uses (`MODELS_DIR=//d/llm-models`,
+  a Docker Desktop Windows path), demand-paging the GGUF runs at roughly
+  0.05 MB/s and the load never finishes. `--load-mode none` is mandatory here.
+
+So the rule is not "mmap good" or "mmap bad", it is: **mmap is unusable across a
+9p bind mount, and fine on a real volume.** Anyone moving `MODELS_DIR` onto a
+volume should re-measure rather than inherit either conclusion.
+
+### The eval's own README scorecard had been corrupted for weeks
+
+`README.md` carried `how scoring wo<!-- eval-scorecard-start -->` — a sentence
+truncated mid-word by a marker — and `<!-- eval-scorecard-end -->nd -->`. Present
+since before 8c225e7. `gen-readme-scorecard.py` splices
+`readme[:start] + section + readme[end+len(END):]`, which is correct only while
+the markers are well formed: `find()` takes the first match and the tail is
+copied verbatim, so damage survives every regeneration untouched. The generator
+looked healthy while preserving the corruption. It now refuses unless there is
+exactly one of each marker, start precedes end, and the text after the end
+marker is not a marker fragment.
+
+### .env comments must not assert the active mode
+
+`.env` is rewritten by `scripts/mode.sh`, so a comment claiming a live state
+goes stale on the next switch. The file shipped a block headed
+"CURRENTLY SET FOR PROSE, NOT CODE" directly above `TEMPERATURE=0.6`. Comments
+now describe the knob and point at `modes/*.env` for per-regime values; CI
+rejects `^#.*currently set` and friends.
+
+### forge corrupts a merge when message content is structured
+
+`forge/clients/llamafile.py` merges two adjacent same-role messages with
+`target["content"] + "\n\n" + m["content"]`, which assumes `str`. The OpenAI
+schema also allows a **list** of content blocks, which pi sends, and the
+expression then raises `TypeError: can only concatenate list (not "str") to
+list` — returned to the client as an opaque 502.
+
+Reproduced against the running proxy, with a control:
+
+| request | result |
+| --- | --- |
+| 2x user, string content | 200 |
+| 2x user, **list** content | **502** `can only concatenate list …` |
+| 1x user, list content | 200 |
+
+Present in **0.8.2 and 0.9.0**, so upgrading is not the fix. It is reached
+whenever two same-role messages end up adjacent — most easily by asking
+something while llama is still loading (503), then retyping. In other words the
+first thing anyone does after a restart.
+
+Patched at image build time by `patches/forge_merge_consecutive.py`: the
+`str + str` path stays byte-identical, and structured content is merged as
+blocks so image parts are not silently dropped. The patcher verifies the exact
+upstream source text and exits non-zero if it has changed, so a forge upgrade
+fails the build instead of quietly shipping unpatched.
+
+## Still open (carried forward from HANDOFF.md, which is now deleted)
+
+Genuinely unresolved, each with the thing that would settle it:
+
+- **`THINK_LANG=zh` has never been measured on this hardware.** It is on in
+  `coding` mode on a community claim from an HN thread, not a local result.
+  `./scripts/ab-think-lang.sh --repeat 3 --save` settles it; a non-zero exit
+  means set it `off`.
+- **`SPEC_DRAFT_N_MAX=2` was adopted from a public rig, not measured here.**
+  ThinkingCap's card suggests 4 with an accept length of 3.69.
+- **forge 0.9.0 is available; we pin 0.8.2.** There is a `MIGRATING_TO_0.9.md`
+  upstream. Note that 0.9.0 does *not* fix the structured-content merge bug
+  above, so it buys nothing on that front.
+- **`bottlecapai/ThinkingCap-Qwen3.6-27B-GGUF` is the next model worth testing**
+  — 15.7 GB, claiming 50% fewer thinking tokens at equal accuracy with
+  multi-seed CIs. Expect this repo's eval to be unable to detect that: it runs
+  `EVAL_THINKING=off` and scores no token-cost metric, so judging it needs the
+  thinking-token measurement `ab_think_lang.py` already does.
+- **`/stack slots save|restore` is shipped but unexercised**, deliberately —
+  running a save is what wedged llama's task queue once already.
