@@ -40,6 +40,23 @@ jobs:
             bash -n "$f" && echo "  $f: OK"
           done
 
+      # pi loads .pi/extensions/*.ts at startup. A parse error there does not
+      # fail loudly — the session simply comes up without /stack — so it is
+      # checked here instead. Node's type stripping is a parser, not a type
+      # checker, which is the right depth: it catches syntax and any construct a
+      # strip-only transpiler cannot handle (parameter properties, enums), while
+      # needing no toolchain and no node_modules.
+      - name: Extension syntax checks
+        run: |
+          for f in .pi/extensions/*.ts; do
+            node --experimental-strip-types --no-warnings \
+                 -e "import('./$f').catch(e => {
+                       if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0);
+                       console.error(e.message); process.exit(1);
+                     })"
+            echo "  $f: OK"
+          done
+
       # The stack targets pi only. A reintroduced Claude Code launcher, env key
       # or wire-format check would go unnoticed otherwise until someone tried to
       # run it against a 64K window.

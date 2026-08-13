@@ -244,6 +244,49 @@ or a project whose conventions file is enormous.
 For a permanent change, edit `.env`; for a permanent *machine-local* change that
 should not be committed, put it in `.env.local`.
 
+### Controlling the stack from inside pi: `/stack`
+
+`.pi/extensions/stack.ts` ships with the repo and auto-loads whenever pi runs
+here, so a session can inspect and drive the stack without dropping to a shell.
+Approve project-local files once (`-a`, or answer the trust prompt) and:
+
+```
+/stack                     model, context, slots, throughput, GPU, forge, settings
+/stack env [FILTER]        every effective setting (.env + .env.local + exported)
+/stack set KEY=VALUE       edit .env, and say exactly what must restart
+/stack up | down           start / stop via scripts/
+/stack restart [llama|forge]
+/stack smoke | eval | bench
+/stack logs [llama|forge]
+/stack slots save|restore|erase [id]
+```
+
+**Observation is model-callable; mutation is not.** The `stack_status` tool lets
+the model check throughput or KV usage before blaming itself for slow output.
+Every command that changes something is user-only, so a model cannot restart
+llama in the middle of your task.
+
+**Nothing here reconfigures a running server, because nothing can.**
+llama-server answers **501 to `POST /props`** on this build — context size,
+sampling, reasoning budget and MTP are startup flags, full stop — and forge
+0.8.2 has no admin API at all (`/health`, `/v1/models`, `/v1/messages`,
+`/v1/chat/completions`, and that is the entire surface). So `/stack set` edits
+`.env` and then tells you precisely what to recreate, reading the key→service
+mapping out of `docker-compose.yml` so it cannot drift. It distinguishes keys
+that only `pi-local.sh` reads — those just need pi restarted — from keys that
+need a container recreate and, for llama, a ~20 minute cold load.
+
+`/stack` also detects one failure mode that ordinary health checks miss: if
+`/props` answers while `/slots` and `/metrics` time out, llama's **task queue is
+wedged** and inference is down even though the container looks healthy and
+`/health` passes. The status output says so, and names the recovery.
+
+> **`/stack slots` is sharp.** Measured on this box: saving one 32k slot wrote
+> 315 MB in 180 s without finishing, and **aborting a save wedged the server** as
+> above, costing a container recreate and a cold load. The command therefore has
+> no client-side timeout — interrupting is the thing that breaks it — and it
+> re-probes the queue afterwards. Read the confirmation before saying yes.
+
 ### The launch banner
 
 Every session prints what it is actually doing, so nothing is on silently:
@@ -550,7 +593,9 @@ scripts/
   test_repeat_detector.py  standalone unit tests for the loop detector
   test_cjk_detector.py     standalone unit tests for the CJK leak detector
   bench.sh              prompt processing + generation speed benchmark
-  slot-cache.sh         save/restore KV cache for warm restarts
+  slot-cache.sh         save/restore KV cache — UNUSED, and read its header first
+.pi/extensions/
+  stack.ts              /stack command + stack_status tool inside pi
   download_model.py     resumable GGUF fetch
   pi-local.sh           launch pi against the stack (the only client)
   mcp.sh                call an MCP server as a CLI (wraps mcp2cli)

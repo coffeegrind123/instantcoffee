@@ -1309,3 +1309,85 @@ here — recorded so the next person does not trust that row.
 the two before it. Single-sample tests at temperature 0.6 move around; the
 suite has no repeat mechanism, so individual rows should not be read as
 regressions.
+
+## 2026-08-13 — controlling the stack from pi, and what probing it cost
+
+Goal: drive forge and llama-server from inside pi instead of a second terminal.
+Shipped as `.pi/extensions/stack.ts` — a `/stack` command plus a read-only
+`stack_status` tool. Everything below was probed against the running build
+(llama-server b10200, forge 0.8.2). Three of the probes contradicted what the
+previous session had recorded, and the corrections are the valuable part.
+
+### The handoff's forge route table was wrong
+
+It listed forge's surface as `GET /forge/health`, `GET /forge/usage`,
+`POST /v1/messages`, and flagged `/forge/usage` as something we should start
+using. Both `/forge/*` routes **404 on our build**. They belong to forge 0.9.0;
+the table had been read out of the HEAD clone in `/tmp/research/forge` and
+written down as if it were live. There is no usage endpoint to adopt.
+
+forge 0.8.2's actual surface, from the installed package and confirmed by
+probe: `/health`, `/v1/models`, `/v1/messages`, `/v1/chat/completions`,
+`/chat/completions`. No admin or config API — it is CLI-flag driven only.
+
+### `POST /props` is 501, so "configure llama at runtime" does not exist
+
+Confirmed again. Context size, sampling, reasoning budget and MTP are startup
+flags. `/stack set` therefore edits `.env` and reports exactly what must be
+recreated. The key→service mapping is parsed out of `docker-compose.yml` at
+runtime rather than hardcoded, so it cannot drift when the compose file grows a
+knob, and keys that only `pi-local.sh` reads are called out separately — those
+need pi restarted, not a 20-minute model reload.
+
+### `/props.n_ctx` is null; the real value is elsewhere
+
+Reading the obvious field would have reported "unknown context" forever. The
+authoritative values are `default_generation_settings.n_ctx` and each slot's
+`n_ctx`. A field existing is not a field being populated.
+
+### slot-cache.sh has been a silent no-op
+
+It sends `POST /slots?action=save&id_slot=N`. That form **404s on b10200**; the
+route is `POST /slots/{id}?action=...`. Two layers hid it: `curl -f` swallows
+the body and `|| true` swallows the exit status. The previous session cited this
+script as proof the syntax worked — it proved only that the script never checks.
+Fixed to use the correct route and to report failures. Nothing in the repo calls
+it, which is the only reason this cost nothing in production.
+
+### Saving a slot is expensive, and aborting one wedges the server
+
+Measured, at PARALLEL_SLOTS=1 with a 32k context: a single slot save wrote
+**315 MB in 180 s and had not finished**. Aborting it mid-write **wedged
+llama's task queue**: `/slots`, `/metrics`, `/lora-adapters` and all inference
+hung from then on, while `/props` and `/models` — which bypass the queue — kept
+answering 200. `docker restart` then failed with the process a zombie; the
+container had to be force-killed and recreated, costing a cold load.
+
+This has two consequences worth keeping:
+
+1. **`save_slots` must never be an EXIT trap**, which is exactly what
+   slot-cache.sh's header suggested. Container shutdown SIGTERMs and then
+   SIGKILLs on a timeout — the abort that wedges the server — on every
+   `docker compose down`.
+2. **A health check that only hits `/props` or `/health` cannot see this.**
+   `/stack` now flags the signature explicitly: `/props` answering while
+   `/slots` and `/metrics` time out means the queue is wedged and inference is
+   down, and it names the recovery. `/stack slots` sends no client-side timeout,
+   because interrupting is the failure mode, and re-probes the queue afterwards.
+
+### Observation is a tool; mutation is a command
+
+`stack_status` is registered with `registerTool` so the model can check
+throughput and KV usage before blaming itself for slow output. Every mutating
+path is `registerCommand`, which pi exposes only to the user. The model should
+be able to see that prefill collapsed; it should not be able to restart llama
+mid-task.
+
+### Router mode, still deferred
+
+`/models/load` and `/models/unload` answer 200 even now, and pi's built-in
+`/llama` UI would give model swapping and Hugging Face search — but only when
+llama-server starts **without** `-m`. That changes what happens at boot (nothing
+loaded, so forge's first request fails until a model is), which is a change to
+`up.sh` and the smoke test. Left alone deliberately while two models are being
+evaluated on this stack.

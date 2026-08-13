@@ -79,7 +79,30 @@ edit precision or tool calling.
 Model cards are downloaded at
 `/tmp/claude-0/.../scratchpad/cards/` (may not survive a reboot).
 
-## pi → forge/llama control (researched, not built)
+## pi → forge/llama control — BUILT (2026-08-13)
+
+Shipped as `.pi/extensions/stack.ts`: a `/stack` command and a read-only
+`stack_status` tool. Documented in README under "Controlling the stack from
+inside pi", with the full record in `context/design/decisions.md`.
+
+**Two claims in the research below were wrong, and are corrected there:**
+
+- forge does **not** serve `/forge/health` or `/forge/usage` — those 404 on our
+  pinned 0.8.2. They are 0.9.0 routes that got read out of the HEAD clone and
+  written down as if probed. There is no usage endpoint to adopt.
+- `scripts/slot-cache.sh` did **not** prove the slot syntax. It sends
+  `POST /slots?action=..&id_slot=..`, which 404s on b10200; `curl -f` and
+  `|| true` hid that. The real route is `POST /slots/{id}?action=..`. Fixed.
+
+**One incident worth knowing about.** Probing slot save wedged llama: an aborted
+save stops the task queue draining, so `/slots`, `/metrics` and *all inference*
+hang while `/props` keeps answering 200 and the container looks healthy.
+Recovery needed a force-recreate and a cold load. `/stack` now detects that
+signature and names the fix; `slot-cache.sh` carries a header warning never to
+use `save_slots` as an EXIT trap, because shutdown's SIGKILL is exactly that
+abort.
+
+## The original research (superseded above where they conflict)
 
 Three repos cloned to `/tmp/research/`: `pi`, `forge` (0.9.0 — we pin 0.8.2,
 there is a `MIGRATING_TO_0.9.md`), `llama.cpp` (sparse: `tools/server`).
