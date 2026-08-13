@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "label": "review",
-  "message": "67%",
-  "color": "yellow",
+  "message": "100%",
+  "color": "brightgreen",
   "style": "flat"
 }

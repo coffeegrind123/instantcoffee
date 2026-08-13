@@ -3,6 +3,6 @@
   "label": "eval",
   "message": "83% (23/26)",
   "color": "green",
-  "namedLogo": "pytest",
-  "style": "flat"
+  "style": "flat",
+  "namedLogo": "pytest"
 }
