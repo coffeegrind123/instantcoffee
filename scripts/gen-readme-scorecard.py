@@ -131,6 +131,34 @@ def update_readme(scorecard: str, data: dict) -> bool:
         print(f"  {MARKER_END}", file=sys.stderr)
         return False
 
+    # The splice below is readme[:start] + section + readme[end+len(END):], which
+    # is only correct while the markers are well formed. A README that already
+    # carries a damaged marker survives every regeneration with the damage
+    # intact — find() matches the first occurrence and the tail is copied
+    # verbatim — so it looks like the generator is fine while it quietly
+    # preserves corruption. This repo shipped `<!-- eval-scorecard-end -->nd -->`
+    # through several commits that way. Refuse instead of splicing blind.
+    if readme.count(MARKER_START) != 1 or readme.count(MARKER_END) != 1:
+        print(f"ERROR: expected exactly one of each scorecard marker, found "
+              f"{readme.count(MARKER_START)} start / {readme.count(MARKER_END)} end. "
+              f"Fix README.md by hand.", file=sys.stderr)
+        return False
+
+    if start > end:
+        print("ERROR: scorecard end marker precedes the start marker. "
+              "Fix README.md by hand.", file=sys.stderr)
+        return False
+
+    # Trailing fragment of a mangled end marker, e.g. "...-end -->nd -->", which
+    # is what this repo actually shipped. The signature is leftover marker tail
+    # immediately after the real end marker: some word characters, then "-->",
+    # before any newline.
+    after = readme[end + len(MARKER_END):]
+    if re.match(r"[^\n]{0,20}-->", after):
+        print(f"ERROR: text immediately after the end marker looks like a broken "
+              f"marker fragment: {after[:24]!r}. Fix README.md by hand.", file=sys.stderr)
+        return False
+
     # Also update the top-of-README eval badge to match
     overall = data.get("overall", {})
     score = overall.get("score", 0)

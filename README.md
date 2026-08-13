@@ -5,8 +5,12 @@
 
 Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy, driven by the **pi** coding agent. One
-backend: upstream **llama.cpp** with an **unsloth GGUF** (MTP speculative
-decoding, single-file, mmap-friendly).
+backend: upstream **llama.cpp** with a single-file MTP GGUF (speculative
+decoding, mmap-friendly).
+
+Two switchable regimes — `coding` on the unsloth weights, `prose` on a
+decensored Fable-Fusion merge — via `./scripts/mode.sh` or `/stack mode` inside
+pi. The scorecard below is `coding`.
 
 ```
               pi  (scripts/pi-local.sh)
@@ -88,6 +92,7 @@ cd ~/my-project && qpi
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `cd <project> && ~/qwen3.6-forge/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
+| `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 
@@ -121,14 +126,14 @@ The keys worth knowing:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
-| `GGUF_FILE` | `Qwen3.6-27B-UD-Q4_K_XL.gguf` | See the VRAM table |
+| `GGUF_FILE` | set by the active mode | `coding` uses `Qwen3.6-27B-UD-Q4_K_XL.gguf`; `prose` the Fable-Fusion IQ4_XS. See the VRAM table |
 | `CTX_SIZE` | `32768` | Context per slot; also what forge uses as its token budget. Capped by the f16 KV cache — see below |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
-| `THINK_LANG` | `zh` | Reason in Mandarin, answer in English. `off` disables. Unmeasured on this hardware — see below |
+| `THINK_LANG` | set by the active mode | Reason in Mandarin, answer in English. `zh` in `coding`, `off` in `prose`. Unmeasured on this hardware — see below |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
 | `LLAMA_EXTRA_FLAGS` | `-n 8192 --load-mode none` | `--load-mode none` disables mmap (mandatory on a 9p bind mount); `-n` is the server-side generation cap. **No KV quantization** — see below |
 | `CACHE_PROMPT` | `1` | Persist KV cache to disk for fast warm restarts |
-| `CACHE_RAM` | `8192` | RAM budget for prompt cache in MiB; 0 disables |
+| `CACHE_RAM` | `2048` | RAM budget for prompt cache in MiB; 0 disables. **This is HOST RAM, not VRAM.** It was 8192, which was the single largest avoidable memory consumer on this box and collapsed prefill to 2.83 tok/s once the host started swapping |
 | `CACHE_REUSE` | `64` | Previous cache entries to compare for reuse |
 | `SLOT_PROMPT_SIMILARITY` | `0.20` | Similarity threshold for cache reuse (0.0–1.0) |
 | `CTX_CHECKPOINTS` | `16` | KV checkpoints per slot for agentic rewind; 0 disables |
@@ -161,19 +166,30 @@ Nothing in this stack filters content. That was checked rather than assumed, on
 | llama.cpp | No such feature exists. |
 
 So if an uncensored model is behaving timidly here, the cause is configuration,
-not a filter. The things that actually constrain output:
+not a filter. Four things constrain output, and **`prose` mode already fixes the
+first three** — they are listed so the reasoning is inspectable, not as a to-do:
 
-1. **The sampler profile is tuned for code.** `TEMPERATURE=0.6` is Qwen's
-   "precise coding" preset, and XTC/DRY ship disabled.
+1. **A sampler profile tuned for code.** `TEMPERATURE=0.6` is Qwen's "precise
+   coding" preset, and XTC/DRY ship disabled. `prose` moves to 1.0 with DRY on.
 2. **The MTP quant caps your sampling range.** DavidAU's card asks for
    `temp <= 1` and `repeat pen 1.0` on MTP quants, then separately recommends
    `repeat pen 1.1-1.15` for chat/roleplay and regular GGUFs "for creative/
-   complex and/or temps over 1". Those two pieces of advice conflict, and the
-   card resolves it: **use the non-MTP quant for prose.**
-3. **`THINK_LANG=zh`** appends a long instruction block about reasoning language.
-   Not a filter, but it is dead weight in a fiction session — `THINK_LANG=off`.
-4. **pi loads the project's `AGENTS.md`/`CLAUDE.md` by default.** In a code repo
-   that injects coding conventions into a writing session — `PI_CONTEXT_FILES=0`.
+   complex and/or temps over 1". Those conflict, and the card resolves it: use
+   a non-MTP quant if you want to go above temp 1. `prose` sits at exactly 1.0,
+   which is the highest the MTP quant tolerates.
+3. **`THINK_LANG=zh`** appends a page of instructions about reasoning language,
+   verbatim tool arguments and code identifiers. Not a filter, but dead weight
+   in a fiction session. `prose` sets it `off`.
+4. **pi loads the project's `AGENTS.md`/`CLAUDE.md` by default** — in a code
+   repo that injects coding conventions into a writing session. This one is
+   per-session, not per-mode: pass `-nc`, or `PI_CONTEXT_FILES=0`.
+
+For a writing session, drop pi's coding tools too — it is an agent, and will
+otherwise reach for `read`/`bash`/`edit`/`write`:
+
+```bash
+qpi -nt -nc --system-prompt "You are a literary fiction writer. Return only prose."
+```
 
 ### Two modes
 
@@ -358,6 +374,8 @@ Approve project-local files once (`-a`, or answer the trust prompt) and:
 
 ```
 /stack                     model, context, slots, throughput, GPU, forge, settings
+/stack mode                which preset .env matches, and what differs
+/stack mode coding|prose   switch regime, then offer the restart it needs
 /stack env [FILTER]        every effective setting (.env + .env.local + exported)
 /stack set KEY=VALUE       edit .env, and say exactly what must restart
 /stack up | down           start / stop via scripts/
@@ -568,10 +586,12 @@ cheaply in Mandarin because that is what it was most natively trained on. The
 follow-up question in that thread — *better thinking, or just shorter?* — was
 never answered, and nobody posted a measurement.
 
-**This is on by default here, by operator decision, ahead of that measurement.**
-It is running on a community claim, not a local result. `THINK_LANG=off` in
-`.env` reverts it, and the A/B below is how you find out whether it earns its
-place.
+**`coding` mode turns this on, by operator decision, ahead of that measurement.**
+It is running on a community claim, not a local result. `prose` mode sets it
+`off` — the fragment is a page about verbatim tool arguments and code
+identifiers, which buys a fiction session nothing. `THINK_LANG=off` in `.env`
+reverts it anywhere, and the A/B below is how you find out whether it earns its
+place in `coding`.
 
 It costs nothing in readability on this stack specifically: the provider entry
 declares `reasoning: false`, so pi never renders a thinking trace and you would
@@ -700,11 +720,15 @@ scripts/
   test_cjk_detector.py     standalone unit tests for the CJK leak detector
   bench.sh              prompt processing + generation speed benchmark
   slot-cache.sh         save/restore KV cache — UNUSED, and read its header first
-.pi/extensions/
-  stack.ts              /stack command + stack_status tool inside pi
+  mode.sh               switch between the regimes in modes/
   download_model.py     resumable GGUF fetch
   pi-local.sh           launch pi against the stack (the only client)
   mcp.sh                call an MCP server as a CLI (wraps mcp2cli)
+modes/
+  coding.env            the regime the committed scorecard was measured in
+  prose.env             decensored model, card sampling, no thinking-language
+.pi/extensions/
+  stack.ts              /stack command + stack_status tool inside pi
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
 harbor-adapter/
@@ -719,7 +743,12 @@ context/                why things are the way they are
 ## Eval Results
 
 > **Full methodology:** [context/design/eval-methodology.md](context/design/eval-methodology.md) —
-> what each suite tests, where the benchmarks come from, how scoring wo<!-- eval-scorecard-start -->
+> what each suite tests, where the benchmarks come from, how scoring works.
+>
+> Measured in **`coding` mode**. Switching to `prose` changes the model and the
+> sampling, so these numbers stop describing what is running.
+
+<!-- eval-scorecard-start -->
 
 ![Eval](https://img.shields.io/badge/eval-91%25%20(27%2F27)-brightgreen?logo=pytest&style=flat)
 
@@ -738,7 +767,7 @@ context/                why things are the way they are
 | tools | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/tools-73%-green?style=flat-square) |
 
 
-<!-- eval-scorecard-end -->nd -->
+<!-- eval-scorecard-end -->
 
 ### Running evaluations
 
