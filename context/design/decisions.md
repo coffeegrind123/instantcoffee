@@ -1187,3 +1187,70 @@ The `-n` generation cap in `LLAMA_EXTRA_FLAGS` also stays. It was added because
 headroom renames `max_tokens` to `max_completion_tokens` and llama.cpp reads
 only the former — but it is the right backstop regardless of what is upstream,
 since any client that sends the newer key would otherwise get no cap at all.
+
+### forge requires a tool call whenever tools are present (2026-08-12)
+
+The bug found while probing headroom, now fixed. forge's proxy path branches on
+whether the request carries tools:
+
+```python
+if not tool_specs:            # no tools -> forward straight through
+    ...
+validator = ResponseValidator(tool_names, ...)   # tools -> a bare text reply FAILS
+```
+
+With tools declared, a plain text answer is a validation failure. forge appends
+a nudge — *"Your previous response was not a valid tool call"* — and retries up
+to `--max-retries` before giving up and passing the text through anyway.
+
+Captured against an echo backend standing in for llama, so there is no ambiguity
+about what forge sent:
+
+```
+[3] assistant  'The FATAL line is worker-3, code 7741.'      <- correct answer
+[4] user       'Your previous response was not a valid tool call...'
+[5] assistant  'The FATAL line is worker-3, code 7741.'      <- correct again
+[6] user       'Your previous response was not a valid tool call...'
+[7] assistant  'The FATAL line is worker-3, code 7741.'
+[8] user       'Your previous response was not a valid tool call...'
+```
+
+llama's own log shows the cost: the same request re-prefilled at 5436 -> 5495 ->
+5565 tokens, growing by the nudge each round.
+
+**This fires on most turns of a real agent loop.** After a tool result comes
+back, answering in text IS the correct move — forge treats the normal case as an
+error.
+
+`FORGE_EXTRA_FLAGS=--inject-respond-tool` fixes it: the model gets a
+`respond(message="...")` tool, so an answer is a tool call and the guardrails
+still apply; forge strips the respond call on the way out and the client sees
+ordinary text. Measured on the trailing-tool-result shape — **without it the
+request timed out at 398s having never returned; with it the correct answer came
+back with `tool_calls` empty.** The smoke test still passes 11/11, so genuine
+tool calls (`get_weather`) are unaffected.
+
+The old note here said this flag was a crutch for ~8B models and that "a 27B
+does not need" it. That was wrong, and wrong in a way that mattered: the
+requirement is structural in forge, not a property of the model.
+
+### CACHE_RAM was 8 GiB of HOST memory (2026-08-13)
+
+Prefill collapsed to **2.83 tok/s** (from ~2000) with generation still healthy
+at 43.9 — the same signature as the KV-quant bug, from a completely different
+cause, which is why both are recorded.
+
+`CACHE_RAM=8192` is a host-RAM budget, and it accounted for the llama
+container's entire 9.02 GiB RSS. On a 22 GiB VM shared with the other
+containers and a dozen agent sessions that left **394 MiB free with 5.5 GiB in
+swap**, and prefill degrades under that pressure. Lowered to 2048: host usage
+16.8 -> 8.2 GiB, available 5.2 -> 13.8 GiB.
+
+Worth stating plainly because it cost time twice tonight: **prefill collapsing
+while decode stays fine has at least two distinct causes on this stack** — a
+quantized V cache (fixed by removing it) and host memory pressure. The second
+was nearly misdiagnosed as a regression of the first.
+
+`/free` was run and found nothing to reclaim: no abandoned sessions (all ten
+pts devices had been written within the threshold) and no runaway process. The
+pressure was our own configuration, not stray sessions.
