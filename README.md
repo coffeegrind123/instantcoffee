@@ -61,12 +61,19 @@ git clone <this repo> && cd qwen3.6-forge
 both services, and then runs the end-to-end smoke test. It is idempotent — re-run it
 any time.
 
-Then start a session — pi works on your current directory, so `cd` to the
-project you want it to work on:
+Then start a session. pi works on your **current directory**, so `cd` to the
+project you want it to work on and call the launcher by absolute path:
 
 ```bash
 cd ~/my-project
 ~/qwen3.6-forge/scripts/pi-local.sh
+```
+
+Add the alias once and you never type the path again:
+
+```bash
+echo "alias qpi='~/qwen3.6-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
+cd ~/my-project && qpi
 ```
 
 ## Day-to-day
@@ -133,7 +140,7 @@ The keys worth knowing:
 | `FORGE_REASONING_REPLAY` | `full` | `keep-last` / `full` replay captured reasoning to the backend |
 | `BIND_ADDR` | `127.0.0.1` | `0.0.0.0` to expose on the LAN |
 | `PI_MAX_TOKENS` | `8192` | Generation cap given to pi; keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
-| `PI_CONTEXT_FILES` | `0` | `1` loads `AGENTS.md`; `0` passes `-nc` |
+| `PI_CONTEXT_FILES` | `1` | Loads the project's `AGENTS.md`/`CLAUDE.md`; `0` passes `-nc` |
 | `PI_EXTRA_ARGS` | *(empty)* | Flags your own `pi` alias would add — aliases do not expand in scripts |
 | `PI_AUTO_UPDATE` | `1` | Keep pi on the latest npm release; fails soft |
 | `PI_UPDATE_INTERVAL_H` | `24` | Hours between update checks |
@@ -201,9 +208,12 @@ pi then reads and edits files under `~/my-project`. Worth adding to your shell
 so you stop typing the path:
 
 ```bash
-alias qpi='~/qwen3.6-forge/scripts/pi-local.sh'
-# then, in any project:  cd ~/my-project && qpi
+echo "alias qpi='~/qwen3.6-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
+cd ~/my-project && qpi
 ```
+
+(`~/.zshrc` if you use zsh. The alias points at the script, not at `pi` itself,
+so it keeps working when the launcher changes.)
 
 Common variants — any pi flag passes straight through:
 
@@ -221,15 +231,15 @@ Any `.env` key can be overridden for a single launch by setting it in front of
 the command — the same way `docker compose` treats the shell environment:
 
 ```bash
-PI_CONTEXT_FILES=1 qpi     # load this project's AGENTS.md / CLAUDE.md
+PI_CONTEXT_FILES=0 qpi     # skip this project's AGENTS.md / CLAUDE.md
 THINK_LANG=off qpi         # no Chinese-reasoning fragment this session
 MCP2CLI_ENABLED=0 qpi      # drop the MCP skill for this session
 ```
 
-**`PI_CONTEXT_FILES=1` is the one to remember when working in a real project.**
-The launcher passes `-nc` by default, which stops pi walking parent directories
-for `AGENTS.md`/`CLAUDE.md` — cheap on a 32K window, but it also means your
-project's conventions are not loaded until you ask for them.
+Your project's `AGENTS.md`/`CLAUDE.md` **is** loaded by default — pi walks
+parent directories to find it. `PI_CONTEXT_FILES=0` turns that off for a session
+where the window matters more than the conventions: a long single-file refactor,
+or a project whose conventions file is enormous.
 
 For a permanent change, edit `.env`; for a permanent *machine-local* change that
 should not be committed, put it in `.env.local`.
@@ -329,9 +339,11 @@ What you give up is real and worth stating: no MCP servers, no sub-agent
 fan-out, and no ecosystem of Claude Code plugins. What you get back is nearly
 the whole window for the actual session.
 
-The one flag that matters is `-nc`, which the launcher passes by default: it
-skips `AGENTS.md`/`CLAUDE.md` discovery, and pi walks parent directories looking
-for those. Set `PI_CONTEXT_FILES=1` when you do want project conventions loaded.
+Your project's conventions still load: pi walks parent directories for
+`AGENTS.md`/`CLAUDE.md` and `PI_CONTEXT_FILES` is `1` by default. That is a
+deliberate exception to the window-frugality above — an agent that ignores the
+conventions file in the repo it is editing costs more in rework than the tokens
+save. `PI_CONTEXT_FILES=0` passes `-nc` and skips the discovery.
 
 ## MCP, without MCP
 

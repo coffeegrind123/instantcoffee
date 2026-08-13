@@ -111,9 +111,9 @@ fi
 # --- launch ------------------------------------------------------------------
 pi_flags=(--provider forge --model "$MODEL")
 
-# -nc skips AGENTS.md/CLAUDE.md discovery. On a 32K local window those files are
-# a real fraction of the budget, and pi walks parent directories to find them.
-# PI_CONTEXT_FILES=1 loads them anyway.
+# pi discovers AGENTS.md / CLAUDE.md by walking parent directories. Loaded by
+# default: an agent that ignores the conventions file in the repo it is editing
+# costs more in rework than the tokens save. PI_CONTEXT_FILES=0 passes -nc.
 CTX_FILES_NOTE="context files off"
 if [[ "$(env_get PI_CONTEXT_FILES)" == "1" ]]; then
   CTX_FILES_NOTE="context files on"
