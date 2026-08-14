@@ -10,6 +10,10 @@
 models/
 __pycache__/
 
+# Per-iteration log written by /loop (vendor/pi-loop-mode) into the working
+# directory it is looping on, which is sometimes this one. `/loop stats` reads it.
+.pi-loop-log.jsonl
+
 # Harbor eval setup — clone harbor-framework/harbor yourself:
 #   git clone https://github.com/harbor-framework/harbor.git harbor-eval
 # No adapter is installed into it; pi uses Harbor's stock agent. The checkout

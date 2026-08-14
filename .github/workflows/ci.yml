@@ -24,6 +24,12 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
 
+      # Pinned because both TypeScript steps below rely on type stripping, which
+      # landed in Node 22.6 — on an older runner image they would fail as a
+      # missing flag rather than as the problem they are meant to catch.
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+
       - name: Python syntax checks
         run: |
           for f in scripts/smoke_test.py scripts/eval.py \
@@ -74,6 +80,45 @@ jobs:
 
       - name: CJK leak detector unit tests
         run: python scripts/test_cjk_detector.py
+
+      # /loop is a fork carried in this repo (vendor/pi-loop-mode/FORK.md), so its
+      # regressions are ours. The suite drives the extension's real handlers
+      # through the context-overflow race the fork exists to fix — a break there
+      # would otherwise only show up hours into an unattended run.
+      - name: Loop-mode fork unit tests
+        working-directory: vendor/pi-loop-mode
+        run: |
+          npm run lint
+          npm test
+
+      # The Matrix channel is a conversion carried in this repo
+      # (vendor/prinny-channel/FORK.md), so its regressions are ours too. Its
+      # failure mode is the one worth catching in CI: a broken channel does not
+      # error, it just stops delivering, and the only witness is somebody on
+      # Matrix wondering why the bot ignores them.
+      #
+      # The sidecar's Matrix dependencies are installed and compiled outside the
+      # repo, which is what --prepare does. The suite runs against that compiled
+      # output rather than a re-compile of it, so this step is not optional
+      # setup — it builds the artifact under test.
+      - name: Matrix channel — build the sidecar runtime
+        working-directory: vendor/prinny-channel
+        run: node server/bin/prinny-channel.mjs --prepare
+
+      - name: Matrix channel unit tests
+        working-directory: vendor/prinny-channel
+        run: |
+          npm run lint
+          npm run test:unit
+
+      # Separate, and after pi is installed, so "pi would not install" is not
+      # reported as "the extension is broken". This is the step that catches a
+      # wrong notification method name — the extension's whole job, and
+      # something no unit test can see.
+      - name: Matrix channel — the extension inside a real pi
+        run: |
+          npm install -g @earendil-works/pi-coding-agent
+          cd vendor/prinny-channel && npm run test:e2e
 
       # A fragment that is empty, or that forgets to pin the output language,
       # would quietly turn THINK_LANG into "answer in Chinese".

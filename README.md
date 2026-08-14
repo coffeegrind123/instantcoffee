@@ -95,7 +95,8 @@ cd ~/my-project && qpi
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
-| `pi install npm:pi-loop-mode@2.5.4` | One-time install of `/loop` (pinned in `.env`) |
+| `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (23 tests, no install) |
+| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (227 tests, no install) |
 
 ## Updating
 
@@ -423,12 +424,17 @@ wedged** and inference is down even though the container looks healthy and
 
 ### Unattended loops: `/loop`
 
-`pi-loop-mode` (pinned in `.env` as `PI_LOOP_MODE_VERSION`) iterates the agent
-until you stop it. Install once — it goes into pi's **user** settings, which is
-the only scope pi loads from in every directory:
+`vendor/pi-loop-mode` — a fork of `pi-loop-mode@2.5.4`, carried in this repo —
+iterates the agent until you stop it. Nothing to install: `pi-local.sh` loads the
+extension, its skill and its prompt templates from the checkout by absolute path,
+so `/loop` behaves the same in whatever directory you started pi in.
+
+If the upstream npm package is still in pi's user settings from before the fork,
+remove it — two copies register two `/loop` commands that fight over one
+session's state, and the launcher warns when it sees one:
 
 ```bash
-pi install npm:pi-loop-mode@2.5.4
+pi uninstall npm:pi-loop-mode
 ```
 
 Then, in the project you want worked on:
@@ -461,11 +467,85 @@ Verified end to end on Qwen3.6-27B: given a `PLAN.md`, a two-iteration run
 produced a working module and a passing test, and `python3 test_calc.py` exited
 0 — the plan's own acceptance criterion.
 
+**Why it is forked.** A longer unattended run died on the one thing it is
+supposed to survive:
+
+```
+Error: "Backend returned 400"
+[compaction] Compacted from 33,719 tokens
+Error: Compaction failed: Already compacted
+Loop paused — context recovery required
+```
+
+The context overflowed, **the recovery worked**, and the loop stopped anyway —
+waiting for a human to type `/compact` and `/loop resume`, which is the one thing
+an unattended loop cannot ask for. pi runs its own overflow recovery *after* the
+`agent_end` event that upstream compacts from, so the two race; pi's lands first,
+and pi refuses a second compaction of a branch that already ends in one. Upstream
+treated that refusal — someone else's success — as a fatal error.
+
+The fork defers its compaction to `agent_settled` (nothing left to race), adopts
+pi's recovery when pi wins, treats `Already compacted` as "no work to do" rather
+than a failure, and replaces the terminal pause with a cooldown ladder that
+retries with a progressively tighter summary. `vendor/pi-loop-mode/FORK.md` has
+the full list; `cd vendor/pi-loop-mode && npm test` runs the 23 tests that drive
+the real handlers through that failure.
+
 > **Third-party code runs with full system access.** Both this and the
 > alternative were reviewed before running: no install-time lifecycle scripts,
 > no network calls, no filesystem writes outside pi's own API. `pi-loop-mode`'s
 > single `pi.exec` is the documented `--check` command you supply yourself.
-> Re-review on upgrade — the pin exists for that reason.
+> Re-review anything pulled from upstream into `vendor/` — the fork is now the
+> only copy that runs, so nothing changes under it without a commit here.
+
+### Talking to it from Matrix: `/prinny`
+
+`vendor/prinny-channel` puts a pi session on Matrix. A message from an
+allowlisted sender becomes a turn; the answer comes back to the room by itself.
+It is a conversion of the Claude Code plugin of the same name — the Matrix half
+is upstream's and unmodified, everything that touched Claude Code was rewritten
+for pi. `vendor/prinny-channel/FORK.md` is the full account.
+
+**Off by default** (`PRINNY_ENABLED=0`). It is the only part of this stack that
+logs into a remote service and makes the session addressable from the internet,
+which is a decision to take on purpose. Set it to `1` and:
+
+```
+/prinny prepare                                     once, ~1 min
+/prinny configure https://matrix.example.org @bot:matrix.example.org <password>
+# message the bot from your Matrix client — it replies with a code
+/prinny pair <code>
+/prinny policy allowlist                            stop handing out codes
+```
+
+`/prinny` on its own prints connection state, policy, allowlist, pending
+pairings and settings. `/prinny log` tails the channel's own log — the channel
+never writes to the terminal, because in pi stdout and stderr are the TUI.
+
+The Matrix layer runs as a **child process**, not inside pi. Loading
+matrix-js-sdk plus its Rust crypto blocks the event loop for ~15 seconds and
+writes to stdout on the way up; in-process that is a frozen TUI drawn over with
+library chatter. Its ~105MB of dependencies are installed outside the repo, at
+`~/.pi/agent/channels/prinny/runtime`, by `/prinny prepare`.
+
+**The answer is forwarded, not requested.** Upstream made a `reply` tool the
+only way out, which holds at frontier scale and does not at 27B: the model
+writes a good answer into the transcript, never calls the tool, and the person
+on Matrix sees nothing while the operator sees a complete reply. So the
+extension sends the assistant's text itself — `text` content only, never
+thinking blocks and never tool calls, filtered by allowlist so a new content
+kind is excluded rather than leaked. `/prinny forward all` sends each message as
+it completes instead of just the final one; `/prinny forward off` restores
+upstream's behaviour.
+
+`/prinny permissions dangerous` relays a Matrix approval prompt before `rm -rf`,
+`sudo`, force pushes and similar. pi has no approval system of its own, so this
+is the extension's own gate rather than a relay of one; it **fails closed**, so
+a dead channel blocks rather than allows.
+
+> **One Matrix account per channel.** Two bots signed into the same account
+> duplicate every delivery and fight over the crypto store, which ends with a
+> bot that cannot decrypt its own rooms.
 
 ### The launch banner
 
@@ -477,9 +557,12 @@ pi -> http://localhost:8081  (model: qwen3.6-27b, context files off, thinking in
 
 Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
 `mcp via cli` means the MCP skill is loaded; `context files off` means `-nc`;
-`/loop` means pi-loop-mode is installed at the pinned version;
+`/loop` means the vendored loop-mode fork loaded (and that no upstream npm copy
+is shadowing it);
 `/stack` means the stack extension loaded. If `/stack` is absent from the
-banner, the command will not exist in that session.
+banner, the command will not exist in that session. `/prinny` means the Matrix
+channel loaded — and it says so with a qualifier when it will not work yet:
+`/prinny (runtime not built)` or `/prinny (not configured)`.
 
 ### Keeping pi current
 
@@ -791,6 +874,15 @@ patches/
                         message content; fails the build if forge changes
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
+vendor/pi-loop-mode/    /loop — fork of pi-loop-mode@2.5.4, loaded from here
+  FORK.md               what was changed and why (context-recovery race)
+  tests/                node --test suite for the fork's recovery ladder
+vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plugin
+  FORK.md               what the conversion changed, and why forwarding exists
+  extensions/index.ts   the pi extension: tools, /prinny, forwarding, lifecycle
+  src/                  pure modules — client, gate, block renderer, access
+  server/               the Matrix sidecar, run as a child process
+  tests/                227 tests, no node_modules
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
 harbor-adapter/
@@ -851,6 +943,8 @@ python3 scripts/gen-readme-scorecard.py --all
 # CI-ready: validate everything that doesn't need a GPU
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
+(cd vendor/pi-loop-mode && npm test)      # 23 tests for the /loop fork
+(cd vendor/prinny-channel && npm test)   # 227 tests for the Matrix channel
 docker compose --profile tools config     # validate compose
 ```
 

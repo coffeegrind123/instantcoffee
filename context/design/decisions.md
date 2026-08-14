@@ -1624,3 +1624,261 @@ afterwards.
 Both were run before the second one was reviewed, which was the wrong order.
 Review first — the pin exists so an upgrade is a deliberate act with a re-review
 attached.
+
+## 2026-08-13 — the loop stopped on someone else's success, so /loop is now a fork
+
+`vendor/pi-loop-mode` is a fork of `pi-loop-mode@2.5.4`, loaded from this
+checkout by `scripts/pi-local.sh`. The npm install it replaces is gone
+(`pi uninstall npm:pi-loop-mode`); the launcher warns if one comes back, because
+two copies register two `/loop` commands over one session's state.
+
+### The failure
+
+A real unattended run on the 32k model:
+
+```
+Error: "Backend returned 400"
+[compaction] Compacted from 33,719 tokens
+Error: Compaction failed: Already compacted
+Error: Emergency context compaction failed: Already compacted.
+Loop paused — context recovery required
+```
+
+The context overflowed, **the recovery worked**, and the loop stopped anyway,
+waiting for a human to type `/compact` and `/loop resume` — the one thing an
+unattended loop cannot ask for. The instinct to read this as "the context is
+broken" is what makes it expensive: nothing was broken, and 33,719 tokens had
+already been compacted away by the time the error was printed.
+
+### The cause, read out of pi's source rather than inferred
+
+pi runs its own overflow recovery in `_handlePostAgentRun()`, which sits
+**between** the `agent_end` extension event and the end of the run:
+
+```js
+// core/agent-session.js
+async _runAgentPrompt(messages) {
+  await this.agent.prompt(messages);              // emits agent_end
+  while (await this._handlePostAgentRun()) {      // _checkCompaction() -> auto-compaction (+1 retry)
+    await this.agent.continue();
+  }
+  ... finally { await this._emitAgentSettled(); } // agent_settled
+}
+```
+
+Upstream compacts from `agent_end`, so both compactions are in flight at once.
+pi's lands first and appends a compaction entry, and `prepareCompaction()`
+refuses a branch that ends in one:
+
+```js
+if (pathEntries[pathEntries.length - 1].type === "compaction") return undefined;  // -> "Already compacted"
+```
+
+Upstream's `onError` treats every compaction error as terminal, so the loser of
+that race paused the run. pi's own auto-compaction path is already guarded
+against the mirror case (`assistantIsFromBeforeCompaction`) — the missing guard
+was only ever on the extension side.
+
+### What the fork changes
+
+Full list in `vendor/pi-loop-mode/FORK.md`. The shape of it:
+
+- Compaction moves from `agent_end` to `agent_settled`, which is documented as
+  "no retry, compaction, or queued continuation left to run" — there is nothing
+  left to race there.
+- `session_compact` adopts pi's recovery as the loop's own. When pi says it will
+  re-run the turn itself, the loop does not send a second one — behind a
+  watchdog that resumes anyway if that retry never arrives, since an unattended
+  loop must not hang on another component's promise.
+- `Already compacted` / `Nothing to compact` mean "no work to do", not "failed".
+- The branch is read before a compaction is requested, so the loop never asks pi
+  for something pi's own guard will refuse.
+- The circuit breaker cools down (60s, 120s, 240s) and retries with a
+  progressively tighter summary (24k -> 8k -> 3k chars) instead of stopping. A
+  pause is still the last rung, for a context that genuinely cannot shrink.
+- Overflow compactions are built locally. pi summarizes with the LLM, and after
+  an overflow that is the same LLM that just refused this context — the request
+  least likely to succeed exactly when it is needed. Threshold compactions still
+  get pi's better model summary; they have room to spare.
+
+### Fork rather than patch, and vendor rather than install
+
+The changes are edits to the package's own source. As an npm install they would
+be replaced by the next `pi update`, and a patch applied over an install would
+go with it — silently, since a `/loop` that has quietly reverted still starts.
+The extension needs no `node_modules`: its only non-relative import is an
+`import type` of pi's types, erased before the file runs.
+
+Upstream is AGPL-3.0-only; `LICENSE` is vendored unchanged and `FORK.md`
+records the provenance and the delta.
+
+### Verified, not assumed
+
+`cd vendor/pi-loop-mode && npm test` — 23 tests driving the extension's real
+handlers through the failure above: pi winning the race, pi promising a retry,
+a branch that already ends in a compaction, a genuine summarization failure, the
+full cooldown ladder, and a completed turn retiring it. Loading was checked
+against controls, since "no output" is what both success and a silently unloaded
+extension look like: a bad `-e` path errors loudly, and without the extension
+`/loop status` is forwarded to the model, which answers by explaining it has no
+such command.
+
+## 2026-08-14 — Matrix in, and what a 27B model does with a reply tool
+
+`vendor/prinny-channel` puts a pi session on Matrix: a message from an
+allowlisted sender becomes a turn, and the answer goes back to the room. It is a
+conversion of `prinny-channel`, which is a **Claude Code plugin** — an MCP
+server the harness launches, plus two skills. `FORK.md` in that directory is the
+full account; this records the decisions worth arguing about.
+
+### The Matrix half was not touched; the Claude Code half does not exist in pi
+
+Three things the plugin relied on have no counterpart here: a plugin system, a
+channel protocol (`notifications/claude/channel`, which Claude Code renders as a
+`<channel>` block), and a permission prompt for the channel to relay. So the
+sidecar — login, crypto, pairing, allowlist, history, the outbox — was vendored
+essentially as-is, with four small edits (state directory, the bootstrap's
+checkout search, the now-unread MCP `instructions`, and user-visible wording),
+and everything above it was rewritten.
+
+Keeping the sidecar's MCP surface **exactly** as upstream, method names
+included, is what keeps `server/src/server.ts` diffable against the upstream
+repo. The extension is the MCP *client* now.
+
+### The Matrix layer runs as a child process
+
+Not a preference. `@prinny/bot` pulls in matrix-js-sdk and its Rust crypto WASM,
+and loading it is ~15 seconds of **synchronous** work — in-process, that is pi's
+TUI frozen at startup. The same library writes to stdout while it loads, and in
+pi stdout and stderr *are* the TUI, so a stray line scribbles over the
+interface. Out of process both become the child's file descriptors: stdout is a
+pipe carrying JSON-RPC, stderr goes to `<state-dir>/channel.log`.
+
+Same reasoning keeps the extension itself silent on the terminal. Everything it
+has to say goes to that log, with only state changes promoted to
+`ctx.ui.notify`.
+
+### The MCP client is hand-written, and that was the cheaper option
+
+`@modelcontextprotocol/sdk` is a dependency, and a dependency under `vendor/`
+means a `node_modules` tree there — the thing the sidecar's own bootstrap exists
+to avoid. pi resolves an extension's bare imports against its own module root,
+which carries `typebox` and pi's packages but not the MCP SDK, so the SDK could
+only be reached by deep-importing the staged runtime's copy by a path into
+another package's build output that no semver range protects. MCP over stdio is
+newline-delimited JSON-RPC; the subset used here is four methods of a stable
+protocol. It is written out, and tested against a child process that can be told
+to split messages mid-JSON, print prose onto the transport, go silent, or die.
+
+### Answers are forwarded, not requested — this is the local-model decision
+
+Upstream made the `reply` tool the only way out, and said so in capital letters
+in the tool description. That holds at frontier scale. **At 27B it does not**:
+the model writes a perfectly good answer into the transcript and never calls the
+tool. The failure is silent in the worst way — the operator sees a complete
+answer in the TUI, and the person on Matrix sees nothing at all, so the bug
+presents as "your bot ignores me" rather than as anything in a log.
+
+So the extension forwards the assistant's text itself (`forward=result` by
+default; `all` sends each message as it completes; `off` restores upstream's
+behaviour). `prinny_reply` stays for what forwarding cannot do — attachments,
+quote-replies, a second message — and text sent both ways is deduplicated on
+normalised content, because a model that both writes an answer *and* calls the
+tool with it is the common case here, not an edge one.
+
+Two constraints on what gets forwarded:
+
+- **Only `type: "text"` content**, by allowlist. An assistant message mixes
+  text, `thinking` and `toolCall` blocks. Excluding the latter two by name would
+  forward whatever kind pi adds next — for a reasoning model, precisely the
+  content least suited to a stranger's phone.
+- **Never when more than one room is waiting.** The answer cannot be attributed
+  to one of them, and guessing sends one person's conversation to another.
+
+### Access management is code, not a skill
+
+Upstream's `/prinny:access` was a Markdown skill instructing the model to read
+`access.json`, mutate it carefully, and write it back. Reasonable for a frontier
+model; a liability here. A dropped key or a re-serialised `pending` block is a
+silently broken allowlist, and that allowlist is what stands between a publicly
+addressable Matrix ID and this machine's shell. It is now `/prinny`, with
+read-modify-write on every mutation and no pairing ever approved without its
+code. The skills remain — rewritten to say which command to run.
+
+### The permission gate fails closed, and is off by default
+
+pi raises no approval prompts, so there is nothing to relay; the extension has
+to be the thing that asks. Default `off`, because adding friction pi does not
+otherwise have would be a surprise rather than a feature. When on, an
+unreachable channel **blocks** — enabling it is a statement that these calls
+should not happen unwatched, and "the approver was unreachable" is not "the
+approver said yes".
+
+### Settings live in their own file
+
+`access.json` already has a writer: the sidecar rewrites it whenever the gate
+mints or prunes a pairing, and its `readAccessFile()` rebuilds the object from a
+fixed list of known keys. Anything it does not know about is dropped — so pi
+settings kept there would vanish the first time a stranger messaged the bot,
+which is the worst possible moment to lose the delivery configuration.
+
+### Off by default in `.env`
+
+`PRINNY_ENABLED=0`. This is the only component in the stack that logs into a
+remote service and makes the session addressable from the internet. `0` leaves
+the extension out of the session entirely rather than loading it dormant, so
+there is nothing to misconfigure until it is asked for.
+
+### Verified, not assumed
+
+`cd vendor/prinny-channel && npm test` — 227 tests. Upstream's suite ported from
+vitest onto `node:test` (via a matcher shim, so 900 lines of assertions were not
+retyped) and run against the **compiled** sidecar, which is the artifact that
+actually ships. The pi side is tested directly. And the extension is tested
+inside a real `pi --mode json` process against a stand-in sidecar, because a
+wrong notification method name fails as "messages never arrive" and as nothing
+else.
+
+Four things were checked rather than believed, each having been a plausible
+assumption:
+
+- `typebox`, `@earendil-works/pi-ai` and `@earendil-works/pi-tui` **do** resolve
+  from an extension loaded by absolute path outside pi's tree. The docs say so;
+  the vendoring depends on it, so it was run.
+- `pi.sendUserMessage()` from a timer **does** inject a real user message and
+  drive a turn — confirmed in the JSON event stream, not inferred from the type
+  signature.
+- Node does **not** rewrite a `.js` specifier to a `.ts` file, so the sidecar's
+  sources cannot be imported directly by the tests. Checked with a control.
+- `constructor(private readonly x: T)` is TypeScript that emits code, and Node's
+  strip-only type stripping rejects it outright. pi's loader copes, so this
+  would have run under pi and broken only under `node --test` — a split where
+  the tests look like the broken thing.
+
+### Two hazards worth carrying forward
+
+- **One Matrix account per channel.** Two bots on one account duplicate every
+  delivery and fight over the crypto store, ending with a bot that cannot
+  decrypt its own rooms. Separate state directories are not enough; the
+  homeserver cares about the account.
+- **The sidecar is not auto-restarted on exit.** It retries the homeserver
+  forever by itself, so an exit means something a restart loop cannot fix — bad
+  credentials, a broken build, a killed process. `/prinny start` is the retry.
+
+### Forwarding needed a rule about *when*, not just *what*
+
+Found while writing the test for it, not before. Forwarding was keyed on "this
+room has an unanswered message", which is set the moment the message arrives —
+and a Matrix message can arrive while pi is mid-turn on something the operator
+typed in the terminal. That turn's answer, about the operator's own private
+work, would then be forwarded to whoever had just messaged. Nothing on this side
+would show it happening.
+
+Eligibility is now tied to evidence: the room becomes answerable only when pi
+emits its `<channel>` block as a user message, which is pi saying it has read
+it. The match reads **only the opening tag**, anchored to the start — the body
+is a stranger's text, and a plain substring search over the whole message let
+someone write `message_id="$somebody-elses"` into a Matrix message and redirect
+another room's answer to themselves. Both spoofing attempts are in
+`tests/forwarding.test.ts`; the second one failed on first run, which is why the
+match is anchored.

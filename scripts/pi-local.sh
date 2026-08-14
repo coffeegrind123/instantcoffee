@@ -142,23 +142,75 @@ else
   warn "$STACK_EXT is missing — /stack will not be available this session."
 fi
 
-# pi-loop-mode lives in pi's USER settings, not in this checkout, because that is
-# the only scope pi loads from in every directory. Nothing here installs it — a
-# launcher that silently installs npm packages is a worse trade than a warning —
-# but a missing one is worth saying at startup rather than when /loop is typed
-# and turns out to be plain text the model answers.
-LOOP_VERSION="$(env_get PI_LOOP_MODE_VERSION)"
+# /loop comes from vendor/pi-loop-mode — a fork of pi-loop-mode@2.5.4 that this
+# repo carries and edits (see vendor/pi-loop-mode/FORK.md). It is loaded by
+# absolute path, like /stack above, so the same code runs whatever directory pi
+# was started in, and so the fix travels with the checkout instead of living in
+# a user-global npm install that the next `pi update` would quietly replace.
+#
+# The extension needs no node_modules: its only non-relative import is a
+# `import type` of pi's own types, which is erased before the file ever runs.
+LOOP_DIR="$REPO_ROOT/vendor/pi-loop-mode"
 LOOP_NOTE=""
-if [[ -n "$LOOP_VERSION" ]]; then
-  if pi list 2>/dev/null | grep -q "pi-loop-mode@${LOOP_VERSION}"; then
-    LOOP_NOTE=", /loop"
-  elif pi list 2>/dev/null | grep -q "pi-loop-mode@"; then
-    warn "pi-loop-mode is installed at a version other than the pinned ${LOOP_VERSION}."
-    warn "Match the pin with: pi install npm:pi-loop-mode@${LOOP_VERSION}"
-    LOOP_NOTE=", /loop (unpinned)"
+if [[ -r "$LOOP_DIR/extensions/index.ts" ]]; then
+  pi_flags+=(-e "$LOOP_DIR/extensions/index.ts")
+  # Skill and prompt templates ship in the same package; without them /loop works
+  # but the model loses the guidance the loop skill exists to give it.
+  [[ -d "$LOOP_DIR/skills/loop-skill" ]] && pi_flags+=(--skill "$LOOP_DIR/skills/loop-skill")
+  [[ -d "$LOOP_DIR/prompts" ]] && pi_flags+=(--prompt-template "$LOOP_DIR/prompts")
+  LOOP_NOTE=", /loop"
+else
+  warn "$LOOP_DIR is missing — /loop will not exist this session."
+fi
+
+# An npm install of the upstream package registers a SECOND /loop from a different
+# path (pi only dedupes identical paths), and the two would fight over the same
+# session state. Say so rather than letting the operator debug it live.
+if pi list 2>/dev/null | grep -q "pi-loop-mode@"; then
+  warn "The upstream pi-loop-mode npm package is still installed in pi's user settings."
+  warn "It shadows vendor/pi-loop-mode and reintroduces the context-recovery bug it forks around."
+  warn "Remove it with: pi uninstall npm:pi-loop-mode"
+  LOOP_NOTE=", /loop (conflicting npm install)"
+fi
+
+# /prinny comes from vendor/prinny-channel — the Matrix channel, converted from
+# the Claude Code plugin of the same name (see vendor/prinny-channel/FORK.md).
+# Loaded by absolute path for the same reasons as /stack and /loop above.
+#
+# It needs no node_modules either: its only bare imports are typebox and pi's own
+# packages, which pi resolves from its own module root. The Matrix layer is a
+# CHILD process whose ~105MB of dependencies live outside this repo, under
+# ~/.pi/agent/channels/prinny/runtime — built once by `/prinny prepare`.
+#
+# Opt-in, because it logs a bot into a homeserver and makes this session
+# addressable from the internet. PRINNY_ENABLED=0 (the default) leaves it out
+# entirely rather than loading it in a dormant state, so there is nothing to
+# misconfigure until you ask for it.
+PRINNY_DIR="$REPO_ROOT/vendor/prinny-channel"
+PRINNY_NOTE=""
+if [[ "$(env_get PRINNY_ENABLED)" == "1" ]]; then
+  if [[ -r "$PRINNY_DIR/extensions/index.ts" ]]; then
+    pi_flags+=(-e "$PRINNY_DIR/extensions/index.ts")
+    # The skills explain which /prinny subcommand to run; without them the model
+    # is left to invent an answer about a command it cannot see.
+    for skill in prinny-access prinny-configure; do
+      [[ -d "$PRINNY_DIR/skills/$skill" ]] && pi_flags+=(--skill "$PRINNY_DIR/skills/$skill")
+    done
+    PRINNY_NOTE=", /prinny"
+
+    # Said now rather than mid-session. An unbuilt runtime means the channel
+    # never comes up, and the only clue is a line in a log file the operator has
+    # no reason to open.
+    PRINNY_STATE="${PRINNY_STATE_DIR:-${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/channels/prinny}"
+    if [[ ! -f "$PRINNY_STATE/runtime/dist/server.js" ]]; then
+      dim "The prinny channel runtime is not built — run /prinny prepare once (~1 min)."
+      PRINNY_NOTE=", /prinny (runtime not built)"
+    elif [[ ! -f "$PRINNY_STATE/.env" ]]; then
+      dim "The prinny channel has no credentials — run /prinny configure."
+      PRINNY_NOTE=", /prinny (not configured)"
+    fi
   else
-    dim "pi-loop-mode is not installed — /loop will not exist this session."
-    dim "Install it with: pi install npm:pi-loop-mode@${LOOP_VERSION}"
+    warn "$PRINNY_DIR is missing — /prinny will not exist this session."
   fi
 fi
 
@@ -247,5 +299,5 @@ fi
 curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
   || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE}${LOOP_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

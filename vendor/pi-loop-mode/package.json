@@ -1,0 +1,47 @@
+{
+  "name": "pi-loop-mode",
+  "version": "2.5.4-forge.1",
+  "description": "forge fork of pi-loop-mode 2.5.4 - see FORK.md (context-recovery race with pi's own overflow compaction)",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "agent",
+    "loop",
+    "unattended",
+    "autonomous",
+    "llm"
+  ],
+  "author": "Robert Ressl <rr@canus.ch>",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "lint": "for file in extensions/index.ts src/*.ts tests/*.test.ts; do node --check \"$file\"; done",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "skills",
+    "prompts",
+    "README.md",
+    "DOCUMENTATION.md",
+    "CHANGELOG.md",
+    "FORK.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "extensions"
+    ],
+    "skills": [
+      "skills"
+    ],
+    "prompts": [
+      "prompts"
+    ]
+  },
+  "private": true
+}
