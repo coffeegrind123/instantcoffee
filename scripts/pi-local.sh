@@ -310,8 +310,23 @@ fi
 
 # forge has to answer before pi starts, or the first request fails inside pi's
 # UI where the cause is much harder to see.
-curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
+#
+# TWO probes, not one, because forge 0.9 split them and conflating them produces
+# a lie. /forge/health is forge's own liveness. /health is the BACKEND's
+# readiness, forwarded — it returns 502 for the whole ~25 minute cold load of a
+# model that is loading perfectly normally. Probing only /health (which is what
+# this did until 2026-08-15) reports "forge is not answering" when forge is up
+# and healthy and the only thing happening is that the weights are still being
+# read off disk.
+curl -fsS -m 5 -o /dev/null "${BASE}/forge/health" 2>/dev/null \
   || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
+
+curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
+  || die "forge is up but the model is not loaded yet at ${BASE} — llama-server is
+still reading the GGUF. Watch it with ./scripts/logs.sh llama, or measure real
+progress with:
+  docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
+A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
 echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"
