@@ -2,7 +2,7 @@
  * /stack — inspect and control the forge + llama.cpp stack from inside pi.
  *
  * Everything here was written against endpoints probed on the running build
- * (llama-server b10200, forge 0.8.2), not against upstream docs. Two of those
+ * (llama-server b10200, forge 0.9.0), not against upstream docs. Two of those
  * probes contradicted the docs, and the contradictions shape this file:
  *
  *   1. `POST /props` answers 501 on this build. Nothing that llama-server takes
@@ -10,9 +10,13 @@
  *      changed at runtime. So `set` edits .env and tells you what to recreate;
  *      it never pretends to have tuned a live server.
  *
- *   2. forge 0.8.2 serves `/health`, `/v1/models`, `/v1/messages` and
- *      `/v1/chat/completions`. The `/forge/health` and `/forge/usage` routes
- *      belong to forge 0.9.0 and 404 here. Probe before you believe a route.
+ *   2. forge 0.9.0 moved its own liveness to `/forge/health` and turned
+ *      `/health` into the BACKEND's readiness, forwarded — measured returning
+ *      502 with llama down, where 0.8.2's `/health` was unconditional forge
+ *      liveness. `/v1/models` likewise forwards the backend's real catalog
+ *      instead of a synthesized one-model list. So the forge probe below reads
+ *      `/forge/health`, and a red forge line now means forge itself is gone,
+ *      not that the model is still loading. Probe before you believe a route.
  *
  * The split that matters: observation is a model-callable tool (`stack_status`),
  * every mutation is a user-only command. The model should be able to see that
@@ -300,6 +304,7 @@ const HEADLINE_KEYS = [
 	"TOP_K",
 	"MIN_P",
 	"REASONING_BUDGET",
+	"REASONING_EFFORT",
 	"THINK_LANG",
 	"FORGE_CAPABILITY",
 	"FORGE_MAX_RETRIES",
@@ -317,7 +322,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		getJson<any>(`${llamaUrl}/props`, DIRECT_TIMEOUT_MS),
 		getJson<any[]>(`${llamaUrl}/slots`, QUEUE_BACKED_TIMEOUT_MS),
 		getText(`${llamaUrl}/metrics`, QUEUE_BACKED_TIMEOUT_MS),
-		getJson<any>(`${forgeUrl}/health`, DIRECT_TIMEOUT_MS),
+		getJson<any>(`${forgeUrl}/forge/health`, DIRECT_TIMEOUT_MS),
 		getJson<any>(`${forgeUrl}/v1/models`, DIRECT_TIMEOUT_MS),
 		getJson<any[]>(`${llamaUrl}/lora-adapters`, QUEUE_BACKED_TIMEOUT_MS),
 		pi.exec("docker", ["ps", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], { timeout: 10_000 }),
@@ -540,7 +545,6 @@ const SUBCOMMANDS = [
 	"down",
 	"restart",
 	"smoke",
-	"eval",
 	"bench",
 	"logs",
 	"slots",
@@ -574,7 +578,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 			description: "Control the forge + llama.cpp stack (unavailable: repo not found)",
 			handler: async (_args, ctx) => {
 				ctx.ui.notify(
-					"qwen3.6-forge repo not found from this directory — /stack needs docker-compose.yml, .env and scripts/lib.sh.",
+					"qwen3.8-forge repo not found from this directory — /stack needs docker-compose.yml, .env and scripts/lib.sh.",
 					"error",
 				);
 			},
@@ -655,8 +659,6 @@ export default function stackExtension(pi: ExtensionAPI) {
 					return lifecycle(ctx, sub, rest[0]);
 				case "smoke":
 					return runScript(ctx, "smoke-test.sh", [], 900_000, "smoke");
-				case "eval":
-					return runScript(ctx, "run-eval.sh", rest, 5_400_000, "eval");
 				case "bench":
 					return runScript(ctx, "bench.sh", rest, 3_600_000, "bench");
 				case "logs":
@@ -853,7 +855,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 		// it says which wall you are up against.
 		const why = runtime.includes("llama")
 			? "llama-server answers 501 to POST /props"
-			: "forge 0.8.2 has no admin API and is CLI-flag driven";
+			: "forge has no admin API and is CLI-flag driven";
 
 		const consequence = clientOnly
 			? "Read by scripts/pi-local.sh at launch — restart pi to pick it up. No container restart needed."
@@ -1094,7 +1096,6 @@ export default function stackExtension(pi: ExtensionAPI) {
 			"/stack up | down          start / stop the stack via scripts/",
 			"/stack restart [svc]      recreate llama and/or forge  (llama ≈ 20 min cold load)",
 			"/stack smoke              scripts/smoke-test.sh",
-			"/stack eval [--history]   scripts/run-eval.sh",
 			"/stack bench [args]       scripts/bench.sh",
 			"/stack logs [llama|forge] last 60 log lines",
 			"/stack slots save|restore|erase [id]",
@@ -1103,7 +1104,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 			"every mutation above is a user-only command on purpose.",
 			"",
 			"Reconfiguration is never live — llama-server answers 501 to POST /props,",
-			"and forge 0.8.2 is CLI-flag driven with no admin API.",
+			"and forge is CLI-flag driven with no admin API.",
 		]);
 	}
 }

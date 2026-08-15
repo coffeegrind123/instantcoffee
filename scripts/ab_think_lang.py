@@ -24,7 +24,8 @@ So this measures both axes on the hardware in front of you:
 The third one is the go/no-go. A model that reasons in Chinese and then writes a
 Chinese identifier into an edit, or a Chinese character into a file path, has not
 saved anything — it has produced a patch that does not apply. Both arms run with
-thinking ENABLED, which the standard eval (scripts/eval.py) does not do.
+thinking ENABLED in both arms — measuring the fragment without it would
+produce a meaningless dead heat.
 
 Sampling at temperature 0.6 is stochastic, so a single run cannot separate a real
 effect from noise. --repeat runs the whole task set N times per arm and reports
@@ -48,8 +49,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
-MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.6-27b")
-TIMEOUT = float(os.environ.get("EVAL_TIMEOUT", "900"))
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.8-27b")
+TIMEOUT = float(os.environ.get("AB_TIMEOUT", "900"))
 
 # Code tasks need room for a full reasoning trace AND the answer. Both arms run
 # with thinking ON, and REASONING_BUDGET defaults to 4096, so a 3072 cap could be
@@ -153,7 +154,7 @@ def ask(messages: list[dict], system: str | None, tools: list | None = None,
         "model": MODEL_ALIAS,
         "messages": msgs,
         "max_tokens": max_tokens,
-        # The point of the experiment. eval.py sends False here.
+        # The point of the experiment: thinking on, in both arms.
         "chat_template_kwargs": {"enable_thinking": True},
     }
     if tools:

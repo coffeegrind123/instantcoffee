@@ -14,8 +14,7 @@ __pycache__/
 # directory it is looping on, which is sometimes this one. `/loop stats` reads it.
 .pi-loop-log.jsonl
 
-# Harbor eval setup — clone harbor-framework/harbor yourself:
-#   git clone https://github.com/harbor-framework/harbor.git harbor-eval
-# No adapter is installed into it; pi uses Harbor's stock agent. The checkout
-# itself lives outside version control.
-harbor-eval/
+# Ad-hoc measurement output. The scored eval harness that used to commit results
+# here was removed on 2026-08-15; nothing writes this directory automatically any
+# more except ./scripts/ab-think-lang.sh --save.
+results/

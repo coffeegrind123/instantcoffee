@@ -1,16 +1,41 @@
-# qwen3.6-forge
+# qwen3.8-forge
 
-[![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.6-forge/actions)
-[![Eval](https://img.shields.io/badge/eval-91%25%20(27%2F27)-brightgreen?logo=pytest&style=flat)](#eval-results)
+[![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.8-forge/actions)
 
-Reproducible Docker Compose stack running **Qwen3.6-27B** on a single **RTX 4090**,
+Reproducible Docker Compose stack running **Qwen3.8-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy, driven by the **pi** coding agent. One
 backend: upstream **llama.cpp** with a single-file MTP GGUF (speculative
 decoding, mmap-friendly).
 
 Two switchable regimes — `coding` on the unsloth weights, `prose` on a
-decensored Fable-Fusion merge — via `./scripts/mode.sh` or `/stack mode` inside
-pi. The scorecard below is `coding`.
+Heretic-decensored 3.8 build — via `./scripts/mode.sh` or `/stack mode` inside
+pi. `coding` is the default.
+
+> **Migrated from Qwen3.6-27B on 2026-08-15**, the day 3.8-27B released. The
+> architecture string is unchanged (`qwen35`), so the pinned llama.cpp build
+> loads it as-is, and UD-Q4_K_XL is the same 17.9 GB — but three things moved:
+> MTP now ships in the mainline quant (no `*-MTP-GGUF` repo), the card publishes
+> one thinking temperature (1.0) where 3.6 published two, and there is a new
+> `reasoning_effort` control that defaults to `xhigh` and will eat any budget you
+> give it. See `REASONING_EFFORT` in `.env` and the 2026-08-15 entry in
+> `context/design/decisions.md`.
+>
+> **Verified on this box on migration day:** smoke test 11/11 (including a real
+> tool call through forge), prefill **1175 tok/s**, decode **39.6 tok/s**, MTP
+> acceptance **86.2%**, VRAM **21469 / 24564 MiB** at 32K — within 100 MiB of
+> what 3.6 used, so the quant table below carries over unchanged. Decode is well
+> down on the 69.2 tok/s `versions.lock` recorded for 3.6; 86% acceptance at a
+> draft depth of **2** points at the inherited `SPEC_DRAFT_N_MAX` being too low
+> for 3.8's draft head, and that sweep is not finished.
+>
+> forge went 0.8.2 → **0.9.0** in the same change, and that one is not a version
+> bump: 0.9 rejects `--budget-mode` for externally managed backends (the proxy
+> refuses to start), and `/health` now forwards the *backend's* readiness while
+> forge's own liveness moved to `/forge/health`. Both are handled here — see the
+> forge notes in `.env`. pi went 0.84.1 → 0.84.2, which is uneventful. llama.cpp
+> stays pinned at `b10200` deliberately: nothing between it and the newest
+> published CUDA image is Qwen3.8-specific, and the one commit that is
+> (`reasoning_effort` as an API field) has not shipped in an image yet.
 
 ```
               pi  (scripts/pi-local.sh)
@@ -24,7 +49,7 @@ pi. The scorecard below is `coding`.
                   │  OpenAI wire, tools forwarded verbatim
                   ▼
        ┌─────────────────────┐   llama-server     :8080
-       │  llama.cpp (CUDA)    │   Qwen3.6-27B, --jinja native function
+       │  llama.cpp (CUDA)    │   Qwen3.8-27B, --jinja native function
        │                      │   calling, 32K context
        └─────────────────────┘
                   │
@@ -46,18 +71,19 @@ documented for.
 
 - Docker Desktop with **GPU support enabled** (Settings → Resources → GPU)
 - NVIDIA driver with CUDA support — verified here on driver `596.36`
-- ~20 GB of disk for the model, ~5 GB for images
+- ~18 GB of disk for the `coding` model, another ~15 GB if you also want
+  `prose`, ~5 GB for images
 - `bash`, `curl`, and `docker` for the scripts (`python3` optional — the scripts fall
   back to a throwaway container when it is missing)
-- `uv` only for the two optional extras: MCP-as-a-CLI (`scripts/mcp.sh`) and the
-  Harbor eval runner. Nothing in the core stack needs it.
+- `uv` only for one optional extra: MCP-as-a-CLI (`scripts/mcp.sh`). Nothing in
+  the core stack needs it.
 
 ## Quick start
 
 ```bash
-git clone <this repo> && cd qwen3.6-forge
+git clone <this repo> && cd qwen3.8-forge
 
-# Edit MODELS_DIR in .env first if D: is not where you want ~15 GB to land.
+# Edit MODELS_DIR in .env first if D: is not where you want ~18 GB to land.
 ./scripts/setup.sh
 ```
 
@@ -70,13 +96,13 @@ project you want it to work on and call the launcher by absolute path:
 
 ```bash
 cd ~/my-project
-~/qwen3.6-forge/scripts/pi-local.sh
+~/qwen3.8-forge/scripts/pi-local.sh
 ```
 
 Add the alias once and you never type the path again:
 
 ```bash
-echo "alias qpi='~/qwen3.6-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
+echo "alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
 cd ~/my-project && qpi
 ```
 
@@ -90,7 +116,7 @@ cd ~/my-project && qpi
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
 | `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
-| `cd <project> && ~/qwen3.6-forge/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
+| `cd <project> && ~/qwen3.8-forge/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
@@ -128,9 +154,10 @@ The keys worth knowing:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
-| `GGUF_FILE` | set by the active mode | `coding` uses `Qwen3.6-27B-UD-Q4_K_XL.gguf`; `prose` the Fable-Fusion IQ4_XS. See the VRAM table |
+| `GGUF_FILE` | set by the active mode | `coding` uses `Qwen3.8-27B-UD-Q4_K_XL.gguf`; `prose` the Heretic-decensored IQ4_XS. See the VRAM table |
 | `CTX_SIZE` | `32768` | Context per slot; also what forge uses as its token budget. Capped by the f16 KV cache — see below |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
+| `REASONING_EFFORT` | `medium` | **New in 3.8.** `xhigh`\|`high`\|`medium`\|`low` — `high` is rewritten to `xhigh`, anything else fails the request. Upstream defaults to `xhigh`; this stack does not, see below |
 | `THINK_LANG` | set by the active mode | Reason in Mandarin, answer in English. `zh` in `coding`, `off` in `prose`. Unmeasured on this hardware — see below |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
 | `LLAMA_EXTRA_FLAGS` | `-n 8192 --load-mode none` | `--load-mode none` disables mmap (mandatory on a 9p bind mount); `-n` is the server-side generation cap. **No KV quantization** — see below |
@@ -215,25 +242,44 @@ than carrying a second definition of what "prose mode" means:
 
 | | `coding` | `prose` |
 | --- | --- | --- |
-| model | unsloth `UD-Q4_K_XL` | Fable-Fusion `IQ4_XS` (decensored) |
-| temperature | 0.6 | 1.0 |
+| model | unsloth `UD-Q4_K_XL` | `Qwen3.8-27B-Uncensored` `IQ4_XS` |
+| temperature | 1.0 | 1.0 |
 | DRY | off | 0.8 |
+| `REASONING_EFFORT` | medium | medium |
 | `THINK_LANG` | zh | off |
 
-`coding` is the regime the committed **0.913 / 27-27** scorecard was measured in
-— Qwen's published "precise coding" preset with every creative sampler at
-llama.cpp's disabled value. `prose` follows the Fable-Fusion card first and
-Qwen's general preset where that card is silent.
+Both modes now sit at temperature 1.0. On 3.6 `coding` ran at 0.6, which was
+Qwen3.6's separate "precise coding" preset; the 3.8 card publishes a single
+thinking preset and it is 1.0, and the GGUF metadata says the same
+(`general.sampling.temp=1.0`). The old **0.913 / 27-27** scorecard was measured
+on 3.6 at 0.6; it described neither this model nor this temperature, and it was
+deleted along with the rest of the eval harness rather than left to rot.
 
-**The one substitution, called out because it is not a card value:** the card
-asks for `smoothing_factor 1.5`, which is a KoboldCpp sampler llama.cpp does not
-implement, and offers `repeat pen 1.1-1.15` as the fallback — which the *same
-card* forbids on MTP quants. DRY penalises repeated sequences rather than
-repeated tokens, so it buys the same thing without touching rep pen. Set
-`DRY_MULTIPLIER=0.0` for pure card values.
+`prose` moved model as well as version. There is no 3.8 Fable-Fusion — DavidAU
+had published one 3.8 model at migration time, with no GGUF — so the whole
+Fable-Fusion card, including its `temp <= 1` MTP ceiling and its rep-pen ban,
+is gone with it. The replacement is
+[`JonathanColetti/Qwen3.8-27B-Uncensored-GGUF`](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF),
+picked because it publishes numbers instead of adjectives: Heretic
+refusal-direction removal at bf16, **12/100 refusals against the base model's
+98/100** at KL 0.1191, a mean 0-shot capability delta of **-0.5** across
+MMLU/ARC-C/HellaSwag/Winogrande (all inside stderr), and MTP tensors grafted
+back after abliteration and verified file by file. That last point is the
+one that matters operationally — abliteration silently drops `blk.64` while
+`config.json` still advertises it, so most decensored 3.8 GGUFs are 64 blocks
+and cannot do MTP at all. This one is 65, checked here from the GGUF header
+before it was chosen.
 
-Note the temperature ceiling: the card caps MTP quants at `temp <= 1`. To go
-above that, switch to a regular (non-MTP) GGUF from the same repo.
+DRY stays at 0.8 in `prose` as a preference now, not as a card requirement: it
+penalises repeated *sequences* rather than repeated tokens, which is what keeps
+long fiction from collapsing into the same phrasing without flattening style the
+way a flat repeat penalty does. `DRY_MULTIPLIER=0.0` gives Qwen's preset
+unmodified.
+
+Known cost of the prose model, stated by its publisher: the draft head was
+trained against the unmodified weights, so MTP acceptance may fall. Speculative
+decoding verifies every drafted token against the target, so that is a decode-
+speed risk and never a quality one.
 
 > **`max_tokens` bites in prose mode.** This is a thinking model with
 > `REASONING_BUDGET=4096`, so a request must leave room for the thinking block
@@ -248,8 +294,8 @@ above that, switch to a regular (non-MTP) GGUF from the same repo.
 ### The knobs
 
 Every sampler this build supports is wired through `.env`, and each ships at
-llama.cpp's **disabled** value, so `coding` reproduces the scorecard's regime
-exactly. The chain runs:
+llama.cpp's **disabled** value, so `coding` is Qwen's published preset and
+nothing else. The chain runs:
 
 ```
 penalties -> dry -> top_n_sigma -> top_k -> typ_p -> top_p -> min_p -> xtc -> temperature
@@ -269,14 +315,20 @@ Prefer **DRY** over `REPEAT_PENALTY` for prose. A flat repeat penalty also
 punishes ordinary function words and flattens style — which is the problem
 `smoothing_factor` is usually reached for.
 
-> The model itself is not the limiter: Heretic/ARA took refusals from **99/100
-> to 4/100** on the base model, per the card's own measurement.
+> The model itself is not the limiter: Heretic took refusals from **98/100 to
+> 12/100** on the 3.8 base, per the card's own measurement. (The 3.6 prose model
+> this replaces measured 99/100 → 4/100 by the same method — a different weight
+> edit on a different base, so the two numbers are not a regression, they are
+> different experiments.)
 
 ## Choosing a quant for 24 GiB
 
-The 4090 has 24.0 GiB. Qwen3.6-27B is a hybrid: only **16 of its 64 layers** use full
+The 4090 has 24.0 GiB. Qwen3.8-27B is a hybrid: only **16 of its 64 layers** use full
 attention (the other 48 are Gated DeltaNet, whose recurrent state does not grow with
-context). That makes its KV cache far smaller than a normal 27B.
+context). That makes its KV cache far smaller than a normal 27B. Unchanged from 3.6 —
+the GGUF still declares `full_attention_interval=4`, `head_count_kv=4` and 256-wide
+K/V heads, and every quant is within 10 MB of its 3.6 counterpart, so the table below
+carries over byte for byte.
 
 **The KV cache must be f16/f16 here, and that is what sets the context size.**
 Measured on this machine on 2026-08-12, not inherited from a guide:
@@ -325,14 +377,14 @@ from anywhere:
 
 ```bash
 cd ~/my-project
-~/qwen3.6-forge/scripts/pi-local.sh
+~/qwen3.8-forge/scripts/pi-local.sh
 ```
 
 pi then reads and edits files under `~/my-project`. Worth adding to your shell
 so you stop typing the path:
 
 ```bash
-echo "alias qpi='~/qwen3.6-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
+echo "alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
 cd ~/my-project && qpi
 ```
 
@@ -381,7 +433,7 @@ with `, /stack` when it is active.
 > `/stack` is forwarded to the model as plain text, you get a confident,
 > invented answer instead of an error. If you launch `pi` directly rather than
 > through `pi-local.sh`, pass
-> `-e ~/qwen3.6-forge/.pi/extensions/stack.ts` yourself.
+> `-e ~/qwen3.8-forge/.pi/extensions/stack.ts` yourself.
 
 ```
 /stack                     model, context, slots, throughput, GPU, forge, settings
@@ -391,7 +443,7 @@ with `, /stack` when it is active.
 /stack set KEY=VALUE       edit .env, and say exactly what must restart
 /stack up | down           start / stop via scripts/
 /stack restart [llama|forge]
-/stack smoke | eval | bench
+/stack smoke | bench
 /stack logs [llama|forge]
 /stack slots save|restore|erase [id]
 ```
@@ -403,9 +455,10 @@ llama in the middle of your task.
 
 **Nothing here reconfigures a running server, because nothing can.**
 llama-server answers **501 to `POST /props`** on this build — context size,
-sampling, reasoning budget and MTP are startup flags, full stop — and forge
-0.8.2 has no admin API at all (`/health`, `/v1/models`, `/v1/messages`,
-`/v1/chat/completions`, and that is the entire surface). So `/stack set` edits
+sampling, reasoning budget and MTP are startup flags, full stop — and forge has
+no admin API either. 0.9.0 added `/forge/health` and `/forge/usage` and started
+forwarding `/health`, `/v1/models`, `/v1/health`, `/models` and `/props` to the
+backend, but every management mutation stays closed. So `/stack set` edits
 `.env` and then tells you precisely what to recreate, reading the key→service
 mapping out of `docker-compose.yml` so it cannot drift. It distinguishes keys
 that only `pi-local.sh` reads — those just need pi restarted — from keys that
@@ -552,7 +605,7 @@ a dead channel blocks rather than allows.
 Every session prints what it is actually doing, so nothing is on silently:
 
 ```
-pi -> http://localhost:8081  (model: qwen3.6-27b, context files off, thinking in zh, mcp via cli, /stack)
+pi -> http://localhost:8081  (model: qwen3.8-27b, context files off, thinking in zh, mcp via cli, /stack)
 ```
 
 Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
@@ -608,7 +661,7 @@ What it writes, and why each field:
         "supportsReasoningEffort": false
       },
       "models": [
-        { "id": "qwen3.6-27b", "contextWindow": 32768, "maxTokens": 8192 }
+        { "id": "qwen3.8-27b", "contextWindow": 32768, "maxTokens": 8192 }
       ]
     }
   }
@@ -621,9 +674,13 @@ What it writes, and why each field:
   `thinking` for no gain. It is also the only path anything here is measured on.
 - **`apiKey: "local"`** — pi hides models it considers unauthenticated, so even a
   keyless local server needs a placeholder.
-- **`compat` both false** — llama.cpp's chat templates don't know the `developer`
-  role, and `reasoning_effort` is an OpenAI-ism it doesn't implement. pi's own
-  docs flag this for exactly this class of server.
+- **`compat` both false — and on 3.8 the reason is the engine, not the model.**
+  Qwen3.8's template supports the `developer` role and takes a real
+  `reasoning_effort` variable. llama.cpp only started forwarding an API-level
+  `reasoning_effort` to the template in commit `7e4c0a9` (2026-08-14), and the
+  newest published CUDA image at migration time was `server-cuda-b10423`, cut a
+  day earlier — so a client that sends the field has it silently dropped. Effort
+  is set server-side instead; see below.
 - **`maxTokens` well under `contextWindow`** — with `--no-context-shift` an
   overflowing request fails loudly, and an agent loop's prompt grows every turn.
   It comes from `PI_MAX_TOKENS`, and `LLAMA_EXTRA_FLAGS` carries the same number
@@ -705,16 +762,52 @@ Two things that were measured rather than assumed, on 2026-08-12:
   not to type itself out.
 - **The model name is ignored** end to end. It is a label; llama.cpp serves
   whatever GGUF it was started with.
-- **`reasoning_effort` and the `developer` role are not implemented** by
-  llama.cpp's chat templates, which is why the provider entry declares both as
-  unsupported. Thinking is controlled server-side by `REASONING_BUDGET` and
-  nowhere else.
+- **`reasoning_effort` does not survive as an API field** on the pinned build,
+  which is why the provider entry declares it unsupported. Thinking depth is set
+  server-side by `REASONING_EFFORT` in `.env` and capped by `REASONING_BUDGET`.
 - **Prompt caching is not an API-level feature here.** There is no
   `cache_control` on the OpenAI wire; the stack gets the same effect from
   `--cache-prompt` + `--slot-save-path` (KV cache persisted to disk, so warm
   restarts skip re-prefill), `preserve_thinking` (no KV re-prefill across
   agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
   `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
+
+## Reasoning effort — the 3.8 knob that will bite you
+
+New in 3.8, and the reason release-day reports are full of 20-minute answers:
+the model takes a `reasoning_effort` level, and **upstream's default is
+`xhigh`**. At `xhigh` the template prepends
+
+> *Reasoning effort is set to xhigh. Please think carefully through the task,
+> validate key assumptions, consider plausible alternatives, and prioritize
+> correctness, consistency, and clarity in the final answer.*
+
+and the model does exactly that — public reports on release day include 22-36k
+thinking tokens for a single SVG. Against `REASONING_BUDGET=4096` that is not
+"slower", it is a truncation on **every** turn: the answer arrives mid-thought
+with the budget message stapled to it.
+
+This stack sets `REASONING_EFFORT=medium`, passed to llama-server as
+`--chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "..."}'`.
+
+The accepted values, read out of the template embedded in the GGUF and confirmed
+by rendering it:
+
+| Value | What the template does |
+| --- | --- |
+| `xhigh` | Prepends the steering paragraph above. Upstream default |
+| `high` | Silently rewritten to `xhigh` |
+| `medium` | **Injects nothing at all.** What this stack runs |
+| `low` | Prepends "keep your thinking brief and focused" |
+| anything else | `raise_exception()` — the request fails |
+
+That last row includes `none`, which several release-day write-ups list as a
+fourth level. It is not one. It also includes the empty string, so never leave
+`REASONING_EFFORT=` blank in `.env`.
+
+Raising it is a two-key change, not one: `xhigh` without a matching increase to
+`REASONING_BUDGET` (and the context to hold it) just moves where the truncation
+lands. On a 32K window on one 4090 there is not much room to give it.
 
 ## Thinking in another language
 
@@ -766,7 +859,7 @@ active, so a session can never be running it silently.
 
 Neither llama-server nor forge can inject a system prompt — verified, with the
 receipts, in `prompts/README.md` — so this is applied by the launchers, and by
-`eval.py` when you set `EVAL_SYSTEM_PROMPT_FILE`.
+`ab_think_lang.py`, which takes `--system-prompt-file`.
 
 Adding another language is a file: drop `prompts/think-<code>.md` and set
 `THINK_LANG=<code>`. An unknown code fails the launch loudly rather than starting
@@ -789,14 +882,74 @@ at **10–12 MB/s** (`dd` from a throwaway container against the same mount, twi
 the host has the file cached. Watch real progress with `./scripts/logs.sh llama`
 rather than the health status.
 
-**The load stalls: high CPU, no progress, VRAM flat.**
-Memory pressure, not a slow disk. The model is mmap'd, so if the VM has little
-free memory its pages are evicted as fast as they fault in and the load thrashes
-indefinitely. Check with `free -m` (and `docker run --rm --privileged alpine
-free -m` for the Docker VM). Seen here with a runaway 5.8 GB `ugrep` on the box:
-killing it took *available* from 8.6 GB to 13.4 GB and the load proceeded. VRAM
-that is not climbing (`docker exec qwen36-llama nvidia-smi`) is the tell —
-distinguish it from a slow-but-progressing load before restarting anything.
+**The load seems stuck: VRAM flat, no new log lines, low CPU.**
+Read this before concluding anything, because the two obvious tells are both
+misleading on this stack.
+
+*Flat VRAM is normal here.* With `--load-mode none` (no mmap) llama-server
+allocates the **whole** weight buffer up front and then streams the file into
+it, so `nvidia-smi` jumps to ~18.5 GiB in the first seconds and does not move
+again until the KV cache is allocated at the end. It is not a progress bar.
+(The old advice in this slot said flat VRAM meant a stall. That applies to an
+mmap'd load, which this is not.)
+
+*Silence in the log is also normal.* llama-server prints nothing between
+`load_model: loading model ...` and the end of the load.
+
+**The real progress counter** is bytes read by the process — and note that
+`init: true` means llama-server is **PID 7**, not PID 1:
+
+```bash
+docker exec qwen38-llama sh -c 'grep ^rchar /proc/7/io; cat /proc/7/wchan'
+```
+
+Sample it twice and divide. `State: D` with `wchan: p9_client_rpc` is the
+process waiting on the 9p mount, which is what a healthy load looks like most of
+the time.
+
+**Measured here on 2026-08-15, and the reason this entry exists:**
+
+| Condition | Load read rate | Window |
+| --- | --- | --- |
+| Model download running concurrently, VM at 2.2 GiB free | **2.1 MB/s** | 160 s |
+| Download stopped, page cache dropped | **32.3 MB/s** | 300 s |
+
+A **15x** difference, and the whole 17.9 GB load finished in **27 minutes**
+wall clock including the slow first half. Do not pull a model and cold-load
+another at the same time — they contend for the same 9p mount.
+
+The control that proves the mount itself was fine throughout: `dd` off the same
+GGUF read at **12.9 MB/s** while llama was apparently crawling at 2.
+
+Sample over minutes, not seconds. A 13-second window on this same load reported
+19.9 MB/s where the 300-second window reported 32.3 — the rate is bursty enough
+that a short sample is worthless in either direction.
+
+```bash
+docker run --rm -v //d/llm-models:/m alpine \
+  dd if=/m/<model>.gguf of=/dev/null bs=1M count=200 skip=6000
+```
+
+If that control is *also* slow, then it is memory pressure or the mount. Free
+memory with `docker run --rm --privileged alpine sh -c 'sync; echo 3 >
+/proc/sys/vm/drop_caches'` and re-measure before restarting anything.
+
+**The model download restarts from zero, or dies with `[Errno 12] Cannot
+allocate memory`.**
+Memory pressure, not a network fault, and it is reclaimable. Hit during the 3.8
+migration at ~6 GB into an 18 GB pull: the VM had 2.1 GiB free with 11 GiB sitting
+in page cache, and the transfer failed with `OSError: [Errno 12]`. The download
+script retries 12 times, so this shows up as a pull that keeps starting over
+rather than as an error you notice. Fix it and let the retry proceed:
+
+```bash
+docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+free -h     # want multiple GiB *free*, not just available
+```
+
+That one command took free memory from 2.1 GiB to 11 GiB here. Check
+`docker logs <downloader container>` for the `[retry]` lines — a plain
+`du -sh $MODELS_DIR/.hf-cache` going *down* is the symptom.
 
 **It is unbearably slow (< 1 tok/s).**
 The GPU is not attached and it is running on CPU. Check `docker info | grep -i nvidia`
@@ -829,17 +982,14 @@ of being bind-mounted.
 ## Layout
 
 ```
-.gitignore              .env.local, models, caches, the harbor checkout
+.gitignore              .env.local, models, caches
 .env                    committed config + version pins
 .env.local.example      machine-local override template (copy to .env.local)
 versions.lock           what update.sh last verified (generated)
 docker-compose.yml      llama + forge, plus tools-profile one-shots
 Dockerfile.forge        forge proxy image, pinned to FORGE_VERSION
 .github/workflows/ci.yml  CI pipeline (lint, build, verify)
-badges/                 shield.io endpoint JSON for dynamic badges
-results/
-  latest.json           most recent eval run (committed, displayed in README)
-  history.jsonl         append-only log of all eval runs
+badges/ci.json          shield.io endpoint JSON for the CI badge
 prompts/
   think-zh.md           reason in Mandarin, answer in the user's language
   README.md             why this is applied client-side and not in the engine
@@ -852,22 +1002,19 @@ scripts/
   smoke-test.sh         run smoke_test.py against the running stack
   download-model.sh     runner for download_model.py
   smoke_test.py         end-to-end checks (runs inside the compose network)
-  eval.py               9-suite coding eval (speed, codegen, bugfix, tools…)
-  eval_harness.py       extended coding eval with judge-based scoring
-  run-eval.sh           run eval, save results, regenerate badge + README
-  gen-readme-scorecard.py  update README scorecard from results/latest.json
   ab_think_lang.py      A/B a thinking-language prompt: quality, cost, leakage
   ab-think-lang.sh      runner for the above (resolves the fragment from .env)
   test_repeat_detector.py  standalone unit tests for the loop detector
   test_cjk_detector.py     standalone unit tests for the CJK leak detector
-  bench.sh              prompt processing + generation speed benchmark
+  bench.sh              runner for bench.py
+  bench.py              prefill / decode / MTP acceptance, from llama's timings
   slot-cache.sh         save/restore KV cache — UNUSED, and read its header first
   mode.sh               switch between the regimes in modes/
   download_model.py     resumable GGUF fetch
   pi-local.sh           launch pi against the stack (the only client)
   mcp.sh                call an MCP server as a CLI (wraps mcp2cli)
 modes/
-  coding.env            the regime the committed scorecard was measured in
+  coding.env            mainline unsloth quant, Qwen's published preset
   prose.env             decensored model, card sampling, no thinking-language
 patches/
   forge_merge_consecutive.py  build-time fix for a forge crash on structured
@@ -885,100 +1032,72 @@ vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plug
   tests/                227 tests, no node_modules
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
-harbor-adapter/
-  run-local.sh          Harbor eval runner (stock pi agent, no adapter needed)
-  README.md             why no adapter is needed
 context/                why things are the way they are
   README.md              index of the above, and the conventions it follows
   design/decisions.md    all design decisions, flags, quant choice
-  design/eval-methodology.md  what the eval benches, how it scores
 ```
 
-## Eval Results
+## Verifying it works
 
-> **Full methodology:** [context/design/eval-methodology.md](context/design/eval-methodology.md) —
-> what each suite tests, where the benchmarks come from, how scoring works.
->
-> Measured in **`coding` mode**. Switching to `prose` changes the model and the
-> sampling, so these numbers stop describing what is running.
-
-<!-- eval-scorecard-start -->
-
-![Eval](https://img.shields.io/badge/eval-91%25%20(27%2F27)-brightgreen?logo=pytest&style=flat)
-
-**Latest eval:** 91% — 27/27 tests pass (floor: 0.5)
-
-| Suite | Score | Passed | Bar |
-| --- | --- | --- | --- |
-| bugfix | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/bugfix-73%-green?style=flat-square) |
-| codegen | [███████████████████░] 0.95 | 5/5 | ![](https://img.shields.io/badge/codegen-95%-brightgreen?style=flat-square) |
-| edits | [█████████████████░░░] 0.88 | 4/4 | ![](https://img.shields.io/badge/edits-88%-green?style=flat-square) |
-| multiturn | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/multiturn-100%-brightgreen?style=flat-square) |
-| reasoning | [████████████████████] 1.00 | 3/3 | ![](https://img.shields.io/badge/reasoning-100%-brightgreen?style=flat-square) |
-| refactor | [████████████████████] 1.00 | 1/1 | ![](https://img.shields.io/badge/refactor-100%-brightgreen?style=flat-square) |
-| review | [████████████████████] 1.00 | 1/1 | ![](https://img.shields.io/badge/review-100%-brightgreen?style=flat-square) |
-| speed | [████████████████████] 1.00 | 4/4 | ![](https://img.shields.io/badge/speed-100%-brightgreen?style=flat-square) |
-| tools | [██████████████░░░░░░] 0.73 | 3/3 | ![](https://img.shields.io/badge/tools-73%-green?style=flat-square) |
-
-
-<!-- eval-scorecard-end -->
-
-### Running evaluations
+There is no scored eval suite in this repo any more (removed 2026-08-15, with
+the 3.8 migration — the 9-suite harness, its committed scorecard, its badges and
+the Harbor adapter all went together). Three things verify the stack now, and
+each answers a different question:
 
 ```bash
-# Start the stack first
-./scripts/up.sh
+./scripts/up.sh                  # start it
 
-# Quick smoke test (must pass)
-./scripts/smoke-test.sh
+./scripts/smoke-test.sh          # does it work end to end, at all
+./scripts/bench.sh --full        # how fast, and is MTP paying for itself
+./scripts/ab-think-lang.sh       # is THINK_LANG earning its place
 
-# Full 9-suite coding eval
-./scripts/run-eval.sh            # run and save results
-./scripts/run-eval.sh --history  # also append to history.jsonl
-./scripts/run-eval.sh --badge    # also regenerate badges
-
-# Update README with latest results
-python3 scripts/gen-readme-scorecard.py --all
-
-# CI-ready: validate everything that doesn't need a GPU
+# No GPU needed — the same checks CI runs:
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 (cd vendor/pi-loop-mode && npm test)      # 23 tests for the /loop fork
-(cd vendor/prinny-channel && npm test)   # 227 tests for the Matrix channel
+(cd vendor/prinny-channel && npm test)    # 227 tests for the Matrix channel
 docker compose --profile tools config     # validate compose
 ```
 
-> **The speed suite measures the engine, not the proxy.** It queries llama-server
-> directly and scores `timings.prompt_per_second` / `timings.predicted_per_second`
-> — forge strips that block, and dividing token counts by end-to-end wall clock
-> measures proxy overhead rather than throughput. Prefill uses a **4000-word**
-> prompt with a unique per-run nonce, because llama caches prompt prefixes and a
-> repeated prompt reports a rate for work it never did (the suite fails the row
-> outright if `timings.cache_n` shows a hit). Proxy cost is its own row,
-> `proxy_overhead_s`, named for what it is.
->
-> This replaced a version that sent a 521-token prompt and derived both figures
-> from one wall clock: it scored 0.47 both before and after a fix that made
-> prefill ~65x faster, and could not have detected the regression.
->
-> Individual rows still move at temperature 0.6 with no repeat mechanism:
-> `edits/mixed_tabs` scored 1.00, 0.50 and 0.00 across three runs of the same
-> build. Treat single-row changes as noise, not regressions.
+### bench.sh measures the engine, not the proxy
 
-**The scorecard measures the no-thinking path.** `eval.py` sends
-`enable_thinking: false` and always has, so every number above — and every row in
-`results/history.jsonl` — describes the model with reasoning off, while a real
-pi session runs with it on under `REASONING_BUDGET`. To measure what you
-actually run, set `EVAL_THINKING=on` (in `.env` or on the command line). The mode
-and any system prompt are recorded under `config` in `results/latest.json`, so
-the two kinds of run can never be confused after the fact. Keep the default when
-you want a score comparable to the committed history.
+Two ways to get a throughput number that looks fine and means nothing, both of
+which this repo has actually shipped:
 
-The eval produces:
+**Dividing token counts by wall clock.** That measures forge's overhead as if it
+were engine throughput. `bench.sh` talks to llama-server directly and reports
+`timings.prompt_per_second` / `timings.predicted_per_second`, which llama
+measures around the compute itself and forge strips out of the response. The
+version this replaced scored the same before and after a fix that made prefill
+**~65x faster** — a benchmark that cannot see a 65x regression is worse than
+none.
 
-| Artifact | Purpose |
-| --- | --- |
-| `results/latest.json` | Most recent scores (committed, displayed in README) |
-| `results/history.jsonl` | Every run, append-only |
-| `badges/eval.json` | Shield.io endpoint for dynamic eval badge |
-| `badges/suite-*.json` | Per-suite dynamic badges |
+**Reusing a prompt.** `--cache-prompt` is on, so the second run of a fixed
+prompt is served from the prefix cache and reports a prefill rate for work it
+never did. Every prompt `bench.sh` sends carries a unique nonce **at the front**
+(a prefix cache matches from the start, so a trailing nonce would not help), and
+any run whose `timings.cache_n` is non-zero is printed as `CACHED (excluded)`
+rather than counted.
+
+### Tuning MTP with it
+
+When `SPEC_TYPE=draft-mtp` is on, llama reports `draft_n` and
+`draft_n_accepted`, and `bench.sh` prints acceptance per run and in aggregate.
+That is the measurement `SPEC_DRAFT_N_MAX` should be set from:
+
+```bash
+./scripts/bench.sh --repeat 3                      # baseline at the current n-max
+./scripts/set.sh SPEC_DRAFT_N_MAX=4 2>/dev/null \
+  || sed -i 's/^SPEC_DRAFT_N_MAX=.*/SPEC_DRAFT_N_MAX=4/' .env
+docker compose up -d --force-recreate llama        # ~20 min cold load
+./scripts/bench.sh --repeat 3                      # compare decode tok/s
+```
+
+Raise n-max while decode improves; stop when the extra drafted tokens stop being
+accepted. The current value of `2` is inherited from a **Qwen3.6** rig and 3.8
+has a different draft head — public 3.8 reports on a 4090 run 4-5, and the
+prose model's card puts llama.cpp's own default at 3. All three are guesses
+until measured on this box.
+
+If no draft counters appear at all, either `SPEC_TYPE` is empty or the GGUF has
+no MTP head — check `block_count`, which must be **65**, not 64.

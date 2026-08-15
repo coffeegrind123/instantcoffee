@@ -73,16 +73,30 @@ providers["forge"] = {
     # llama.cpp ignores it.
     "apiKey": "local",
     "compat": {
-        # llama.cpp's chat templates do not know the `developer` role, and
-        # `reasoning_effort` is an OpenAI-ism it does not implement. pi's docs
-        # call this out for exactly this class of server.
+        # Both still False on 3.8, but the reason changed and is worth writing
+        # down, because the obvious reading of the 3.8 release notes says
+        # otherwise.
+        #
+        # The MODEL supports both: the unsloth 3.8 template adds developer-role
+        # handling, and `reasoning_effort` is a real template variable with four
+        # levels. The ENGINE is what does not. llama.cpp only began forwarding an
+        # API-level `reasoning_effort` field to the template in commit 7e4c0a9
+        # (2026-08-14, "chat: pass reasoning_effort to template"), and the newest
+        # published CUDA server image at migration time was server-cuda-b10423,
+        # cut 2026-08-13 — a day earlier. So a client that sends the field gets
+        # it silently dropped.
+        #
+        # Until an image ships with that commit, effort is set server-side via
+        # --chat-template-kwargs from REASONING_EFFORT in .env, which applies to
+        # the whole server rather than per request. Flip these to True only after
+        # checking that the running build actually honours them.
         "supportsDeveloperRole": False,
         "supportsReasoningEffort": False,
     },
     "models": [
         {
             "id": os.environ["MODEL"],
-            "name": "Qwen3.6-27B local (forge)",
+            "name": "Qwen3.8-27B local (forge)",
             "contextWindow": int(os.environ["CTX"]),
             # Well under contextWindow on purpose: with --no-context-shift a
             # request that would overflow fails loudly, and an agentic loop's

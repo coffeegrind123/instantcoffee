@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end verification of the qwen3.6-forge stack.
+"""End-to-end verification of the qwen3.8-forge stack.
 
 Runs inside the compose network (`docker compose --profile tools run --rm
 smoketest`), so it exercises the same service names the proxy itself uses.
@@ -23,7 +23,7 @@ import urllib.request
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080").rstrip("/")
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
-MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.6-27b")
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.8-27b")
 CTX_SIZE = int(os.environ.get("CTX_SIZE", "32768"))
 
 # Generous: a cold 27B on one 4090 with a thinking budget is not fast.
@@ -261,11 +261,15 @@ def _check_content_repeats(content: str, label: str) -> None:
 
 
 def main() -> int:
-    print(f"\nqwen3.6-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
+    print(f"\nqwen3.8-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
 
     print("Reachability")
     llama_up = wait_for(f"{LLAMA_URL}/health", "llama-server")
-    forge_up = wait_for(f"{FORGE_URL}/health", "forge proxy", timeout=120)
+    # /forge/health, not /health. Since forge 0.9.0, /health is the BACKEND's
+    # readiness forwarded through (502 while llama is still loading) and
+    # /forge/health is forge's own liveness. Probing the wrong one turns a
+    # normal 24-minute cold load into "forge is down".
+    forge_up = wait_for(f"{FORGE_URL}/forge/health", "forge proxy", timeout=120)
 
     if llama_up:
         print("\nBackend")

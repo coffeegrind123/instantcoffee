@@ -10,7 +10,7 @@ import sys
 
 
 def _count_repeats(text: str, length: int) -> int:
-    """From scripts/smoke_test.py and scripts/eval_harness.py."""
+    """From scripts/smoke_test.py."""
     n = len(text)
     pattern = text[n - length : n]
     count = 1

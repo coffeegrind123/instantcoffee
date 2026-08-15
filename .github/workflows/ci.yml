@@ -32,17 +32,16 @@ jobs:
 
       - name: Python syntax checks
         run: |
-          for f in scripts/smoke_test.py scripts/eval.py \
-                   scripts/eval_harness.py scripts/test_repeat_detector.py \
+          for f in scripts/smoke_test.py scripts/test_repeat_detector.py \
                    scripts/ab_think_lang.py scripts/test_cjk_detector.py \
-                   scripts/download_model.py scripts/gen-readme-scorecard.py; do
+                   scripts/download_model.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
 
       - name: Shell syntax checks
         run: |
-          for f in scripts/*.sh harbor-adapter/*.sh; do
+          for f in scripts/*.sh; do
             bash -n "$f" && echo "  $f: OK"
           done
 
@@ -63,13 +62,16 @@ jobs:
             echo "  $f: OK"
           done
 
-      # The stack targets pi only. A reintroduced Claude Code launcher, env key
-      # or wire-format check would go unnoticed otherwise until someone tried to
-      # run it against a 64K window.
-      - name: No Claude Code support has crept back in
+      # The stack targets pi only, and no longer carries a scored eval harness.
+      # A reintroduced Claude Code launcher, env key or wire-format check would
+      # go unnoticed otherwise until someone tried to run it against a 64K
+      # window; a reintroduced eval.py would quietly bring back a scorecard,
+      # badges and a results/ directory that were deliberately deleted.
+      - name: No Claude Code support or eval harness has crept back in
         run: |
           for f in scripts/claude-local.sh scripts/claude-code-env.sh \
-                   harbor-adapter/forge_claude.py; do
+                   harbor-adapter/forge_claude.py scripts/eval.py \
+                   scripts/eval_harness.py scripts/run-eval.sh; do
             test ! -e "$f" || { echo "REMOVED FILE IS BACK: $f"; exit 1; }
           done
           ! grep -qE '^CLAUDE_' .env || { echo ".env has CLAUDE_* keys again"; exit 1; }
@@ -137,7 +139,7 @@ jobs:
                      LLAMA_EXTRA_FLAGS TEMPERATURE TOP_P TOP_K MIN_P
                      REASONING_BUDGET FORGE_CAPABILITY FORGE_REASONING_REPLAY
                      CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
-                     LLAMA_PORT FORGE_PORT THINK_LANG EVAL_THINKING
+                     LLAMA_PORT FORGE_PORT THINK_LANG REASONING_EFFORT
                      PI_MAX_TOKENS PI_CONTEXT_FILES
                      MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION )
           missing=0
@@ -282,39 +284,30 @@ jobs:
           file: Dockerfile.forge
           build-args: FORGE_VERSION=${{ vars.FORGE_VERSION || '0.8.2' }}
           load: true
-          tags: qwen36-forge/proxy:ci
+          tags: qwen38-forge/proxy:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Verify scripts in image
         run: |
-          docker run --rm --entrypoint ls qwen36-forge/proxy:ci /work/scripts/ \
+          docker run --rm --entrypoint ls qwen38-forge/proxy:ci /work/scripts/ \
             | tee /dev/stderr \
-            | grep -q eval.py
+            | grep -q smoke_test.py
 
       # The A/B harness reads the fragment from inside the image, so a missing
       # COPY would only surface as a run-time crash on a machine with a GPU.
       - name: Verify prompt fragments in image
         run: |
-          docker run --rm --entrypoint ls qwen36-forge/proxy:ci /work/prompts/ \
+          docker run --rm --entrypoint ls qwen38-forge/proxy:ci /work/prompts/ \
             | tee /dev/stderr \
             | grep -q think-zh.md
-          docker run --rm --entrypoint python qwen36-forge/proxy:ci \
+          docker run --rm --entrypoint python qwen38-forge/proxy:ci \
             /work/scripts/ab_think_lang.py --help > /dev/null && echo "ab harness: OK"
 
       - name: Verify smoke_test.py imports and has check_for_repeats
         run: >
-          docker run --rm --entrypoint python qwen36-forge/proxy:ci
+          docker run --rm --entrypoint python qwen38-forge/proxy:ci
           -c "import ast; tree=ast.parse(open('/work/scripts/smoke_test.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('smoke_test fns:',fns); assert 'check_for_repeats' in fns"
-
-      - name: Verify eval.py imports and has all 9 suites
-        run: >
-          docker run --rm --entrypoint python qwen36-forge/proxy:ci
-          -c "import ast; tree=ast.parse(open('/work/scripts/eval.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; suites=[n for n in fns if n.startswith('_suite')]; print('suites:',suites); assert len(suites)==9, f'expected 9 suites, got {len(suites)}'"
-
-      - name: Verify gen-readme-scorecard.py imports (host-side, not in image)
-        run: >
-          python -c "import ast; tree=ast.parse(open('scripts/gen-readme-scorecard.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('scorecard fns:',fns); assert 'generate_scorecard' in fns"
 
       # ── badge (main push only) ────────────────────────────────────────
       - name: Generate CI badge

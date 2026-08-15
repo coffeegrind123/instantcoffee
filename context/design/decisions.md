@@ -64,9 +64,11 @@ the newest build and then pins *that* immutable tag. Reading the annotation beat
 paging the tag list — the tags endpoint returns an unordered 100-tag page whose
 newest entries were years stale.
 
-**forge from PyPI, not from a git checkout.** `forge-guardrails==0.8.2` in a
-`pip install` means updating is a version bump in `.env` and a rebuild, with no
-submodule to keep in sync.
+**forge from PyPI, not from a git checkout.** `forge-guardrails==${FORGE_VERSION}`
+in a `pip install` means updating is a version bump in `.env` and a rebuild, with
+no submodule to keep in sync. (The 0.8.2 -> 0.9.0 bump on 2026-08-15 cost more
+than a rebuild, but only because 0.9 changed the Proxy contract — see that
+entry.)
 
 ## Flags that are not obvious
 
@@ -91,9 +93,15 @@ Checked against `common/arg.cpp` at tag `b10200`:
 
 ### forge flags
 
-`--budget-mode manual --budget-tokens ${CTX_SIZE}` pins forge's budget to the same
-number llama-server booted with, so forge never probes for it and the two can never
+`--budget-tokens ${CTX_SIZE}` pins forge's reported budget to the same number
+llama-server booted with, so forge never probes for it and the two can never
 disagree.
+
+*Superseded 2026-08-15:* this used to read `--budget-mode manual --budget-tokens
+${CTX_SIZE}`. forge 0.9.0 rejects `budget_mode` for unmanaged backends outright
+— "error: unmanaged backends do not accept budget_mode", exit 2 — and its proxy
+is now unconditionally no-compaction, so `--budget-tokens` is a reporting
+denominator and nothing else. See the 2026-08-15 entry.
 
 `--inject-respond-tool` is **off** (it is opt-in as of forge 0.8.x). It exists to
 keep ~8B models from wandering out of tool-calling mode; a 27B does not need the
@@ -336,7 +344,7 @@ Combined with `--cache-reuse 64` and `--slot-prompt-similarity 0.20`: the engine
 compares incoming prompts against cached entries and reuses matching KV segments
 instead of recomputing. The similarity threshold is tuned per sasasin's config.
 
-Slot files are stored in a Docker named volume (`qwen36-slot-cache`) so they survive
+Slot files are stored in a Docker named volume (`qwen38-slot-cache`) so they survive
 container rebuilds but don't pollute the model directory.
 
 Caveat: `--cache-prompt` uses the `--cache-ram` budget (default 8192 MiB). At 64K
@@ -755,7 +763,7 @@ Findings that shaped the wiring, all read out of the source rather than assumed:
 - **Unknown models default to a 128K context window.**
   `crates/headroom-proxy/src/compression/model_limits.rs` falls back to 128K
   with a one-time warning for any model id absent from LiteLLM's table.
-  `qwen3.6-27b` is absent. So headroom sizes its compression against twice this
+  `qwen3.8-27b` is absent. So headroom sizes its compression against twice this
   stack's real window. `HEADROOM_TARGET_RATIO` is therefore the lever that
   matters, and forge's `--budget-tokens ${CTX_SIZE}` stays the backstop.
 - **`max_tokens` is renamed and then silently ignored.**
@@ -1546,16 +1554,23 @@ Genuinely unresolved, each with the thing that would settle it:
   `coding` mode on a community claim from an HN thread, not a local result.
   `./scripts/ab-think-lang.sh --repeat 3 --save` settles it; a non-zero exit
   means set it `off`.
-- **`SPEC_DRAFT_N_MAX=2` was adopted from a public rig, not measured here.**
-  ThinkingCap's card suggests 4 with an accept length of 3.69.
-- **forge 0.9.0 is available; we pin 0.8.2.** There is a `MIGRATING_TO_0.9.md`
-  upstream. Note that 0.9.0 does *not* fix the structured-content merge bug
-  above, so it buys nothing on that front.
-- **`bottlecapai/ThinkingCap-Qwen3.6-27B-GGUF` is the next model worth testing**
-  — 15.7 GB, claiming 50% fewer thinking tokens at equal accuracy with
-  multi-seed CIs. Expect this repo's eval to be unable to detect that: it runs
-  `EVAL_THINKING=off` and scores no token-cost metric, so judging it needs the
-  thinking-token measurement `ab_think_lang.py` already does.
+- **`SPEC_DRAFT_N_MAX=2` was adopted from a public rig, not measured here — and
+  the rig was running 3.6.** 3.8 has a different draft head; public 3.8 reports
+  on a 4090 run 4-5 with 47%/28% acceptance at the 4th/5th drafted token, and
+  the prose model's card puts llama.cpp's own default at 3. `bench.py` now
+  reports `draft_n` / `draft_n_accepted`, so `./scripts/bench.sh --repeat 3` at
+  a couple of values settles it.
+- **`reasoning_effort` cannot be set per request on this build.** llama.cpp
+  gained API-field forwarding in `7e4c0a9` (2026-08-14); the newest published
+  CUDA server image is `server-cuda-b10423`, cut a day earlier. Until an image
+  ships with it, `REASONING_EFFORT` is server-wide and pi's
+  `supportsReasoningEffort` stays false. `./scripts/update.sh` is the way to
+  move the pin, and it rolls back if the smoke test fails.
+- **The prose model's MTP acceptance is unknown and may be worse.** Its draft
+  head was trained against the unmodified weights and the main stack was then
+  abliterated, so acceptance can fall — a decode-speed cost only, since every
+  drafted token is still verified. `./scripts/bench.sh` in `prose` mode against
+  the same run in `coding` mode is the comparison.
 - **`/stack slots save|restore` is shipped but unexercised**, deliberately —
   running a save is what wedged llama's task queue once already.
 
@@ -1882,3 +1897,241 @@ someone write `message_id="$somebody-elses"` into a Matrix message and redirect
 another room's answer to themselves. Both spoofing attempts are in
 `tests/forwarding.test.ts`; the second one failed on first run, which is why the
 match is anchored.
+
+---
+
+## 2026-08-15 — Qwen3.8-27B, and deleting the eval harness
+
+Qwen3.8-27B released roughly ten hours before this entry. The stack moved to it
+the same day. Two things happened at once and it is worth keeping them apart:
+the model swap, which was small, and the removal of the scored eval harness,
+which was a deliberate deletion rather than a casualty of the swap.
+
+### The migration was cheap because nothing structural changed
+
+Read out of the GGUF header before anything was downloaded, by HTTP range
+request against the file on the Hub rather than by trusting a model card:
+
+```
+general.architecture        = qwen35        <- identical to 3.5 / 3.6
+qwen35.block_count          = 65            <- 64 layers + 1 MTP block
+qwen35.nextn_predict_layers = 1
+blk.64.nextn.{eh_proj,enorm,hnorm,shared_head_norm}
+qwen35.context_length       = 262144
+qwen35.full_attention_interval = 4
+general.sampling.{temp,top_k,top_p} = 1.0, 20, 0.95
+```
+
+Consequences, in order of how much work each saved:
+
+- **The pinned llama.cpp build loads it unchanged.** The architecture string is
+  still `qwen35`, so `server-cuda-b10200` needs no bump for the model itself.
+- **MTP ships in the mainline quant.** On 3.6 this stack pulled
+  `unsloth/Qwen3.6-27B-MTP-GGUF`, a separate repo. There is no
+  `Qwen3.8-27B-MTP-GGUF` and there does not need to be — `block_count=65` and
+  the `blk.64.nextn.*` tensors are in `unsloth/Qwen3.8-27B-GGUF` itself.
+- **VRAM planning carried over untouched.** `UD-Q4_K_XL` is 17.92 GB against
+  3.6's 17.91 GB, and the hybrid attention layout is unchanged (16 full-attention
+  layers of 64, 4 KV heads, 256-wide K/V), so the quant table in `README.md` and
+  `CTX_SIZE=32768` both still hold without re-deriving them.
+
+### Three things did change
+
+**Temperature.** 3.6 published two thinking presets — 1.0 general, 0.6 "precise
+coding" — and `coding` mode ran the 0.6. The 3.8 card publishes one, and it is
+1.0; the GGUF stamps `general.sampling.temp=1.0` as well. Both modes are now
+1.0. This is why the old scorecard could not simply be carried forward: it
+described a temperature the stack no longer runs.
+
+**`reasoning_effort`, which is new and defaults badly for this box.** Values,
+read out of the template embedded in the GGUF rather than from a write-up:
+`xhigh` | `high` | `medium` | `low`, with `high` silently rewritten to `xhigh`,
+`medium` the only level that injects nothing into the system prompt, and
+anything else — including the `none` that circulates in release-day summaries —
+hitting `raise_exception()` and failing the request. Upstream's default is
+`xhigh`, which prepends a "think carefully, validate key assumptions, consider
+plausible alternatives" instruction, and the release-day reports are 20-90
+minute answers and 22-36k thinking tokens for one SVG. Against
+`REASONING_BUDGET=4096` that is not slowness, it is a truncation on every turn.
+`REASONING_EFFORT=medium` is the stack default, passed via
+`--chat-template-kwargs`.
+
+**The prose model had to be replaced outright.** There is no 3.8 Fable-Fusion.
+DavidAU had published one 3.8 model at migration time, no GGUF, zero downloads,
+so the entire Fable-Fusion card — `temp <= 1` on MTP quants, the rep-pen ban,
+the `smoothing_factor` request that DRY was substituted for — describes nothing
+on disk any more and was removed rather than transplanted.
+`JonathanColetti/Qwen3.8-27B-Uncensored-GGUF` replaces it, chosen on published
+measurements: Heretic at bf16, 98/100 -> 12/100 refusals at KL 0.1191, mean
+0-shot capability delta -0.5 across MMLU/ARC-C/HellaSwag/Winogrande. Its MTP
+head is grafted back from base after abliteration and verified per file, which
+matters more than it sounds: abliteration re-saves through transformers, which
+drops the MTP block while `config.json` still advertises it, so most decensored
+3.8 GGUFs are 64 blocks and cannot speculate at all. Confirmed here from the
+header before selection — 65 blocks, 866 tensors, `blk.64.nextn.*` present.
+
+### A checked assumption that turned out fine, recorded because the check was cheap
+
+The community fixed-template repo (`froggeric/Qwen-Fixed-Chat-Templates` v22)
+warns that the official 3.8 template throws a fatal exception on
+`enable_thinking=false` and on JSON-string tool arguments. Both would matter
+here. Neither applies: the template embedded in the **unsloth** GGUF is already
+patched ("Unsloth fixes - developer role, merged system messages, tool calling")
+and emits the empty `<think></think>` prefill for `enable_thinking=false`
+exactly as 3.6 did. The stock template stays; no vendored jinja file was added.
+
+Both claims were tested rather than read: the template was extracted from the
+GGUF and rendered in a throwaway container against every input that matters.
+
+```
+reasoning_effort=xhigh   -> "Reasoning effort is set to xhigh. Please think carefully..."
+reasoning_effort=high    -> identical xhigh steering (silently rewritten)
+reasoning_effort=medium  -> no steering sentence at all
+reasoning_effort=low     -> "Reasoning effort is set to low. Keep your thinking brief..."
+reasoning_effort=none    -> RAISED "Unexpected reasoning effort none."
+reasoning_effort=""      -> RAISED (so never leave the .env key empty)
+no kwarg at all          -> xhigh steering
+enable_thinking=False    -> "<|im_start|>assistant\n<think>\n\n</think>\n\n", no raise
+tool_call.arguments as a JSON string -> RAISED
+tool_call.arguments as an object     -> renders fine
+```
+
+That last pair is the one that would have broken the agent loop, since an
+OpenAI-wire client sends `arguments` as a string. It does not, and the reason is
+in llama.cpp rather than in the template: `common/chat.cpp` at b10200 checks
+`tmpl.original_caps().supports_object_arguments` and, when the template wants
+objects, runs `workaround::func_args_not_string()` over the messages —
+`json::parse` on every string `arguments` — *before* rendering. Read in the
+pinned build's source, not inferred from behaviour. Re-check it if tool calls
+start failing after a llama.cpp bump; that is the code that would have moved.
+
+### Why the eval harness was deleted rather than re-run
+
+`eval.py`, `eval_harness.py`, `run-eval.sh`, `gen-readme-scorecard.py`,
+`results/`, the eval badges, `eval-methodology.md` and the Harbor adapter are
+gone. The migration is what forced the decision — every number in the scorecard
+was measured on a different model at a different temperature with thinking off,
+so the choice was to re-run it or to stop keeping it — but the reasons are
+older than the migration:
+
+- **It scored the path nobody runs.** `EVAL_THINKING=off` was the committed
+  default, so every published number described the model with reasoning
+  disabled, while a real pi session runs with thinking on under
+  `REASONING_BUDGET`. The scorecard in the README was not a measurement of this
+  stack.
+- **Individual rows were noise.** `edits/mixed_tabs` scored 1.00, 0.50 and 0.00
+  across three runs of the same build. A number that moves that much between
+  identical runs cannot support the conclusions a README badge invites.
+- **A single aggregate score invites exactly the comparison it cannot support.**
+  0.913 against what? Not against another model on the same harness, not against
+  a public benchmark. It measured this harness against itself.
+
+What survives is what answers a question someone actually asks: does it work
+(`smoke-test.sh`), how fast is it (`bench.sh`), and is `THINK_LANG` earning its
+place (`ab-think-lang.sh`). CI now fails if `eval.py` reappears, in the same
+guard that keeps Claude Code support from creeping back.
+
+### bench.sh had to be fixed on the way out
+
+Deleting the eval suite promoted `bench.sh` to the only throughput measurement
+in the repo — and it was the broken kind. It divided token counts by end-to-end
+wall clock through the proxy, and sent a fixed prompt that `--cache-prompt`
+serves out of the prefix cache on every run after the first. That is the same
+mistake the 2026-08-12 entry above records paying for: the version it replaced
+scored 0.47 before and after a fix that made prefill ~65x faster.
+
+`bench.py` now runs inside the compose network like the smoke test, reads
+`timings.prompt_per_second` / `timings.predicted_per_second` from llama directly
+(forge strips that block), puts a unique nonce at the **front** of every prompt
+where a prefix cache will actually see it, and prints any run with a non-zero
+`timings.cache_n` as `CACHED (excluded)` instead of counting it. It also reports
+`draft_n` / `draft_n_accepted`, which is what `SPEC_DRAFT_N_MAX` should be tuned
+against — the committed `2` is a 3.6 number for a draft head 3.8 does not have.
+
+### The same day: forge 0.8.2 -> 0.9.0, pi 0.84.1 -> 0.84.2, llama.cpp left alone
+
+Three components, three different answers, and the interesting part is why they
+differ.
+
+**forge 0.9.0 — taken, and it was not a version bump.** The changelog's breaking
+changes land squarely on the Proxy, which is the only part of forge this stack
+uses. Verified against a running 0.9.0 in a throwaway container before touching
+the compose file, because the migration doc and the actual argument parser are
+two different sources:
+
+```
+$ python -m forge.proxy --backend-url ... --backend-capability native \
+      --budget-mode manual --budget-tokens 32768 ...
+__main__.py: error: unmanaged backends do not accept budget_mode
+```
+
+An externally managed backend — anything reached with `--backend-url`, which is
+this stack — is "unmanaged", and 0.9 rejects `budget_mode` for unmanaged
+backends outright. The proxy would not have started at all. `--budget-mode
+manual` is gone from `docker-compose.yml`; `--budget-tokens ${CTX_SIZE}` stays
+and is now a reporting denominator only.
+
+Losing forge-side budget management costs nothing here. pi does its own context
+management, `PI_MAX_TOKENS` (8192) sits well under `CTX_SIZE` (32768), and
+`--no-context-shift` means an overflow fails loudly rather than silently sliding
+the window. forge was never the thing keeping the conversation inside the
+window.
+
+The second break is quieter and would have looked like a broken stack:
+
+```
+/forge/health -> 200 {"status":"ok"}     (with the backend unreachable)
+/health       -> 502 {"error": ...}      (forwarded backend readiness)
+/v1/models    -> 502                     (forwarded, no synthesized catalog)
+/forge/usage  -> 204
+```
+
+`/health` is now the *backend's* readiness. Probing it as a container
+healthcheck would have marked forge unhealthy for the entire ~24 minute cold
+load of a model that was loading perfectly normally — a self-inflicted
+"forge is down" every single restart. The compose healthcheck, `smoke_test.py`
+and the `/stack` probe all moved to `/forge/health`. Note the consequence for
+reading `/stack`: a red forge line now means forge itself is gone, where before
+it could also mean the model was still loading.
+
+`patches/forge_merge_consecutive.py` still applies cleanly at 0.9.0 — the
+structured-content merge bug is unfixed upstream, and the patch fails the image
+build loudly if that source line ever moves. Confirmed by building the image at
+`FORGE_VERSION=0.9.0` before committing to the bump.
+
+**pi 0.84.1 -> 0.84.2 — taken, and it is uneventful.** Nothing in the release
+touches local OpenAI-compatible providers, llama.cpp, or reasoning control. Its
+only Qwen3.8 content is cloud: the Qwen Token Plan model list swapped
+`qwen3.8-max-preview` for `qwen3.8-max`. `PI_AUTO_UPDATE=1` would have picked it
+up within 24h regardless.
+
+Also checked and deliberately unchanged: `pi-loop-mode` upstream is still 2.5.4,
+so the vendored fork's base has not moved; `mcp2cli` is still 3.3.1 and still
+declares an unbounded `mcp>=1.0` while the MCP SDK is now 2.0.0 — so
+`MCP_SDK_VERSION=1.29.0` remains load-bearing exactly as documented, and the CI
+guard that enforces `1.*` still earns its place.
+
+**llama.cpp — NOT bumped, on purpose.** `b10200` stays pinned. The reasoning:
+
+- Nothing between `b10200` and the newest published CUDA image is
+  Qwen3.8-specific. `git compare b10200...b10423` touches no `src/models/qwen35*`
+  file at all; the qwen35 commits that matter (`use post-norm hidden state for
+  MTP`, the delta-net graph dedups) all predate the pin. The architecture string
+  is still `qwen35`, so 3.8 is not a new model to this engine.
+- The one commit worth having, `7e4c0a9` "chat: pass reasoning_effort to
+  template" (2026-08-14), **is not in any published CUDA image**. Probed the
+  ghcr manifests directly: `server-cuda-b10423` (cut 2026-08-13T18:40Z) exists,
+  and every tag from `b10424` to `b10437` returns 404. Bumping buys nothing on
+  the one axis where 3.8 changed.
+- A model swap and a forge major in the same change is already enough. Adding an
+  engine bump means a failure cannot be attributed to any of the three.
+
+`./scripts/update.sh` is the way to move it once this is verified — it bumps,
+rebuilds, smoke-tests, and restores the previous pins if the smoke test fails.
+
+Two things that bench.py depends on were checked in the pinned build's source
+rather than assumed: `tools/server/server-task.cpp` emits `cache_n` and
+`predicted_per_second` unconditionally and `draft_n` / `draft_n_accepted`
+whenever `draft_n > 0`, and `to_json_oaicompat_chat()` attaches the whole
+`timings` block to non-streaming `/v1/chat/completions` responses. So the
+nonce-and-timings benchmark works on b10200 as written.

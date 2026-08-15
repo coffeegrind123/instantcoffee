@@ -46,7 +46,7 @@ RUN python /tmp/patches/forge_merge_consecutive.py \
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"
 # without cross-referencing .env.
-LABEL org.opencontainers.image.title="qwen3.6-forge proxy" \
+LABEL org.opencontainers.image.title="qwen3.8-forge proxy" \
       org.opencontainers.image.description="forge-guardrails proxy in front of llama-server" \
       forge.version="${FORGE_VERSION}"
 
@@ -55,12 +55,12 @@ LABEL org.opencontainers.image.title="qwen3.6-forge proxy" \
 # `./scripts` expands to here) mounts an EMPTY directory instead of failing —
 # see context/design/decisions.md. Baking them in removes that whole class of
 # bug and makes the image self-contained.
-COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/eval_harness.py scripts/eval.py scripts/ab_think_lang.py /work/scripts/
+COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/ab_think_lang.py /work/scripts/
 
 # System-prompt fragments. They have to be inside the image for the same reason
 # the scripts are: neither llama-server nor forge can inject a system prompt, so
-# the eval and the A/B harness apply it themselves, and a bind-mounted source
-# would resolve to an empty directory on Docker Desktop.
+# the A/B harness applies it itself, and a bind-mounted source would resolve to
+# an empty directory on Docker Desktop.
 COPY --chown=forge:forge prompts/ /work/prompts/
 
 WORKDIR /work

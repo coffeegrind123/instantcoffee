@@ -1,4 +1,4 @@
-name: qwen36-forge
+name: qwen38-forge
 
 services:
   # ---------------------------------------------------------------------------
@@ -6,7 +6,7 @@ services:
   # ---------------------------------------------------------------------------
   llama:
     image: ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}
-    container_name: qwen36-llama
+    container_name: qwen38-llama
     restart: unless-stopped
     gpus: all
     # llama-server runs as PID 1 and does not reap children. Twice on this box a
@@ -40,7 +40,7 @@ services:
       --reasoning-format deepseek
       --reasoning-budget ${REASONING_BUDGET}
       --reasoning-budget-message "${REASONING_BUDGET_MESSAGE}"
-      --chat-template-kwargs '{"preserve_thinking": true}'
+      --chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "${REASONING_EFFORT:-medium}"}'
       -ngl ${NGL}
       -fa ${FLASH_ATTN}
       -kvu
@@ -89,6 +89,21 @@ services:
 
   # ---------------------------------------------------------------------------
   # forge — guardrail proxy. Clients talk to this, never to a backend directly.
+  #
+  # Two things here are forge 0.9 contract changes, both verified against a
+  # running 0.9.0 rather than read off the migration doc:
+  #
+  #   * NO --budget-mode. forge 0.9 exits 2 with "unmanaged backends do not
+  #     accept budget_mode" — an externally managed backend (--backend-url) is
+  #     unmanaged, and the proxy is now unconditionally no-compaction.
+  #     --budget-tokens survives as a reporting denominator only, which is all
+  #     this stack ever wanted from it; pi does its own context management.
+  #
+  #   * The healthcheck probes /forge/health, NOT /health. In 0.9 /health
+  #     forwards the BACKEND's readiness (measured: 502 while llama is down), so
+  #     probing it would mark forge unhealthy for the whole ~24 minute cold load
+  #     of a model that is loading perfectly normally. /forge/health is forge's
+  #     own liveness and answered 200 with the backend unreachable.
   # ---------------------------------------------------------------------------
   forge:
     build:
@@ -96,15 +111,14 @@ services:
       dockerfile: Dockerfile.forge
       args:
         FORGE_VERSION: ${FORGE_VERSION}
-    image: qwen36-forge/proxy:${FORGE_VERSION}
-    container_name: qwen36-forge
+    image: qwen38-forge/proxy:${FORGE_VERSION}
+    container_name: qwen38-forge
     restart: unless-stopped
     ports:
       - "${BIND_ADDR}:${FORGE_PORT}:8081"
     command: >
       --backend-url http://llama:8080
       --backend-capability ${FORGE_CAPABILITY}
-      --budget-mode manual
       --budget-tokens ${CTX_SIZE}
       --max-retries ${FORGE_MAX_RETRIES}
       --max-tool-errors ${FORGE_MAX_TOOL_ERRORS}
@@ -116,7 +130,7 @@ services:
         - CMD
         - python
         - -c
-        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=4).status==200 else 1)"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/forge/health', timeout=4).status==200 else 1)"
       interval: 15s
       timeout: 6s
       start_period: 30s
@@ -128,7 +142,7 @@ services:
   # ---------------------------------------------------------------------------
   downloader:
     profiles: ["tools"]
-    image: qwen36-forge/proxy:${FORGE_VERSION}
+    image: qwen38-forge/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -154,7 +168,7 @@ services:
   # ---------------------------------------------------------------------------
   smoketest:
     profiles: ["tools"]
-    image: qwen36-forge/proxy:${FORGE_VERSION}
+    image: qwen38-forge/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -168,40 +182,34 @@ services:
       CTX_SIZE: ${CTX_SIZE}
 
   # ---------------------------------------------------------------------------
-  # One-shot coding evaluation. Runs INSIDE the compose network.
-  #   docker compose --profile tools run --rm eval
+  # Throughput benchmark. Runs INSIDE the compose network and talks to llama
+  # directly — forge strips the `timings` block these numbers come from.
+  #   ./scripts/bench.sh --full
   # ---------------------------------------------------------------------------
-  eval:
+  bench:
     profiles: ["tools"]
-    image: qwen36-forge/proxy:${FORGE_VERSION}
+    image: qwen38-forge/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
       args:
         FORGE_VERSION: ${FORGE_VERSION}
-    entrypoint: ["python", "/work/scripts/eval.py"]
+    entrypoint: ["python", "/work/scripts/bench.py"]
     environment:
-      FORGE_URL: http://forge:8081
-      # The speed suite reads llama's own timings block, which forge strips.
       LLAMA_URL: http://llama:8080
       MODEL_ALIAS: ${MODEL_ALIAS}
-      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
-      EVAL_REPEAT_THRESHOLD: ${EVAL_REPEAT_THRESHOLD:-3}
-      EVAL_SCORE_FLOOR: ${EVAL_SCORE_FLOOR:-0.5}
-      # Thinking is off by default here — every committed score was measured
-      # that way. Both knobs are stamped into the result JSON.
-      EVAL_THINKING: ${EVAL_THINKING:-off}
-      EVAL_SYSTEM_PROMPT_FILE: ${EVAL_SYSTEM_PROMPT_FILE:-}
+      BENCH_TIMEOUT: ${BENCH_TIMEOUT:-900}
 
   # ---------------------------------------------------------------------------
   # One-shot A/B of a THINK_LANG fragment. Runs INSIDE the compose network.
   #   ./scripts/ab-think-lang.sh          (preferred — resolves the fragment)
   #   docker compose --profile tools run --rm ab-think-lang --repeat 3
-  # Thinking is forced ON in both arms, which the standard eval does not do.
+  # Thinking is forced ON in both arms — measuring the fragment without it would
+  # produce a meaningless dead heat.
   # ---------------------------------------------------------------------------
   ab-think-lang:
     profiles: ["tools"]
-    image: qwen36-forge/proxy:${FORGE_VERSION}
+    image: qwen38-forge/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -211,32 +219,11 @@ services:
     environment:
       FORGE_URL: http://forge:8081
       MODEL_ALIAS: ${MODEL_ALIAS}
-      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
-
-  # ---------------------------------------------------------------------------
-  # One-shot coding evaluation (extended). Runs INSIDE the compose network.
-  #   docker compose --profile tools run --rm eval-harness
-  # ---------------------------------------------------------------------------
-  eval-harness:
-    profiles: ["tools"]
-    image: qwen36-forge/proxy:${FORGE_VERSION}
-    build:
-      context: .
-      dockerfile: Dockerfile.forge
-      args:
-        FORGE_VERSION: ${FORGE_VERSION}
-    entrypoint: ["python", "/work/scripts/eval_harness.py"]
-    environment:
-      LLAMA_URL: http://llama:8080
-      FORGE_URL: http://forge:8081
-      MODEL_ALIAS: ${MODEL_ALIAS}
-      EVAL_TIMEOUT: ${EVAL_TIMEOUT:-900}
-      EVAL_REPEAT_THRESHOLD: ${EVAL_REPEAT_THRESHOLD:-3}
-      EVAL_SCORE_FLOOR: ${EVAL_SCORE_FLOOR:-0.5}
+      AB_TIMEOUT: ${AB_TIMEOUT:-900}
 
 # ---------------------------------------------------------------------------
 # Named volumes
 # ---------------------------------------------------------------------------
 volumes:
   slot-cache:
-    name: qwen36-slot-cache
+    name: qwen38-slot-cache

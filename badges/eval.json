@@ -1,8 +1,0 @@
-{
-  "schemaVersion": 1,
-  "label": "eval",
-  "message": "91% (27/27)",
-  "color": "brightgreen",
-  "style": "flat",
-  "namedLogo": "pytest"
-}
