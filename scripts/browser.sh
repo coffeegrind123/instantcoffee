@@ -24,13 +24,24 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 require_cmd python3
 
-# ZENDRIVER_MCP_DIR may be unset in an older .env — fall back to the two places
-# the checkout normally lives rather than failing on a knob nobody added yet.
+# ZENDRIVER_MCP_DIR may be unset in an older .env — fall back to the places the
+# checkout normally lives rather than failing on a knob nobody added yet.
+#
+# A candidate has to SUPPORT --transport, not merely exist. A stale clone from
+# before the HTTP transport landed satisfies `-f run.py` perfectly well, and then
+# every knob here points at a server that speaks only stdio and is missing 63
+# tools — a wrong answer that looks like a working one. (One such clone sat in
+# $HOME until 2026-08-16.)
 DIR="$(env_get ZENDRIVER_MCP_DIR)"
 if [[ -z "$DIR" ]]; then
   for cand in /opt/zendriver-mcp "$HOME/Zendriver-MCP" "$HOME/zendriver-mcp"; do
-    [[ -f "$cand/run.py" ]] && { DIR="$cand"; break; }
+    [[ -f "$cand/run.py" ]] && grep -q -- "--transport" "$cand/run.py" && { DIR="$cand"; break; }
   done
+fi
+if [[ -n "$DIR" && -f "$DIR/run.py" ]] && ! grep -q -- "--transport" "$DIR/run.py"; then
+  die "the Zendriver MCP checkout at $DIR predates the HTTP transport.
+     This stack needs 'run.py --transport streamable-http'. Update it:
+       git -C '$DIR' pull"
 fi
 
 PORT="$(env_get BROWSER_MCP_PORT)";      : "${PORT:=8931}"

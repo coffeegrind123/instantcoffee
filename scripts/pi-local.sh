@@ -271,8 +271,11 @@ if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
   # fails, and the model reads that as "the web is not available to me".
   ZDIR="$(env_get ZENDRIVER_MCP_DIR)"
   if [[ -z "$ZDIR" ]]; then
+    # Must support --transport, not merely exist: a clone from before the HTTP
+    # transport passes an -f test and then serves stdio only, 63 tools short.
     for cand in /opt/zendriver-mcp "$HOME/Zendriver-MCP"; do
-      [[ -f "$cand/run.py" ]] && { ZDIR="$cand"; break; }
+      [[ -f "$cand/run.py" ]] && grep -q -- "--transport" "$cand/run.py" \
+        && { ZDIR="$cand"; break; }
     done
   fi
   BROWSER_OK=1
