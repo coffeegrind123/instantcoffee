@@ -17,6 +17,8 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import {
   branchEndsInCompaction,
   buildEmergencyCompaction,
+  buildHandoffCompaction,
+  findHandoffCutEntryId,
   isBenignCompactionError,
   isContextPressure,
   MAX_COMPRESSION_LEVEL,
@@ -157,6 +159,85 @@ describe("buildEmergencyCompaction", () => {
   });
 });
 
+describe("findHandoffCutEntryId", () => {
+  const smallTail = [
+    { type: "session", id: "s" },
+    { type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: "first" }] } },
+    { type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "first answer" }] } },
+    { type: "custom", customType: "loop-state", id: "c1" },
+    { type: "custom_message", customType: "loop", id: "p2", content: [{ type: "text", text: "continue" }] },
+    { type: "message", id: "a2", message: { role: "assistant", content: [{ type: "text", text: "second answer" }] } },
+  ];
+
+  test("cuts at the start of the last turn, not at pi's 20k-token tail", () => {
+    assert.equal(findHandoffCutEntryId(smallTail, "pi-cut"), "p2");
+  });
+
+  test("an oversized final turn keeps one message instead of carrying the flood into the next context", () => {
+    const flooded = [
+      ...smallTail.slice(0, -1),
+      {
+        type: "message",
+        id: "a2",
+        message: { role: "assistant", content: [{ type: "text", text: "x".repeat(40_000) }] },
+      },
+    ];
+    // Keeping from p2 would keep the 40k-char answer too — the very thing that filled the context.
+    assert.equal(findHandoffCutEntryId(flooded, "pi-cut"), "a2");
+  });
+
+  test("never cuts across an existing compaction boundary", () => {
+    const compacted = [{ type: "compaction", id: "k1" }, ...smallTail.slice(4)];
+    assert.equal(findHandoffCutEntryId(compacted, "pi-cut"), "p2");
+  });
+
+  test("falls back to pi's own cut point when there is nothing to cut at", () => {
+    assert.equal(findHandoffCutEntryId([], "pi-cut"), "pi-cut");
+    assert.equal(findHandoffCutEntryId([{ type: "custom", customType: "loop-state", id: "c1" }], "pi-cut"), "pi-cut");
+  });
+});
+
+describe("buildHandoffCompaction", () => {
+  const preparation = {
+    firstKeptEntryId: "pi-cut",
+    tokensBefore: 29_000,
+    fileOps: { read: new Set(["src/a.ts"]), written: new Set<string>(), edited: new Set(["src/b.ts"]) },
+  };
+
+  function state(iteration: number): LoopState {
+    return { ...defaultState(), description: "Improve the site", iterationCount: iteration };
+  }
+
+  test("does not grow with the run — the failure it replaces was a summary that did", () => {
+    // pi merges each compaction summary into the previous one. Measured across one 32k session:
+    // 1,666 → 11,054 chars, by which point compaction freed nothing at all.
+    const early = buildHandoffCompaction(state(4), preparation, WORKDIR).summary.length;
+    const late = buildHandoffCompaction(state(400), preparation, WORKDIR).summary.length;
+    assert.ok(late - early <= 8, `grew by ${late - early} chars over 396 iterations`);
+    assert.ok(late <= 4_000, `a handoff summary must stay bounded, got ${late}`);
+  });
+
+  test("stays materially smaller than the emergency summary it replaces on a small window", () => {
+    const handoff = buildHandoffCompaction(state(4), preparation, WORKDIR).summary.length;
+    const emergency = buildEmergencyCompaction(state(4), preparation, WORKDIR, 0).summary.length;
+    assert.ok(handoff < emergency, `handoff ${handoff} should be smaller than emergency ${emergency}`);
+  });
+
+  test("tightens further when a handoff did not free enough room", () => {
+    const sizes = [0, 1, 2].map((level) => buildHandoffCompaction(state(4), preparation, WORKDIR, [], level).summary.length);
+    assert.ok(sizes[0] > sizes[1], `level 0 (${sizes[0]}) should exceed level 1 (${sizes[1]})`);
+    assert.ok(sizes[1] > sizes[2], `level 1 (${sizes[1]}) should exceed level 2 (${sizes[2]})`);
+  });
+
+  test("tells the model the conversation is gone rather than letting it try to recall it", () => {
+    const result = buildHandoffCompaction(state(4), preparation, WORKDIR);
+    assert.match(result.summary, /## Goal/);
+    assert.match(result.summary, /handoff/i);
+    assert.match(result.summary, /PROGRESS\.md/);
+    assert.equal(result.tokensBefore, 29_000);
+  });
+});
+
 // --------------------------------------------------------------------------------------------
 // Extension harness — drives the registered handlers exactly as pi does
 // --------------------------------------------------------------------------------------------
@@ -173,6 +254,9 @@ const sentTurns: any[] = [];
 
 let branch: any[] = [];
 let contextPercent: number | null = 100;
+/** 0 keeps the pre-handoff behaviour: pi reports no window, so no window-based decision fires. */
+let contextWindow = 0;
+let contextTokens: number | null = null;
 
 const pi = {
   on(event: string, handler: Handler) {
@@ -213,9 +297,11 @@ const ctx = {
     getEntries: () => branch,
   },
   modelRegistry: { find: () => undefined, getAll: () => [] },
+  model: undefined as { contextWindow?: number } | undefined,
   isIdle: () => true,
   hasPendingMessages: () => false,
-  getContextUsage: () => (contextPercent === null ? undefined : { percent: contextPercent }),
+  getContextUsage: () =>
+    contextPercent === null ? undefined : { percent: contextPercent, contextWindow, tokens: contextTokens },
   compact(options: any) {
     compactRequests.push(options);
   },
@@ -252,6 +338,26 @@ const goodTurn = {
   ],
 };
 
+/**
+ * A clean "stop" with nothing in it — the exact shape found 36 times in the measured sessions
+ * (`content: []`, `stopReason: "stop"`, one output token), always on a nearly-full context.
+ */
+const emptyTurn = {
+  messages: [{ role: "assistant", content: [], stopReason: "stop", usage: { output: 1 } }],
+};
+
+/** Text, but no tool call: what the narration-only rule counts. */
+const narrationTurn = {
+  messages: [
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "Considering the next step in the plan." }],
+      stopReason: "stop",
+      usage: { output: 40 },
+    },
+  ],
+};
+
 function reset(): void {
   notifications.length = 0;
   statuses.length = 0;
@@ -273,6 +379,9 @@ async function startLoop(): Promise<void> {
   await commandHandler("end", ctx);
   branch = [{ type: "message" }];
   contextPercent = 100;
+  contextWindow = 0;
+  contextTokens = null;
+  ctx.model = undefined;
   reset();
   await commandHandler("start Improve the site. Done when: the build passes", ctx);
   reset();
@@ -423,8 +532,9 @@ describe("loop context recovery", () => {
     assert.equal(result.compaction.firstKeptEntryId, "entry-9");
   });
 
-  test("a routine threshold compaction still uses pi's own model summary", async () => {
+  test("a routine threshold compaction on a roomy window still uses pi's own model summary", async () => {
     contextPercent = 60;
+    contextWindow = 200_000;
     const result = await emit("session_before_compact", {
       reason: "threshold",
       willRetry: false,
@@ -435,5 +545,150 @@ describe("loop context recovery", () => {
       },
     });
     assert.equal(result, undefined, "there is context room to spare; the better summary wins");
+  });
+});
+
+// --------------------------------------------------------------------------------------------
+// Small windows: handoff instead of compaction, and starvation instead of fixation
+//
+// pi's compaction defaults (reserveTokens 16384, keepRecentTokens 20000) are sized for a 200k
+// window. On the 32k window this fork runs against they leave a floor of 20,000 tokens plus a
+// summary that grows on every merge — above the point at which the model stops answering at all.
+// --------------------------------------------------------------------------------------------
+
+describe("small-window handoff", () => {
+  const handoffBranch = [
+    { type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: "first" }] } },
+    { type: "message", id: "a1", message: { role: "assistant", content: [{ type: "text", text: "first answer" }] } },
+    { type: "custom_message", customType: "loop", id: "p2", content: [{ type: "text", text: "continue" }] },
+    { type: "message", id: "a2", message: { role: "assistant", content: [{ type: "text", text: "second answer" }] } },
+  ];
+
+  const preparation = {
+    firstKeptEntryId: "pi-cut",
+    tokensBefore: 29_000,
+    fileOps: { read: new Set(), written: new Set(), edited: new Set() },
+  };
+
+  beforeEach(async () => {
+    await startLoop();
+  });
+
+  after(async () => {
+    await commandHandler("end", ctx);
+  });
+
+  test("a threshold compaction on a 32k window becomes a bounded handoff", async () => {
+    // Well below any pressure threshold: it is the window, not the fill, that makes pi's defaults
+    // unusable here — its own compaction would keep 20,000 of these 32,768 tokens.
+    contextPercent = 55;
+    contextWindow = 32_768;
+    const result = await emit("session_before_compact", {
+      reason: "threshold",
+      willRetry: false,
+      branchEntries: handoffBranch,
+      preparation,
+    });
+    assert.ok(result?.compaction, "pi must not be left to keep 61% of this window");
+    assert.match(result.compaction.summary, /handoff/i);
+    assert.ok(result.compaction.summary.length <= 4_000, `summary was ${result.compaction.summary.length} chars`);
+    assert.equal(result.compaction.firstKeptEntryId, "p2", "the cut is the last turn, not pi's 20k tail");
+  });
+
+  test("a saturated big window hands off too — the fill is enough on its own", async () => {
+    contextPercent = 88;
+    contextWindow = 200_000;
+    const result = await emit("session_before_compact", {
+      reason: "threshold",
+      willRetry: false,
+      branchEntries: handoffBranch,
+      preparation,
+    });
+    assert.ok(result?.compaction);
+    assert.equal(result.compaction.firstKeptEntryId, "p2");
+  });
+
+  test("an empty response on a full context is recovered, not scolded", async () => {
+    contextPercent = 92;
+    contextWindow = 32_768;
+    await emit("agent_end", emptyTurn);
+
+    const messages = notifications.map((entry) => entry.message).join("\n");
+    assert.match(messages, /context pressure detected/i);
+    assert.doesNotMatch(messages, /stuck/i, "an out-of-room model is not a repeating model");
+    assert.equal(sentTurns.length, 0, "no prompt may be injected into a context that is already full");
+
+    await emit("agent_settled", {});
+    assert.equal(compactRequests.length, 1, "the room is the problem, so take room back");
+  });
+
+  test("an empty response with room to spare is left to the ordinary path", async () => {
+    contextPercent = 30;
+    contextWindow = 32_768;
+    await emit("agent_end", emptyTurn);
+    await emit("agent_settled", {});
+    assert.equal(compactRequests.length, 0, "at 30% full the context is not the explanation");
+    const status = await loopStatus();
+    assert.match(status, /Status: running/);
+  });
+
+  test("a stuck verdict on a saturated context compacts instead of re-prompting", async () => {
+    contextPercent = 90;
+    contextWindow = 32_768;
+    // Three turns without a tool call is what the narration-only rule fires on.
+    await emit("agent_end", narrationTurn);
+    await emit("agent_end", narrationTurn);
+    reset();
+    await emit("agent_end", narrationTurn);
+
+    assert.equal(compactRequests.length, 1, "the ladder's prompt rungs cannot help a full context");
+    assert.equal(sentTurns.length, 0, "a strategy prompt would add text to the thing that is too big");
+    assert.match(notifications.map((entry) => entry.message).join("\n"), /compacting instead of re-prompting/i);
+  });
+
+  test("the same stuck verdict with room to spare still gets the rotating strategy", async () => {
+    contextPercent = 30;
+    contextWindow = 32_768;
+    await emit("agent_end", narrationTurn);
+    await emit("agent_end", narrationTurn);
+    reset();
+    await emit("agent_end", narrationTurn);
+
+    assert.equal(compactRequests.length, 0, "nothing is wrong with this context");
+    // The strategy turn goes out after the ladder's escalating delay, so the notification is what
+    // is observable here without running the clock.
+    assert.match(
+      notifications.map((entry) => entry.message).join("\n"),
+      /injecting new strategy/i,
+      "with room to spare, redirecting the model is the right answer",
+    );
+  });
+
+  test("the model is told how much context is left, and only when it matters", async () => {
+    contextWindow = 32_768;
+    contextTokens = 6_000;
+    contextPercent = 18;
+    const quiet = await emit("context", { messages: [{ role: "user", content: [] }] });
+    assert.equal(quiet, undefined, "a notice on every turn from turn one is pure overhead");
+
+    contextTokens = 21_000;
+    contextPercent = 64;
+    const noticed = await emit("context", { messages: [{ role: "user", content: [] }] });
+    assert.ok(noticed?.messages, "above the notice threshold the model gets its own budget");
+    assert.equal(noticed.messages.length, 2);
+    const injected = noticed.messages.at(-1);
+    assert.equal(injected.role, "custom", "appended last, so the cached prefix is untouched");
+    assert.match(injected.content[0].text, /11\.8k of 32\.8k tokens left \(64% used\)/);
+    assert.match(injected.content[0].text, /PROGRESS\.md/);
+  });
+
+  test("the notice stops advising and starts forbidding once the context is nearly gone", async () => {
+    contextWindow = 32_768;
+    contextTokens = 29_500;
+    contextPercent = 90;
+    const result = await emit("context", { messages: [{ role: "user", content: [] }] });
+    const text = result.messages.at(-1).content[0].text;
+    assert.match(text, /CRITICAL/);
+    assert.match(text, /Do not read files/);
   });
 });

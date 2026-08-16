@@ -2270,3 +2270,119 @@ that the model or the proxy regressed.
   command runs in pi's bash tool; both inherit the launcher's environment.
   rtk's telemetry is opt-in and off by default upstream, so this makes it off
   because the checkout says so rather than because a default happens to agree.
+
+## 2026-08-16 — the /loop context ceiling: hand off instead of compacting
+
+The context-recovery fork (`vendor/pi-loop-mode/FORK.md`) fixed a loop that died
+on an overflow. What it did not fix — because nobody had measured it — is a loop
+that never overflows and gets nothing done anyway.
+
+### The measurement, which is the only part that decided anything
+
+Eight real sessions under `~/.pi/agent/sessions`, Qwen3.6/3.8 on a 32,768-token
+window, plus pi 0.84.2's own `dist/core/compaction/compaction.js` driven directly
+with synthetic entries. The largest session is 24 compactions long and contains
+**zero** errors.
+
+| turns | ctxTokens | %win | `shouldCompact` | `prepareCompaction` | kept after |
+| --- | --- | --- | --- | --- | --- |
+| 16 | 16000 | 49% | false | undefined (no-op) | - |
+| 20 | 20000 | 61% | **true** | **undefined (no-op)** | - |
+| 24 | 24000 | 73% | true | OK | 20000 |
+| 32 | 32000 | 98% | true | OK | 20000 |
+
+Three defects, all in the defaults rather than in the code:
+
+1. `shouldCompact()` turns true at `contextWindow - reserveTokens` = 50% of this
+   window, but `prepareCompaction()` returns `undefined` while the whole context
+   is smaller than `keepRecentTokens` (20,000). From 50% to ~66% pi decides to
+   compact **every turn and silently does nothing** — it returns before
+   `compaction_start` is emitted, so there is no log, no error, no UI.
+2. Every compaction keeps `keepRecentTokens` = 61% of this window. The floor
+   after a compaction is higher than the level the model stops working at.
+3. `reserveTokens` doubles as the summarizer's `maxTokens`
+   (`min(0.8 * reserve, model.maxTokens)` = 8,192 here), and each summary is
+   merged into the previous one. Observed growth in one session: 1,666 → 3,183 →
+   5,891 → 9,411 → 11,054 chars. By the fourth compaction the session sat at
+   94–96% full permanently and compaction freed nothing at all.
+
+And the reason "94% full" is fatal rather than merely wasteful:
+
+| context | empty assistant turns | turns with output |
+| --- | --- | --- |
+| below 87% of the window | 3 | 193 |
+| at or above 87% | 33 | 30 |
+
+An empty turn is `content: []`, `stopReason: "stop"`, one output token — a clean
+success as far as pi is concerned, and a burnt iteration as far as the loop is
+concerned. Above the cliff it is a coin flip; below it, 1.5%.
+
+### The finding that changed the design
+
+The loop's own guards make it worse. Entries 118–138 of that session: three empty
+turns → `"no tool usage for 3 turns (narration only)"` → an 800-character *"You
+are repeating yourself"* injection → two more empty turns → a 600-character
+*"produce a tangible artifact"* injection → compaction → immediately a turn with
+tool calls and 884 tokens of output.
+
+The model was not fixated. It had no room. Every rung of the stuck ladder works
+by adding prompt text, so the ladder was force-feeding the cause. A guard whose
+remedy is the disease is worse than no guard, because it looks like it is
+working.
+
+### What was built
+
+Ordered by leverage, not by novelty:
+
+- **`pi-local.sh` sizes compaction from `CTX_SIZE`** into pi's global settings:
+  `reserveTokens = min(16384, CTX//2)`, `keepRecentTokens = max(2000, min(20000,
+  CTX*0.2))`. Free, no code, and on its own it removes the silent no-op window
+  and drops the post-compaction floor from 20,000 tokens to 7,000. Global rather
+  than `.pi/settings.json` because `/loop` runs in whatever project it is pointed
+  at, and project settings are trust-gated.
+- **Handoff instead of compaction on windows ≤ 64k** (`buildHandoffCompaction`,
+  `findHandoffCutEntryId`): a summary bounded at 4,000 chars that is the same
+  size on iteration 400 as on iteration 4, cut at the start of the last turn
+  rather than at pi's 20,000-token tail, built with no model call. The two
+  settings above cannot both be had from pi alone — `reserveTokens` controls the
+  trigger *and* the summary size, so an early trigger forces a large summary.
+- **An empty turn at ≥80% is context pressure, not stuck-ness** — one new clause
+  in `isContextPressure()`, which routes it into the recovery machinery that was
+  already there and already tested.
+- **The stuck ladder skips its prompt rungs above 80%** and compacts directly.
+- **The model is shown its own budget above 60%** via the `context` event, which
+  pi clones (`structuredClone`) so it never touches the session. Appended last so
+  llama.cpp's prefix cache is untouched: ~40 tokens/turn. Aimed below the cliff
+  on purpose — a warning at 90% arrives where the model most often says nothing.
+
+### Verified, not assumed
+
+- The compaction numbers come from driving pi's real `prepareCompaction()` /
+  `shouldCompact()`, not from reading them. The before/after table above is that
+  probe's output.
+- The empty-turn cliff is a count over 259 real assistant turns, with the control
+  (turns *below* the threshold) counted in the same pass.
+- `emitContext()` was read before relying on it: it does
+  `structuredClone(messages)`, so a `context` handler cannot leak into history.
+- `buildContextEntries()` was read before choosing a cut point: context is
+  `[compaction summary] + entries from firstKeptEntryId onward`, and the id is
+  extension-supplied and unvalidated. The handoff still only ever passes an id
+  that exists in the branch — the "unmatched id keeps nothing" behaviour is real
+  but is an implementation detail, and nothing here depends on it.
+- `findHandoffCutEntryId()` was run against the real branches pi compacted at
+  entries 48/102/109/135/143/150 of that session, not only against fixtures.
+  Counting context-visible content only, pi kept 68,778–123,083 chars where the
+  handoff keeps **374–6,133**. The 374-char case is the oversized-final-turn
+  fallback firing on real data, which is what it exists for.
+- The extension was loaded through **jiti**, the transpiler pi's own
+  `core/extensions/loader.js` uses — not just through Node's `--experimental-
+  strip-types` that the tests run under. It registers one `/loop` command and
+  13 handlers, `context` among them exactly once.
+- 39 tests pass (`cd vendor/pi-loop-mode && npm test`), including the empty turn
+  at 92% versus the same turn at 30%, and the stuck verdict on a saturated
+  context versus one with room to spare.
+- **Not** verified: a live end-to-end `/loop` run against the model. The stack is
+  up and llama-server answers (5.6 s for a 171-token task in its own log), but pi
+  itself would not reach a first token inside 180 s in this container, and even
+  `pi --help` hangs here. That is a pre-existing environment problem, unrelated
+  to this change, and it is the one claim not backed by a measurement.

@@ -127,7 +127,7 @@ cd ~/my-project && qpi
 | `./scripts/browser.sh status` | Is the browser up, and what page is open |
 | `./scripts/browser.sh down` | Stop Chrome and its server |
 | `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
-| `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (23 tests, no install) |
+| `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (39 tests, no install) |
 | `cd vendor/prinny-channel && npm test` | Test the Matrix channel (227 tests, no install) |
 | `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (16 tests, no install) |
 
@@ -557,9 +557,35 @@ treated that refusal — someone else's success — as a fatal error.
 The fork defers its compaction to `agent_settled` (nothing left to race), adopts
 pi's recovery when pi wins, treats `Already compacted` as "no work to do" rather
 than a failure, and replaces the terminal pause with a cooldown ladder that
-retries with a progressively tighter summary. `vendor/pi-loop-mode/FORK.md` has
-the full list; `cd vendor/pi-loop-mode && npm test` runs the 23 tests that drive
-the real handlers through that failure.
+retries with a progressively tighter summary.
+
+**Then it stopped overflowing and still went nowhere.** Eight real sessions under
+`~/.pi/agent/sessions` show the sequel: 24 compactions, not one error, and from
+the fourth compaction onward the session pinned at **94–96% of the 32k window**,
+compacting nearly every iteration and freeing nothing. pi's compaction defaults
+are sized for a 200k window and do three separate harmful things on 32k — they
+no-op silently between 50% and 66% full, they always keep 20,000 tokens (61% of
+this window), and the summary is merged into the previous one every time, so it
+grows (measured: 1,666 → 11,054 chars) until it is what fills the window.
+
+That matters because of a cliff. Above ~87% full, **33 of 63 assistant turns came
+back completely empty** (`content: []`, `stopReason: "stop"`); below it, 3 of 196.
+And the loop's own guards read those empty turns as fixation and answered them by
+injecting more prompt text into the context that caused them.
+
+So the fork now **hands off instead of compacting** on any window ≤ 64k: a
+bounded summary that does not grow, cut at the last turn instead of at pi's
+20,000-token tail, built locally with no model call. An empty turn above 80% is
+classified as context pressure rather than stuck-ness, the stuck ladder skips
+straight to compaction when the context is full instead of scolding the model,
+and the model is shown its own remaining budget once past 60% so it can finish
+and write state to `PROGRESS.md` before the handoff. `pi-local.sh` also sizes
+pi's own `reserveTokens`/`keepRecentTokens` from `CTX_SIZE`, which alone drops
+the post-compaction floor from 20,000 tokens to 7,000.
+
+`vendor/pi-loop-mode/FORK.md` has the full list and the measurements;
+`cd vendor/pi-loop-mode && npm test` runs the 39 tests that drive the real
+handlers through both failures.
 
 > **Third-party code runs with full system access.** Both this and the
 > alternative were reviewed before running: no install-time lifecycle scripts,
@@ -713,6 +739,25 @@ What it writes, and why each field:
 and models. That would bypass forge completely and lose every guardrail this
 repo exists to provide, so the model is registered as a plain custom provider
 instead.
+
+**It sizes compaction from `CTX_SIZE` too**, into `~/.pi/agent/settings.json`
+(merged, not overwritten — pi keeps its theme and packages there):
+
+```json
+{ "compaction": { "reserveTokens": 16384, "keepRecentTokens": 6554 } }
+```
+
+pi's defaults are `16384` / `20000`, sized for a 200k window. On 32k the second
+one is 61% of the whole window, so a compaction cannot free more than the
+remainder, and `prepareCompaction()` silently returns nothing at all until the
+context exceeds it — which is why compaction in the measured sessions first fired
+at 88% full rather than at the 50% the setting implies. `reserveTokens =
+min(16384, CTX_SIZE // 2)` keeps the trigger at 50% of whatever window is
+actually served; `keepRecentTokens = max(2000, min(20000, CTX_SIZE * 0.2))` cuts
+back to ~20% of it. Measured against pi's own `prepareCompaction()`, that drops
+the post-compaction floor from 20,000 tokens to 7,000. Global rather than a
+`.pi/settings.json` here, because `/loop` runs in whatever project you point it
+at — and project settings only load for a *trusted* project.
 
 ### Why pi, and what that costs
 
@@ -1393,7 +1438,7 @@ each answers a different question:
 # No GPU needed — the same checks CI runs:
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
-(cd vendor/pi-loop-mode && npm test)      # 23 tests for the /loop fork
+(cd vendor/pi-loop-mode && npm test)      # 39 tests for the /loop fork
 (cd vendor/prinny-channel && npm test)    # 227 tests for the Matrix channel
 (cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)
 docker compose --profile tools config     # validate compose

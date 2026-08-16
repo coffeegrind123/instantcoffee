@@ -2,9 +2,17 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { parseStartArgs, type StartArgs } from "../src/arguments.ts";
 import {
+  contextBudgetMessage,
+  contextBudgetStatus,
+  CONTEXT_STARVATION_PERCENT,
+  type ContextUsageLike,
+} from "../src/context-budget.ts";
+import {
   branchEndsInCompaction,
   buildEmergencyCompaction,
+  buildHandoffCompaction,
   CONTEXT_PRESSURE_PERCENT,
+  HANDOFF_MAX_WINDOW_TOKENS,
   isBenignCompactionError,
   isContextPressure,
   MAX_COMPRESSION_LEVEL,
@@ -166,6 +174,34 @@ function restoreState(ctx: ExtensionContext): void {
 
 function persistState(pi: ExtensionAPI): void {
   pi.appendEntry(STATE_ENTRY_TYPE, persistedLoopState(state));
+}
+
+/**
+ * Context usage for the active model, with the window filled in from the model when pi cannot
+ * supply it — right after a compaction pi reports `tokens: null`, and the window is still the
+ * number every threshold decision here depends on.
+ */
+function contextUsage(ctx: ExtensionContext): ContextUsageLike | undefined {
+  const reported = ctx.getContextUsage() as ContextUsageLike | undefined;
+  const modelWindow = (ctx.model as { contextWindow?: number } | undefined)?.contextWindow ?? 0;
+  if (!reported) return modelWindow > 0 ? { tokens: null, contextWindow: modelWindow, percent: null } : undefined;
+  if (reported.contextWindow && reported.contextWindow > 0) return reported;
+  return modelWindow > 0 ? { ...reported, contextWindow: modelWindow } : reported;
+}
+
+/**
+ * True when the window is small enough that pi's own threshold compaction cannot keep up with it:
+ * it keeps `keepRecentTokens` (20,000 by default) plus a summary that grows on every merge, which
+ * on a 32k window is a floor above the point at which the model starts returning nothing.
+ */
+function windowNeedsHandoff(usage: ContextUsageLike | undefined): boolean {
+  const window = usage?.contextWindow ?? 0;
+  return window > 0 && window <= HANDOFF_MAX_WINDOW_TOKENS;
+}
+
+/** True while the context is full enough that adding prompt text makes the situation worse. */
+function contextIsSaturated(usage: ContextUsageLike | undefined): boolean {
+  return (usage?.percent ?? 0) >= CONTEXT_STARVATION_PERCENT;
 }
 
 function resolveModel(ctx: ExtensionContext, spec: string) {
@@ -445,7 +481,7 @@ function finishContextRecovery(
   persistState(pi);
   logIteration("context_recovered", { reason, detail, freedRoom, resumeTurn });
   ctx.ui.notify(`Loop: context recovered — ${detail}. Continuing.`, "info");
-  ctx.ui.setStatus("loop", statusBarText());
+  ctx.ui.setStatus("loop", statusBarText(ctx));
   if (resumeTurn) {
     scheduleLoopTurn(pi, "recover", 0, ctx);
   } else {
@@ -619,7 +655,7 @@ function formatElapsed(): string {
   return parts.join(" ");
 }
 
-function statusBarText(): string {
+function statusBarText(ctx?: ExtensionContext): string {
   if (state.softStopRequested) return `Loop finishing iteration ${state.iterationCount + 1} — soft stop pending`;
   const iterations = state.maxIterations > 0 ? `${state.iterationCount}/${state.maxIterations}` : `${state.iterationCount}/∞`;
   const check =
@@ -628,10 +664,21 @@ function statusBarText(): string {
       : state.lastCheckPassed !== undefined
         ? ` · check ${state.lastCheckPassed ? "✓" : "✗"}`
         : "";
-  return `Loop ${iterations} · ${formatElapsed()} · err ${state.totalErrorCount}${check}: ${snippet(state.description, 40)}`;
+  // The operator sees the same number the model is now told about, so a handoff is never a surprise.
+  const budget = ctx ? contextBudgetStatus(contextUsage(ctx)) : undefined;
+  return `Loop ${iterations} · ${formatElapsed()} · err ${state.totalErrorCount}${budget ? ` · ${budget}` : ""}${check}: ${snippet(state.description, 40)}`;
 }
 
 function statusText(ctx: ExtensionContext): string {
+  const usage = contextUsage(ctx);
+  const contextLine =
+    usage && (usage.contextWindow ?? 0) > 0
+      ? usage.tokens === null || usage.tokens === undefined
+        ? `unknown (window ${usage.contextWindow}; usage is unknown until the next response after a compaction)`
+        : `${usage.tokens}/${usage.contextWindow} tokens (${Math.round(usage.percent ?? 0)}%)${
+            windowNeedsHandoff(usage) ? ", handoff mode" : ""
+          }`
+      : "-";
   return [
     `Active: ${state.active}`,
     `Status: ${state.status}${state.softStopRequested ? " (soft stop pending)" : ""}`,
@@ -649,6 +696,7 @@ function statusText(ctx: ExtensionContext): string {
     `Rescue model: ${state.rescueModel || "-"}${state.rescueActive ? " (rescue turn in flight)" : ""}`,
     `Elapsed: ${formatElapsed()}`,
     `Errors: ${state.totalErrorCount} total, ${state.consecutiveErrorCount} consecutive`,
+    `Context: ${contextLine}`,
     `Context recoveries: ${state.contextRecoveryCount}${
       state.contextCooldownCount > 0 ? `, cooldown ${state.contextCooldownCount}/${MAX_CONTEXT_COOLDOWNS}` : ""
     }${state.contextCompressionLevel > 0 ? `, summary level ${state.contextCompressionLevel}/${MAX_COMPRESSION_LEVEL}` : ""}`,
@@ -719,8 +767,12 @@ async function interveneStuck(pi: ExtensionAPI, ctx: ExtensionContext, reason: s
   // Fight repetition at the sampling level too (applied via before_provider_request).
   state.penaltyTurnsRemaining = PENALTY_TURNS;
 
+  // A full context is not fixation, and none of the prompt-level rungs below can fix it — they all
+  // work by adding text to the thing that is already too big. Skip straight to the compaction.
+  const saturated = contextIsSaturated(contextUsage(ctx));
+
   // Escalation 1: hand the situation to a stronger rescue model for one turn.
-  if (state.rescueModel && !state.rescueActive && state.consecutiveStuckCount >= RESCUE_AFTER) {
+  if (!saturated && state.rescueModel && !state.rescueActive && state.consecutiveStuckCount >= RESCUE_AFTER) {
     if (!state.loopModel && ctx.model) state.rescueReturnModel = `${ctx.model.provider}/${ctx.model.id}`;
     const switched = await switchModel(pi, ctx, state.rescueModel);
     if (!state.active || token !== runToken) return;
@@ -740,11 +792,24 @@ async function interveneStuck(pi: ExtensionAPI, ctx: ExtensionContext, reason: s
   const delayMs = Math.min(60, 2 ** Math.min(state.consecutiveStuckCount, 6)) * 1000;
 
   // Escalation 2: stubborn fixation — compact the context so the repeated pattern leaves the window.
-  if (state.consecutiveStuckCount >= COMPACT_AFTER && state.iterationCount - state.lastCompactIteration >= COMPACT_AFTER) {
+  //
+  // A saturated context takes this branch immediately rather than after COMPACT_AFTER interventions.
+  // Measured on a 32k run: three "you are repeating yourself" injections in a row each produced
+  // another empty response, and the compaction that finally arrived was followed immediately by a
+  // turn that did real work. The prompt was never the problem; the room was.
+  if (
+    saturated ||
+    (state.consecutiveStuckCount >= COMPACT_AFTER && state.iterationCount - state.lastCompactIteration >= COMPACT_AFTER)
+  ) {
     state.lastCompactIteration = state.iterationCount;
     persistState(pi);
-    logIteration("compact", { reason });
-    ctx.ui.notify(`Loop: stuck ${state.consecutiveStuckCount}x — compacting context to break the pattern.`, "warning");
+    logIteration("compact", { reason, saturated });
+    ctx.ui.notify(
+      saturated
+        ? `Loop: stuck on a saturated context (${reason}) — compacting instead of re-prompting.`
+        : `Loop: stuck ${state.consecutiveStuckCount}x — compacting context to break the pattern.`,
+      "warning",
+    );
     ctx.compact({
       customInstructions:
         "Summarize the work so far concisely. Explicitly EXCLUDE repetitive filler sentences and repeated failed attempts; keep the goal, the current project state, and concrete next steps.",
@@ -807,23 +872,60 @@ function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   persistState(pi);
   const mode = state.untilDone ? "until-done" : "endless (stop with /loop stop)";
   ctx.ui.notify(`Loop active [${mode}]: ${state.description}`, "info");
-  ctx.ui.setStatus("loop", statusBarText());
+  ctx.ui.setStatus("loop", statusBarText(ctx));
   sendLoopTurn(pi, "start", ctx);
 }
 
 export default function (pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, ctx) => {
+    const usage = contextUsage(ctx);
+    const percent = usage?.percent ?? 0;
+    const loopOwnsThisSession = state.active && Boolean(state.description);
+
     // pi's own compactions summarize with the LLM. After an overflow that is the same LLM that just
     // refused this context, so the summarization request is the one least likely to succeed exactly
-    // when it is needed most — build those locally too. A plain threshold compaction still has room
-    // to spare and keeps pi's higher-quality model summary.
-    const percent = ctx.getContextUsage()?.percent ?? 0;
+    // when it is needed most — build those locally instead.
     const unsafeToSummarizeWithModel =
-      state.active && Boolean(state.description) && (event.reason === "overflow" || Boolean(contextRecoveryPending));
+      loopOwnsThisSession && (event.reason === "overflow" || Boolean(contextRecoveryPending));
     const saturatedManualCompaction =
       event.reason === "manual" && Boolean(state.description) && percent >= CONTEXT_PRESSURE_PERCENT;
-    if (!emergencyCompactionPending && !unsafeToSummarizeWithModel && !saturatedManualCompaction) return;
+
+    // A context this tight cannot afford what pi's defaults do to it, whatever triggered the
+    // compaction: pi keeps `keepRecentTokens` (20,000 — 61% of a 32k window) and merges a summary
+    // that grows on every compaction. Measured across one 32k run, compaction #4 onward freed
+    // nothing at all and the session sat at 94–96% full, returning empty turns. Every compaction
+    // here becomes a handoff instead: a bounded summary that does not grow, a cut at the last turn,
+    // and no model call at all.
+    const needsHandoff = loopOwnsThisSession && (windowNeedsHandoff(usage) || percent >= CONTEXT_STARVATION_PERCENT);
+
+    if (!emergencyCompactionPending && !unsafeToSummarizeWithModel && !saturatedManualCompaction) {
+      // A window with room to spare keeps pi's higher-quality model summary.
+      if (!needsHandoff || (event.reason !== "threshold" && event.reason !== "manual")) return;
+    }
     emergencyCompactionPending = false;
+
+    if (needsHandoff) {
+      const handoff = buildHandoffCompaction(
+        state,
+        event.preparation,
+        ctx.cwd,
+        event.branchEntries ?? [],
+        state.contextCompressionLevel,
+      );
+      logIteration("context_handoff", {
+        reason: event.reason,
+        percent,
+        window: usage?.contextWindow,
+        summaryChars: handoff.summary.length,
+        tightened: handoff.firstKeptEntryId !== event.preparation.firstKeptEntryId,
+        level: state.contextCompressionLevel,
+      });
+      ctx.ui.notify(
+        `Loop: handing off to a fresh context (${Math.round(percent)}% used, ${handoff.summary.length}-char summary).`,
+        "info",
+      );
+      return { compaction: handoff };
+    }
     return { compaction: buildEmergencyCompaction(state, event.preparation, ctx.cwd, state.contextCompressionLevel) };
   });
 
@@ -967,7 +1069,7 @@ export default function (pi: ExtensionAPI) {
         state.lastNotice = "Resumed by operator.";
         persistState(pi);
         ctx.ui.notify(`Loop resumed: ${state.description}`, "info");
-        ctx.ui.setStatus("loop", statusBarText());
+        ctx.ui.setStatus("loop", statusBarText(ctx));
         sendLoopTurn(pi, "resume", ctx);
         return;
       }
@@ -1071,7 +1173,7 @@ export default function (pi: ExtensionAPI) {
     restoreState(ctx);
     if (!state.active) return;
 
-    ctx.ui.setStatus("loop", statusBarText());
+    ctx.ui.setStatus("loop", statusBarText(ctx));
 
     // A soft stop that never finalized (pi exited mid-iteration): stop now instead of resuming.
     if (state.softStopRequested) {
@@ -1154,9 +1256,11 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
-  // --- Sanitize degenerate assistant messages before every LLM call. ---
-  // Repeated text or thinking would otherwise reinforce the pattern each turn.
-  pi.on("context", async (event) => {
+  // --- Sanitize degenerate assistant messages, and show the model its own context budget. ---
+  // Repeated text or thinking would otherwise reinforce the pattern each turn. The budget notice is
+  // appended last, so the cached prefix is untouched and llama.cpp re-prefills only the notice; pi
+  // clones the message array for this event, so none of it is ever written to the session.
+  pi.on("context", async (event, ctx) => {
     if (!state.active) return;
     let changed = false;
     const messages = event.messages.map((message) => {
@@ -1166,6 +1270,12 @@ export default function (pi: ExtensionAPI) {
       changed = true;
       return sanitized as typeof message;
     });
+
+    const budget = contextBudgetMessage(contextUsage(ctx));
+    if (budget) {
+      messages.push(budget as (typeof messages)[number]);
+      changed = true;
+    }
     return changed ? { messages } : undefined;
   });
 
@@ -1246,7 +1356,16 @@ export default function (pi: ExtensionAPI) {
     }
 
     // --- Context pressure: compact without the saturated model, then retry at most twice. ---
-    const contextPercent = ctx.getContextUsage()?.percent ?? null;
+    const usage = contextUsage(ctx);
+    const contextPercent = usage?.percent ?? null;
+    // Nothing said, nothing thought, nothing called. On a saturated context that is starvation, not
+    // fixation — routing it here keeps the stuck ladder from answering an out-of-room model with a
+    // longer prompt.
+    const emptyResponse =
+      Boolean(lastAssistant) &&
+      !lastAssistantText.trim() &&
+      !lastAssistantRepetitionText.trim() &&
+      state.toolCallsThisTurn === 0;
     if (
       lastAssistant &&
       isContextPressure({
@@ -1254,11 +1373,19 @@ export default function (pi: ExtensionAPI) {
         errorMessage: lastAssistant.errorMessage,
         outputTokens: lastAssistant.usage?.output,
         contextPercent,
+        emptyResponse,
       })
     ) {
       state.consecutiveErrorCount++;
       state.totalErrorCount++;
-      const reason = snippet(lastAssistant.errorMessage ?? `stop reason ${stopReason}`, 140);
+      const starved = emptyResponse && stopReason === "stop";
+      const reason = snippet(
+        lastAssistant.errorMessage ??
+          (starved
+            ? `empty response at ${Math.round(contextPercent ?? 0)}% context (no text, no thinking, no tool call)`
+            : `stop reason ${stopReason}`),
+        140,
+      );
       // Pressure that survived a recovery means the last summary did not free enough room; the next
       // one is built tighter rather than reproducing a context the model has already refused.
       if (state.consecutiveErrorCount > 1) tightenEmergencySummary();
@@ -1341,7 +1468,7 @@ export default function (pi: ExtensionAPI) {
       state.lastNotice = "Rescue turn completed; back to loop model.";
       persistState(pi);
       logIteration("rescue_end");
-      ctx.ui.setStatus("loop", statusBarText());
+      ctx.ui.setStatus("loop", statusBarText(ctx));
       if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "continue", state.delaySeconds * 1000, ctx);
       return;
     }
@@ -1379,7 +1506,7 @@ export default function (pi: ExtensionAPI) {
           persistState(pi);
           logIteration("check_failed");
           ctx.ui.notify("Loop: LOOP_DONE claimed, but the goal check fails — continuing.", "warning");
-          ctx.ui.setStatus("loop", statusBarText());
+          ctx.ui.setStatus("loop", statusBarText(ctx));
           if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "check_failed", state.delaySeconds * 1000, ctx);
           return;
         }
@@ -1397,7 +1524,7 @@ export default function (pi: ExtensionAPI) {
       persistState(pi);
       logIteration("done");
       ctx.ui.notify(`Loop: goal reported done (#${state.doneSignalCount}); continuing with improvement work.`, "info");
-      ctx.ui.setStatus("loop", statusBarText());
+      ctx.ui.setStatus("loop", statusBarText(ctx));
       if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "improve", state.delaySeconds * 1000, ctx);
       return;
     }
@@ -1410,7 +1537,7 @@ export default function (pi: ExtensionAPI) {
       persistState(pi);
       logIteration("blocked");
       ctx.ui.notify(`Loop: blocked reported (${snippet(lastAssistantText, 120)}); continuing with assumptions.`, "warning");
-      ctx.ui.setStatus("loop", statusBarText());
+      ctx.ui.setStatus("loop", statusBarText(ctx));
       if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "unblock", state.delaySeconds * 1000, ctx);
       return;
     }
@@ -1435,7 +1562,7 @@ export default function (pi: ExtensionAPI) {
       persistState(pi);
       logIteration("regression");
       ctx.ui.notify(`Loop: goal check score regressed to ${state.lastCheckScore} — requesting fix.`, "warning");
-      ctx.ui.setStatus("loop", statusBarText());
+      ctx.ui.setStatus("loop", statusBarText(ctx));
       if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "regression", state.delaySeconds * 1000, ctx);
       return;
     }
@@ -1456,7 +1583,7 @@ export default function (pi: ExtensionAPI) {
       persistState(pi);
       logIteration("audit");
       ctx.ui.notify(`Loop: no concrete progress for ${NO_PROGRESS_WINDOW} iterations — requesting tangible output.`, "warning");
-      ctx.ui.setStatus("loop", statusBarText());
+      ctx.ui.setStatus("loop", statusBarText(ctx));
       if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "audit", state.delaySeconds * 1000, ctx);
       return;
     }
@@ -1468,7 +1595,7 @@ export default function (pi: ExtensionAPI) {
     state.lastNotice = "";
     persistState(pi);
     logIteration("continue");
-    ctx.ui.setStatus("loop", statusBarText());
+    ctx.ui.setStatus("loop", statusBarText(ctx));
 
     if (!ctx.hasPendingMessages()) {
       scheduleLoopTurn(pi, "continue", state.delaySeconds * 1000, ctx);

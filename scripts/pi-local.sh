@@ -117,6 +117,51 @@ path.chmod(0o600)
 print(f"wrote {path}")
 PY
 
+# --- size pi's compaction for THIS window ------------------------------------
+# pi's defaults (reserveTokens 16384, keepRecentTokens 20000) are sized for a
+# 200k window and are actively harmful on 32k. Measured against pi 0.84.2's own
+# dist and 8 real sessions under ~/.pi/agent/sessions:
+#
+#   * shouldCompact() turns true at 50% of the window, but prepareCompaction()
+#     returns undefined until the context exceeds keepRecentTokens — so from 50%
+#     to ~66% pi decides to compact on every turn and silently does nothing.
+#   * The first compaction that actually fires lands at 28.8k of 32.7k (88%),
+#     and always keeps keepRecentTokens = 61% of the window, plus a summary that
+#     is merged into the previous one and grows every time (observed: 1,666 ->
+#     11,054 chars). From compaction #4 the session sat at 94-96% full and
+#     compaction freed nothing at all.
+#   * Above ~87% full, 33 of 63 assistant turns came back completely empty
+#     (content: [], stopReason "stop"). Below it, 3 of 196.
+#
+# Sizing both knobs off CTX_SIZE keeps the trigger at 50% of whatever window the
+# stack is actually serving and cuts back to ~20% of it, which is the difference
+# between compacting every turn and compacting every ~50.
+#
+# This is written to pi's GLOBAL settings on purpose: the loop runs in whatever
+# project you point it at, and a .pi/settings.json in this repo would only apply
+# to sessions started here (and only when the project is trusted).
+CTX="$CTX" PI_DIR="$PI_DIR" python3 - <<'PY'
+import json, os, pathlib
+
+path = pathlib.Path(os.environ["PI_DIR"]) / "settings.json"
+ctx = int(os.environ["CTX"])
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except json.JSONDecodeError:
+        raise SystemExit(f"{path} exists but is not valid JSON — refusing to overwrite it")
+
+compaction = data.setdefault("compaction", {})
+# Trigger at 50% of the window; never later than pi's own default headroom.
+compaction["reserveTokens"] = min(16384, ctx // 2)
+# Keep ~20% of the window after a compaction, floored so a tiny window still
+# keeps a usable turn and capped at pi's default so a large one is unchanged.
+compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
+path.write_text(json.dumps(data, indent=2) + "\n")
+print(f"wrote {path} (compaction: {compaction})")
+PY
+
 if (( INSTALL_ONLY )); then
   dim "Provider 'forge' installed. Check with: pi --list-models"
   exit 0
