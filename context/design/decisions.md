@@ -2386,3 +2386,147 @@ Ordered by leverage, not by novelty:
   itself would not reach a first token inside 180 s in this container, and even
   `pi --help` hangs here. That is a pre-existing environment problem, unrelated
   to this change, and it is the one claim not backed by a measurement.
+
+## 2026-08-16 — one slow session, taken apart: five real defects and a swapping box
+
+A user pasted a `/loop`-less pi session that fetched Google News and asked what
+could be optimised. The session looked mildly annoying — two `Error: terminated`,
+two browser timeouts, then a curl fallback that worked. Every part of it turned
+out to be a different defect, and none of them was the one the transcript
+appeared to show.
+
+### The browser was not slow; Chrome was dead
+
+Reproduced first: `browser.sh navigate` hung past a 120 s kill. Then the control
+that isolates it —
+
+```
+zendriver MCP  tools/list        -> 200 OK, instant
+Chrome         /json/version     -> no answer in 20 s
+```
+
+— and the server log showing `ListToolsRequest -> 200 OK` followed by
+`CallToolRequest` with no response line, ever. Chrome had been up since 07:56 and
+the session was 08:13, so this was not cold-start latency. `browser.sh status`
+had been reporting `Browser: Running  Open tabs: 1` the whole time, because it
+asks zendriver, which answers from cache.
+
+**A health check that cannot fail is not a health check.** The supervisor was
+watching the half that had not broken. Fixes: `browser.sh health` probes Chrome's
+CDP endpoint directly (ancestry-matched, so it cannot report another session's
+browser as ours), `status` gained the same probe and a third exit code, and the
+supervisor now restarts the server on two consecutive failed probes — without
+calling `stop_browser` first, since that is a call into the process whose browser
+is the thing not responding.
+
+Verified by SIGSTOPping Chrome: `health` flips to `wedged`/exit 2, `status`
+prints the fix, SIGCONT flips both back.
+
+### The timeout message taught the model nothing
+
+What it actually got, twice, 60 s apart:
+
+```
+Failed to call tool: Request timed out
+
+Expected parameters:
+  url (string) *required* - Absolute URL to load, including the scheme.
+```
+
+A parameter dump, for a failure that has nothing to do with parameters — so it
+sent the identical call again. Two minutes and ~500 tokens for a page that was
+never going to load. `.pi/extensions/browser-guard.ts` rewrites that result from
+a live probe, naming which failure it is and telling the model to use `bash`
+instead of retrying. `mcp/adapter.json` also sets `requestTimeoutMs: 30000`
+(unset, the SDK default is 60 s), and `browser.sh up` now opens Chrome up front,
+because a cold launch measured **74 s** — longer than a single call is allowed to
+wait, so the first call failed while nothing was wrong.
+
+### `Error: terminated` was a 300-second idle timeout, and the box was swapping
+
+Exact, from the session file against forge's log:
+
+```
+08:17:38.596  user message        forge: POST /v1/chat/completions
+08:22:39.887  error: terminated   (301 s)
+08:27:42.447  error: terminated   (301 s)
+08:29:01.078  first real answer
+```
+
+`DEFAULT_HTTP_IDLE_TIMEOUT_MS = 300_000` in pi's `core/http-dispatcher.js`.
+Prefill emits nothing while it runs, and llama's own log for that session says
+`prompt eval time = 65218 ms / 1276 tokens` — **19.57 tok/s**, against the 1,175
+tok/s this README quotes. The README already names the cause: `CACHE_RAM` was
+once 8192 and "collapsed prefill to 2.83 tok/s once the host started swapping".
+Confirmed live: 4.2 GiB of swap in use, load average 44, and PSI
+`full avg10=59` — for 59% of the last ten seconds *every* task was stalled on
+memory.
+
+`pi-local.sh` now sets `httpIdleTimeoutMs` sized off `CTX_SIZE` at the degraded
+prefill floor, clamped to [5 min, 15 min]. **That is a seatbelt, not a fix**, and
+it is written down as one.
+
+`/free` found nothing to reclaim, which is itself the finding: all 13 claude
+sessions were live (idle 6–228 s), and all nine extra zendriver bridges had live
+claude parents, so the PGID rule kept every one. The box is not leaking; it is
+oversubscribed. Reclaimed: one 78 MB Chrome profile.
+
+### forge was eating llama's prompt-cache counter
+
+Matched control pair, identical request:
+
+```
+llama :8080  ->  "prompt_tokens_details": {"cached_tokens": 7}
+forge :8081  ->  (absent)
+```
+
+`forge/proxy/convert.py` rebuilds the usage dict with three keys in four places,
+and `clients/llamafile.py::_record_usage()` never reads `cached_tokens` even
+though `TokenUsage.cache_read_input_tokens` exists for it. pi reads exactly that
+field (`pi-ai/dist/api/openai-completions.js` maps it to `cacheRead`), so every
+session on this stack reported `cacheRead: 0` and the footer's cache-hit
+indicator could never appear — while llama's own log showed prefix reuse at
+`f_sim_best 0.988`. The feature worked the whole time and nothing downstream
+could see it. `patches/forge_cached_tokens.py` fixes both halves at build time,
+verify-or-fail like the existing patch; the same control pair now agrees.
+
+### The tool surface, measured instead of estimated
+
+Captured by pointing pi at a stand-in provider that logs the request body:
+
+| component | ~tokens |
+| --- | --- |
+| tool schemas (13 tools) | 3,157 |
+| pi base + append-system-prompt | 890 |
+| `<available_skills>` block | 823 |
+| user message | 8 |
+| **whole first request** | **4,963** |
+
+and the tools, largest first: `mcp` 719, **`prinny_*` 1,470 across six**,
+`mcpScript` 309, `edit` 309, `read` 182, `bash` 145, `write` 118,
+`stack_status` 99. The six Matrix tools cost more than pi's own bash, read, edit
+and write combined, on every turn, in every session — including sessions with no
+Matrix credentials, where the sidecar already refuses to start for exactly that
+reason. `registerTools()` is now behind the same `isConfigured()` gate.
+
+This corrects an estimate made earlier the same day from reading pi's source
+(~2,000 tokens for the built-ins). The built-ins are 754. Counting template
+literals in a tool's module counts its rendering code too.
+
+### Verified, not assumed
+
+- Every number above is a measurement: the CDP probe against a real wedged
+  Chrome, the 301 s from session timestamps against forge's log, the prefill
+  rate from llama's own timing lines, the tool budget from the bytes pi put on
+  the wire, and the forge usage fix from the same control pair that found it.
+- The browser guard was loaded through **jiti**, pi's own extension transpiler,
+  and driven with the exact `tool_result` shape from the failing session. It
+  rewrites the transport failure and leaves successes, real tool errors and
+  non-browser tools untouched.
+- `tests/tool-budget.test.ts` asserts the tool surface against the wire, with a
+  control (pi's own `bash` present in both runs) so an empty capture cannot pass
+  as a pass. 231 prinny tests, 24 browser_cli checks.
+- **Correction to an earlier note in this file:** "pi will not reach a first
+  token inside 180 s in this container, and even `pi --help` hangs" was written
+  during the same memory storm. `pi --help` returns in under a second once the
+  box is not thrashing. It was never a pi defect.

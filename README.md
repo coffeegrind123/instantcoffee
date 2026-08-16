@@ -125,10 +125,12 @@ cd ~/my-project && qpi
 | `./scripts/rtk.sh --status` | What is being filtered, and whether the pin matches |
 | `./scripts/rtk.sh --check` | Do rtk's filters still behave the way the allow-list assumes |
 | `./scripts/browser.sh status` | Is the browser up, and what page is open |
+| `./scripts/browser.sh health` | Probe Chrome itself (exit 2 = wedged) |
+| `./scripts/browser.sh reap` | Clear leftovers from servers that died |
 | `./scripts/browser.sh down` | Stop Chrome and its server |
 | `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 | `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (39 tests, no install) |
-| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (227 tests, no install) |
+| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (231 tests, no install) |
 | `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (16 tests, no install) |
 
 ## Updating
@@ -759,6 +761,20 @@ the post-compaction floor from 20,000 tokens to 7,000. Global rather than a
 `.pi/settings.json` here, because `/loop` runs in whatever project you point it
 at — and project settings only load for a *trusted* project.
 
+**And `httpIdleTimeoutMs`, for the same reason.** pi's default is 300,000 ms —
+how long a request may go without producing a single byte. Prefill produces no
+bytes while it runs. Measured 2026-08-16 in a real session: the first two
+requests both died with `Error: terminated` at **exactly 301 s**, ten minutes
+before the first token, because this box had collapsed to 20–37 tok/s of prefill
+under memory pressure (the healthy figure at the top of this README is 1,175).
+6.5k tokens of prompt at 35 tok/s is 187 s of silence, and a prompt-cache
+eviction pushed it past 300. The value is sized so a *full* window still prefills
+inside the budget at 36 tok/s — the degraded floor, not the healthy rate — then
+clamped to `[300 s, 15 min]`: 900,000 ms on a 32k window.
+
+That is a seatbelt, not a fix. If you are seeing it engage, the box is swapping;
+see the note on `CACHE_RAM` above and run `/free`.
+
 ### Why pi, and what that costs
 
 pi is minimal by design: **no MCP** (its README says so outright — "build CLI
@@ -1094,6 +1110,45 @@ So the machinery holds itself up, at three levels:
   Both live in the server, so the CLI and the adapter get them equally. Verified
   by killing each layer under a live session and watching the next call succeed.
 
+**None of that covered the failure that actually happened.** On 2026-08-16 Chrome
+stopped answering its own DevTools endpoint while the MCP server in front of it
+stayed perfectly healthy — `tools/list` instant, `get_browser_status` cheerfully
+reporting *"Running, 1 tab"*, and every `navigate` hanging until the client gave
+up. It sat like that for four hours. The supervisor was watching the half that
+had not broken, and `status` was asking the server about a browser that was gone,
+which is a question the server answers from cache. A health check that cannot
+fail is not a health check.
+
+So health is now measured against Chrome itself:
+
+- **`./scripts/browser.sh health`** probes Chrome's CDP endpoint directly —
+  found by process ancestry, so it cannot report another session's browser as
+  this one's — and exits `0` healthy, `2` wedged. `status` grew the same probe
+  and the same third exit code, and prints zendriver's view only *after* it,
+  clearly labelled as the cached opinion it is.
+- **The supervisor watches Chrome, not just the server.** Two consecutive failed
+  probes (30 s apart) and it restarts the server, whose process group takes the
+  wedged Chrome with it. It does not try `stop_browser` first: that is a call
+  into the process whose browser is the thing not responding.
+- **`browser.sh up` opens Chrome up front** (`BROWSER_MCP_WARM`). A cold launch
+  measured **74 s** — longer than the MCP SDK's default per-request timeout, so
+  the first tool call used to fail with a timeout while nothing was wrong.
+- **`./scripts/browser.sh reap [--dry-run]`** clears leftovers from servers that
+  died without stopping. Deliberately narrow: only processes whose parent is
+  already gone, and only profile directories no live Chrome references — several
+  agent sessions on this box run their own bridge, and those have live owners.
+
+And when a call does time out, the model is told something it can act on. It used
+to get `Failed to call tool: Request timed out` followed by a dump of the tool's
+parameters — a parameter dump, for a failure that has nothing to do with
+parameters. It did the only thing that message suggests: sent the identical call
+again, waited another 60 s, and only then guessed its way to `curl`. Two minutes
+and ~500 tokens for a page that was never going to load.
+`.pi/extensions/browser-guard.ts` now rewrites that result, using a live probe to
+say *which* failure it is — wedged, not started, or a slow page — and to tell the
+model to fall back to `bash` rather than retry. It registers no tools and no
+commands, so it costs nothing in the window.
+
 `./scripts/browser.sh up | status | down | logs` still exist — for you, not for
 the model. Chrome costs a few hundred MB while it is open; `down` stops it and
 the supervisor together.
@@ -1393,8 +1448,11 @@ modes/
 patches/
   forge_merge_consecutive.py  build-time fix for a forge crash on structured
                         message content; fails the build if forge changes
+  forge_cached_tokens.py      build-time fix for forge dropping llama's
+                        prompt-cache counter; fails the build if forge changes
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
+  browser-guard.ts      turns a browser-tool timeout into an instruction
 vendor/pi-loop-mode/    /loop — fork of pi-loop-mode@2.5.4, loaded from here
   FORK.md               what was changed and why (context-recovery race)
   tests/                node --test suite for the fork's recovery ladder
@@ -1403,7 +1461,7 @@ vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plug
   extensions/index.ts   the pi extension: tools, /prinny, forwarding, lifecycle
   src/                  pure modules — client, gate, block renderer, access
   server/               the Matrix sidecar, run as a child process
-  tests/                227 tests, no node_modules
+  tests/                231 tests, no node_modules
 vendor/rtk-pi/          bash output filtering — fork of rtk's own pi extension
   FORK.md               the measurements, and why it filters an allow-list
   src/gate.ts           what is filtered and what is accepted back (no pi import)
@@ -1439,7 +1497,7 @@ each answers a different question:
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 (cd vendor/pi-loop-mode && npm test)      # 39 tests for the /loop fork
-(cd vendor/prinny-channel && npm test)    # 227 tests for the Matrix channel
+(cd vendor/prinny-channel && npm test)    # 231 tests for the Matrix channel
 (cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)
 docker compose --profile tools config     # validate compose
 ```

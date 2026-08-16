@@ -54,6 +54,22 @@ AUTOSTART = (os.environ.get("BROWSER_MCP_AUTOSTART") or "1") == "1"
 START_TIMEOUT = float(os.environ.get("BROWSER_MCP_START_TIMEOUT") or "60")
 CALL_TIMEOUT = float(os.environ.get("BROWSER_MCP_TIMEOUT") or "180")
 
+# Chrome's own DevTools endpoint has to answer this fast or it is considered
+# wedged. It is a loopback GET against a process that is either alive or not;
+# three seconds is already generous, and a long timeout here would reproduce the
+# very failure this probe exists to detect.
+CDP_PROBE_TIMEOUT = float(os.environ.get("BROWSER_MCP_CDP_TIMEOUT") or "3")
+# How often the supervisor checks Chrome, and how many consecutive failures it
+# takes to act. Two strikes, so a probe that loses a race with a Chrome restart
+# does not cost a server restart.
+WEDGE_CHECK_SECONDS = float(os.environ.get("BROWSER_MCP_WEDGE_CHECK") or "30")
+WEDGE_STRIKES = int(os.environ.get("BROWSER_MCP_WEDGE_STRIKES") or "2")
+# Open Chrome as part of `up`, so the first real tool call does not pay for it.
+# Measured 2026-08-16: a cold Chrome launch took 74 s, which is longer than the
+# MCP SDK's default per-request timeout — the first call would fail even though
+# nothing is broken.
+WARM = (os.environ.get("BROWSER_MCP_WARM") or "1") == "1"
+
 PID_FILE = os.path.join(STATE_DIR, f"server-{PORT}.pid")
 LOG_FILE = os.path.join(STATE_DIR, f"server-{PORT}.log")
 
@@ -126,6 +142,114 @@ def list_tools() -> list[dict]:
     return rpc("tools/list").get("tools") or []
 
 
+# --- chrome health -----------------------------------------------------------
+# The MCP server answering is NOT evidence that the browser works. Measured
+# 2026-08-16: `tools/list` returned instantly and `get_browser_status` cheerfully
+# reported "Running, 1 tab" for a Chrome whose own CDP endpoint had stopped
+# answering entirely — every `navigate` hung until the client gave up. The
+# server was serving zendriver's cached view of a browser that was gone.
+#
+# So health is measured against Chrome itself, over the DevTools HTTP endpoint,
+# which is the one thing that cannot be answered from cache.
+def _read_cmdline(pid: int) -> str:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as fh:
+            return fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _ppid(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as fh:
+            data = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    # comm can contain spaces and parentheses; ppid is the field after the ')'.
+    try:
+        return int(data[data.rindex(")") + 1 :].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _descends_from(pid: int, ancestor: int, limit: int = 12) -> bool:
+    seen = pid
+    for _ in range(limit):
+        parent = _ppid(seen)
+        if parent is None or parent <= 1:
+            return False
+        if parent == ancestor:
+            return True
+        seen = parent
+    return False
+
+
+def find_chrome() -> tuple[int, int] | None:
+    """(pid, cdp_port) of the Chrome this server launched, or None if there is none.
+
+    Ancestry is the discriminator, not the profile path: every zendriver on the
+    box launches Chrome with a disposable `/tmp/uc_*` profile, and this container
+    routinely runs several (each agent session spawns its own bridge). Matching
+    on the profile alone would happily report someone else's browser as ours.
+    """
+    owner = read_pid()
+    candidates: list[tuple[int, int, bool]] = []
+    try:
+        pids = [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    except OSError:
+        return None
+    for pid in pids:
+        cmd = _read_cmdline(pid)
+        if "--remote-debugging-port=" not in cmd or "chrome_crashpad_handler" in cmd:
+            continue
+        match = re.search(r"--remote-debugging-port=(\d+)", cmd)
+        if not match:
+            continue
+        port = int(match.group(1))
+        if port <= 0:
+            continue
+        candidates.append((pid, port, bool(owner) and _descends_from(pid, owner)))
+    if not candidates:
+        return None
+    ours = [c for c in candidates if c[2]]
+    if ours:
+        return ours[0][0], ours[0][1]
+    # No ancestry match: only answer when there is exactly one browser on the
+    # box, so an ambiguous reading never becomes a confident wrong verdict.
+    disposable = [c for c in candidates if "--user-data-dir=/tmp/uc_" in _read_cmdline(c[0])]
+    if len(disposable) == 1:
+        return disposable[0][0], disposable[0][1]
+    return None
+
+
+def cdp_ok(port: int, timeout: float = CDP_PROBE_TIMEOUT) -> tuple[bool, str]:
+    """Ask Chrome itself whether it is alive. Never raises."""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/version", timeout=timeout
+        ) as resp:
+            body = json.loads(resp.read().decode("utf-8", "replace"))
+        return True, str(body.get("Browser") or "chrome")
+    except Exception as exc:  # noqa: BLE001 — any failure means "not answering"
+        return False, str(exc)
+
+
+def chrome_health() -> tuple[str, str]:
+    """('none' | 'ok' | 'wedged' | 'unknown', human-readable detail)."""
+    found = find_chrome()
+    if found is None:
+        return "none", "no Chrome running (it opens on the first tool that needs one)"
+    pid, port = found
+    alive, detail = cdp_ok(port)
+    if alive:
+        return "ok", f"pid {pid}, CDP 127.0.0.1:{port}, {detail}"
+    return (
+        "wedged",
+        f"pid {pid} is running but its CDP endpoint 127.0.0.1:{port} did not answer "
+        f"within {CDP_PROBE_TIMEOUT:.0f}s ({detail})",
+    )
+
+
 # --- server lifecycle --------------------------------------------------------
 def read_pid() -> int | None:
     try:
@@ -140,10 +264,39 @@ def read_pid() -> int | None:
     return pid
 
 
+def warm_browser(quiet: bool = False) -> None:
+    """Open Chrome now, so the first real tool call does not pay for it.
+
+    A cold launch measured 74 s on this box — longer than the MCP SDK's default
+    per-request timeout, so a client's very first call would fail with a timeout
+    while nothing was actually wrong. Paying it here, once, out of band, is the
+    difference between "slow start" and "the browser is broken".
+    """
+    if not WARM:
+        return
+    state, _ = chrome_health()
+    if state != "none":
+        return
+    if not quiet:
+        print("  .. opening Chrome (first launch is slow; doing it now so calls are not)")
+    started = time.time()
+    try:
+        result = call_tool("start_browser", {}, timeout=max(CALL_TIMEOUT, 120.0))
+    except Exception as exc:  # noqa: BLE001 — warming is best effort
+        err(f"warn could not warm the browser ({exc}); the first tool call will open it")
+        return
+    if result.get("isError"):
+        err(f"warn could not warm the browser: {text_of(result)[:200]}")
+        return
+    if not quiet:
+        print(f"  ok chrome open ({time.time() - started:.0f}s)")
+
+
 def start_server(quiet: bool = False) -> None:
     if is_up():
         if not quiet:
             print(f"  ok browser MCP already up at {URL}")
+        warm_browser(quiet)
         return
 
     run_py = os.path.join(SERVER_DIR, "run.py")
@@ -201,9 +354,45 @@ def start_server(quiet: bool = False) -> None:
         if is_up(timeout=2.0):
             if not quiet:
                 print(f"  ok browser MCP up at {URL} (pid {proc.pid}, log {LOG_FILE})")
+            warm_browser(quiet)
             return
         time.sleep(0.5)
     die(f"browser MCP server did not answer within {START_TIMEOUT:.0f}s — see {LOG_FILE}")
+
+
+def _wait_watching_chrome(child: subprocess.Popen) -> int:
+    """Wait for the server to exit, restarting it if Chrome wedges underneath it.
+
+    Returns the server's exit code, or a synthetic -1 when we terminated it
+    ourselves because its browser had stopped answering.
+    """
+    strikes = 0
+    while True:
+        try:
+            return child.wait(timeout=WEDGE_CHECK_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        state, detail = chrome_health()
+        if state != "wedged":
+            if strikes:
+                print(f"[supervisor] chrome recovered ({state}) after {strikes} strike(s)", flush=True)
+            strikes = 0
+            continue
+        strikes += 1
+        print(f"[supervisor] chrome not answering ({strikes}/{WEDGE_STRIKES}): {detail}", flush=True)
+        if strikes < WEDGE_STRIKES:
+            continue
+        print("[supervisor] restarting the server to clear a wedged browser", flush=True)
+        # Do NOT ask the server to stop_browser first: that is a tool call into
+        # the process whose browser is the thing not responding, so it is exactly
+        # the call that hangs. Terminating the group takes Chrome with it.
+        child.terminate()
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait()
+        return -1
 
 
 def supervise() -> "None":
@@ -267,7 +456,12 @@ def supervise() -> "None":
         child = subprocess.Popen(
             argv, cwd=SERVER_DIR, stdin=subprocess.DEVNULL, start_new_session=True
         )
-        rc = child.wait()
+        # Watch CHROME, not just the server. The server exiting is the easy case
+        # and the one this supervisor was written for; the case that actually
+        # happened is the server staying perfectly healthy while the browser
+        # underneath it stopped answering. Nothing was watching that half, so it
+        # stayed broken for four hours and every tool call hung.
+        rc = _wait_watching_chrome(child)
         reap_group(child)
         now = time.time()
         restarts = [t for t in restarts if now - t < 600] + [now]
@@ -325,7 +519,94 @@ def _rm(path: str) -> None:
         pass
 
 
+def reap(dry_run: bool = False) -> int:
+    """Clear leftovers from servers that died without stopping cleanly.
+
+    Deliberately narrow. On this box several agent sessions each run their OWN
+    zendriver bridge over stdio, and those have live parents — killing them
+    because they are not ours would break somebody else's session. So a process
+    is only reaped when its parent is gone (PPID 1) AND it is not the server we
+    are supervising. A profile directory is only reaped when no live Chrome
+    references it.
+    """
+    ours = read_pid()
+    live_server = None
+    for pid_name in os.listdir("/proc"):
+        if not pid_name.isdigit():
+            continue
+        pid = int(pid_name)
+        if "zendriver-mcp" in _read_cmdline(pid) and ours and _descends_from(pid, ours):
+            live_server = pid
+
+    killed: list[int] = []
+    for pid_name in sorted(os.listdir("/proc"), key=lambda n: int(n) if n.isdigit() else 0):
+        if not pid_name.isdigit():
+            continue
+        pid = int(pid_name)
+        cmd = _read_cmdline(pid)
+        if "zendriver-mcp" not in cmd and "browser_cli.py supervise" not in cmd:
+            continue
+        if pid in {ours, live_server}:
+            continue
+        if _ppid(pid) != 1:
+            continue  # someone alive owns it — not ours to reap
+        killed.append(pid)
+        if dry_run:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+    if killed and not dry_run:
+        time.sleep(2)
+        for pid in killed:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+    live_profiles = set()
+    for pid_name in os.listdir("/proc"):
+        if not pid_name.isdigit():
+            continue
+        match = re.search(r"--user-data-dir=(/tmp/uc_\S+)", _read_cmdline(int(pid_name)))
+        if match:
+            live_profiles.add(match.group(1))
+
+    freed_mb = 0
+    removed: list[str] = []
+    import glob
+    import shutil
+
+    for path in glob.glob("/tmp/uc_*"):
+        if not os.path.isdir(path) or path in live_profiles:
+            continue
+        size = 0
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    size += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+        freed_mb += size // (1024 * 1024)
+        removed.append(path)
+        if not dry_run:
+            shutil.rmtree(path, ignore_errors=True)
+
+    verb = "would reap" if dry_run else "reaped"
+    print(f"  {verb} {len(killed)} orphan process(es): {killed or '-'}")
+    print(f"  {verb} {len(removed)} stale Chrome profile(s), ~{freed_mb} MB")
+    return 0
+
+
 def status() -> int:
+    """0 = healthy, 1 = server down, 2 = server up but Chrome wedged.
+
+    The third exit code exists because those are three different problems with
+    three different fixes, and the version of this function that could only say
+    "up" reported a healthy browser for four hours while every call to it hung.
+    """
     pid = read_pid()
     if not is_up():
         print(f"down  {URL}" + (f"  (stale pid {pid})" if pid else ""))
@@ -333,9 +614,20 @@ def status() -> int:
         return 1
     tools = list_tools()
     print(f"up    {URL}  pid {pid or '?'}  {len(tools)} tools  log {LOG_FILE}")
-    if any(t["name"] == "get_browser_status" for t in tools):
+
+    state, detail = chrome_health()
+    if state == "wedged":
+        print(f"WEDGED chrome: {detail}")
+        print("      Tool calls will hang until this is cleared.")
+        print("      Fix: ./scripts/browser.sh restart")
+        return 2
+    print(f"      chrome: {state} — {detail}")
+
+    # zendriver's own view, printed AFTER the probe and clearly attributed: it is
+    # useful colour (which tabs are open) but it is cached state, not evidence.
+    if state == "ok" and any(t["name"] == "get_browser_status" for t in tools):
         try:
-            print("      " + text_of(call_tool("get_browser_status", {})).replace("\n", " ")[:300])
+            print("      " + text_of(call_tool("get_browser_status", {}, timeout=15.0)).replace("\n", " ")[:300])
         except Exception as e:  # noqa: BLE001
             err(f"warn could not read browser status: {e}")
     return 0
@@ -512,6 +804,8 @@ Drive a real Chrome from the shell. The server stays up between calls, so a page
 you open in one call is still open in the next.
 
   ./scripts/browser.sh up | down | restart | status | logs
+  ./scripts/browser.sh health                    probe Chrome itself (0 ok, 2 wedged)
+  ./scripts/browser.sh reap [--dry-run]          clear leftovers from dead servers
   ./scripts/browser.sh --list --compact          every tool name (~2 tokens each)
   ./scripts/browser.sh --search <word>           find a tool by name or purpose
   ./scripts/browser.sh <tool> --help             that one tool's parameters
@@ -549,6 +843,13 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "status":
         return status()
+    if cmd == "health":
+        # Just Chrome, machine-readable, for a watchdog or a CI check.
+        state, detail = chrome_health()
+        print(f"{state}\t{detail}")
+        return {"ok": 0, "none": 0, "unknown": 1, "wedged": 2}.get(state, 1)
+    if cmd == "reap":
+        return reap(dry_run="--dry-run" in rest)
     if cmd == "logs":
         n = int(rest[0]) if rest and rest[0].isdigit() else 40
         if not os.path.isfile(LOG_FILE):

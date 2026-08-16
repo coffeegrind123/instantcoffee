@@ -158,8 +158,23 @@ compaction["reserveTokens"] = min(16384, ctx // 2)
 # Keep ~20% of the window after a compaction, floored so a tiny window still
 # keeps a usable turn and capped at pi's default so a large one is unchanged.
 compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
+
+# pi's HTTP IDLE timeout, i.e. how long a request may go without producing a
+# byte. Default 300_000 ms. Measured 2026-08-16 in ~/testing: a session's first
+# two requests both died with `Error: terminated` at exactly 301 s, ten minutes
+# before the first token, because prefill emits nothing while it runs and this
+# box had collapsed to 20-37 tok/s of prefill under memory pressure (the README
+# records 1,175 tok/s healthy). 6.5k tokens of prompt at 35 tok/s is 187 s of
+# silence; queueing and a prompt-cache eviction pushed it past 300.
+#
+# Sized so a FULL window still prefills inside the budget at 36 tok/s - the
+# degraded floor, not the healthy rate - then clamped: never below pi's own
+# default, never above 15 min, because past that a genuinely dead connection is
+# just a hang.
+data["httpIdleTimeoutMs"] = min(900, max(300, -(-ctx // 36))) * 1000
+
 path.write_text(json.dumps(data, indent=2) + "\n")
-print(f"wrote {path} (compaction: {compaction})")
+print(f"wrote {path} (compaction: {compaction}, httpIdleTimeoutMs: {data['httpIdleTimeoutMs']})")
 PY
 
 if (( INSTALL_ONLY )); then
@@ -199,6 +214,15 @@ if [[ -r "$STACK_EXT" ]]; then
   STACK_NOTE=", /stack"
 else
   warn "$STACK_EXT is missing — /stack will not be available this session."
+fi
+
+# Rewrites a browser-tool timeout into an instruction instead of a parameter
+# dump. Loaded whenever the browser is, by absolute path for the same reasons as
+# /stack. It registers no tools and no commands, so it costs nothing in the
+# window; it only ever edits the text of a browser call that already failed.
+GUARD_EXT="$REPO_ROOT/.pi/extensions/browser-guard.ts"
+if [[ -r "$GUARD_EXT" ]]; then
+  pi_flags+=(-e "$GUARD_EXT")
 fi
 
 # /loop comes from vendor/pi-loop-mode — a fork of pi-loop-mode@2.5.4 that this

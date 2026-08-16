@@ -39,9 +39,17 @@ RUN pip install --no-cache-dir \
 # both 0.8.2 and 0.9.0. The patcher verifies the source text and exits non-zero
 # if forge has changed it, so an upgrade fails the build rather than silently
 # shipping unpatched. See patches/forge_merge_consecutive.py.
-COPY patches/forge_merge_consecutive.py /tmp/patches/forge_merge_consecutive.py
-RUN python /tmp/patches/forge_merge_consecutive.py \
-        "$(python -c 'import site; print(site.getsitepackages()[0])')" \
+#
+# The second patch restores llama-server's prompt-cache counter. forge rebuilds
+# the OpenAI usage dict with three keys and drops `prompt_tokens_details`, which
+# is the exact field pi reads for its cache-hit display — so every session on
+# this stack reported cacheRead: 0 while llama's own logs showed prefix reuse up
+# to f_sim_best 0.988. Measured as a matched pair against both ports, not
+# inferred. See patches/forge_cached_tokens.py.
+COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py /tmp/patches/
+RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
+    && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
+    && python /tmp/patches/forge_cached_tokens.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"

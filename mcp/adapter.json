@@ -28,6 +28,22 @@
       ],
       "lifecycle": "lazy",
 
+      "_requestTimeoutMs": [
+        "Unset, this falls back to the MCP SDK default of 60 s. Measured",
+        "2026-08-16 on a session that hit a wedged Chrome: two navigate calls",
+        "each burned the full 60 s before the model gave up and fell back to",
+        "curl — two minutes of wall clock and ~500 tokens for a page it never",
+        "loaded.",
+        "",
+        "30 s is far above warm operation (25-417 ms per call through this",
+        "adapter; 3-32 s through the CLI, which pays process startup) and far",
+        "below the point where waiting is still useful. The cold case that used",
+        "to need the long timeout - a 74 s first Chrome launch - is gone:",
+        "browser.sh warms Chrome during `up` (BROWSER_MCP_WARM), so no client",
+        "request pays for it."
+      ],
+      "requestTimeoutMs": 30000,
+
       "_directTools": [
         "The browse loop, registered as ordinary pi tools so the model calls",
         "them by name with a real schema instead of through the proxy. Measured",

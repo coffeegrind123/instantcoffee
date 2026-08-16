@@ -10,10 +10,16 @@ mistyped parameter that vanishes produces a call that succeeds and does the
 wrong thing.
 """
 
+import http.server
 import importlib.util
 import io
+import json
+import os
 import pathlib
+import socket
 import sys
+import threading
+import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("browser_cli", HERE / "browser_cli.py")
@@ -121,6 +127,69 @@ def main() -> int:
     help_text = bc.tool_help(NAVIGATE)
     check("help names the required arg", "--url <string>" in help_text, True)
     check("help marks it required", "(required)" in help_text, True)
+
+    # ---------------------------------------------------------------------
+    # Chrome health. The bug this replaces: the MCP server answered `tools/list`
+    # instantly and reported "Browser: Running, 1 tab" for four hours while
+    # Chrome's own CDP endpoint answered nothing and every navigate hung. So the
+    # probe must go to Chrome, and it must be able to say "wedged" out loud.
+    # ---------------------------------------------------------------------
+    print("browser_cli: process introspection")
+    me = os.getpid()
+    check("_ppid finds a real parent", bc._ppid(me) == os.getppid(), True)
+    check("_ppid on a pid that cannot exist", bc._ppid(2**22), None)
+    check("_descends_from own parent", bc._descends_from(me, os.getppid()), True)
+    check("_descends_from an unrelated pid", bc._descends_from(me, 2**22 - 1), False)
+    check("_read_cmdline of self is non-empty", len(bc._read_cmdline(me)) > 0, True)
+
+    print("browser_cli: CDP probe")
+    # A closed port must fail FAST — a slow "no" here would reproduce the hang.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        dead_port = probe.getsockname()[1]
+    started = time.time()
+    alive, _ = bc.cdp_ok(dead_port, timeout=2.0)
+    check("closed port reports not alive", alive, False)
+    check("and does so quickly", time.time() - started < 5.0, True)
+
+    class _Version(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *_a):  # noqa: D401 — silence the default logger
+            pass
+
+        def do_GET(self):
+            body = json.dumps({"Browser": "Chrome/150.0.0.0"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Version)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    live_port = server.server_address[1]
+    try:
+        alive, detail = bc.cdp_ok(live_port, timeout=5.0)
+        check("an answering endpoint reports alive", alive, True)
+        check("and names the build", detail, "Chrome/150.0.0.0")
+
+        print("browser_cli: health verdicts")
+        real_find = bc.find_chrome
+        try:
+            bc.find_chrome = lambda: None
+            check("no browser is 'none', not 'wedged'", bc.chrome_health()[0], "none")
+            bc.find_chrome = lambda: (me, live_port)
+            check("an answering browser is 'ok'", bc.chrome_health()[0], "ok")
+            bc.find_chrome = lambda: (me, dead_port)
+            state, detail = bc.chrome_health()
+            check("a silent browser is 'wedged'", state, "wedged")
+            # The detail is what an operator acts on, so it must carry both the
+            # pid to kill and the endpoint that failed.
+            check("and the verdict names pid and port", str(me) in detail and str(dead_port) in detail, True)
+        finally:
+            bc.find_chrome = real_find
+    finally:
+        server.shutdown()
+        server.server_close()
 
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s): {', '.join(FAILURES)}")
