@@ -1,6 +1,6 @@
 ---
 name: browser-tools
-description: Drive a real Chrome with the browser_* tools — open pages, read them as text, click, type, fill forms, read cookies and network logs, get past bot protection. Use when a task needs a live web page rather than a file: reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
+description: Drive a real Chrome with the browser_* tools — open pages, read them as text, click, type, fill forms, read cookies and network logs, get past bot protection. Use when a task needs a live web page rather than a file — reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
 compatibility: Needs the browser server up (./scripts/browser.sh up) and pi-mcp-adapter installed. Five tools are native; the other 93 are reached with mcp({ search }).
 ---
 

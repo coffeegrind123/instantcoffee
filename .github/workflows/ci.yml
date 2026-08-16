@@ -198,8 +198,9 @@ jobs:
       # instead of finding out mid-session.
       - name: Agent skills are well formed
         run: |
+          pip install --quiet pyyaml
           python - <<'EOF'
-          import re, sys, pathlib
+          import re, sys, pathlib, yaml
           bad = 0
           for p in pathlib.Path("skills").glob("*/SKILL.md"):
               err = 0
@@ -207,10 +208,19 @@ jobs:
               m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
               if not m:
                   print(f"{p}: no YAML frontmatter"); bad = 1; continue
-              fm = dict(
-                  (k.strip(), v.strip())
-                  for k, v in (l.split(":", 1) for l in m.group(1).splitlines() if ":" in l)
-              )
+              # Parsed as real YAML, not split on the first colon. A ": " inside
+              # an unquoted description is a nested mapping to a YAML parser and
+              # pi drops the whole skill — which is exactly how this repo shipped
+              # two unloadable skills whose frontmatter a split(":") check liked.
+              try:
+                  fm = yaml.safe_load(m.group(1))
+                  if not isinstance(fm, dict):
+                      raise ValueError(f"frontmatter is {type(fm).__name__}, not a mapping")
+              except Exception as e:
+                  print(f"{p}: frontmatter is not valid YAML: {str(e).splitlines()[0]}")
+                  bad = 1
+                  continue
+              fm = {k: str(v) for k, v in fm.items()}
               name, desc = fm.get("name", ""), fm.get("description", "")
               if not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", name) or len(name) > 64:
                   print(f"{p}: invalid name {name!r}"); err = 1

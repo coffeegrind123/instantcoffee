@@ -1,6 +1,6 @@
 ---
 name: browser
-description: Drive a real Chrome from the shell with ./scripts/browser.sh — open pages, read them as text, click, type, fill forms, read cookies and network logs, and get past bot protection. Use when a task needs a live web page rather than a file: reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
+description: Drive a real Chrome from the shell with ./scripts/browser.sh — open pages, read them as text, click, type, fill forms, read cookies and network logs, and get past bot protection. Use when a task needs a live web page rather than a file — reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
 compatibility: Needs python3 and a Zendriver MCP checkout (ZENDRIVER_MCP_DIR in .env). The server starts itself on first use and keeps running until you stop it.
 ---
 
