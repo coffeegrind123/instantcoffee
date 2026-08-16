@@ -927,13 +927,31 @@ neither loads schemas up front, so the gateway would only add a `call_tool`
 indirection hop and hide 88 tools behind a search that the adapter's own `mcp`
 proxy and the CLI both do better.
 
-### What it costs to run
+### Nothing to manage
 
-Chrome, when it is open — a few hundred MB. The skill tells the model to run
-`./scripts/browser.sh down` when it is finished; `status` says whether it is up
-and what page is open. The server also stops the browser *before* it exits,
-because a bare SIGTERM leaves Chrome resident with its profile still open
-(measured, and the reason `down` is not just `kill`).
+The model is never told to start, stop or check anything, and neither skill
+mentions a lifecycle command. That is not politeness — on a 32K window, every
+sentence about operating a service is context that could have been the page it
+was asked to read, and a model that believes it must repair the browser will
+spend a turn trying.
+
+So the machinery holds itself up, at three levels:
+
+- **The server starts with the session** (`BROWSER_MCP_AUTOUP`), before the model
+  can reach a closed port.
+- **A supervisor restarts it if it dies** — `browser.sh up` starts a supervisor,
+  not the server, and it puts the server back with exponential backoff, giving up
+  loudly after 10 restarts in 10 minutes. It also kills the dead server's process
+  group, because a crashed server leaves Chrome re-parented to init holding its
+  profile (measured: `ppid=1`, and the replacement server started a second Chrome
+  beside it).
+- **Chrome opens on the first tool that needs it, and is replaced if it dies.**
+  Both live in the server, so the CLI and the adapter get them equally. Verified
+  by killing each layer under a live session and watching the next call succeed.
+
+`./scripts/browser.sh up | status | down | logs` still exist — for you, not for
+the model. Chrome costs a few hundred MB while it is open; `down` stops it and
+the supervisor together.
 
 ### Two things that were measured rather than assumed
 

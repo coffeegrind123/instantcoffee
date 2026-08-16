@@ -1,7 +1,7 @@
 ---
 name: browser-tools
 description: Drive a real Chrome with the browser_* tools — open pages, read them as text, click, type, fill forms, read cookies and network logs, get past bot protection. Use when a task needs a live web page rather than a file — reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
-compatibility: Needs the browser server up (./scripts/browser.sh up) and pi-mcp-adapter installed. Five tools are native; the other 93 are reached with mcp({ search }).
+compatibility: The browser starts and restarts itself — there is no setup step. Five tools are native; the other 93 are reached with mcp({ search }).
 ---
 
 # A real browser, as tools
@@ -85,20 +85,13 @@ A web page is the easiest way to burn this session's whole context.
 - **Blocked, or a challenge page?** `mcp({ search: "cloudflare" })` — there is a
   bypass tool and a check for whether a challenge is present.
 
-## The server
+## You do not manage the browser
 
-The tools talk to a browser server that this repo owns, not to something pi
-started. From bash:
+There is no start step, no stop step, and no server to check. Chrome is brought
+up on the first tool that needs it and restarted if it ever dies. Just call the
+tool you want.
 
-```bash
-./scripts/browser.sh status     # up? which page is open?
-./scripts/browser.sh up         # start it (the launcher normally has)
-./scripts/browser.sh down       # stop Chrome and the server when you are done
-```
-
-If a browser tool reports that it cannot connect, run `./scripts/browser.sh up`
-and retry once. If it fails again, say so and carry on by other means — do not
-retry in a loop, and do not fall back to `curl` for a page that needs JavaScript.
-
-`./scripts/mcp.sh` is a different thing, for other MCP servers. The browser does
-not go through it.
+If a browser tool returns an error, read the error: it says what went wrong with
+that page. Do not try to repair the browser, do not run shell commands to start
+or stop it, and do not fall back to `curl` for a page that needs JavaScript — say
+the page could not be read and carry on.

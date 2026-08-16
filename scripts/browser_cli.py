@@ -176,17 +176,12 @@ def start_server(quiet: bool = False) -> None:
     os.makedirs(STATE_DIR, exist_ok=True)
     log = open(LOG_FILE, "ab", buffering=0)
     log.write(f"\n=== start {time.strftime('%Y-%m-%d %H:%M:%S')} {URL} ===\n".encode())
+    # A supervisor, not the server itself. Nobody is watching this process: if
+    # the server dies mid-session — a Chrome that takes it down, an OOM kill —
+    # the next tool call would get a connection refused, and the model's job is
+    # to read a web page, not to notice that a service needs restarting.
     proc = subprocess.Popen(
-        [
-            PYTHON,
-            run_py,
-            "--transport",
-            "streamable-http",
-            "--host",
-            HOST,
-            "--port",
-            str(PORT),
-        ],
+        [PYTHON, os.path.abspath(__file__), "supervise"],
         cwd=SERVER_DIR,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -209,6 +204,85 @@ def start_server(quiet: bool = False) -> None:
             return
         time.sleep(0.5)
     die(f"browser MCP server did not answer within {START_TIMEOUT:.0f}s — see {LOG_FILE}")
+
+
+def supervise() -> "None":
+    """Run the server, and put it back when it dies. Never returns.
+
+    Spawned detached by start_server(); this process is what PID_FILE names, so
+    stopping it stops the server with it.
+    """
+    run_py = os.path.join(SERVER_DIR, "run.py")
+    argv = [
+        PYTHON,
+        run_py,
+        "--transport",
+        "streamable-http",
+        "--host",
+        HOST,
+        "--port",
+        str(PORT),
+    ]
+    child: subprocess.Popen | None = None
+
+    def reap_group(proc: subprocess.Popen) -> None:
+        """Kill everything the dead server spawned, Chrome included.
+
+        The server is started in its own process group, so one killpg reaches
+        the browser it launched. Without this a crashed server leaves Chrome
+        resident and re-parented to init — measured: a SIGKILLed server left a
+        Chrome with ppid=1 holding its profile, and the next server started a
+        second one beside it.
+        """
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def shutdown(_signum: int, _frame: object) -> None:
+        # Take the server with us, and let it close Chrome on the way: a SIGTERM
+        # to the server alone leaves the browser resident with its profile open.
+        if child and child.poll() is None:
+            try:
+                call_tool("stop_browser", {}, timeout=20.0)
+            except Exception:  # noqa: BLE001 — shutting down either way
+                pass
+            child.terminate()
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+            reap_group(child)
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    # A crash loop must not become a fork bomb against a browser that cannot
+    # start at all (no X display, no Chrome). Back off, and give up loudly.
+    restarts: list[float] = []
+    delay = 1.0
+    while True:
+        # Its own process group, so reap_group() can take Chrome with it.
+        child = subprocess.Popen(
+            argv, cwd=SERVER_DIR, stdin=subprocess.DEVNULL, start_new_session=True
+        )
+        rc = child.wait()
+        reap_group(child)
+        now = time.time()
+        restarts = [t for t in restarts if now - t < 600] + [now]
+        print(
+            f"[supervisor] server exited rc={rc}; restart "
+            f"{len(restarts)} of 10 in the last 10 min",
+            flush=True,
+        )
+        if len(restarts) >= 10:
+            print("[supervisor] giving up — 10 restarts in 10 minutes", flush=True)
+            raise SystemExit(1)
+        time.sleep(delay)
+        delay = min(delay * 2, 30.0)
+        if len(restarts) == 1:
+            delay = 1.0  # a lone crash after a long healthy run is not a loop
 
 
 def stop_server(quiet: bool = False) -> None:
@@ -460,6 +534,9 @@ def main(argv: list[str]) -> int:
 
     cmd, rest = argv[0], argv[1:]
 
+    if cmd == "supervise":  # internal: what start_server() actually spawns
+        supervise()
+        return 0
     if cmd == "up":
         start_server()
         return 0
