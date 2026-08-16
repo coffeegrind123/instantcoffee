@@ -1,0 +1,85 @@
+{
+  "_comment": [
+    "MCP config for pi-mcp-adapter, passed to pi as --mcp-config by",
+    "scripts/pi-local.sh. Absolute path, like every other resource this stack",
+    "hands pi, so it applies whatever directory pi was started in.",
+    "",
+    "This is the pi side of the browser. The SERVER is not started from here:",
+    "scripts/browser.sh owns that process, so it outlives any one pi session and",
+    "can be shared. This file only says how to reach it and which of its 98 tools",
+    "are worth carrying as native pi tools.",
+    "",
+    "${BROWSER_MCP_HOST} and ${BROWSER_MCP_PORT} are interpolated by the adapter",
+    "from the environment, which pi-local.sh exports out of .env — so the port",
+    "cannot drift from the one browser.sh binds. A missing variable fails before",
+    "any request is sent, rather than quietly resolving to a wrong URL.",
+    "",
+    "Keys starting with _ are ignored."
+  ],
+
+  "mcpServers": {
+    "browser": {
+      "url": "http://${BROWSER_MCP_HOST}:${BROWSER_MCP_PORT}/mcp",
+
+      "_lifecycle": [
+        "lazy: do not connect until a browser tool is actually called. The",
+        "server may legitimately be down for a whole session, and connecting at",
+        "startup would spend a failed request and a warning on every launch."
+      ],
+      "lifecycle": "lazy",
+
+      "_directTools": [
+        "The browse loop, registered as ordinary pi tools so the model calls",
+        "them by name with a real schema instead of through the proxy. Measured",
+        "on the wire: 4,621 bytes, ~1,155 tokens for these five. The other 93",
+        "stay behind mcp({ search }) at no standing cost.",
+        "",
+        "start_browser is deliberately NOT here: its schema alone is 2.3 KB",
+        "(~570 tokens, the largest on the server) and the server opens the",
+        "browser by itself on the first tool that needs one",
+        "(ZENDRIVER_MCP_AUTOSTART_BROWSER, set by browser.sh). Add it back only",
+        "if you need headless, a proxy, or a persistent profile chosen per call.",
+        "",
+        "stop_browser is not here either — stopping is the process owner's job:",
+        "./scripts/browser.sh down."
+      ],
+      "directTools": [
+        "navigate",
+        "get_interaction_tree",
+        "click",
+        "type_text",
+        "get_text_content"
+      ]
+    }
+  },
+
+  "settings": {
+    "_outputGuard": [
+      "The adapter's default cap is 50 KiB / 2,000 lines, which matches pi's",
+      "bash guard and is sized for a 200K window. Here it would be ~12.5k",
+      "tokens — 40% of a 32K window in one tool result. 8 KiB is ~2k tokens,",
+      "and the full text still lands in a temp file the model can read or grep",
+      "when it really needs the rest."
+    ],
+    "outputGuard": {
+      "maxBytes": 8192,
+      "maxLines": 200,
+      "detailsMaxBytes": 4096
+    },
+
+    "_freezeDirectTools": [
+      "The registered tool surface is part of the prompt prefix, and this stack",
+      "reuses KV cache across turns and restarts (CACHE_PROMPT, CACHE_REUSE,",
+      "--slot-save-path). A reconnect that re-registers direct tools would",
+      "invalidate that prefix mid-session. The initial sync still runs."
+    ],
+    "freezeDirectTools": true,
+
+    "_hostConfigDiscovery": [
+      "Never adopt Cursor/Claude/Codex/Windsurf MCP configs found on the",
+      "machine. This box has several, and inheriting them would put servers in",
+      "the window that nobody chose for a 32K session."
+    ],
+    "hostConfigDiscovery": "off"
+  }
+}

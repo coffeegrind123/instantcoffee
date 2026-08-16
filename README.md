@@ -121,6 +121,9 @@ cd ~/my-project && qpi
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
+| `./scripts/browser.sh status` | Is the browser up, and what page is open |
+| `./scripts/browser.sh down` | Stop Chrome and its server |
+| `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 | `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (23 tests, no install) |
 | `cd vendor/prinny-channel && npm test` | Test the Matrix channel (227 tests, no install) |
 
@@ -605,11 +608,15 @@ a dead channel blocks rather than allows.
 Every session prints what it is actually doing, so nothing is on silently:
 
 ```
-pi -> http://localhost:8081  (model: qwen3.8-27b, context files off, thinking in zh, mcp via cli, /stack)
+pi -> http://localhost:8081  (model: qwen3.8-27b, context files off, thinking in zh, mcp via cli, browser (native tools), /stack)
 ```
 
 Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
-`mcp via cli` means the MCP skill is loaded; `context files off` means `-nc`;
+`mcp via cli` means the MCP skill is loaded; `browser (native tools)` means the
+adapter registered the `browser_*` tools, against `browser (cli)` for the shell
+path, `browser (server down)` when the server would not start, and
+`browser (no checkout)` when there is no Zendriver-MCP to run;
+`context files off` means `-nc`;
 `/loop` means the vendored loop-mode fork loaded (and that no upstream npm copy
 is shadowing it);
 `/stack` means the stack extension loaded. If `/stack` is absent from the
@@ -736,6 +743,10 @@ Servers are declared in `mcp/servers.json`, `stdio` or `url`, one line each. An
 `auth_header` value takes `env:VAR` and `file:/path` prefixes, so no credential
 goes in the committed file — CI rejects a literal one.
 
+One server does not go through here: the browser. It is stateful and this path
+spawns a fresh server per call, so it gets its own long-lived process and its own
+wrapper — see [A browser](#a-browser).
+
 This is on without a measurement gate in front of it because the cost is bounded
 and known — the skill description, and nothing else until the model chooses to
 call a server. It needs `uv` on PATH; `MCP2CLI_ENABLED=0` turns it off, and
@@ -771,6 +782,186 @@ Two things that were measured rather than assumed, on 2026-08-12:
   restarts skip re-prefill), `preserve_thinking` (no KV re-prefill across
   agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
   `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
+
+## A browser
+
+The model can drive a real Chrome — open pages, read them, click, type, fill
+forms, read cookies and network logs, get past bot protection. **On by default**;
+nothing runs until a tool is called.
+
+Underneath is [Zendriver-MCP-fork](https://github.com/coffeegrind123/Zendriver-MCP-fork)
+— CDP rather than WebDriver, so it is not detected as automation — running as a
+**long-lived HTTP server** that `./scripts/browser.sh` starts, health-checks and
+stops. `ZENDRIVER_MCP_DIR` points at the checkout; it is not vendored, because it
+pulls zendriver and a Chrome.
+
+**That process ownership is the fixed point of the design.** The server is not
+something pi spawns: it outlives any one session, survives `/clear`, is shared
+with anything else on the box, and is stopped deliberately. What changes between
+the two modes below is only how pi *reaches* it.
+
+### Adapter mode — the browse loop as native tools (default)
+
+With `MCP_ADAPTER_ENABLED=1`, pi loads
+[pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) and
+`mcp/adapter.json` points it at the running server. Five tools register as
+ordinary pi tools; the other 93 stay one search away:
+
+```
+browser_navigate({ url: "https://example.com" })
+browser_get_text_content({ max_chars: 4000 })
+browser_get_interaction_tree({ limit: 40 })
+browser_click({ selector: "3" })
+browser_type_text({ selector: "7", text: "hello" })
+
+mcp({ search: "cookie" })                     → any of the other 93, with schemas
+mcp({ tool: "browser_set_cookie", args: … })  → call one
+mcpScript({ code: "…" })                      → several calls in ONE turn
+```
+
+Measured on 2026-08-16 — not from the READMEs. The token figures are the bytes
+**pi actually put on the wire**, captured from a stub model that logged the
+request (the adapter's own README claims "~200 tokens" for the proxy tool; it is
+720):
+
+| | tokens | per call |
+| --- | --- | --- |
+| All 98 schemas, the normal MCP way | ~19,000 (60% of the window) | — |
+| `mcp` proxy tool | 720 | — |
+| `mcpScript` | 302 | — |
+| The five direct tools | 1,155 | 25–417 ms |
+| **Adapter mode total** | **2,178 (6.6%)** | in-process |
+| pi's own `read`/`bash`/`edit`/`write`, for scale | 723 | — |
+| CLI mode (`skills/browser`) | ~120 | 1.7–6.5 s |
+
+Two levers if 6.6% is too much: `"scriptMode": false` in `mcp/adapter.json`
+settings drops `mcpScript` (−302), and shortening `directTools` to
+`navigate`/`get_interaction_tree`/`get_text_content` drops another ~500 at the
+cost of a proxy hop for every click and keystroke.
+
+The per-call figure is why this exists: the CLI pays a Python start and a full
+`tools/list` on every invocation, and `mcpScript` collapses navigate → read →
+click → read into a single turn, which on a 27B local model is worth more than
+the token arithmetic.
+
+`start_browser` is deliberately **not** one of the five — its schema alone is
+2.3 KB (~570 tokens, the largest on the server). Instead `browser.sh` runs the
+server with `ZENDRIVER_MCP_AUTOSTART_BROWSER=1`, so the first tool that needs a
+browser opens one. That fix lives in the server, so both modes get it.
+
+`freezeDirectTools` is on: the registered surface is part of the prompt prefix,
+and this stack reuses KV cache across turns and restarts, so a reconnect must not
+rewrite it mid-session.
+
+The package is **not vendored** — 42 dependencies, 83 MB installed. `pi-local.sh`
+checks for it, warns with the exact install command, and falls back to CLI mode
+rather than passing pi a `--mcp-config` flag that only exists when the adapter is
+loaded:
+
+```bash
+pi install npm:pi-mcp-adapter@2.26.0     # the version .env pins
+```
+
+### CLI mode — the same server, through the shell
+
+`MCP_ADAPTER_ENABLED=0` (or no adapter installed) loads `skills/browser` instead,
+and the model shells out. This is also what a human or a script uses, and it needs
+no npm package at all:
+
+```bash
+./scripts/browser.sh navigate --url https://example.com   # opens Chrome if needed
+./scripts/browser.sh get_text_content                     # the page as plain text
+./scripts/browser.sh get_interaction_tree                 # numbered clickable elements
+./scripts/browser.sh click --selector 3
+./scripts/browser.sh --search cookie                      # find one of the other 98 tools
+./scripts/browser.sh <tool> --help                        # that one tool's parameters
+./scripts/browser.sh up | status | down                   # the server, in both modes
+```
+
+### Why it is not just another entry in mcp/servers.json
+
+There deliberately is not one — `mcp/servers.json` says so where the entry would
+be, and CI keeps it that way. Three reasons, all measured on 2026-08-16:
+
+- **A browser is stateful and mcp2cli is not.** mcp2cli spawns the server per
+  call, and its `--session-start` daemon does not work here (same finding as
+  above). Every call would therefore get a fresh process and a fresh Chrome:
+  `navigate` opens a page that the next command cannot see. The server here runs
+  once and every call reaches that one process, whose `BrowserSession` is a
+  module-level singleton — so the tab survives across calls that are separate OS
+  processes. Verified by navigating in one shell command and reading the page in
+  the next.
+- **Latency.** One mcp2cli invocation costs **11-60 s** on this box (it is a fat
+  Python venv paying its import cost on every call). One direct `tools/call` POST
+  to the running server costs **24 ms**. A browser task is 20-plus calls.
+
+- **A stale tool list, silently.** Found while testing the entry that used to be
+  in the registry: mcp2cli **caches the tool list per URL**, so after the server's
+  surface changes it keeps offering the old one. A gateway-mode experiment left it
+  convinced the server had 10 tools, and `get-page-info` came back as
+  `invalid choice` rather than as anything naming the real problem. `--refresh`
+  fixes it — if you know to. Both supported paths read `tools/list` live.
+
+Both paths therefore speak MCP streamable-http to the server directly. `browser.sh`
+does it in **stateless mode**, where a single POST carries a whole `tools/call`
+with no initialize handshake, in stdlib-only Python: no `uv`, no install step,
+nothing pinned.
+
+### The context arithmetic, again
+
+Wiring these 98 tools into a client that loads schemas costs **76,893 bytes —
+about 19k tokens, 60% of a 32K window** — before the first message. Neither mode
+pays that. Adapter mode buys back 5 tools and a search hop for 2,178 tokens; CLI
+mode pays almost nothing standing and charges for discovery instead:
+
+| What | Cost |
+| --- | --- |
+| The skill's name and description, every session | ~120 tokens |
+| `--list --compact` (all 98 names) | ~370 tokens |
+| `--search <word>` (typically 8 lines) | ~100 tokens |
+| One tool's `--help` | ~130 tokens |
+
+The server *does* ship a search gateway (`ZENDRIVER_MCP_GATEWAY=1`) that collapses
+98 tools to 10 for clients that load schemas. Both modes deliberately turn it off:
+neither loads schemas up front, so the gateway would only add a `call_tool`
+indirection hop and hide 88 tools behind a search that the adapter's own `mcp`
+proxy and the CLI both do better.
+
+### What it costs to run
+
+Chrome, when it is open — a few hundred MB. The skill tells the model to run
+`./scripts/browser.sh down` when it is finished; `status` says whether it is up
+and what page is open. The server also stops the browser *before* it exits,
+because a bare SIGTERM leaves Chrome resident with its profile still open
+(measured, and the reason `down` is not just `kill`).
+
+### Two things that were measured rather than assumed
+
+- **`FASTMCP_HOST` / `FASTMCP_PORT` are ignored.** FastMCP documents them, but in
+  mcp SDK ≥ 1.28 `FastMCP.__init__` passes its own keyword defaults straight to
+  `Settings`, bypassing the environment. Exporting `FASTMCP_PORT=8931` produced a
+  server bound to **8000**, announcing 8000, with no error. The fork's `run.py`
+  now takes `--transport / --host / --port` and sets `mcp.settings` directly.
+- **A tool call needs no `initialize`.** In stateless mode the server answers a
+  bare `tools/call` POST, which is what makes a shell wrapper practical. In
+  stateful mode (`run.py --stateful`) it does not, and the reply is framed as SSE.
+
+### Knobs
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `BROWSER_MCP_ENABLED` | `1` | Offer the browser at all (loads one of the two skills) |
+| `MCP_ADAPTER_ENABLED` | `1` | Native tools via pi-mcp-adapter; `0` falls back to the CLI |
+| `MCP_ADAPTER_VERSION` | `2.26.0` | Pinned adapter version, checked at launch |
+| `BROWSER_MCP_AUTOUP` | `1` | Start the server at launch in adapter mode (no Chrome yet) |
+| `ZENDRIVER_MCP_DIR` | `/opt/zendriver-mcp` | The Zendriver-MCP checkout to run |
+| `BROWSER_MCP_HOST` / `_PORT` | `127.0.0.1` / `8931` | Where the server listens; `mcp/adapter.json` interpolates both |
+| `BROWSER_MCP_DISPLAY` | `:99` | X display for Chrome; empty inherits `DISPLAY` |
+| `BROWSER_MCP_AUTOSTART` | `1` | Let a tool call start the server, and the server open Chrome |
+| `BROWSER_MCP_TIMEOUT` | `180` | Seconds one tool call may take |
+
+Adapter tuning that is not a port — the direct-tool list, the output guard, the
+lifecycle — lives in `mcp/adapter.json`, commented in place.
 
 ## Reasoning effort — the 3.8 knob that will bite you
 
@@ -1013,6 +1204,9 @@ scripts/
   download_model.py     resumable GGUF fetch
   pi-local.sh           launch pi against the stack (the only client)
   mcp.sh                call an MCP server as a CLI (wraps mcp2cli)
+  browser.sh            drive Chrome as a CLI (resolves .env, runs browser_cli.py)
+  browser_cli.py        the client: server lifecycle, tool discovery, tool calls
+  test_browser_cli.py   standalone unit tests for the browser CLI's arg parsing
 modes/
   coding.env            mainline unsloth quant, Qwen's published preset
   prose.env             decensored model, card sampling, no thinking-language
@@ -1031,7 +1225,10 @@ vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plug
   server/               the Matrix sidecar, run as a child process
   tests/                227 tests, no node_modules
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
+mcp/adapter.json        pi-mcp-adapter config: how pi reaches the browser server
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
+skills/browser/         pi skill for CLI mode (scripts/browser.sh)
+skills/browser-tools/   pi skill for adapter mode (native browser_* tools)
 context/                why things are the way they are
   README.md              index of the above, and the conventions it follows
   design/decisions.md    all design decisions, flags, quant choice

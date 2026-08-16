@@ -34,7 +34,8 @@ jobs:
         run: |
           for f in scripts/smoke_test.py scripts/test_repeat_detector.py \
                    scripts/ab_think_lang.py scripts/test_cjk_detector.py \
-                   scripts/download_model.py; do
+                   scripts/download_model.py scripts/browser_cli.py \
+                   scripts/test_browser_cli.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
@@ -82,6 +83,13 @@ jobs:
 
       - name: CJK leak detector unit tests
         run: python scripts/test_cjk_detector.py
+
+      # The browser CLI turns shell words into JSON arguments for a tool it has
+      # never seen, from that tool's own schema. A regression there is silent:
+      # a dropped or mistyped parameter produces a call that succeeds and does
+      # the wrong thing. No server or browser is needed for these.
+      - name: Browser CLI unit tests
+        run: python scripts/test_browser_cli.py
 
       # /loop is a fork carried in this repo (vendor/pi-loop-mode/FORK.md), so its
       # regressions are ours. The suite drives the extension's real handlers
@@ -141,7 +149,11 @@ jobs:
                      CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
                      LLAMA_PORT FORGE_PORT THINK_LANG REASONING_EFFORT
                      PI_MAX_TOKENS PI_CONTEXT_FILES
-                     MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION )
+                     MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION
+                     BROWSER_MCP_ENABLED ZENDRIVER_MCP_DIR BROWSER_MCP_HOST
+                     BROWSER_MCP_PORT BROWSER_MCP_DISPLAY BROWSER_MCP_AUTOSTART
+                     BROWSER_MCP_TIMEOUT
+                     MCP_ADAPTER_ENABLED MCP_ADAPTER_VERSION BROWSER_MCP_AUTOUP )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then
@@ -233,6 +245,60 @@ jobs:
                   # catching automatically; env:/file: indirection is the fix.
                   if ":env:" not in v and ":file:" not in v:
                       print(f"  {name}: auth_header must use env: or file:, not a literal"); bad = 1
+          sys.exit(bad)
+          EOF
+
+      # The browser must not come back as an mcp2cli server: measured at 11-60 s
+      # per call against 25-417 ms through the adapter, with a per-URL tool-list
+      # cache that serves a stale surface after the server changes. mcp/servers.json
+      # explains this in _no_browser_entry; this keeps it true.
+      - name: The browser is not registered as an mcp2cli server
+        run: |
+          python - <<'EOF'
+          import json, sys
+          reg = json.load(open("mcp/servers.json", encoding="utf-8"))
+          servers = reg.get("servers") or {}
+          port = None
+          for line in open(".env", encoding="utf-8"):
+              if line.startswith("BROWSER_MCP_PORT="):
+                  port = line.split("=", 1)[1].strip()
+          for name, entry in servers.items():
+              target = entry.get("url") or entry.get("stdio") or ""
+              if name == "browser" or (port and port in target):
+                  print(f"'{name}' points the mcp2cli path at the browser: {target}")
+                  sys.exit(1)
+          print("  no browser entry in the mcp2cli registry: OK")
+          EOF
+
+      # mcp/adapter.json is what pi-mcp-adapter reads (--mcp-config). Two ways it
+      # can rot silently: a hardcoded URL that drifts from the port browser.sh
+      # binds, and an empty directTools list — which still "works", it just
+      # quietly demotes the whole browse loop to proxy calls.
+      - name: Browser adapter config is well formed
+        run: |
+          python - <<'EOF'
+          import json, re, sys
+          cfg = json.load(open("mcp/adapter.json", encoding="utf-8"))
+          env = open(".env", encoding="utf-8").read()
+          bad = 0
+          server = (cfg.get("mcpServers") or {}).get("browser")
+          if not server:
+              print("no 'browser' server in mcp/adapter.json"); sys.exit(1)
+          url = server.get("url", "")
+          for var in ("BROWSER_MCP_HOST", "BROWSER_MCP_PORT"):
+              if "${%s}" % var not in url:
+                  print(f"url must interpolate ${{{var}}}, got {url!r}"); bad = 1
+              if not re.search(rf"^{var}=", env, re.M):
+                  print(f"{var} is not in .env"); bad = 1
+          direct = server.get("directTools")
+          if not isinstance(direct, list) or not direct:
+              print("directTools must be a non-empty list"); bad = 1
+          elif "start_browser" in direct:
+              print("start_browser is 2.3KB of schema; the server auto-starts instead"); bad = 1
+          guard = (cfg.get("settings") or {}).get("outputGuard") or {}
+          if guard.get("maxBytes", 51200) > 16384:
+              print("outputGuard.maxBytes is sized for a 200K window, not 32K"); bad = 1
+          print(f"  adapter config: OK ({len(direct)} direct tools, url {url})")
           sys.exit(bad)
           EOF
 

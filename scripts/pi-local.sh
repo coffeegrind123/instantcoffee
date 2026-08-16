@@ -251,6 +251,93 @@ if [[ "$(env_get MCP2CLI_ENABLED)" == "1" ]]; then
   fi
 fi
 
+# A browser. Two ways in, and the difference is only which side of the wire pi
+# sits on — scripts/browser.sh owns the server process either way, so the browser
+# outlives the session and is shared with anything else on this box.
+#
+#   adapter mode (default)  pi-mcp-adapter connects to that server over HTTP and
+#                           registers the browse loop as native pi tools. Calls
+#                           cost 25-417 ms and the other 93 tools stay one
+#                           mcp({ search }) away.
+#   cli mode                the model shells out to ./scripts/browser.sh. No npm
+#                           package, ~120 tokens, 1.7-6.5 s per call.
+#
+# Neither starts Chrome here. In adapter mode the SERVER is started (see
+# BROWSER_MCP_AUTOUP) because the model's first call otherwise hits a closed
+# port; Chrome itself still waits for a tool that needs it.
+BROWSER_NOTE=""
+if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
+  # Said now rather than mid-session: without the checkout the first browser call
+  # fails, and the model reads that as "the web is not available to me".
+  ZDIR="$(env_get ZENDRIVER_MCP_DIR)"
+  if [[ -z "$ZDIR" ]]; then
+    for cand in /opt/zendriver-mcp "$HOME/Zendriver-MCP"; do
+      [[ -f "$cand/run.py" ]] && { ZDIR="$cand"; break; }
+    done
+  fi
+  BROWSER_OK=1
+  if [[ ! -f "${ZDIR:-/nonexistent}/run.py" ]]; then
+    warn "No Zendriver MCP checkout at '${ZDIR:-<unset>}' — the browser cannot start."
+    warn "Clone https://github.com/coffeegrind123/Zendriver-MCP-fork and set ZENDRIVER_MCP_DIR,"
+    warn "or set BROWSER_MCP_ENABLED=0 to stop offering it."
+    BROWSER_OK=0
+  fi
+
+  # mcp/adapter.json reaches the server through these two, so the config cannot
+  # name a port that browser.sh does not bind. The adapter fails loudly on a
+  # missing variable rather than resolving a wrong URL.
+  BROWSER_HOST="$(env_get BROWSER_MCP_HOST)"; : "${BROWSER_HOST:=127.0.0.1}"
+  BROWSER_PORT="$(env_get BROWSER_MCP_PORT)"; : "${BROWSER_PORT:=8931}"
+  export BROWSER_MCP_HOST="$BROWSER_HOST" BROWSER_MCP_PORT="$BROWSER_PORT"
+
+  USE_ADAPTER=0
+  if [[ "$(env_get MCP_ADAPTER_ENABLED)" == "1" ]]; then
+    # --mcp-config is a flag the ADAPTER registers, so passing it without the
+    # package installed makes pi reject the whole command line. Check first.
+    ADAPTER_PKG="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm/node_modules/pi-mcp-adapter/package.json"
+    WANT_VER="$(env_get MCP_ADAPTER_VERSION)"
+    if [[ -r "$ADAPTER_PKG" ]]; then
+      USE_ADAPTER=1
+      HAVE_VER="$(json_eval "import json;print(json.load(open('$ADAPTER_PKG')).get('version',''))" 2>/dev/null || true)"
+      if [[ -n "$WANT_VER" && -n "$HAVE_VER" && "$HAVE_VER" != "$WANT_VER" ]]; then
+        warn "pi-mcp-adapter ${HAVE_VER} is installed but .env pins ${WANT_VER}."
+        warn "The tool surface the browser skill describes was written against ${WANT_VER}."
+        warn "Align them: pi install npm:pi-mcp-adapter@${WANT_VER}   (or update MCP_ADAPTER_VERSION)"
+      fi
+    else
+      warn "MCP_ADAPTER_ENABLED=1 but pi-mcp-adapter is not installed — falling back to the CLI."
+      warn "Install it once with: pi install npm:pi-mcp-adapter@${WANT_VER:-latest}"
+    fi
+  fi
+
+  if (( USE_ADAPTER )); then
+    ADAPTER_CFG="$REPO_ROOT/mcp/adapter.json"
+    BROWSER_SKILL="$REPO_ROOT/skills/browser-tools"
+    [[ -r "$ADAPTER_CFG" ]] || die "MCP_ADAPTER_ENABLED=1 but $ADAPTER_CFG is missing"
+    [[ -r "$BROWSER_SKILL/SKILL.md" ]] || die "$BROWSER_SKILL/SKILL.md is missing"
+    pi_flags+=(--mcp-config "$ADAPTER_CFG" --skill "$BROWSER_SKILL")
+    BROWSER_NOTE=", browser (native tools)"
+
+    # Idempotent: a no-op when the server is already up, which is the common case
+    # on a second session. Failure is not fatal — the model still has the tools
+    # and the skill says how to bring the server back.
+    if (( BROWSER_OK )) && [[ "$(env_get BROWSER_MCP_AUTOUP)" != "0" ]]; then
+      if ! "$REPO_ROOT/scripts/browser.sh" up >/dev/null 2>&1; then
+        warn "The browser server did not start — see ./scripts/browser.sh logs"
+        BROWSER_NOTE=", browser (server down)"
+      fi
+    fi
+  else
+    BROWSER_SKILL="$REPO_ROOT/skills/browser"
+    [[ -r "$BROWSER_SKILL/SKILL.md" ]] \
+      || die "BROWSER_MCP_ENABLED=1 but $BROWSER_SKILL/SKILL.md is missing"
+    pi_flags+=(--skill "$BROWSER_SKILL")
+    BROWSER_NOTE=", browser (cli)"
+    "$REPO_ROOT/scripts/browser.sh" status >/dev/null 2>&1 && BROWSER_NOTE=", browser (cli, up)"
+  fi
+  (( BROWSER_OK )) || BROWSER_NOTE=", browser (no checkout)"
+fi
+
 # Replayed from .env because bash does not expand aliases inside scripts.
 EXTRA_ARGS="$(env_get PI_EXTRA_ARGS)"
 if [[ -n "$EXTRA_ARGS" ]]; then
@@ -328,5 +415,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

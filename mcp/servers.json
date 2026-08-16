@@ -26,5 +26,16 @@
       "stdio": "npx -y @modelcontextprotocol/server-everything",
       "description": "MCP reference server (13 demo tools). Verifies the plumbing without touching anything real."
     }
-  }
+  },
+
+  "_no_browser_entry": [
+    "The browser is deliberately NOT registered here, though it is an MCP server",
+    "on http://127.0.0.1:8931/mcp and mcp2cli can talk to it. Measured 2026-08-16:",
+    "one mcp2cli call to it cost 11-60 s against 25-417 ms through pi-mcp-adapter,",
+    "and mcp2cli caches the tool list per URL — after the server's surface changed",
+    "it kept offering the old one, so get-page-info came back as 'invalid choice'",
+    "rather than as anything naming the real problem.",
+    "",
+    "Use the browser_* tools (adapter mode) or ./scripts/browser.sh (CLI mode)."
+  ]
 }
