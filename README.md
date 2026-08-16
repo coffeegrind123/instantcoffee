@@ -121,11 +121,15 @@ cd ~/my-project && qpi
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
+| `./scripts/rtk.sh --install` | One-time: install the pinned rtk that filters bash output |
+| `./scripts/rtk.sh --status` | What is being filtered, and whether the pin matches |
+| `./scripts/rtk.sh --check` | Do rtk's filters still behave the way the allow-list assumes |
 | `./scripts/browser.sh status` | Is the browser up, and what page is open |
 | `./scripts/browser.sh down` | Stop Chrome and its server |
 | `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 | `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (23 tests, no install) |
 | `cd vendor/prinny-channel && npm test` | Test the Matrix channel (227 tests, no install) |
+| `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (16 tests, no install) |
 
 ## Updating
 
@@ -145,6 +149,14 @@ One command updates every pinned component:
    back up on them.** An update that breaks inference does not get to stay.
 6. Rewrites `versions.lock` with the resolved image digest — commit it, that file is
    the record of what was actually verified working.
+
+`update.sh` does not bump rtk — `RTK_VERSION` in `.env` is moved by hand, because
+raising it means re-measuring the allow-list. What it *does* do, in the same pass
+that smoke-tests the stack, is run `./scripts/rtk.sh --check` and record the
+answer in `versions.lock` as `rtk_filters`. A failure there warns rather than
+rolls back: rtk breaking means bash output stops being compressed, not that
+inference regressed, and tearing down a verified llama/forge update over it would
+be the wrong trade.
 
 ## Configuration
 
@@ -184,6 +196,8 @@ The keys worth knowing:
 | `MCP2CLI_ENABLED` | `1` | Loads the `mcp-tools` skill so pi can call MCP servers as a CLI. `0` disables |
 | `MCP2CLI_VERSION` | `3.3.1` | mcp2cli release |
 | `MCP_SDK_VERSION` | `1.29.0` | MCP Python SDK pin — must stay `<2`, see below |
+| `RTK_ENABLED` | `1` | Filters the output of 23 bash commands before pi reads it. Inert without the binary, so it is safe on a fresh clone. `RTK_DISABLED=1` turns it off for one launch |
+| `RTK_VERSION` | `0.45.0` | rtk pin. Moved by hand, not by `update.sh` — raising it means re-measuring the allow-list with `./scripts/rtk.sh --check` |
 
 ## Creative writing, and what is *not* in the way
 
@@ -783,6 +797,92 @@ Two things that were measured rather than assumed, on 2026-08-12:
   agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
   `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
 
+## Shorter bash output
+
+Same arithmetic as the MCP section, pointed at the other big consumer of a 32K
+window. [rtk](https://github.com/rtk-ai/rtk) is a Rust binary that filters a
+command's output before the client reads it — `git status` compacted, test
+runners reduced to their failures. `scripts/rtk.sh` installs a pinned build;
+`vendor/rtk-pi` is the pi extension that decides what gets filtered.
+
+**On by default, and inert without the binary** — the extension warns once and
+filters nothing, so `RTK_ENABLED=1` is safe on a fresh clone. One command to make
+it live:
+
+```bash
+./scripts/rtk.sh --install     # pinned build, sha256-verified, ~10 MB
+./scripts/rtk.sh --status      # what is filtered, and whether the pin matches
+```
+
+Measured here on 2026-08-16, against rtk 0.45.0:
+
+| command | raw | filtered | saved |
+| --- | --- | --- | --- |
+| `git status` | 275 B | 49 B | 82% |
+| `pytest -q` (43 tests, 3 failing) | 1312 B | 476 B | 64% |
+| `find vendor -name '*.ts'` | 1718 B | 773 B | 55% |
+| `git diff HEAD~1` | 2384 B | 2213 B | 7% |
+| `cat README.md` | 67652 B | 67652 B | 0% |
+| `ls -1` | 123 B | 242 B | **-97%** |
+
+### Why it filters an allow-list rather than everything
+
+Upstream's pi extension hands **every** bash command to rtk and applies whatever
+comes back. This one filters 23 commands and passes the rest through untouched,
+because of what running the binary turned up rather than reading its docs:
+
+- **Some rewrites substitute a different command.** `npm run lint` becomes
+  `rtk lint` — the indirection is discarded, so whatever the package's lint
+  script actually is gets replaced by a bare eslint. `uv run pytest` becomes
+  `uv run rtk pytest`, resolving a pytest outside the venv. Both are silent, and
+  a 27B model at `REASONING_EFFORT=medium` has no way to smell either.
+- **Two commands in rtk's coverage table have no filter behind them** on 0.45.0:
+  `npm test` and `cargo nextest` (bare or `run`) both come back "no rewrite".
+  Bare `ruff` likewise — only `ruff check`/`ruff format` match.
+
+What was *not* found is worth saying too, because the issue tracker suggested
+otherwise. Diffed against the real command, rtk's filters are mostly faithful:
+`find` returned the same 38-file set, `grep -rl` the same paths, `rtk read` the
+same bytes at every size tried up to 180 KB. The allow-list is narrow because
+most filters **save nothing on a repo shaped like this one**, not because most of
+them lie.
+
+`cat` is the one entry denied on principle rather than arithmetic. It costs 0%
+to deny today, and rtk's README advertises "signatures and structure over full
+bodies" — so the current losslessness is undocumented and could turn off in a
+point release. The failure that would cause is this stack's known one: an edit
+whose `old_string` no longer matches the file.
+
+### Keeping it honest
+
+Two halves, both in CI, because neither implies the other:
+
+```bash
+cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts
+./scripts/rtk.sh --check
+```
+
+The unit tests cover which commands are handed to rtk and what is accepted back.
+`--check` re-runs every measurement in the allow-list against the installed
+binary and fails if one stops holding — it is what caught `npm test` and
+`cargo nextest` being in rtk's coverage table with no filter behind them, and
+what will catch `rtk read` the day it starts summarising. `RTK_VERSION` is pinned
+for the same reason: rtk shipped 45 minor versions in seven months, and the
+filters are what the allow-list is trusting.
+
+One check earns its place over all the others: a `pytest` collection error must
+still exit non-zero and still name what failed. Upstream #2317 reports filters
+masking hard failures behind benign summaries; it does not reproduce on 0.45.0,
+and pytest is only on the allow-list because of that. A masked failure here means
+the model reports a green run and moves on, which is worse than no filtering at
+all.
+
+Verified end to end on 2026-08-16: a pi session against the local model ran
+`git status` through the bash tool and it arrived as `rtk git status` — 42 tokens
+saved on a single call, 64.8% across the session.
+
+`RTK_DISABLED=1 qpi` turns filtering off for one session without editing `.env`.
+
 ## A browser
 
 The model can drive a real Chrome — open pages, read them, click, type, fill
@@ -1181,6 +1281,21 @@ The mcp2cli install lost its SDK pin. MCP Python SDK 2.0.0 renamed that field
 and mcp2cli 3.3.1 still reads the old name. `./scripts/mcp.sh --install`
 reinstalls with `mcp==${MCP_SDK_VERSION}` and fixes it.
 
+**A command's output in the session looks nothing like what I get in my own shell.**
+That is rtk, and it is doing its job — `git status` comes back as a compact stat
+block, a test run comes back as its failures. `./scripts/rtk.sh --status` lists
+exactly which commands this applies to; everything else is untouched. If you need the
+raw bytes for one session, launch with `RTK_DISABLED=1`; to turn it off for good,
+set `RTK_ENABLED=0` in `.env`.
+
+The case that is *not* normal is output that looks wrong rather than short —
+a count that disagrees with reality, a test run that reports success when it
+failed. Run `./scripts/rtk.sh --check` first: it re-runs every measurement the
+allow-list rests on, including that a failing pytest still exits non-zero and
+still names what broke. If that passes and the output is still wrong, the command
+does not belong on the allow-list — take it out of `vendor/rtk-pi/src/gate.ts`
+and record why, the way the entries already there do.
+
 **The bind-mount trap (Docker Desktop on Windows/WSL).**
 Docker Desktop resolves bind sources on the **Windows** side. A WSL-style path such as
 `/home/you/models` mounts an **empty directory** rather than failing, so the container
@@ -1225,6 +1340,8 @@ scripts/
   browser.sh            drive Chrome as a CLI (resolves .env, runs browser_cli.py)
   browser_cli.py        the client: server lifecycle, tool discovery, tool calls
   test_browser_cli.py   standalone unit tests for the browser CLI's arg parsing
+  rtk.sh                install/pin rtk, and --check its filters against the
+                        allow-list they are trusted to match
 modes/
   coding.env            mainline unsloth quant, Qwen's published preset
   prose.env             decensored model, card sampling, no thinking-language
@@ -1242,6 +1359,11 @@ vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plug
   src/                  pure modules — client, gate, block renderer, access
   server/               the Matrix sidecar, run as a child process
   tests/                227 tests, no node_modules
+vendor/rtk-pi/          bash output filtering — fork of rtk's own pi extension
+  FORK.md               the measurements, and why it filters an allow-list
+  src/gate.ts           what is filtered and what is accepted back (no pi import)
+  extensions/index.ts   the pi coupling, and nothing else
+  tests/                node --test suite for the gate
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 mcp/adapter.json        pi-mcp-adapter config: how pi reaches the browser server
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
@@ -1256,7 +1378,7 @@ context/                why things are the way they are
 
 There is no scored eval suite in this repo any more (removed 2026-08-15, with
 the 3.8 migration — the 9-suite harness, its committed scorecard, its badges and
-the Harbor adapter all went together). Three things verify the stack now, and
+the Harbor adapter all went together). Four things verify the stack now, and
 each answers a different question:
 
 ```bash
@@ -1266,13 +1388,20 @@ each answers a different question:
 ./scripts/bench.sh --full        # how fast, and is MTP paying for itself
 ./scripts/ab-think-lang.sh       # is THINK_LANG earning its place
 
+./scripts/rtk.sh --check         # do rtk's filters still match the allow-list
+
 # No GPU needed — the same checks CI runs:
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 (cd vendor/pi-loop-mode && npm test)      # 23 tests for the /loop fork
 (cd vendor/prinny-channel && npm test)    # 227 tests for the Matrix channel
+(cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)
 docker compose --profile tools config     # validate compose
 ```
+
+`rtk.sh --check` is the odd one out: it tests a binary this repo does not own,
+because `vendor/rtk-pi`'s allow-list is a set of claims about that binary's
+behaviour. It needs no GPU and no stack — only the pinned rtk.
 
 ### bench.sh measures the engine, not the proxy
 

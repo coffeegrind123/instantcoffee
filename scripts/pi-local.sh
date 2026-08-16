@@ -228,6 +228,57 @@ if [[ "$(env_get PRINNY_ENABLED)" == "1" ]]; then
   fi
 fi
 
+# rtk — compresses the output of an allow-list of bash commands before pi sees
+# it. Loaded by absolute path like everything else above, from vendor/rtk-pi
+# rather than by `rtk init --agent pi`: that writes into whichever project pi was
+# started in, which is your project, not this checkout.
+#
+# On by default, and safe to leave on with no binary installed — the extension
+# warns once at load and filters nothing, so the session is never worse than it
+# would have been. That is why this checks for the extension but does not check
+# for rtk itself: a missing binary is a note, not a launch-time decision.
+#
+# It filters an allow-list, not everything, because some of rtk's filters return
+# output that is wrong rather than short. vendor/rtk-pi/FORK.md has the
+# measurements; ./scripts/rtk.sh --check re-runs them.
+RTK_DIR="$REPO_ROOT/vendor/rtk-pi"
+RTK_NOTE=""
+if [[ "$(env_get RTK_ENABLED)" == "1" ]]; then
+  if [[ -r "$RTK_DIR/extensions/index.ts" ]]; then
+    pi_flags+=(-e "$RTK_DIR/extensions/index.ts")
+
+    # Exported here rather than in scripts/rtk.sh, because rtk.sh is not in the
+    # path that matters: the extension shells out to `rtk rewrite` itself, and
+    # the rewritten command (`rtk git status`) is then run by pi's bash tool.
+    # Both inherit THIS environment and neither goes through rtk.sh, so setting
+    # it there alone would leave a stack meant to run with the network unplugged
+    # relying on rtk's own default. It is off by default upstream; this makes it
+    # off because the checkout says so.
+    export RTK_TELEMETRY_DISABLED=1
+    if command -v rtk >/dev/null 2>&1 || [[ -x "$HOME/.local/bin/rtk" ]]; then
+      RTK_NOTE=", rtk"
+      # A filter set that does not match the pin is the one failure here that is
+      # invisible from inside a session: commands keep working and quietly report
+      # something else. Say it at launch, where it can be acted on.
+      WANT_RTK="$(env_get RTK_VERSION)"
+      HAVE_RTK="$( { command -v rtk >/dev/null 2>&1 && rtk --version || "$HOME/.local/bin/rtk" --version; } 2>/dev/null \
+                   | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+      if [[ -n "$WANT_RTK" && -n "$HAVE_RTK" && "$WANT_RTK" != "$HAVE_RTK" ]]; then
+        warn "rtk ${HAVE_RTK} is installed but .env pins ${WANT_RTK}."
+        warn "The allow-list in vendor/rtk-pi was measured against ${WANT_RTK}."
+        warn "Align them: ./scripts/rtk.sh --install   (then ./scripts/rtk.sh --check)"
+        RTK_NOTE=", rtk (${HAVE_RTK}, pin says ${WANT_RTK})"
+      fi
+    else
+      dim "rtk is not installed — bash output will not be filtered this session."
+      dim "Install it once with: ./scripts/rtk.sh --install"
+      RTK_NOTE=", rtk (not installed)"
+    fi
+  else
+    warn "$RTK_DIR is missing — bash output will not be filtered."
+  fi
+fi
+
 # MCP servers, reached as a CLI rather than as MCP. --skill is additive and takes
 # an absolute path, so the skill travels with the repo instead of being installed
 # into ~/.pi — nothing outside this checkout is touched, and it still applies when
@@ -418,5 +469,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

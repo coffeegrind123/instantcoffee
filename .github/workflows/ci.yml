@@ -54,7 +54,7 @@ jobs:
       # needing no toolchain and no node_modules.
       - name: Extension syntax checks
         run: |
-          for f in .pi/extensions/*.ts; do
+          for f in .pi/extensions/*.ts vendor/rtk-pi/extensions/*.ts; do
             node --experimental-strip-types --no-warnings \
                  -e "import('./$f').catch(e => {
                        if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0);
@@ -62,6 +62,27 @@ jobs:
                      })"
             echo "  $f: OK"
           done
+
+      # The rtk fork's gate decides which bash commands get their output
+      # rewritten before pi sees it. Its failure mode is silent in both
+      # directions: too permissive and a command is quietly replaced by a
+      # different one (`npm run lint` -> a bare eslint), too strict and the
+      # savings evaporate with nothing to show for it. Neither shows up in a
+      # session. src/gate.ts imports nothing from pi precisely so this can run
+      # with no node_modules.
+      - name: rtk gate unit tests
+        working-directory: vendor/rtk-pi
+        run: node --experimental-strip-types --no-warnings --test tests/*.test.ts
+
+      # The other half of the same contract: that the rtk BINARY still behaves
+      # the way the allow-list assumes. Filters are upstream's to change and a
+      # filter that stops rewriting, or starts summarising a file read, does it
+      # without a version bump anyone here would notice. Pinned version, so this
+      # is deterministic; it is what catches the pin being raised carelessly.
+      - name: rtk filters still match the allow-list
+        run: |
+          ./scripts/rtk.sh --install
+          ./scripts/rtk.sh --check
 
       # The stack targets pi only, and no longer carries a scored eval harness.
       # A reintroduced Claude Code launcher, env key or wire-format check would
@@ -153,7 +174,8 @@ jobs:
                      BROWSER_MCP_ENABLED ZENDRIVER_MCP_DIR BROWSER_MCP_HOST
                      BROWSER_MCP_PORT BROWSER_MCP_DISPLAY BROWSER_MCP_AUTOSTART
                      BROWSER_MCP_TIMEOUT
-                     MCP_ADAPTER_ENABLED MCP_ADAPTER_VERSION BROWSER_MCP_AUTOUP )
+                     MCP_ADAPTER_ENABLED MCP_ADAPTER_VERSION BROWSER_MCP_AUTOUP
+                     RTK_ENABLED RTK_VERSION )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then

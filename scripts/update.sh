@@ -129,13 +129,35 @@ info "Restarting the stack"
 compose up -d --remove-orphans || rollback
 
 # --- verify ------------------------------------------------------------------
+RTK_STATE="off"
 if (( VERIFY )); then
   info "Verifying (model reload takes a few minutes on a cold start)"
   if ! compose --profile tools run --rm smoketest; then
     rollback
   fi
+
+  # rtk is client-side, so a smoke test against the stack cannot see it. Its
+  # filters are what vendor/rtk-pi's allow-list is trusting, and they change
+  # without anything here noticing — so verify them in the same pass that
+  # verifies everything else, and record the answer below.
+  #
+  # NOT a rollback trigger. rtk failing means bash output stops being compressed;
+  # it does not mean the model or the proxy regressed, and tearing down a
+  # verified llama/forge update over it would be the wrong trade.
+  if [[ "$(env_get RTK_ENABLED)" == "1" ]]; then
+    if "$REPO_ROOT/scripts/rtk.sh" --check >/dev/null 2>&1; then
+      RTK_STATE="allow-list verified"
+      ok "rtk $(env_get RTK_VERSION) filters match vendor/rtk-pi"
+    else
+      RTK_STATE="MISMATCH — re-measure"
+      warn "rtk's filters no longer match the allow-list in vendor/rtk-pi."
+      warn "Bash output is still correct; it is just no longer being compressed"
+      warn "the way that was measured. Details: ./scripts/rtk.sh --check"
+    fi
+  fi
 else
   warn "Skipped verification (--no-verify)"
+  [[ "$(env_get RTK_ENABLED)" == "1" ]] && RTK_STATE="not verified"
 fi
 
 # --- record ------------------------------------------------------------------
@@ -152,6 +174,8 @@ model_file          = $(env_get GGUF_FILE)
 model_file_sha256   = ${GGUF_SHA:-unknown}
 model_repo_modified = ${GGUF_MODIFIED:-unknown}
 context_size        = $(env_get CTX_SIZE)
+rtk_version         = $( [[ "$(env_get RTK_ENABLED)" == "1" ]] && env_get RTK_VERSION || echo "disabled" )
+rtk_filters         = ${RTK_STATE}
 verified            = $( ((VERIFY)) && echo "smoke test passed" || echo "not verified" )
 EOF
 

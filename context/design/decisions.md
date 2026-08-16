@@ -1573,6 +1573,13 @@ Genuinely unresolved, each with the thing that would settle it:
   the same run in `coding` mode is the comparison.
 - **`/stack slots save|restore` is shipped but unexercised**, deliberately —
   running a save is what wedged llama's task queue once already.
+- **rtk's allow-list was measured on this repo, which is shell, Python and
+  TypeScript.** The entries that carry it here are `git status`, `find` and
+  `pytest`; the Rust and JS entries (`cargo *`, `jest`, `vitest`, `tsc`) were
+  verified to rewrite but their savings have never been measured on a real
+  project of that shape. `diff <(cmd) <(./scripts/rtk.sh cmd)` in such a repo
+  settles it, and would likely justify widening the list — `ls -la` at 69% is
+  already a saving being left on the table because `ls -1` regresses.
 
 ## 2026-08-13 — an unattended loop, and which package to trust with it
 
@@ -2135,3 +2142,131 @@ rather than assumed: `tools/server/server-task.cpp` emits `cache_n` and
 whenever `draft_n > 0`, and `to_json_oaicompat_chat()` attaches the whole
 `timings` block to non-streaming `/v1/chat/completions` responses. So the
 nonce-and-timings benchmark works on b10200 as written.
+
+## 2026-08-16 — rtk, and three findings that did not survive contact with the binary
+
+[rtk](https://github.com/rtk-ai/rtk) filters a command's output before the client
+reads it. Adopted at `0.45.0`, pinned, behind `RTK_ENABLED` (on), with the pi
+extension vendored at `vendor/rtk-pi` and the binary managed by
+`scripts/rtk.sh`.
+
+The arithmetic is the same one that produced MCP-as-a-CLI: on a 32K window, bash
+output is not billed, it is **rented**. Every byte of pytest chatter is a byte
+that is not the file the model was asked to read. rtk's own README hedges that
+its savings dilute into input tokens and then into a bill — a caveat that does
+not apply here, where the bill is electricity and the window is the constraint.
+
+### The measurements, which is the only part that decided anything
+
+Measured in this repo, 2026-08-16, rtk 0.45.0, real command vs `rtk <command>`:
+
+| command | raw | filtered | saved | allow-listed |
+| --- | --- | --- | --- | --- |
+| `git status` | 275 B | 49 B | 82% | yes |
+| `pytest -q` (43 tests, 3 failing) | 1312 B | 476 B | 64% | yes |
+| `find vendor -name '*.ts'` | 1718 B | 773 B | 55% | yes |
+| `ls -la` | 1125 B | 348 B | 69% | no |
+| `git diff HEAD~1` | 2384 B | 2213 B | 7% | yes |
+| `git log --oneline -20` | 1570 B | 1570 B | 0% | yes |
+| `grep -rn env_get scripts` | 3286 B | 3286 B | 0% | no |
+| `cat README.md` | 67652 B | 67652 B | 0% | no |
+| `ls -1` | 123 B | 242 B | **-97%** | no |
+
+The headline "up to 90%" is real and narrow. `git status`, `find` and the test
+runners carry it; several advertised filters do nothing on a repo shaped like
+this one, and one makes the output bigger.
+
+### Three findings from the research pass that measurement overturned
+
+Recorded because all three were written down confidently first, and each would
+have produced a worse design if it had gone unchecked. This is the
+"instrument before you build" rule paying for itself in a single afternoon.
+
+- **"`rtk ls -1` miscounts — 19 entries in a directory holding 13."** WRONG. It
+  agrees with `ls -1A` minus `.git`, and appends sizes. The 19-vs-13 was dotfiles.
+  Upstream #3527 does not reproduce on 0.45.0. This had been the headline
+  justification for the whole allow-list design.
+- **"`cat` is rewritten to a lossy `rtk read` and will break the edit tool."**
+  WRONG on the lossy half. `cat f` does become `rtk read f`, but the output was
+  byte-identical at every size tried, up to 180 KB / 15,000 lines. `cat` is still
+  denied — it saves 0%, so denying costs nothing, and rtk's README advertises
+  "signatures and structure over full bodies", which makes today's losslessness
+  undocumented rather than guaranteed.
+- **"rtk writes its advisory banner to stdout, so upstream's extension splices
+  `[rtk] /!\ No hook installed` into the command."** WRONG, and this one was
+  self-inflicted: the first probe used `2>&1`. Re-run with the streams separated
+  and the rate-limit stamp (`~/.local/share/rtk/.hook_warn_last`) deleted first,
+  the advisory is on **stderr** every time. There is no upstream bug and none was
+  filed. `extractRewrite()` still validates what comes back, now documented as
+  defence in depth rather than as a fix.
+
+What *did* survive: rtk's filters are mostly faithful. `find` returned the same
+38-file set, `grep -rl` the same paths. The allow-list is narrow because most
+filters **save nothing here**, not because most of them lie.
+
+### The two real defects, and why the default is inverted
+
+Upstream's pi extension hands every bash command to `rtk rewrite` and applies
+whatever comes back. `vendor/rtk-pi` filters 23 commands and passes the rest
+through, because some rewrites substitute a *different command*:
+
+- `npm run lint` -> `rtk lint`. The indirection is discarded, so whatever the
+  package's lint script actually is — flags, target, `--max-warnings 0` — is
+  replaced by a bare eslint. Upstream #3543.
+- `uv run pytest` -> `uv run rtk pytest`, resolving a pytest outside the venv.
+  Upstream #3565.
+
+Both are silent, and a 27B model at `REASONING_EFFORT=medium` cannot smell
+either. Anything carrying a pipe, redirect, compound operator or a `VAR=`/`sudo`/
+`uv`/`npx` prefix is refused outright rather than tracked case by case — a pipe
+means a parser downstream, where shorter is simply wrong.
+
+Also found: `npm test` and `cargo nextest` (bare or `run`) are in rtk's coverage
+table with **no filter behind them** on 0.45.0, and bare `ruff` likewise — only
+`ruff check`/`ruff format` match. All three were on the allow-list until
+`--check` said otherwise. `cargo nextest` is upstream #2046.
+
+### Fork rather than `rtk init --agent pi`, and vendor rather than install
+
+`rtk init --agent pi` writes `.pi/extensions/rtk.ts` into whichever project pi
+was started in — which is *your* project, not this checkout. Every other
+extension here is loaded by absolute path for exactly that reason. The same
+argument as `pi-loop-mode` and `prinny-channel`: the changes are edits to the
+package's own logic, so an install would be replaced by the next update.
+
+The gate lives in `src/gate.ts` with no pi import, so it is testable with bare
+node; `extensions/index.ts` is the pi coupling and holds no decisions.
+
+### The `--check` gate is the successor to the measurements above
+
+Every number in this entry decays the moment upstream ships a filter change, and
+rtk shipped 45 minor versions in seven months. `./scripts/rtk.sh --check`
+re-runs them against the installed binary: every allow-listed command still
+rewrites, `rtk read` is still byte-identical to `cat`, `rtk find` still returns
+the same file set, and — the one that matters most — **a pytest collection error
+still exits non-zero and still names what failed**. Upstream #2317 reports
+filters masking hard failures behind benign summaries; it does not reproduce on
+0.45.0, and pytest is only allow-listed because of that. A masked failure means
+the model reports a green run and moves on, which is worse than no filtering.
+
+`scripts/update.sh` runs `--check` in the same pass that smoke-tests the stack
+and records the answer in `versions.lock` as `rtk_filters`. It is deliberately
+**not** a rollback trigger: rtk failing means output stops being compressed, not
+that the model or the proxy regressed.
+
+### Verified, not assumed
+
+- End to end in a real pi 0.84.2 session against the loaded model: the agent ran
+  `git status` through the bash tool and it arrived as `rtk git status` — 42
+  tokens saved on the call, 64.8% across the session.
+- Missing binary, `RTK_ENABLED=0`, and a mismatched pin were each exercised
+  rather than reasoned about. Without the binary the extension warns once and
+  filters nothing, which is why the flag is safe to leave on in a fresh clone.
+- The launcher costs **120 ms** for the rtk block. `pi-local.sh` takes ~50 s to
+  reach launch either way; that is `pi list` and node startup, and predates this.
+- `RTK_TELEMETRY_DISABLED=1` is exported by `pi-local.sh`, not only by
+  `scripts/rtk.sh` — neither path that matters in a session goes through that
+  script. The extension shells out to `rtk rewrite` itself, and the rewritten
+  command runs in pi's bash tool; both inherit the launcher's environment.
+  rtk's telemetry is opt-in and off by default upstream, so this makes it off
+  because the checkout says so rather than because a default happens to agree.

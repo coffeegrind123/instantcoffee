@@ -5,7 +5,7 @@ separate from `README.md`, which is the operating manual.
 
 | File | What it holds |
 | --- | --- |
-| `design/decisions.md` | Every design decision, in date order: model and quant choice, llama.cpp and forge flags, environment traps that cost real time, the settings review against other public Qwen3.6 rigs, the 2026-08-12/13 entries — the move to pi-only, MCP-as-a-CLI, the KV-quantization and memory findings, why headroom was evaluated and removed, the `/stack` extension, the Fable-Fusion evaluation, and the audit corrections — and the 2026-08-15 entry, the migration to Qwen3.8-27B and the removal of the eval harness. It also carries the **Still open** list at the end, which is the successor to the old root-level `HANDOFF.md`. |
+| `design/decisions.md` | Every design decision, in date order: model and quant choice, llama.cpp and forge flags, environment traps that cost real time, the settings review against other public Qwen3.6 rigs, the 2026-08-12/13 entries — the move to pi-only, MCP-as-a-CLI, the KV-quantization and memory findings, why headroom was evaluated and removed, the `/stack` extension, the Fable-Fusion evaluation, and the audit corrections — the 2026-08-15 entry, the migration to Qwen3.8-27B and the removal of the eval harness, and the 2026-08-16 entry, adopting rtk for bash-output filtering and the three research-pass findings that measurement overturned. It also carries the **Still open** list at the end, which is the successor to the old root-level `HANDOFF.md`. |
 
 Two conventions this directory follows, both worth keeping:
 
