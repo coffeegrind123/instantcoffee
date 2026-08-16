@@ -287,7 +287,11 @@ jobs:
           url = server.get("url", "")
           for var in ("BROWSER_MCP_HOST", "BROWSER_MCP_PORT"):
               if "${%s}" % var not in url:
-                  print(f"url must interpolate ${{{var}}}, got {url!r}"); bad = 1
+                  # Built rather than written literally: a "${" followed by "{"
+                  # anywhere in this file is an Actions expression, and the run
+                  # fails before a step starts.
+                  want = "$" + "{" + var + "}"
+                  print(f"url must interpolate {want}, got {url!r}"); bad = 1
               if not re.search(rf"^{var}=", env, re.M):
                   print(f"{var} is not in .env"); bad = 1
           direct = server.get("directTools")
