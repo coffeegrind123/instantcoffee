@@ -820,6 +820,21 @@ accumulating `### Done` list is what goes. Replayed over those same 42 real
 summaries: 11 are trimmed, none exceed the cap, no `## Goal` or `## Next Steps`
 is lost, and that growth curve flattens to `6,458 → 6,538 → 6,550 → 6,516`.
 
+**And it caps a single tool result to a share of what context is left**, because
+the advisory below is not enough on its own. Watched failing on 2026-08-17: the
+CRITICAL notice was in context at 84.5% of the window, saying "do not run
+commands with large output this turn", and the model ran a three-URL curl loop
+that returned 17,790 characters — 100% of the window, an empty assistant turn,
+and a dead run. It could not have complied even in good faith, because nobody
+knows how many bytes a pipeline prints until it has printed them.
+
+The allowance is 10% of the REMAINING window (floor 1,500 chars, ceiling
+20,000), so a 20k result at 15% used is untouched and the same result at 85% is
+cut to ~2,000. Head and tail are kept — the head says what ran, the tail says
+whether it worked — and the full output goes to a file the marker names, so
+nothing is lost. On the failing run that lands the context at 86.8% instead of
+99%, below the empty-turn cliff, with room to write a conclusion.
+
 It also shows the model its own remaining budget above 60% of the window, which
 is the generic half of the `/loop` context work: above 87% of the window 52% of
 assistant turns came back empty (33 of 63) against 1.5% below it (3 of 196), and
@@ -1575,10 +1590,11 @@ patches/
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction
-  compaction-guard/     bounds pi's carried-over summary and shows the model
-                        its context budget — in every session, not just /loop
+  compaction-guard/     bounds pi's carried-over summary, caps oversized tool
+                        results, and shows the model its context budget — in
+                        every session, not just /loop
     src/                pure modules — the cap, the notice (no pi import)
-    tests/              node --test suite, 24 tests
+    tests/              node --test suite, 37 tests
 vendor/pi-loop-mode/    /loop — fork of pi-loop-mode@2.5.4, loaded from here
   FORK.md               what was changed and why (context-recovery race)
   tests/                node --test suite for the fork's recovery ladder
