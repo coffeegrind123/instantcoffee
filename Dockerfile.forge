@@ -46,10 +46,23 @@ RUN pip install --no-cache-dir \
 # this stack reported cacheRead: 0 while llama's own logs showed prefix reuse up
 # to f_sim_best 0.988. Measured as a matched pair against both ports, not
 # inferred. See patches/forge_cached_tokens.py.
-COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py /tmp/patches/
+#
+# The third patch stops forge destroying a reasoning-only turn. TextResponse
+# carries content and nothing else, so when the model produces reasoning and no
+# text — which Qwen does — the client builds TextResponse(content="") and
+# everything generated is gone before the response is assembled. Matched pair
+# against both ports: llama-server returned finish_reason "length" with 490
+# chars of reasoning_content; forge returned "stop" with no reasoning key at
+# all, and pi recorded a clean, successful, EMPTY turn. Reasoning is emitted as
+# reasoning_content, never merged into content, so a harness sees it as thinking
+# and a chat channel that relays assistant text does not relay it.
+# See patches/forge_reasoning_passthrough.py.
+COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
+     patches/forge_reasoning_passthrough.py /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
     && python /tmp/patches/forge_cached_tokens.py "$SITE" \
+    && python /tmp/patches/forge_reasoning_passthrough.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"
