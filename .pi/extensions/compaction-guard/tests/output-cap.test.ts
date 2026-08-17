@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  DEFAULT_CAP_ADVICE,
   CHARS_PER_TOKEN,
   MAX_ALLOWANCE_CHARS,
   MIN_ALLOWANCE_CHARS,
@@ -93,6 +94,23 @@ describe("planOutputCap", () => {
 
   it("ignores a non-string body rather than throwing mid-turn", () => {
     assert.equal(planOutputCap(undefined as unknown as string, 100, undefined), undefined);
+  });
+
+  it("tells a bash-shaped caller to narrow the command, by default", () => {
+    const plan = planOutputCap(big, 2_000, "/tmp/f.txt");
+    assert.ok(plan);
+    assert.ok(plan.text.includes(DEFAULT_CAP_ADVICE));
+  });
+
+  it("takes the caller's advice when the default would not fit what happened", () => {
+    // A subagent's report cannot be narrowed by re-running a command, so the
+    // caller supplies advice the model can actually act on. Watched live: the
+    // model reads this line and acts on it, so wrong advice is followed too.
+    const advice = "Read the file, or re-task the agent with a narrower question.";
+    const plan = planOutputCap(big, 2_000, "/tmp/f.txt", 20, advice);
+    assert.ok(plan);
+    assert.ok(plan.text.includes(advice));
+    assert.ok(!plan.text.includes(DEFAULT_CAP_ADVICE), "the default must not also appear");
   });
 
   it("end to end: the real failure is contained", () => {

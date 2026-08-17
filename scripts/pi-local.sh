@@ -280,6 +280,42 @@ else
   warn "$GUARD_DIR is missing — compaction will use pi's unbounded summary this session."
 fi
 
+# Subagents come from vendor/pi-subagents-lite — a fork of pi-subagents-lite@1.11.0
+# (see vendor/pi-subagents-lite/FORK.md). pi ships none deliberately; of the 341
+# packages the catalog matches on "subagent", this one was picked for the three
+# things this stack actually needs and the rest mostly cannot use.
+#
+# It runs subagents IN PROCESS (pi's own createAgentSession), not as child `pi -p`
+# processes the way the popular packages do. On one llama slot a child process
+# buys no parallelism — it queues at the server — while costing a second system
+# prompt that evicts the parent's cached prefix. In-process keeps one prefix
+# resident, and the win that survives here is context isolation: the child burns
+# its own window on the search and the parent gets back a bounded summary.
+#
+# Loaded AFTER the compaction guard, and only when the guard is present: the
+# fork's src/spawn/result-cap.ts imports the guard's measured cap constants by
+# relative path to bound a finished BACKGROUND subagent's result, which reaches
+# the context as an injected message and so never passes the guard's own
+# `tool_result` hook. Without the guard that import cannot resolve and the
+# extension would fail to load, so this skips it with a reason instead.
+#
+# Off by default. A subagent tool costs its schema on EVERY turn whether or not
+# it is ever called, and on a 32k window that is a standing charge to opt into
+# rather than inherit.
+SUBAGENTS_DIR="$REPO_ROOT/vendor/pi-subagents-lite"
+SUBAGENTS_NOTE=""
+if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
+  if [[ ! -r "$SUBAGENTS_DIR/src/index.ts" ]]; then
+    warn "$SUBAGENTS_DIR is missing — subagents will not exist this session."
+  elif [[ ! -r "$GUARD_DIR/src/output-cap.ts" ]]; then
+    warn "The compaction guard is missing, so subagents were left out of this session."
+    warn "A background subagent's result reaches the context uncapped without it."
+  else
+    pi_flags+=(-e "$SUBAGENTS_DIR/src/index.ts")
+    SUBAGENTS_NOTE=", subagents"
+  fi
+fi
+
 # /prinny comes from vendor/prinny-channel — the Matrix channel, converted from
 # the Claude Code plugin of the same name (see vendor/prinny-channel/FORK.md).
 # Loaded by absolute path for the same reasons as /stack and /loop above.
@@ -562,5 +598,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

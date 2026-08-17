@@ -1,0 +1,41 @@
+/** Where model/thinking appears in the widget in full mode: 'header' (1st line) or 'metadata' (2nd line). */
+export type ModelThinkingPlacement = "header" | "metadata";
+
+/** Non-model keys in config.agent — preserved when clearing all overrides. */
+export const CONFIG_AGENT_NON_MODEL_KEYS = [
+  "default",
+  "forceBackground",
+  "graceTurns",
+  "toolTimeoutMinutes",
+  "idleTimeoutMinutes",
+  "showCost",
+  "showTools",
+  "showTurns",
+  "showInput",
+  "showOutput",
+  "showContext",
+  "showTime",
+  "widgetMaxLines",
+  "widgetMaxLinesCompact",
+
+  "widgetCompact",
+  "showCompletionCards",
+  "widgetShortcut",
+  "widgetShowModel",
+  "widgetShowThinking",
+  "widgetNavHint",
+  "systemPromptMode",
+  "includeContextFiles",
+  "defaultThinking",
+  "defaultMaxTurns",
+  "loadSkillsImplicitly",
+  "loadExtensionsImplicitly",
+  "disableDefaultAgents",
+  "agentToolStrictMode",
+  "outputThinkingBufferSize",
+  "finishedRetentionMinutes",
+  "modelDisplayStyle",
+  "modelThinkingPlacement",
+  "statusBarFormat",
+  "outputTranscript",
+];

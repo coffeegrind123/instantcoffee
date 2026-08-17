@@ -3343,3 +3343,324 @@ the branch commented "Some endpoints return reasoning in reasoning_content
 - Worth reporting upstream: `finish_reason` should be `length` when the cap was
   hit, and an unterminated reasoning block should surface as *something* rather
   than as silence.
+
+## 2026-08-17 — subagents: picked in-process, and the one hole it opens
+
+pi ships no subagents deliberately ("skips features like sub agents and plan
+mode… ask pi to build what you want or install a third party pi package"), so
+this was a build-or-adopt decision. `pi.dev/packages?name=subagent` returns 341
+matches of 5,385 packages; the catalog page is server-rendered, so the whole
+top-50 by downloads came out of one `curl`.
+
+### The split that decided it
+
+Every candidate falls on one side of one line, verified in source rather than
+taken from a README:
+
+| package | dl/mo | ★ | mechanism |
+| --- | --- | --- | --- |
+| `pi-subagents` (nicobailon) | 244,797 | 3,182 | spawns `pi --mode json -p` (`runs/foreground/execution.ts:329`) |
+| `@tintinweb/pi-subagents` | 40,433 | 895 | in-process `createAgentSession` |
+| `@quintinshaw/pi-dynamic-workflows` | 27,843 | 419 | in-process, model routing |
+| `@mjasnikovs/pi-task` | 23,282 | 74 | spawns; built for local LLMs |
+| `pi-subagents-lite` | 2,508 | 26 | in-process, schema-first |
+| `subagent-isolation` | 2,464 | 6 | separate process, on purpose |
+
+Subprocess is the popular answer and the wrong one here. `PARALLEL_SLOTS=1`
+means a child process buys no parallelism — it queues at the server — while
+carrying its own system prompt and tool catalog, which evicts the parent's
+cached prefix from the one slot `CACHE_PROMPT`/`CACHE_REUSE`/`--slot-save-path`
+are tuned around. On this stack the argument for subagents is context isolation
+only, and that does not need a second process.
+
+Treat the download column with suspicion, incidentally: `@vigolium/piolium`
+reports 231,162/mo against 119 stars. Stars and push recency agree with each
+other; downloads agree with neither.
+
+### What it costs, on the wire
+
+Measured with the `tool-budget` harness (real `pi`, stub model, read the `tools`
+array out of the captured request) — so this needed no GPU and no forge:
+
+```
+baseline (no extension)          2,900 chars   read 699 · bash 557 · edit 1,194 · write 445
+with vendor/pi-subagents-lite    3,610 chars   + Agent 357 · StopAgent 193 · AgentStatus 157
+delta                              710 chars   ~178 tok, every turn — 0.54% of 32k
+```
+
+Upstream deletes the tool `description` outright to get there
+(`// @ts-expect-error — description removed to save prompt tokens`).
+`@tintinweb/pi-subagents`'s *compact* description alone is 778 chars, larger
+than this package's entire three-tool schema; its full one is 4,172.
+
+### The hole, and why it could not be fixed in the guard
+
+`.pi/extensions/compaction-guard` bounds tool results by hooking
+`pi.on("tool_result")` and keying off `toolName` rather than a list of pi's
+builtins — so a **foreground** subagent, which returns through the `Agent` tool,
+was already covered with no changes.
+
+A **background** subagent is not. It is delivered with
+`pi.sendMessage({customType:"subagent-result"}, {triggerTurn:true})`, and pi's
+`sendCustomMessage` (`dist/core/agent-session.js:1068`, read rather than
+assumed) builds a `role:"custom"` message and hands it to `agent.steer()` /
+`followUp()` / `_runAgentPrompt()`. That path emits **no** `tool_result`, no
+`input`, and on the triggerTurn branches no `message_start`/`message_end`.
+There is no generic hook, so the bound had to go in the fork, at the source,
+while the full text still exists and can be spilled to a file.
+
+Uncapped it reproduces the 2026-08-17 failure exactly: a large payload arriving
+at high context, triggering a turn on arrival. The fork imports the guard's
+`allowanceChars`/`planOutputCap` rather than restating `REMAINING_FRACTION=0.1`
+and its floor and ceiling, because those numbers were chosen against that
+failure and are pinned by the guard's own test — a second copy would drift away
+from the thing that justifies them.
+
+### Two smaller changes, both load-bearing
+
+- **`@sinclair/typebox` → `typebox`.** Upstream's import does not resolve in this
+  install at all; pi 0.84.2 bundles `typebox` 1.3.7, the successor package.
+  Without this the extension does not load. `Type` and `TSchema` are both
+  exported from the 1.x root and the emitted JSON Schema is identical — checked
+  against pi's own copy, not assumed from the version number.
+- **Default concurrency 4 → 1.** The queue forms either way; the only question is
+  where. In the extension, one prefix stays resident. At the server, four
+  sessions hold context alive and four prefixes fight over one slot.
+
+### Not settled by any of this
+
+The bare schema is what makes the package cheap, and whether a 27B local model
+drives `Agent(prompt, agent:"Explore")` correctly from names alone is a separate
+question — it decides whether the package is usable here, and it needs the real
+model, not another measurement. Same for `cached_tokens` across a delegation,
+the background cap on a real result rather than a unit test, and whether an
+injected `subagent-result` becomes something prinny forwards to Matrix.
+
+## 2026-08-17 (verification) — the subagent fork against the real model, and one assumption that was wrong
+
+Everything in the previous entry was measured on a stub or read out of source.
+This is the same work run against Qwen3.8-27B through forge.
+
+### The tool with no description is drivable
+
+The thing that made the package cheap was also the risk: `Agent` reaches the
+model as a name, five untyped-looking parameters and no prose. On the first
+attempt the model emitted a well-formed call with a self-contained prompt and a
+sensible `description`, did not search itself, and got the right answer back.
+Asked for a background run it set `run_in_background: true` — an **undescribed
+boolean** — then polled `AgentStatus` and slept between polls. All of that was
+inferred from parameter names. The concern was reasonable and it did not
+survive contact.
+
+### The prefix-cache claim was wrong, and the truth is more useful
+
+The assumption carried in from the last session was that a subagent's own system
+prompt evicts the parent's cached prefix from the single slot. Probed directly
+with `prompt_tokens_details.cached_tokens`, control first (a repeat of the same
+prefix must hit, or the instrument is broken):
+
+| child | parent's next call | latency |
+| --- | --- | --- |
+| six small turns (≤3.3k tokens) | 2,117 / 2,134 cached — **99.2%** | 442 ms |
+| four turns growing to 18k tokens | **0** cached — full re-prefill | 2,949 ms |
+
+Identical on `:8080` and `:8081`, so it is llama.cpp, not forge. The small-child
+case survived nine trials of nine at 1–6 turns; the eviction reproduced twice.
+
+An earlier single eviction at six *small* turns did **not** reproduce and is
+recorded here as unexplained rather than quietly dropped — it is what prompted
+re-running the probe with size as the variable instead of turn count.
+
+So the mechanism is **capacity, not identity**. A subagent answering from its own
+knowledge is nearly free to the parent's cache; one that reads files and greps —
+the only reason to have it — pushes the parent out and costs a full re-prefill on
+the next turn. On a 2,133-token parent that is +2.5 s; a real session carries far
+more, so treat it as a floor.
+
+**The consequence for how to use this at all:** the standing schema charge
+(~178 tok/turn) is not the cost that matters. The re-prefill is. Delegate work
+worth a re-prefill; do not delegate a lookup.
+
+### The background cap fires, and the model takes the recovery path
+
+The path with no hook, on a real run:
+
+```
+role: custom, customType: "subagent-result"
+[output capped at 20% context: 14218 chars, kept about 10495.
+ Full output: /tmp/pi-subagent-result-qGLIYT/general-purpose-b78d6c07-0332-438.txt …]
+```
+
+The parent then read the marker, opened the spill file for the exact size, and
+reported it — unprompted, first time.
+
+The same run showed the marker's advice being **followed too literally**: the
+inherited wording said "prefer a narrower command", and the model went looking
+for a command to narrow that had never been run. `planOutputCap` now takes its
+advice from the caller (`DEFAULT_CAP_ADVICE` unchanged for tool output), and the
+subagent path tells it to read the file or re-task the agent. Two tests in the
+guard, one in the fork.
+
+### A discovery that was not being looked for
+
+The same transcript shows compaction-guard capping the **child's** own `read`
+result, 9,778 → 8,176 chars, inside the child's session. Extensions load in the
+in-process subagent too, so a subagent is bounded in its own window and not only
+on the way back. Nothing had to be built for that.
+
+### prinny: answered from source, and it is a real gap
+
+Not run live, because that means logging a bot into a homeserver.
+`forwardToMatrix` returns early unless some room has a *live* `awaitingReply`
+entry, and `forwardResult` deletes every live entry when a run settles. Therefore:
+
+- A subagent that finishes **while the parent is still streaming** arrives as a
+  `steer`, folds into that run, and is forwarded normally.
+- One that finishes **after the run settled** triggers a new turn against a room
+  that was already retired. `forwardToMatrix` finds no live room and returns.
+  **The person who asked from Matrix never sees the answer.**
+
+The failure mode is silence rather than a leak, which is the safe direction, but
+a long background job started from Matrix currently answers into the void. Left
+as a finding rather than fixed here: changing it changes what gets sent to a
+remote service, which is a decision to take deliberately.
+
+## 2026-08-17 (subagent policy) — what a child inherits, and the loop as a tool
+
+Four changes, all prompted by the same question: a subagent is a session the
+model creates on its own initiative, with a prompt the operator never reads, so
+what it can reach matters more than what the parent can.
+
+### What a subagent actually inherits
+
+Measured, by asking one. A subagent's verbatim self-report:
+
+```
+TOOLS:  read bash edit write stack_status mcpScript mcp browser_×5
+SKILLS: mcp-scripting
+```
+
+No `prinny`, no `loop`, no `rtk`, and no `Agent` — so subagents cannot spawn
+subagents. A second probe confirmed rtk's absence the only way that counts: the
+child ran `git status --short` **unrewritten**, where rtk would have made it
+`rtk git status`.
+
+The mechanism: **a child does not inherit the parent's `-e` flags.** It builds
+its own `DefaultResourceLoader` and discovers extensions, so `.pi/extensions/`
+reaches it and `vendor/` does not. That also explains something already
+observed: the compaction guard capping the *child's* own `read` result, because
+the guard lives in `.pi/extensions/`. forge is in the path regardless — the child
+resolves the same provider entry, so the reasoning passthrough and the real
+`finish_reason` apply to subagent turns too.
+
+### The denial, and why it cannot be done by name
+
+prinny must never be reachable from a subagent, and "it happens to live in
+`vendor/`" is a layout accident, not a guarantee. `src/agents/subagent-denylist.ts`
+denies it unconditionally, after the agent's own filter, so no agent `.md` can
+widen it back. Its two skills go with it via `skillsOverride` — a loader hook
+upstream was not using.
+
+It is keyed on path, because the name is unusable here and that was verified
+rather than assumed:
+
+- `extractExtensionName()` reduces `vendor/prinny-channel/extensions/index.ts`
+  to **`index`** — the same name `pi-loop-mode` and `rtk-pi` get.
+- `resolvePackageShortName()` only returns a name when `pi.extensions` lists the
+  entry **file**; prinny's lists `["extensions"]`, the directory, so it returns
+  undefined.
+
+So `excludeExtensions: ["prinny"]` matches nothing and `["index"]` removes all
+three. The suite pins that as a control.
+
+### And the opposite: loop and rtk put back
+
+Both are things the child *should* have and structurally cannot inherit, so they
+are added by default through `additionalExtensionPaths`. `SUBAGENT_EXTRA_EXTENSIONS`
+replaces the list; denied paths are filtered out of it too.
+
+### A ceiling, now that a child can loop
+
+`AgentSession.prompt()` defaults `expandPromptTemplates` to **true** and the fork
+calls it bare, so a child handed `/loop …` starts a real one. Upstream leaves
+`maxTurns` undefined — unbounded — which on a one-slot server is not a runaway
+subagent but a stopped machine: the parent's next turn queues behind it forever.
+`DEFAULT_MAX_TURNS = 40`. Upstream's ladder does the rest properly: a steer of
+"wrap up immediately" at the limit, hard abort only `graceTurns` later, so the
+ceiling produces an answer rather than a severed run.
+
+### The loop, as a tool
+
+`/loop` was command-only, so only a human could start or stop one — a model calls
+tools, it cannot type a slash command. The command body was lifted into
+`loopCommand(args, ctx, opts)` and a `loop` tool drives the same path. The
+command is unchanged.
+
+Three things that were not obvious:
+
+- The tool must return what the command only *notified*. Notices are captured
+  through a `Proxy` (not a spread — the context's methods expect their own
+  `this`) and returned as the tool result.
+- `stop` must not abort the turn that called it. The command aborts the in-flight
+  turn to drop queued follow-ups; from a tool that turn is the tool's own, so the
+  result would be thrown away and the model left unable to tell whether the stop
+  took. `suppressAbort` skips it on the tool path; the state change and the
+  `runToken` bump are what stop the loop.
+- Registration is guarded on `typeof pi.registerTool === "function"`. Found the
+  hard way: the existing suite's fake `pi` has no `registerTool`, so an unguarded
+  call threw inside the factory and cancelled all 39 tests. A control run with
+  the change stashed confirmed the baseline was clean before blaming the tests.
+
+The schema is literal JSON Schema, not typebox: typebox is a runtime import and
+that package deliberately has none, which is what keeps `vendor/` free of
+`node_modules` and lets its tests load the extension under plain node. Adding it
+broke the suite with `ERR_MODULE_NOT_FOUND` on the first run.
+
+**Cost:** 709 chars, ~177 tok/turn on the wire, down from 912 after trimming the
+descriptions to what changes behaviour. Suites: pi-loop-mode 48 (39 + 9 new),
+pi-subagents-lite 27, compaction-guard 39.
+
+## 2026-08-17 (verifier, part 1) — the judgement, without the wiring
+
+`vendor/pi-subagents-lite/src/agents/verify.ts` + 20 tests. **Nothing calls it
+yet**; subagent answers still go back unverified. Recorded now because the
+design decisions are the interesting part and they were made against real
+failure modes rather than in the abstract.
+
+The problem it targets is drift, not correctness. A child gets a brief it has no
+context for, compacts its window as it fills, and continues from a summary —
+and what a monotonic summary erodes first is the oldest thing in the transcript,
+which is the brief. After three compactions the child is answering a question
+that has quietly moved, and nothing notices: the parent sees only the final
+text.
+
+Three layers, cheapest first, because most failures do not need a model call:
+
+1. **Anchor** — restate the brief after each compaction. Prevention. 0 calls.
+2. **Structural gate** — empty answer, or a run that ended aborted /
+   turn-limited / stopped. Objective. 0 calls. Explicitly marks those as *not
+   worth judging*: the status note already says they were cut off.
+3. **Judge + one repair** — only for non-empty answers that ended cleanly, which
+   is exactly where drift is invisible.
+
+Two decisions worth keeping:
+
+- **The judge does not run in the child's session.** The obvious version — ask
+  the child "does that answer the question?" — is the weakest available: every
+  step that led it astray is in its context, with justification, and a model
+  reviewing its own work ratifies it. The judge sees two quoted blocks and one
+  question, no transcript, no tools. Harder to fool because it knows less. The
+  *repair* goes the other way and runs in the child, which does have the context
+  to fix things.
+- **Verdict before reasoning, and fail open.** `VERDICT:` then `WHY:`, because a
+  local model allowed to reason first argues itself into agreement. The parse
+  matches `NOT_ADDRESSED` before `ADDRESSED` — one contains the other, and the
+  wrong order turns every failure into a silent pass. An unreadable reply counts
+  as a pass (a chatty 27B must not discard good work) but is flagged to the
+  parent as unchecked rather than reported as verified.
+
+Not decided yet, and it is the reason the wiring is a separate change: what the
+judge call costs on one slot. The prefix probe says a *small* session leaves the
+parent's cache alone (99.2% across six small child turns), so a two-block judge
+should be nearly free — but that is an inference from a different measurement,
+and this one has not been made.

@@ -227,13 +227,57 @@ post-compaction floor from 20,000 tokens to 7,000. It is written to pi's *global
 settings, not to a `.pi/settings.json` here, because the loop runs in whatever
 project you point it at — and project settings are trust-gated besides.
 
+## The third change: the model can start and stop a loop itself
+
+Upstream exposes loop control only as `/loop`. A model cannot type a slash
+command — it can only call tools — so upstream's loop is something a human
+starts and a human stops. On this stack that is the wrong shape twice over: the
+model is the one that knows it has a goal and a way to check it, and a subagent
+running a bounded loop in its own window is the best version of delegation when
+there is one llama slot and no parallelism to win.
+
+So the command body was lifted into `loopCommand(args, ctx, opts)` and a `loop`
+tool now drives the same code path. The command is unchanged and still there;
+this is an addition, and `tests/loop-tool.test.ts` asserts both are registered.
+
+Three things this needed that are not obvious:
+
+- **The tool has to hand back what the command only showed the operator.**
+  Everything `/loop` reports goes through `ctx.ui.notify`, which the model never
+  sees. The notices are captured on the way past and returned as the tool
+  result. A `Proxy` rather than a spread: the context is a live object whose
+  methods expect their own `this`, and a shallow copy loses them.
+- **`stop` must not abort the turn that called it.** The command aborts the
+  in-flight turn to drop queued loop follow-ups. Called from a tool, the
+  in-flight turn *is* the one executing the tool — aborting it throws away the
+  tool's own result and leaves the model unable to tell whether the stop took.
+  `suppressAbort` skips it on the tool path only; the state change and the
+  `runToken` bump are what actually stop the loop.
+- **Registration is guarded.** `if (typeof pi.registerTool === "function")`.
+  Found the hard way: the existing suite's fake `pi` implements
+  `registerCommand` and not `registerTool`, so an unguarded call threw during
+  the factory and cancelled all 39 tests. A host without tool registration now
+  keeps the command instead of losing the extension.
+
+The schema is written as literal JSON Schema rather than built with typebox,
+because typebox is a **runtime** import and this package deliberately has none —
+that property is what keeps `vendor/` free of `node_modules` and lets `tests/`
+load the extension under plain node. Adding the import broke the suite
+immediately with `ERR_MODULE_NOT_FOUND`; the object pi puts on the wire is the
+same either way.
+
+**What it costs:** 709 chars, ~177 tokens on every turn, measured off the wire
+against a stub model. It was 912 before trimming the descriptions to the parts
+that change behaviour — what it does, that `start` needs a finish line, and when
+not to reach for it.
+
 ## Tests
 
 ```
 cd vendor/pi-loop-mode && node --experimental-strip-types --test tests/*.test.ts
 ```
 
-39 tests. They drive the extension's real handlers through both failures above —
+48 tests — 39 for the two failures above, 9 for the loop tool. They drive the extension's real handlers through both failures above —
 pi winning the compaction race, the retry promise, an unrecoverable context, the
 full cooldown ladder, an empty turn at 92% versus the same turn at 30%, a stuck
 verdict on a saturated context versus one with room to spare, and the budget

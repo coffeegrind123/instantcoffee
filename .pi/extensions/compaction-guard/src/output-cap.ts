@@ -108,11 +108,25 @@ function clipTail(text: string, max: number): string {
  * undefined when it could not be written, and the marker says so rather than
  * pointing at a file that is not there.
  */
+/**
+ * What the marker tells the model to do instead of reading the rest.
+ *
+ * Parameterised because the caller knows what produced the text and this file
+ * does not. "Run a narrower command" is right for a bash result and wrong for a
+ * subagent's report, where the model cannot narrow anything — it would have to
+ * re-task the agent. Advice that does not fit what happened is worse than no
+ * advice: it was watched being followed, and the model went looking for a
+ * command to narrow that did not exist.
+ */
+export const DEFAULT_CAP_ADVICE =
+  'Prefer a narrower command — grep, a line range, --max-count — over reading it all back.';
+
 export function planOutputCap(
   text: string,
   allowance: number,
   spillPath: string | undefined,
-  percentUsed?: number | null
+  percentUsed?: number | null,
+  advice: string = DEFAULT_CAP_ADVICE
 ): CapPlan | undefined {
   if (typeof text !== 'string') return undefined;
   const originalChars = text.length;
@@ -127,7 +141,7 @@ export function planOutputCap(
     : 'The full output could not be saved, so re-run with a narrower filter if you need the rest';
   const marker =
     `\n\n[output capped${where}: ${originalChars} chars, kept about ${allowance}. ` +
-    `${recovery}. Prefer a narrower command — grep, a line range, --max-count — over reading it all back.]\n\n`;
+    `${recovery}. ${advice}]\n\n`;
 
   const budget = Math.max(0, allowance - marker.length);
   const headChars = Math.round(budget * HEAD_SHARE);

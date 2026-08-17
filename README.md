@@ -620,6 +620,95 @@ handlers through both failures.
 > Re-review anything pulled from upstream into `vendor/` — the fork is now the
 > only copy that runs, so nothing changes under it without a commit here.
 
+### Delegating to a subagent: `Agent`
+
+`vendor/pi-subagents-lite` gives the model a way to hand a job to a focused child
+session that burns **its own** window and returns a summary. pi ships no
+subagents deliberately ("ask pi to build what you want or install a third party
+pi package"), so this is a vendored fork of `pi-subagents-lite@1.11.0`;
+`vendor/pi-subagents-lite/FORK.md` is the full account, including why this
+package out of the 341 the catalog matches on "subagent".
+
+**Off by default** (`SUBAGENTS_ENABLED=0`). Turn it on with
+`SUBAGENTS_ENABLED=1 ./scripts/pi-local.sh`, or set it in `.env`.
+
+Be clear about what it buys here, because most of what is written about
+subagents does not apply to one llama slot. It is **not** parallelism:
+`PARALLEL_SLOTS=1` means concurrent children queue no matter where the queue
+forms, and the fork therefore defaults concurrency to 1 so at most one foreign
+prefix competes with the parent's at a time. What it buys is **context
+isolation** — the noisy search happens in a window that is not this one.
+
+**The real cost is the prefix cache, not the schema.** Measured against
+`cached_tokens` on both ports, with a repeat of the same prefix as the control:
+a subagent's own system prompt does *not* evict the parent — six small child
+turns left the parent at a 99.2% cache hit. A child that grows to ~18k tokens
+does: the parent's next call dropped from 2,117 cached tokens to zero and from
+**442 ms to 2,949 ms**, a full re-prefill. A real session carries far more than
+the 2,133 tokens that was measured on, so treat that as a floor. Delegate work
+that is worth a re-prefill; do not delegate a lookup.
+
+The popular packages (`pi-subagents` at 244,797/mo, `subagent-isolation`) all run
+each subagent as a child `pi --mode json -p` process, which on this stack costs a
+second system prompt that evicts the parent's cached prefix and buys no
+concurrency in exchange. This one runs in process, through pi's own
+`createAgentSession`.
+
+**What it costs, measured on the wire** rather than estimated — the same stub
+model `vendor/prinny-channel/tests/tool-budget.test.ts` uses:
+
+```
+baseline (no extension)          2,900 chars   read · bash · edit · write
+with vendor/pi-subagents-lite    3,610 chars   + Agent 357 · StopAgent 193 · AgentStatus 157
+delta                              710 chars   ~178 tokens, every turn
+```
+
+That is 0.54% of a 32k window, and it is that small because upstream ships the
+tools with **no description at all** — `Agent`, `run_in_background` and
+`worktree_path` are the documentation. Whether a 27B local model drives a schema
+that bare is the open question about this package, not its cost.
+
+**What a subagent inherits, measured rather than assumed.** A child does not get
+the parent's `-e` flags — it discovers its own extensions. So everything under
+`.pi/extensions/` reaches it (the compaction guard included: a live run shows it
+capping the *child's own* `read` result at 9,778 → 8,176 chars inside the child
+session) and everything under `vendor/` does not. forge is in the path either
+way, because the child resolves the same provider, so the reasoning passthrough
+and the real `finish_reason` apply to subagent turns too.
+
+That default is wrong in one direction and right in the other, so the fork does
+both:
+
+| | in a subagent | why |
+| --- | --- | --- |
+| compaction guard | yes, by discovery | a child that blows its own window returns nothing |
+| forge patches | yes, server-side | same provider, same proxy |
+| `rtk` | **put back** | a child running `bash` uncompressed is the session that can least afford it |
+| `/loop` | **put back** | a bounded goal loop belongs in a window that is not the operator's |
+| `prinny` + its skills | **denied outright** | the model spawns subagents on its own initiative; they do not get to post to Matrix |
+
+The denial is unconditional and runs after the agent's own filter, so no agent
+file can widen it back, and `SUBAGENT_EXTRA_EXTENSIONS` cannot be used to smuggle
+it in. And because a child can now loop, every subagent has a turn ceiling —
+`DEFAULT_MAX_TURNS = 40`, which steers "wrap up immediately" at the limit and
+hard-aborts only after the grace turns, so hitting it produces an answer rather
+than a severed run. `StopAgent` is the parent's kill switch.
+
+**The model can start and stop a loop itself.** `/loop` was command-only, which
+meant only a human could start one — a model calls tools, it cannot type a slash
+command. `vendor/pi-loop-mode` now registers a `loop` tool alongside the command
+(709 chars, ~177 tokens/turn on the wire) so the model can run its own bounded
+goal loop and stop it, in the main session or inside a subagent.
+
+One thing was fixed rather than inherited. A **foreground** subagent returns as a
+tool result, so the compaction guard bounds it like everything else. A
+**background** one is injected with `pi.sendMessage(..., {triggerTurn: true})`,
+which pi delivers straight to the agent without emitting `tool_result`, `input`,
+or anything else an extension can hook — so an unbounded result would arrive in
+the context and trigger a turn, which is precisely the 17,790-character failure
+the guard exists to prevent. The fork bounds it at the source, reusing the
+guard's measured constants rather than restating them.
+
 ### Talking to it from Matrix: `/prinny`
 
 `vendor/prinny-channel` puts a pi session on Matrix. A message from an
@@ -1672,6 +1761,11 @@ patches/
 vendor/pi-loop-mode/    /loop — fork of pi-loop-mode@2.5.4, loaded from here
   FORK.md               what was changed and why (context-recovery race)
   tests/                node --test suite for the fork's recovery ladder
+vendor/pi-subagents-lite/  Agent — fork of pi-subagents-lite@1.11.0, in-process
+  FORK.md               why this package of 341, the wire cost, what was changed
+  src/spawn/result-cap.ts  bounds a BACKGROUND result — the one path the guard
+                        cannot see, because pi injects it without a tool_result
+  tests/                node --test suite for the cap, plus a lint that works
 vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plugin
   FORK.md               what the conversion changed, and why forwarding exists
   extensions/index.ts   the pi extension: tools, /prinny, forwarding, lifecycle

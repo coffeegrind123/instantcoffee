@@ -955,10 +955,28 @@ export default function (pi: ExtensionAPI) {
     );
   });
 
-  pi.registerCommand("loop", {
-    description:
-      "Loop mode: /loop goal <goal> → /loop prepare [--model M] → /loop run [--model M]; or /loop start <goal>; /loop status|stats|resume|finish|stop|end",
-    handler: async (args: string, ctx) => {
+  /**
+   * Forge fork: the command body, lifted out so a TOOL can drive it too.
+   *
+   * Upstream exposes loop control only as `/loop`, which means only a human can
+   * start or stop one — the model cannot type a slash command, it can only call
+   * tools. That is the wrong shape for this stack: a loop is the thing the model
+   * should reach for when it has a goal and a way to check it, and a subagent
+   * running a bounded loop in its own window is the best version of delegation
+   * here. It also means the model cannot stop a loop it started, which is worse.
+   *
+   * `suppressAbort` is for the tool path only. `stop` and `end` abort the
+   * in-flight turn to drop queued loop follow-ups; called from a tool, the
+   * in-flight turn is the one executing the tool, so aborting it would throw
+   * away the tool's own result and leave the model with no idea whether the stop
+   * took. The state changes and the runToken bump are what actually stop the
+   * loop; the abort is only there to cut a turn the operator is not in.
+   */
+  const loopCommand = async (
+    args: string,
+    ctx: ExtensionContext,
+    opts: { suppressAbort?: boolean } = {},
+  ): Promise<void> => {
       const trimmed = args.trim();
       const [subcommand = "status", ...rest] = trimmed.split(/\s+/);
       const command = subcommand.toLowerCase();
@@ -1112,7 +1130,7 @@ export default function (pi: ExtensionAPI) {
         persistState(pi);
         // Abort the in-flight turn and drop queued loop messages; otherwise the
         // current turn (and any already-queued loop follow-up) keeps the agent running.
-        if (wasActive && !ctx.isIdle()) ctx.abort();
+        if (wasActive && !opts.suppressAbort && !ctx.isIdle()) ctx.abort();
         ctx.ui.notify("Loop stopped. Use /loop resume to continue, /loop start to replace, or /loop end to clear.", "info");
         ctx.ui.setStatus("loop", "Loop stopped");
         return;
@@ -1126,7 +1144,7 @@ export default function (pi: ExtensionAPI) {
         const wasActive = state.active;
         state = defaultState();
         persistState(pi);
-        if (wasActive && !ctx.isIdle()) ctx.abort();
+        if (wasActive && !opts.suppressAbort && !ctx.isIdle()) ctx.abort();
         ctx.ui.notify("Loop ended and state cleared.", "info");
         ctx.ui.setStatus("loop", "Loop ended");
         return;
@@ -1164,8 +1182,124 @@ export default function (pi: ExtensionAPI) {
       applyGoalConfig(parseStartArgs(trimmed));
       if (state.loopModel && !(await switchModel(pi, ctx, state.loopModel))) return;
       runLoop(pi, ctx);
+  };
+
+  pi.registerCommand("loop", {
+    description:
+      "Loop mode: /loop goal <goal> → /loop prepare [--model M] → /loop run [--model M]; or /loop start <goal>; /loop status|stats|resume|finish|stop|end",
+    handler: async (args: string, ctx) => loopCommand(args, ctx),
+  });
+
+  // --- Forge fork: the same thing, as a tool the model can call itself. ------
+  //
+  // Everything the command reports, it reports through `ctx.ui.notify`, which
+  // the operator sees and the model does not. A tool has to hand its caller
+  // text, so the notices are captured on the way past and returned. A Proxy
+  // rather than a spread: the context is a live object with methods that expect
+  // their own `this`, and a shallow copy of it loses them.
+  const withCapturedNotices = (base: ExtensionContext) => {
+    const lines: string[] = [];
+    const ui = new Proxy(base.ui, {
+      get(target, prop, receiver) {
+        if (prop === "notify") {
+          return (message: unknown, level?: unknown) => {
+            lines.push(String(message));
+            try {
+              (target as { notify?: (m: unknown, l?: unknown) => void }).notify?.(message, level);
+            } catch {
+              // A headless or absent UI is not a reason to fail the tool call.
+            }
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const ctx = new Proxy(base, {
+      get(target, prop, receiver) {
+        if (prop === "ui") return ui;
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return { ctx: ctx as ExtensionContext, lines };
+  };
+
+  /** Build the `/loop` argument string this tool call stands for. */
+  const argsForLoopTool = (params: Record<string, unknown>): string => {
+    const action = String(params.action ?? "status").trim().toLowerCase();
+    if (action !== "start") return action;
+
+    const parts = ["start", String(params.goal ?? "").trim()];
+    if (typeof params.max === "number" && Number.isFinite(params.max)) parts.push(`--max ${Math.max(1, Math.floor(params.max))}`);
+    if (typeof params.check === "string" && params.check.trim()) parts.push(`--check ${JSON.stringify(params.check.trim())}`);
+    if (params.until_done === true) parts.push("--until-done");
+    return parts.join(" ");
+  };
+
+  // Guarded: the host may not offer tool registration (an older pi, or a test
+  // harness with a partial ExtensionAPI). The command above is the baseline
+  // capability; the tool is the addition, and it must not take the extension
+  // down with it when it is unavailable.
+  if (typeof (pi as { registerTool?: unknown }).registerTool === "function") {
+  pi.registerTool({
+    name: "loop",
+    label: "loop",
+    // Every character here is charged on every turn, so it carries only what
+    // changes behaviour: what the thing does, that start needs a finish line,
+    // and when NOT to reach for it. Measured at 912 chars before this trim.
+    description:
+      "Iterate toward a goal across turns until it is met. Needs a goal with a finish condition; not for a single answer.",
+    // Written as literal JSON Schema rather than built with typebox. typebox is
+    // a RUNTIME import, and this package deliberately has none — its only
+    // non-relative import is an erased `import type`, which is what keeps
+    // `vendor/` free of node_modules and lets `tests/` load this file under
+    // plain node. Adding it broke the suite immediately; the schema pi puts on
+    // the wire is this object either way.
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "start|stop|status|finish|resume|end" },
+        goal: { type: "string", description: 'start: "<goal>. Done when: <criteria>"' },
+        max: { type: "number", description: "start: max iterations" },
+        check: { type: "string", description: "start: shell command, exit 0 = done" },
+        until_done: { type: "boolean", description: "start: stop when check passes" },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    } as never,
+    execute: async (
+      _toolCallId: string,
+      params: Record<string, unknown>,
+      _signal: AbortSignal | undefined,
+      _onUpdate: unknown,
+      baseCtx: ExtensionContext,
+    ) => {
+      const action = String(params.action ?? "").trim().toLowerCase();
+      if (action === "start" && !String(params.goal ?? "").trim()) {
+        return {
+          content: [{ type: "text", text: 'loop start needs a goal. Give one that says when it is done: "<goal>. Done when: <criteria>".' }],
+          isError: true,
+        };
+      }
+
+      const { ctx, lines } = withCapturedNotices(baseCtx);
+      try {
+        await loopCommand(argsForLoopTool(params), ctx, { suppressAbort: true });
+      } catch (error) {
+        return {
+          content: [{ type: "text", text: `loop ${action} failed: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        };
+      }
+
+      // No notice at all means the command took a silent path; say something
+      // true rather than returning an empty result the model has to guess at.
+      const text = lines.length > 0 ? lines.join("\n") : `loop ${action}: no change reported.`;
+      return { content: [{ type: "text", text }] };
     },
   });
+  }
 
   pi.on("session_start", async (_event, ctx) => {
     clearPendingTimer();
