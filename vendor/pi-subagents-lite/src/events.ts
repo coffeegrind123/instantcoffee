@@ -141,9 +141,17 @@ export function createNavInputHandler(ctx: ExtensionContext): (data: string) => 
 
     if (widget) {
       if (!widget.isNavActive()) {
-        // ↓ + empty editor + visible agents exist → activate
+        // ↓ or ← + empty editor + visible agents exist → activate.
+        //
+        // ← is here because it is the key Claude Code advertises for the same
+        // move ("← for agents"), and because both of the packages that have
+        // built this affordance independently — nicobailon's fleet-status and
+        // tintinweb's fleet-list — accept both keys. It costs one predicate and
+        // is only reachable on an empty editor, where ← has nothing to move
+        // over anyway.
         const editorEmpty = (ctx.ui as any).getEditorText?.() === "";
-        if (matchesKey(data, "down") && widget.hasVisibleAgents() && editorEmpty) {
+        const activator = matchesKey(data, "down") || matchesKey(data, "left");
+        if (activator && widget.hasVisibleAgents() && editorEmpty) {
           widget.navActivate();
           return { consume: true };
         }

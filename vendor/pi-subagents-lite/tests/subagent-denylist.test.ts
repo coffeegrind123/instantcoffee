@@ -115,12 +115,23 @@ describe("withSkillDenial", () => {
 describe("subagentExtraExtensionPaths", () => {
   const always = () => true;
 
-  it("gives a child loop and rtk by default — it cannot inherit either", () => {
+  it("gives a child rtk by default — it cannot inherit it", () => {
     const out = subagentExtraExtensionPaths({} as NodeJS.ProcessEnv, always);
-    assert.equal(out.length, 2);
-    assert.ok(out.some((p) => p.includes("/vendor/pi-loop-mode/")), "loop must be there");
+    assert.equal(out.length, 1);
     assert.ok(out.some((p) => p.includes("/vendor/rtk-pi/")), "rtk must be there");
     assert.ok(out.every((p) => p.startsWith("/")), "paths must be absolute for pi's loader");
+  });
+
+  it("does NOT hand a child pi-loop-mode", () => {
+    // It was in this list, and it is the one package here whose state is
+    // module-global — so a child's copy of its handlers ran against the
+    // operator's single LoopState: the child's system prompt gained the
+    // operator's goal, the child's agent_end drove the operator's iteration
+    // ladder and received its next loop turn, and a child that compacted had its
+    // conversation replaced by the operator's loop handoff. See that package's
+    // factory guard. It goes back when its state is per-session.
+    const out = subagentExtraExtensionPaths({} as NodeJS.ProcessEnv, always);
+    assert.ok(!out.some((p) => p.includes("/vendor/pi-loop-mode/")), "loop must not be handed to a child");
   });
 
   it("never includes the Matrix channel in the default set", () => {

@@ -9,9 +9,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.js";
 import { AgentOutputLog } from "./output-file.js";
 import { Watchdog } from "./watchdog.js";
-import { getStore } from "../shell.js";
-import { buildAnchorMessage } from "./verify.ts";
-import { verifyAnswer, type VerifyDeps } from "./verify-runner.ts";
+import { getPiInstance, getStore } from "../shell.js";
+import { appendFollowUp, buildAnchorMessage } from "./verify.ts";
+import { resolveVerifyRounds, resolveVerifyTimeoutMs, verifyAnswer, type VerifyDeps } from "./verify-runner.ts";
 import { VERIFIER_AGENT_TYPE } from "./default-agents.js";
 import {
   type AgentRecord,
@@ -23,9 +23,9 @@ import {
 } from "../types.js";
 import type { SubagentType } from "./types.js";
 import { getAgentConfig } from "./agent-types.js";
-import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
+import { addUsage, emptyUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
 import { errorMessage, toSingleLine } from "../utils.js";
-import { DEFAULT_GRACE_TURNS } from "../config/config-io.js";
+import { DEFAULT_CONCURRENCY, DEFAULT_GRACE_TURNS } from "../config/config-io.js";
 
 export const WATCHDOG_TICK_MS = 5_000;
 
@@ -53,11 +53,68 @@ const AGENT_ID_PREFIX_LENGTH = 17;
 // foreign prefix is competing at a time, which is the difference this default
 // actually buys. Raise it only if PARALLEL_SLOTS goes up with it; per-provider
 // overrides still apply (`concurrency.providers.forge`).
-const DEFAULT_CONCURRENCY_LIMIT = 1;
+//
+// The number itself lives in `config/config-io.ts`, and is read from there
+// rather than restated here. It has to be one constant: this file's fallback
+// only applies when the caller passes NO concurrency config, and the real wiring
+// always passes one (`events.ts` hands the manager `getStore().concurrency`,
+// which merges DEFAULT_CONCURRENCY). While the two were separate they diverged —
+// this said 1, the config said 4, and 4 is what every session actually ran with,
+// which is the state the paragraph above argues against.
+const DEFAULT_CONCURRENCY_LIMIT = DEFAULT_CONCURRENCY.default;
 
 /** Whether the agent status is terminal (no longer running or queued). */
 function isTerminalStatus(status: AgentStatus): boolean {
   return status !== "running" && status !== "queued";
+}
+
+/** A cancellable per-call deadline. See startDeadline. */
+interface Deadline {
+  /** Forward to the run as its abort signal. */
+  signal: AbortSignal;
+  /** Throw if the deadline fired. Call once the awaited work has returned. */
+  assertNotExpired(): void;
+  /** Always call, in a finally — an uncleared timer keeps a handle alive. */
+  cancel(): void;
+}
+
+/**
+ * Forge fork: bound one verification model call in time.
+ *
+ * Verification runs inside the settlement chain, after the record's status has
+ * gone terminal — and every stop path in this file keys off `status ===
+ * "running"`. So while a judge or a repair is in flight the record is
+ * unstoppable: `stopAgent()` returns false for the operator's Esc and for the
+ * `StopAgent` tool alike, and `checkWatchdogs()` does not merely skip the
+ * record, `Watchdog.check()` deletes its state. Meanwhile the parent's `Agent`
+ * tool call is blocked on the completion gate, which does not open until
+ * verification returns. Nothing else can end that wait, so this does.
+ *
+ * `assertNotExpired()` is separate from the signal on purpose: `runAgent` does
+ * not reject when aborted, it returns with `aborted: true` and whatever text
+ * arrived. Left at that, a timeout would look like a judge that replied with
+ * nothing — which the parser reads as "unparsed", i.e. a pass. Throwing instead
+ * routes it to `verifyAnswer`'s catch, which is already the "the verifier
+ * failed" path: the answer goes out annotated as unchecked, and the operator is
+ * told why.
+ */
+function startDeadline(label: string, timeoutMs: number): Deadline {
+  const controller = new AbortController();
+  let expired = false;
+  const timer = setTimeout(() => {
+    expired = true;
+    controller.abort();
+  }, timeoutMs);
+  // Never hold the process open for a deadline that has outlived its session.
+  timer.unref?.();
+  const fail = () => new Error(`the ${label} did not answer within ${Math.round(timeoutMs / 1000)}s`);
+  return {
+    signal: controller.signal,
+    assertNotExpired: () => {
+      if (expired) throw fail();
+    },
+    cancel: () => clearTimeout(timer),
+  };
 }
 
 function formatModelError(
@@ -334,17 +391,73 @@ export class AgentManager {
         // released in the .finally that follows it. A judge that asked for a
         // slot would wait for a slot that is waiting for the judge, and with
         // the fork's default of 1 that is a deadlock rather than a slowdown.
-        const result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, { pi, maxTurns: 1 });
-        return result.responseText;
+        //
+        // Going around spawn() also means going around every teardown spawn()
+        // would have arranged: no record, so nothing in dispose() or clear()
+        // ever reaches this session. Disposing it here is the whole cleanup —
+        // without it every judged answer leaks one AgentSession, its message
+        // history and its bound extensions, for the life of the process. The
+        // dispose is in the `finally` so a deadline that fires still tears down.
+        const deadline = startDeadline("verifier", resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS));
+        let result: RunResult | undefined;
+        try {
+          result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, {
+            pi,
+            maxTurns: 1,
+            signal: deadline.signal,
+            // Without this the judge's cost landed nowhere at all — not on the
+            // record, not in the session total — so a verified delegation
+            // under-reported itself by a whole model call.
+            //
+            // It goes to `verifyUsage`, not `lifetimeUsage`, and the split is
+            // exact rather than aesthetic: `lifetimeUsage` is what the CHILD's
+            // session spent (its run, and any repair turn, which really is the
+            // child's own turn in its own window), `verifyUsage` is what the
+            // verifier spent in sessions of its own. Nothing is in both, and
+            // `tallyCompletion` adds them.
+            onAssistantUsage: (usage) => {
+              record.stats.verifyUsage ??= emptyUsage();
+              addUsage(record.stats.verifyUsage, usage);
+            },
+          });
+          deadline.assertNotExpired();
+          return result.responseText;
+        } finally {
+          deadline.cancel();
+          try {
+            result?.session?.dispose();
+          } catch {
+            // A judge that answered is worth more than a tidy teardown.
+          }
+        }
       },
       repair: async (prompt: string) => {
         const session = record.execution.session;
         if (!session) throw new Error("the subagent's session is gone");
-        const result = await continueAgentSession(session, prompt, {
-          maxTurns: 1,
-          graceTurns: DEFAULT_GRACE_TURNS,
-        });
-        return result.responseText;
+        const deadline = startDeadline("repair", resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS));
+        try {
+          const result = await continueAgentSession(session, prompt, {
+            maxTurns: 1,
+            graceTurns: DEFAULT_GRACE_TURNS,
+            signal: deadline.signal,
+            // A repair is a real turn in the child's own session: it uses tools,
+            // it counts against the child's window, and it can compact. Running
+            // it without the tracking callbacks meant none of that was recorded
+            // — and, worse, `onCompaction` is what fires the task anchor, so the
+            // one turn most likely to compact (the child is already near the end
+            // of its window; that is usually why it drifted) was the one turn
+            // with the anchor switched off. Its usage lands in `lifetimeUsage`
+            // rather than `verifyUsage` because it is the child spending the
+            // child's window; see the judge above for the split.
+            ...this.runTrackingCallbacks(record, record.execution.liveViewCallbacks, (turnCount) => {
+              record.stats.turnCount = (record.stats.turnCount ?? 0) + turnCount;
+            }),
+          });
+          deadline.assertNotExpired();
+          return result.responseText;
+        } finally {
+          deadline.cancel();
+        }
       },
       notify: (message: string) => {
         try {
@@ -352,6 +465,10 @@ export class AgentManager {
         } catch {
           // Headless is fine; the verdict still applied.
         }
+      },
+      // The widget polls the record, so writing the field is the whole update.
+      onPhase: (phase) => {
+        record.verifyPhase = phase;
       },
     };
   }
@@ -367,9 +484,19 @@ export class AgentManager {
   private async runVerification(record: AgentRecord, deps: VerifyDeps | undefined): Promise<void> {
     if (!deps) return;
     const brief = record.execution.brief ?? "";
-    const outcome = await verifyAnswer(record, brief, deps);
-    record.verification = outcome.status;
-    record.result = outcome.answer;
+    try {
+      // Read per call, not cached at construction: an operator who changes the
+      // budget between sessions should not have to reason about when it was
+      // captured, and this runs once per settled subagent.
+      const rounds = resolveVerifyRounds(process.env.SUBAGENT_VERIFY_ROUNDS);
+      const outcome = await verifyAnswer(record, brief, deps, { rounds });
+      record.verification = outcome.status;
+      record.result = outcome.answer;
+    } finally {
+      // verifyAnswer clears the phase itself on every path it owns; this is the
+      // backstop for the one it does not — a throw from outside its own try.
+      record.verifyPhase = undefined;
+    }
   }
 
   /** Start an agent now or from queue drain; manages the slot's running count when one is held. */
@@ -555,7 +682,11 @@ export class AgentManager {
     // Usage is monotonic (addUsage only accumulates), so the delta from the
     // last tally is the cost this run added. The first tally (talliedCost
     // undefined) also counts the agent; continuations never double-count.
-    const cost = record.stats.lifetimeUsage.cost;
+    //
+    // Both accumulators, because they partition the spend rather than overlap:
+    // lifetimeUsage is the child's own session, verifyUsage is the judge's.
+    // Counting only the first hid every judge call from the session total.
+    const cost = record.stats.lifetimeUsage.cost + (record.stats.verifyUsage?.cost ?? 0);
     const baseline = record.execution.talliedCost ?? 0;
     this.totalAgentCost += cost - baseline;
     const firstTally = record.execution.talliedCost === undefined;
@@ -707,6 +838,33 @@ export class AgentManager {
       concurrencySlot.running++;
     }
 
+    // Forge fork: the brief the verifier and the anchor check against has to
+    // grow with the task, or the continuation is checked against a question it
+    // was not asked.
+    //
+    // `brief` was written once, at spawn, and never updated. So steering a
+    // settled agent — the /agents menu's steer action, or the viewer's steer box
+    // — produced an answer to the STEER, judged against the ORIGINAL prompt. The
+    // judge said NOT_ADDRESSED, correctly, and the repair then told the child
+    // "This is the task, in full, as it was given to you: <the original>. Answer
+    // it now" — actively undoing the operator's instruction, and labelling the
+    // result `✎ repaired`, which reads as an improvement.
+    //
+    // Appended rather than replaced: a follow-up almost always presupposes the
+    // original task ("now also list the callers"), so replacing would lose the
+    // half the answer still has to satisfy. The anchor reads the same field, and
+    // wants the same thing after a compaction.
+    record.execution.brief = appendFollowUp(record.execution.brief, message);
+
+    // Forge fork: a verdict describes one answer. The new answer has not been
+    // checked yet, and may never be — verification is skipped when the pi
+    // instance or the spawning ctx is missing (see below), and when
+    // SUBAGENT_VERIFY is off. Leaving the old verdict in place showed a `✓
+    // checked` badge, and a `verification: "passed"` in the tool result details,
+    // against text nothing had looked at. Absence is already the "never checked"
+    // signal every reader keys off, so clearing it is the whole fix.
+    record.verification = undefined;
+
     // Reset the record to running; stats (usage, toolUses, turnCount) carry over.
     const abortController = new AbortController();
     record.execution.abortController = abortController;
@@ -729,7 +887,22 @@ export class AgentManager {
       graceTurns: getStore().agent.graceTurns ?? DEFAULT_GRACE_TURNS,
       signal: abortController.signal,
     });
-    this.attachSettlementChain(record, promise, concurrencySlot, this.buildVerifyDeps(pi, ctx, record));
+    // `pi` and `ctx` are NOT in scope here — this is not startAgent, which gets
+    // them from SpawnArgs. Referencing them directly threw
+    // `ReferenceError: pi is not defined` on every continuation, and nothing
+    // caught it: `steer()` is async, so continuing a settled agent from the
+    // menu or the viewer rejected instead of running. The pi instance is a
+    // shell singleton and the spawning context is kept on the record for
+    // exactly this kind of later use; when either is missing the continuation
+    // still runs, just unverified.
+    const verifyCtx = record.execution.spawnCtx;
+    const verifyPi = getPiInstance();
+    this.attachSettlementChain(
+      record,
+      promise,
+      concurrencySlot,
+      verifyPi && verifyCtx ? this.buildVerifyDeps(verifyPi, verifyCtx, record) : undefined,
+    );
     // The run proceeds asynchronously; the caller only learns the wiring
     // succeeded. The parent abort binding is deliberately NOT re-attached —
     // the parent turn that spawned the agent is over.

@@ -20,6 +20,7 @@ import {
   type StatsVisibility,
 } from "./format.js";
 import type { LiveView } from "../types.js";
+import { verificationBadge, verifyPhaseActivity } from "./verification-badge.js";
 
 // Backward-compat re-export for consumers importing Theme from this module.
 export type { Theme } from "./types.js";
@@ -496,6 +497,13 @@ export class AgentWidget {
     for (const a of allAgents) {
       if (a.lifecycle.status === "running") running.push(a);
       else if (a.lifecycle.status === "queued") queued.push(a);
+      // Forge fork: the verifier runs after the child's run has settled — its
+      // status is already terminal and completedAt is not stamped until the
+      // check returns — so a verifying record matches none of the tests here
+      // and its row would vanish for the length of a model call, on a stack
+      // where an unexplained pause is the one thing the widget exists to
+      // prevent. It is active work the user is waiting on: it stays running.
+      else if (a.verifyPhase) running.push(a);
       else if (a.lifecycle.completedAt !== undefined && a.lifecycle.completedAt >= cutoff) finished.push(a);
     }
     return { running, queued, finished };
@@ -550,8 +558,22 @@ export class AgentWidget {
     );
     const statsLine = statsParts.join("·");
     const tagPart = this.modelThinkingHeaderTag(a, theme);
+    const verdict = this.verificationSuffix(a, theme);
 
-    return `${icon} ${theme.fg("dim", name)}${tagPart}  ${theme.fg("dim", a.display.description)}  ${wrapInDim(theme, statsLine)}${statusText}`;
+    return `${icon} ${theme.fg("dim", name)}${tagPart}  ${theme.fg("dim", a.display.description)}  ${wrapInDim(theme, statsLine)}${statusText}${verdict}`;
+  }
+
+  /**
+   * The verifier's verdict as a trailing marker, or "" when nothing was checked.
+   *
+   * Last on the line on purpose: it is the field most safely lost to
+   * truncation on a narrow terminal, because unlike the description or the
+   * stats it can always be recovered from the tool result's details.
+   */
+  private verificationSuffix(a: AgentRecord, theme: Theme): string {
+    const badge = verificationBadge(a.verification);
+    if (!badge) return "";
+    return ` ${theme.fg(badge.tone, `${badge.icon} ${badge.label}`)}`;
   }
 
   /** Build the dim-styled model/thinking tag for the header line, or "" when it belongs on the metadata line. */
@@ -618,7 +640,12 @@ export class AgentWidget {
       const name = getDisplayName(a.display.type);
       const bg = this.getLiveView(a.id);
       const statsLine = this.buildStatsLine(a, theme);
-      const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…";
+      // A verifying row has no live view to describe — the judge runs in its own
+      // session and the repair goes through continueAgentSession with no
+      // live-view callbacks wired — so the phase text is the only thing that can
+      // say what the wait is for.
+      const activity =
+        verifyPhaseActivity(a.verifyPhase) ?? (bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…");
 
       if (this.isCompact()) {
         // Compact: single line; description after model, stats, then activity.
@@ -826,7 +853,7 @@ export class AgentWidget {
       return `${readout}  ${theme.fg("dim", "↑↓ navigate · enter view · esc back")}`;
     }
     if (!this.navHint) return iconText;
-    return `${iconText}  ${theme.fg("dim", "↓ to navigate")}`;
+    return `${iconText}  ${theme.fg("dim", "↓/← to navigate")}`;
   }
 
   private buildQueuedIndividualBlocks(queued: AgentRecord[], theme: Theme, w: number): RenderBlock[] {

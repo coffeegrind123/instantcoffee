@@ -323,6 +323,16 @@ if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
     [[ -n "$SUBAGENT_VERIFY_VALUE" ]] && export SUBAGENT_VERIFY="$SUBAGENT_VERIFY_VALUE"
     [[ "$SUBAGENT_VERIFY_VALUE" == "0" ]] && SUBAGENTS_NOTE=", subagents (unverified)"
 
+    SUBAGENT_ROUNDS_VALUE="$(env_get SUBAGENT_VERIFY_ROUNDS)"
+    [[ -n "$SUBAGENT_ROUNDS_VALUE" ]] && export SUBAGENT_VERIFY_ROUNDS="$SUBAGENT_ROUNDS_VALUE"
+
+    # Per-call deadline for the judge and each repair, in ms. Verification runs
+    # after the child's status has gone terminal, and every stop path keys off
+    # "running" — so without this a wedged llama-server hangs the parent's Agent
+    # tool call with no operator-reachable exit. Default 300000 in the fork.
+    SUBAGENT_TIMEOUT_VALUE="$(env_get SUBAGENT_VERIFY_TIMEOUT_MS)"
+    [[ -n "$SUBAGENT_TIMEOUT_VALUE" ]] && export SUBAGENT_VERIFY_TIMEOUT_MS="$SUBAGENT_TIMEOUT_VALUE"
+
     SUBAGENT_EXTRAS_VALUE="$(env_get SUBAGENT_EXTRA_EXTENSIONS)"
     [[ -n "$SUBAGENT_EXTRAS_VALUE" ]] && export SUBAGENT_EXTRA_EXTENSIONS="$SUBAGENT_EXTRAS_VALUE"
   fi

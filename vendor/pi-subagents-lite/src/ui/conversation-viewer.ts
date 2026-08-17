@@ -32,6 +32,7 @@ import {
   resolveAgentModelLabel,
 } from "./format.js";
 import { summarizeToolArgs } from "../utils.js";
+import { verificationBadge } from "./verification-badge.js";
 import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./viewer-keys.js";
 
 /** Fixed chrome lines: top border + 2 header rows + 2 separators + footer + bottom border. */
@@ -282,8 +283,14 @@ export class ConversationViewer implements Component {
     const worktreeTag = this.record.display.worktreeLabel
       ? th.fg("muted", ` @${this.record.display.worktreeLabel}`)
       : "";
-    // Row 1: status icon, name, description, worktree
-    lines.push(row(`${statusIcon} ${th.bold(name)}  ${th.fg("muted", this.record.display.description)}${worktreeTag}`));
+    // Row 1: status icon, name, description, worktree, verifier verdict
+    const badge = verificationBadge(this.record.verification);
+    const verdictTag = badge ? ` ${th.fg(badge.tone, `${badge.icon} ${badge.label}`)}` : "";
+    lines.push(
+      row(
+        `${statusIcon} ${th.bold(name)}  ${th.fg("muted", this.record.display.description)}${worktreeTag}${verdictTag}`,
+      ),
+    );
 
     // Row 2: model name + compact usage stats
     const resolvedInvocation = {

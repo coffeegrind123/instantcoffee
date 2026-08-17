@@ -18,6 +18,8 @@ import {
   buildRepairPrompt,
   parseJudgeVerdict,
   structuralVerdict,
+  MAX_BRIEF_CHARS,
+  appendFollowUp,
   verificationNote,
 } from "../src/agents/verify.ts";
 
@@ -41,6 +43,17 @@ describe("structuralVerdict", () => {
       assert.equal(v.ok, true, `${status} keeps its partial output`);
       assert.equal(v.worthJudging, false, `${status} already explains itself`);
     }
+  });
+
+  it("does not judge a run that ended in a provider error, whose text is never shown at all", () => {
+    // Stronger than the three above: for a foreground spawn, `executeAgentTool`
+    // intercepts error status and returns `errorResult(record.error)` without
+    // reading `record.result`. So a judge and up to three repairs could run, on
+    // the one slot the parent is blocked on, and every character they produced
+    // was then discarded unread.
+    const v = structuralVerdict("half an answer before the provider died", { status: "error" } as any);
+    assert.equal(v.ok, true, "the partial text is still kept on the record");
+    assert.equal(v.worthJudging, false, "but no model call may be spent on it");
   });
 
   it("sends a clean, non-empty answer to the judge — the case where drift is invisible", () => {
@@ -138,5 +151,58 @@ describe("verificationNote", () => {
     assert.match(verificationNote("failed"), /Treat it as unreliable/);
     assert.match(verificationNote("unparsed"), /went out unchecked/);
     assert.match(verificationNote("repaired"), /corrected one/);
+  });
+});
+
+describe("appendFollowUp", () => {
+  const STEER = "Now also list the callers of validateToken().";
+
+  it("keeps the original task alongside the follow-up", () => {
+    // The failure: `brief` was written once at spawn and never updated, so a
+    // steered continuation answered the STEER and was judged against the
+    // ORIGINAL. The judge said NOT_ADDRESSED — correctly — and the repair then
+    // told the child to answer the original instead, discarding the operator's
+    // instruction and labelling the result "repaired".
+    const out = appendFollowUp(BRIEF, STEER);
+    assert.ok(out.includes(BRIEF), "the original task must survive — the follow-up presupposes it");
+    assert.ok(out.includes(STEER), "and the steer has to be in what the judge checks against");
+  });
+
+  it("accumulates across several steers, oldest first", () => {
+    const out = appendFollowUp(appendFollowUp(BRIEF, "one"), "two");
+    assert.ok(out.indexOf("one") < out.indexOf("two"));
+    assert.ok(out.includes(BRIEF));
+  });
+
+  it("ignores an empty or whitespace steer rather than growing the brief", () => {
+    assert.equal(appendFollowUp(BRIEF, ""), BRIEF);
+    assert.equal(appendFollowUp(BRIEF, "   \n "), BRIEF);
+  });
+
+  it("uses the steer alone when there was no brief to extend", () => {
+    assert.equal(appendFollowUp(undefined, STEER), STEER);
+    assert.equal(appendFollowUp("", STEER), STEER);
+  });
+
+  it("stays bounded however many times an agent is steered", () => {
+    let brief = BRIEF;
+    for (let i = 0; i < 500; i++) brief = appendFollowUp(brief, `follow-up number ${i} with some padding text`);
+    assert.ok(brief.length <= MAX_BRIEF_CHARS, `brief grew to ${brief.length} chars`);
+  });
+
+  it("drops the OLDEST follow-ups, never the original task", () => {
+    let brief = BRIEF;
+    for (let i = 0; i < 500; i++) brief = appendFollowUp(brief, `follow-up number ${i} with some padding text`);
+    assert.ok(brief.includes(BRIEF), "the original is what everything else refers back to");
+    assert.ok(brief.includes("follow-up number 499"), "the newest instruction must always be there");
+    assert.ok(!brief.includes("follow-up number 0 "), "the oldest are what gets dropped");
+  });
+
+  it("keeps the newest instruction even when the original alone fills the budget", () => {
+    const huge = "x".repeat(MAX_BRIEF_CHARS - 20);
+    const out = appendFollowUp(huge, STEER);
+    assert.ok(out.length <= MAX_BRIEF_CHARS, `brief was ${out.length} chars`);
+    assert.ok(out.startsWith(huge), "the original is not truncated to make room");
+    assert.ok(out.length > huge.length, "a steer must never silently do nothing");
   });
 });

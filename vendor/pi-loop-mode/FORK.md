@@ -271,13 +271,100 @@ against a stub model. It was 912 before trimming the descriptions to the parts
 that change behaviour — what it does, that `start` needs a finish line, and when
 not to reach for it.
 
+**One thing the tool broke on the way through, fixed later** (evaluation F10).
+The tool builds a `/loop` argument string and hands it to the same parser the
+slash command uses, quoting the check command with `JSON.stringify`. The parser's
+`--check "([^"]*)"` stopped at the first backslash-quote, so
+`grep -q "all tests passed" out.log` was configured as `grep \` — a command that
+runs, fails, and is reported as a *failing goal check* rather than as a broken
+configuration. The pattern now consumes escape pairs
+(`"((?:[^"\\]|\\.)*)"`) and unescapes only `\"` and `\\`, so a Windows path in a
+check command (`C:\bin\test.exe`, where `\b` is not an escape) still means what
+it says. `action`'s description also gained `stats`, which `TOOL_ACTIONS` had
+always accepted.
+
+## The fourth change: a subagent's session must not be able to kill the loop
+
+Found by auditing the whole subagent path (`context/design/subagents-loop-verifier-anatomy.md`
+§9, B3 and B4). Two defects, both from this package meeting subagents:
+
+**A subagent spawn silently killed a running loop.** `pi-subagents-lite` runs its
+children *in this process*, a child session binds this extension, and node's
+module cache means the child's copy is the **same module** — the `state`,
+`pendingTimer` and `runToken` at the top of `extensions/index.ts` are shared with
+the operator's session. pi's `bindExtensions()` ends by emitting `session_start`
+(`core/agent-session.js:1761`), so every spawn ran, against the operator's live
+loop: `clearPendingTimer()` (cancelling the next iteration, already scheduled),
+`resetContextRecovery()`, and `restoreState(ctx)` — replacing the loop with the
+child's in-memory branch, which is empty. The symptom is not an error: the loop
+stops advancing the first time the model delegates anything, and `/loop status`
+reports no loop at all. The verifier doubles it, because the judge is itself a
+subagent session.
+
+`pi-subagents-lite` now publishes its spawn depth on
+`globalThis.__PI_SUBAGENT_SPAWN_DEPTH__`; this package reads it at factory time.
+A global rather than an import, because vendored packages must not depend on each
+other.
+
+**That first fix guarded two handlers out of thirteen, and the other eleven were
+worse.** Found by a second audit
+(`context/design/subagents-loop-verifier-evaluation.md`, F1), and every item below
+was reproduced against the real module before it was fixed. With the operator's
+loop running and a subagent doing something unrelated:
+
+| Handler | What it did to the child, or to the operator |
+| --- | --- |
+| `before_agent_start` | appended `Loop mode is active. Goal: <the operator's goal> … keep every response under 1,200 characters … never stop on your own` to the **child's** system prompt. Every clause is wrong for a subagent, and it is injected into exactly the mechanism the answer verifier exists to detect drift in. |
+| `agent_end` | ran the whole iteration ladder on the operator's state with the child's ctx — cancelled the operator's scheduled iteration, incremented its iteration count, persisted its state into the child's throwaway in-memory branch, and **delivered the operator's next loop turn into the child**. `agent-session.js:779` continues a session for messages queued by an `agent_end` handler, so the child then worked on the operator's goal until its 40-turn ceiling. |
+| `session_before_compact` | replaced the child's compaction with a handoff built from the operator's loop state: on a 32k window `windowNeedsHandoff` is always true, so a child that compacted lost its entire conversation and was told *"the conversation above was dropped … perform exactly one concrete next progress batch"*. |
+| `session_compact` | consumed the operator's pending context-recovery marker, and reset its compression level. |
+| `agent_settled` | could finalize the operator's soft stop, or run its emergency compaction against the child's context. |
+| `before_provider_request` | applied the operator's anti-repetition sampling penalties to the child's requests. |
+| `message_end` / `tool_result` | fed the child's assistant text and tool results into the operator's repetition fingerprints and tool counters — the entire input to `detectStuck()`. |
+| `message_update` | the child's degenerate-repetition abort set the shared `degenerateAbortPending`, which the operator's next `agent_end` consumed as its own. |
+| goal check | with `--check` configured, ran the operator's shell command once per child turn. |
+
+Per foreground verified delegation that fired **three** times — the child's run,
+the judge's run, and a repair — because the judge is itself a subagent session.
+
+**The fix is the whole factory: an instance born inside a spawn registers
+nothing.** Not the command, not the tool, not one handler. A per-handler guard
+would have stopped the damage without making a child loop work, because
+`runLoop()` writes the same shared state — so the honest narrow fix is to be
+inert, and `pi-subagents-lite` correspondingly no longer hands this package to a
+subagent at all (`subagent-denylist.ts`), which also saves the child ~177
+tokens/turn of `loop` tool schema.
+
+**The underlying exposure is still not gone**, and this is the one thing left
+open: `state` is module-global, so nothing but the guard separates two sessions.
+Per-session state would re-enable a loop inside a subagent, which is what the
+extension list wanted in the first place. It is ~450 references across 1,846
+lines and 18 helper signatures, and it is deliberately not done here: it enables
+a feature that has never actually worked, and either shape of it (a closure
+around the whole file, or threading `pi` into every helper) costs the ability to
+diff this fork against upstream 2.5.4. Both changes revert together when someone
+decides that trade is worth making.
+
+**An unknown tool action started an endless loop.** `loopCommand`'s last branch
+is the `/loop <goal>` convenience — anything unrecognised becomes a goal. Right
+for a person, a trap for a model guessing a verb: `loop(action: "pause")` started
+an endless loop whose goal was the word "pause". The tool now checks a closed
+action set first. The existing test *"survives an unknown action"* asserted only
+that a string came back, so it had been passing **because** of the bug; it now
+asserts nothing was started.
+
 ## Tests
 
 ```
 cd vendor/pi-loop-mode && node --experimental-strip-types --test tests/*.test.ts
 ```
 
-48 tests — 39 for the two failures above, 9 for the loop tool. They drive the extension's real handlers through both failures above —
+63 tests — 39 for the two failures above, 14 for the loop tool and its argument
+round-trip, 10 for subagent isolation. The isolation suite loads the extension
+twice, exactly as the process does, and was **control-run with the guard
+disabled**: 8 of its 9 new assertions fail without the fix, so it is testing the
+guard and not the weather. The `--check` round-trip test was control-run the same
+way against the old `"([^"]*)"` pattern. They drive the extension's real handlers through both failures above —
 pi winning the compaction race, the retry promise, an unrecoverable context, the
 full cooldown ladder, an empty turn at 92% versus the same turn at 30%, a stuck
 verdict on a saturated context versus one with room to spare, and the budget

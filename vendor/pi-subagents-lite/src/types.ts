@@ -32,6 +32,36 @@ export interface RunTunables {
   graceTurns?: number;
 }
 
+/**
+ * Forge fork: what the answer verifier concluded about one settled answer.
+ *
+ * The three skips are separate values rather than one `skipped` because they
+ * are three different problems: nothing was said, the run was cut off before
+ * it could say it, or no brief was recorded to check the answer against. The
+ * first is usually a saturated context, the second explains itself in the
+ * status note, and the third is a fault in the spawn path — one label for all
+ * three would hide the only one that is a bug in us.
+ */
+export type AgentVerification =
+  | "skipped-empty"
+  | "skipped-cutoff"
+  | "skipped-nobrief"
+  | "passed"
+  | "unparsed"
+  | "repaired"
+  | "failed"
+  | "errored";
+
+/**
+ * Forge fork: which verification step is running right now.
+ *
+ * Both are model calls on the slot the parent is waiting on, and they happen
+ * *after* the child's run has settled — status is already terminal and
+ * `completedAt` is not set yet, so without this field the record belongs to no
+ * widget category at all and the row silently disappears for the duration.
+ */
+export type VerifyPhase = "judging" | "repairing";
+
 export interface AgentRecord {
   id: string;
   result?: string;
@@ -40,7 +70,12 @@ export interface AgentRecord {
    * run. Kept on the record rather than only in the text so the widget and the
    * tests can tell "passed" from "was never checked".
    */
-  verification?: "skipped-empty" | "skipped-cutoff" | "passed" | "unparsed" | "repaired" | "failed" | "errored";
+  verification?: AgentVerification;
+  /**
+   * Forge fork: set while the verifier is working, cleared when it settles.
+   * Read by the widget to keep the row visible and say what the wait is for.
+   */
+  verifyPhase?: VerifyPhase;
   error?: string;
   lifecycle: AgentLifecycle;
   display: AgentDisplayInfo;
@@ -227,6 +262,19 @@ export interface AgentAccumulatedStats {
    * and cost deliberately excluded — see issue #38). Initialized to zeros at spawn.
    */
   lifetimeUsage: LifetimeUsage;
+  /**
+   * Forge fork: what the answer verifier itself spent, kept apart from the
+   * child's own usage.
+   *
+   * The judge and each repair are real model calls on the slot the parent is
+   * blocked on, and neither was counted anywhere — not on the record, not in
+   * `getTotalAgentCost()` — so a verified delegation under-reported itself by
+   * one to three calls. Separate rather than folded in, because the question the
+   * operator asks is "what did the check cost me", and an answer hidden inside
+   * the child's number cannot be asked. Undefined until the verifier spends
+   * something, which keeps "never checked" distinguishable from "checked, free".
+   */
+  verifyUsage?: LifetimeUsage;
   toolUses: number;
   /** Final turn count (set on completion). Used by widget after activity cleanup. */
   turnCount?: number;

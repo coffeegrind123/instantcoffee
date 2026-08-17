@@ -37,6 +37,7 @@ import { getStore, enterSubagentSpawn, exitSubagentSpawn } from "../shell.js";
 import { DEFAULT_GRACE_TURNS, CUSTOM_PROMPT_PATH } from "../config/config-io.js";
 import { patchRetryClassifier } from "./stream-retry.js";
 import { subagentExtraExtensionPaths, withExtensionDenial, withSkillDenial } from "./subagent-denylist.js";
+import { declaredResources } from "./declared-resources.js";
 
 // Cache: extension path → unscoped package name (lowercased), or undefined if not found
 const packageNameCache = new Map<string, string | undefined>();
@@ -411,8 +412,11 @@ function buildPrompt(
   if (Array.isArray(agentConfig?.preloadSkills)) {
     extras.skillBlocks = preloadSkills(agentConfig.preloadSkills, cwd);
   }
-  if (Array.isArray(config.skills)) {
-    extras.skillMetas = loadSkillMeta(config.skills, cwd);
+  // Same precedence as createResourceLoader: the agent's own `skills` wins over
+  // getConfig()'s, which substitutes general-purpose's for a hidden type.
+  const { skills } = declaredResources(agentConfig, config);
+  if (Array.isArray(skills)) {
+    extras.skillMetas = loadSkillMeta(skills, cwd);
   }
   if (agentConfig) {
     return buildAgentPrompt(agentConfig, cwd, env, extras, systemPromptMode);
@@ -497,8 +501,12 @@ function createResourceLoader(
   settingsManager: SettingsManager,
   notify?: (msg: string) => void,
 ) {
-  const extensions = config.extensions;
-  const noSkills = config.skills === false || Array.isArray(config.skills) || Array.isArray(agentConfig?.preloadSkills);
+  // Forge fork: the agent's OWN declaration, not getConfig()'s — see
+  // declared-resources.ts. getConfig routes a `hidden` type through
+  // general-purpose, so `__verifier`'s `extensions: false` never arrived here
+  // and the `extensions === false` branch below was unreachable code.
+  const { extensions, skills } = declaredResources(agentConfig, config);
+  const noSkills = skills === false || Array.isArray(skills) || Array.isArray(agentConfig?.preloadSkills);
   const agentDir = getAgentDir();
   const loaderOpts: ConstructorParameters<typeof DefaultResourceLoader>[0] = {
     cwd,
@@ -521,7 +529,24 @@ function createResourceLoader(
     // A child discovers its own extensions and never sees the parent's `-e`
     // flags, so anything under vendor/ is absent unless named here. Empty
     // unless SUBAGENT_EXTRA_EXTENSIONS says otherwise.
-    additionalExtensionPaths: subagentExtraExtensionPaths(),
+    //
+    // `extensions: false` has to suppress these too, and that is not what the
+    // loader does on its own: `noExtensions` only drops *discovered* paths —
+    // `resource-loader.js:315` reads `noExtensions ? cliEnabledExtensions :
+    // merge(...)`, and the additional paths ARE the cli set. So an agent that
+    // declares no extensions (the `__verifier` judge does) still loaded and
+    // bound every path in this list. That is not free: rtk's factory runs
+    // `rtk --version` as a subprocess on load, so a judge call — one per
+    // verified answer, on the slot the parent is waiting on — was paying for a
+    // process spawn and a fistful of event handlers it can never use. Worse,
+    // one of those paths is `vendor/pi-loop-mode`, whose handlers run against
+    // the OPERATOR's loop state (see that package's FORK.md) — so a judge was
+    // driving the operator's loop as well as costing a subprocess.
+    //
+    // `extensions` above is the agent's own declaration for exactly this
+    // reason; reading it from `getConfig()` made this branch unreachable for
+    // every hidden agent, which is all of them that set it.
+    additionalExtensionPaths: extensions === false ? [] : subagentExtraExtensionPaths(),
   };
   const loader = new DefaultResourceLoader(loaderOpts);
   return {
@@ -716,11 +741,41 @@ export async function runAgent(
   prompt: string,
   options: RunOptions,
 ): Promise<RunResult> {
-  // Bracket the whole subagent lifecycle so the extension factory can detect
-  // it's being re-loaded inside a subagent and avoid clobbering the parent shell.
+  // The spawn bracket is NOT here. See buildSubagentSession() below: it covers
+  // extension loading and binding only, not the child's run.
+  return runAgentImpl(ctx, type, prompt, options);
+}
+
+/**
+ * Build a subagent's session inside the spawn bracket.
+ *
+ * The bracket exists so an extension factory re-loaded for a child can tell it
+ * is being loaded into a subagent (`isInsideSubagentSpawn()`, published to other
+ * packages as `__PI_SUBAGENT_SPAWN_DEPTH__`). Both things that need it happen
+ * here: `reloadAndMap()` calls each extension's factory
+ * (`resource-loader.js` → `loadFinalExtensionSet` → `loader.js:409 factory(api)`),
+ * and `bindExtensions()` inside `createAndConfigureSession` registers the
+ * handlers and emits `session_start`.
+ *
+ * Forge fork: it used to wrap the whole of `runAgentImpl`, which meant the depth
+ * stayed above zero for the entire child run — minutes, for a background agent.
+ * Anything that loaded an extension in that window was misread as a subagent:
+ * an operator `/reload` (or any `session_start` with reason `reload`) while a
+ * background subagent was in flight made THIS extension's own factory return
+ * early, so the operator lost the Agent/StopAgent/AgentStatus tools and the
+ * widget — and `vendor/pi-loop-mode` captured the flag permanently, so the
+ * operator's loop never did its session housekeeping again. The flag answers
+ * "is a subagent session being built right now", and the build is over once the
+ * extensions are bound.
+ */
+async function buildSubagentSession(
+  reloadAndMap: () => Promise<{ extToolMap: Map<string, string[]> }>,
+  create: (extToolMap: Map<string, string[]>) => Promise<AgentSession>,
+): Promise<AgentSession> {
   enterSubagentSpawn();
   try {
-    return await runAgentImpl(ctx, type, prompt, options);
+    const { extToolMap } = await reloadAndMap();
+    return await create(extToolMap);
   } finally {
     exitSubagentSpawn();
   }
@@ -771,17 +826,18 @@ async function runAgentImpl(
     settingsManager,
     bufferNotify,
   );
-  const { extToolMap } = await reloadAndMap();
-  const session = await createAndConfigureSession(
-    ctx,
-    options,
-    agentConfig,
-    type,
-    effectiveCwd,
-    loader,
-    extToolMap,
-    settingsManager,
-    bufferNotify,
+  const session = await buildSubagentSession(reloadAndMap, (extToolMap) =>
+    createAndConfigureSession(
+      ctx,
+      options,
+      agentConfig,
+      type,
+      effectiveCwd,
+      loader,
+      extToolMap,
+      settingsManager,
+      bufferNotify,
+    ),
   );
   const result = await runSessionPrompt(session, prompt, {
     ...options,

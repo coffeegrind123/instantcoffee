@@ -33,8 +33,23 @@ export const MIN_FINISHED_RETENTION_MINUTES = 1 / 60;
 
 export const VALID_SYSTEM_PROMPT_MODES = new Set<string>(["replace", "inherit", "custom"]);
 
-/** Default concurrency config — used for resets. */
-export const DEFAULT_CONCURRENCY: SubagentsConfig["concurrency"] = { default: 4 };
+/**
+ * Default concurrency config — the effective default, and what a reset restores.
+ *
+ * Forge fork: upstream's 4 → 1, for the reasons measured in
+ * `agents/agent-manager.ts` — read that comment before changing this number.
+ *
+ * This is the ONLY place the number lives; the manager's own
+ * `DEFAULT_CONCURRENCY_LIMIT` is read from here. That matters because this
+ * object is always merged into the loaded config (see `applyDefaults` below) and
+ * is always what the manager is constructed with, so a second copy in the
+ * manager was silently unreachable: it said 1 while this said 4, and 4 is what
+ * every session ran with — four children against PARALLEL_SLOTS=1.
+ *
+ * Raise both together if PARALLEL_SLOTS goes up. Per-provider overrides
+ * (`concurrency.providers.forge`) still apply and need no code change.
+ */
+export const DEFAULT_CONCURRENCY: SubagentsConfig["concurrency"] = { default: 1 };
 
 /** Default agent settings — merged into loaded config so callers get a complete shape. */
 export const DEFAULT_AGENT: SubagentsConfig["agent"] = {

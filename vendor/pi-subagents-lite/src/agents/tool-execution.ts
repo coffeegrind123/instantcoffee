@@ -55,6 +55,18 @@ export function buildAgentDetails(
     details.verification = record.verification;
   }
 
+  // Forge fork: what the check itself cost, when it cost anything. The judge
+  // runs in a session of its own, so before this it was spent on the parent's
+  // one slot and reported by nothing at all — the answer's own numbers describe
+  // only the child's session. Absent when the verifier made no model call
+  // (skipped, or off), which keeps "checked, cheap" distinguishable from
+  // "never checked".
+  if (record.stats.verifyUsage) {
+    details.verifyInput = record.stats.verifyUsage.input;
+    details.verifyOutput = record.stats.verifyUsage.output;
+    if (record.stats.verifyUsage.cost > 0) details.verifyCost = record.stats.verifyUsage.cost;
+  }
+
   if (opts?.includeStatus) {
     details.status = record.lifecycle.status;
     details.outputFile = record.display.outputFile;
@@ -247,6 +259,12 @@ export async function executeAgentTool(
     const suffix = `Success! You delegated to an agent. A notification will arrive when done - USER: do not poll, don't check status and don't duplicate the delegated work!\n\nAgent ID: ${agentId}`;
     const label = record.lifecycle.status === "queued" ? "Agent queued" : "Agent running";
     const details = buildAgentDetails(record);
+    // Forge fork: say it in the details rather than leaving the renderer to
+    // infer it from the text. It inferred it by looking for "running in
+    // background", which this message has never said, so a background spawn
+    // rendered with the same green tick as a finished one — at the moment it
+    // started, with no result behind it.
+    details.background = true;
     return successResult(`[${label}] ${suffix}`, details);
   }
 

@@ -6,7 +6,24 @@
 
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Theme } from "./types.js";
+import type { AgentVerification } from "../types.js";
 import { buildStatsParts, formatMs, getDisplayName, buildModelThinkingTag, resolveModelLabel } from "./format.js";
+import { verificationBadge } from "./verification-badge.js";
+
+/**
+ * Forge fork: the verifier's verdict as a trailing marker on a result header.
+ *
+ * `details.verification` is written by buildAgentDetails for every checked
+ * answer and was, until this, read by nothing — so a transcript showed the same
+ * line whether the answer had been checked and passed or never checked at all.
+ * Empty string when there is no verdict: absence means the verifier did not
+ * run, and a marker for that would restore the ambiguity.
+ */
+function verificationSuffix(d: Record<string, unknown> | undefined, theme: Theme): string {
+  const badge = verificationBadge(d?.verification as AgentVerification | undefined);
+  if (!badge) return "";
+  return ` ${theme.fg(badge.tone, `${badge.icon} ${badge.label}`)}`;
+}
 
 // --- Stats rendering helpers ---
 
@@ -77,7 +94,7 @@ export function renderAgentToolResult(
   if (d && d.turnCount != null) {
     const namePart = agentNameLabel(d, theme, modelDisplayStyle);
     const statsLine = buildStatsLine(d, theme, showCost);
-    let lines = `${icon} ${namePart}·${statsLine}\n  ${theme.fg("text", desc)}`;
+    let lines = `${icon} ${namePart}·${statsLine}${verificationSuffix(d, theme)}\n  ${theme.fg("text", desc)}`;
     if (expanded && text) {
       lines +=
         "\n" +
@@ -89,8 +106,14 @@ export function renderAgentToolResult(
     return new Text(lines, 0, 0);
   }
 
-  // Minimal card — background spawns (no stats) use space placeholder
-  const isBackground = text.includes("running in background") || text.includes("queued");
+  // Minimal card — background spawns (no stats) use space placeholder.
+  // `details.background` is the reliable signal; the text tests are kept as a
+  // fallback for results that predate it. On their own they were wrong: the
+  // spawn message reads "[Agent running] Success! You delegated…", which
+  // contains neither phrase, so every background spawn drew a success tick the
+  // instant it started.
+  const isBackground =
+    d?.background === true || text.includes("running in background") || text.includes("queued");
   const prefix = isBackground ? "  " : `${icon} `;
   if (desc) {
     return new Text(`${prefix}${theme.fg("text", desc)}`, 0, 0);
@@ -126,7 +149,7 @@ export function renderSubagentResult(
 
     const namePart = agentNameLabel(d, theme, modelDisplayStyle);
     const statsLine = buildStatsLine(d, theme, showCost);
-    let headerLine = `${icon} ${namePart}·${statsLine}\n  ${theme.fg("text", (d.description as string) || "")}`;
+    let headerLine = `${icon} ${namePart}·${statsLine}${verificationSuffix(d, theme)}\n  ${theme.fg("text", (d.description as string) || "")}`;
     if (d.outputFile as string) {
       headerLine += `\n  ${theme.fg("dim", `tail -f ${d.outputFile}`)}`;
     }
@@ -172,6 +195,7 @@ function buildFallbackResultLine(
   if (d?.type) {
     line += ` ${agentNameLabel(d, theme, modelDisplayStyle)}`;
   }
+  line += verificationSuffix(d, theme);
   const desc = (d?.description as string) || "";
   if (desc) line += `\n  ${theme.fg("text", desc)}`;
   if (d?.outputFile) {

@@ -37,7 +37,9 @@
  *
  * The repair goes the other way: the child *does* have the context to fix its
  * answer, so a failed verdict continues the child's session with the brief
- * restated, once. Judge without history, repair with it.
+ * restated. Judge without history, repair with it. Each repair is judged in
+ * turn, up to a small budget — see `verify-runner.ts` for why the fix is the
+ * answer least worth trusting unchecked.
  *
  * ## What this cannot do
  *
@@ -84,7 +86,20 @@ export function structuralVerdict(answer: string, lifecycle: Pick<AgentLifecycle
 
   // These already carry their own note from status-note.ts, so this only
   // decides that a judge would be telling the parent something it knows.
-  if (lifecycle.status === "aborted" || lifecycle.status === "turn_limited" || lifecycle.status === "stopped") {
+  //
+  // `error` is in the list for a stronger reason than the other three, and it
+  // was missing: a run that ended in a provider error is not merely
+  // self-explanatory, its text is never shown at all. `executeAgentTool`
+  // intercepts error status before it formats a result and returns
+  // `errorResult(record.error)` — so `record.result`, including anything the
+  // judge and up to three repair attempts produced, is read by nobody. The
+  // model calls were spent and the output discarded.
+  if (
+    lifecycle.status === "aborted" ||
+    lifecycle.status === "turn_limited" ||
+    lifecycle.status === "stopped" ||
+    lifecycle.status === "error"
+  ) {
     return { ok: true, worthJudging: false };
   }
 
@@ -177,6 +192,65 @@ export function buildRepairPrompt(brief: string, why: string): string {
 }
 
 /**
+ * Separator between the original task and a steered follow-up. Also the split
+ * point when the accumulated brief has to be trimmed.
+ */
+const FOLLOW_UP_MARKER = "\n\nFollow-up: ";
+
+/**
+ * How large the accumulated brief may grow. A steer can happen any number of
+ * times, and this text is restated in full in every repair prompt, so it needs a
+ * ceiling. Generous next to JUDGE_BRIEF_CHARS, because the judge sees a
+ * truncation of this and the repair sees all of it.
+ */
+export const MAX_BRIEF_CHARS = 6_000;
+
+/**
+ * The brief, extended by a follow-up instruction.
+ *
+ * A continued agent is answering the original task *and* whatever it was steered
+ * with, so both have to be in the text the judge checks against and the anchor
+ * restates. Appending rather than replacing is the point: a follow-up almost
+ * always presupposes the original ("now also list the callers of X"), and
+ * replacing would leave half the answer looking unaddressed.
+ *
+ * When the accumulation outgrows the budget the ORIGINAL task is what survives —
+ * the oldest follow-ups are dropped instead. The original is the one part of the
+ * brief that everything else refers back to, and it is also the part a drifting
+ * child has most likely lost.
+ */
+export function appendFollowUp(brief: string | undefined, followUp: string): string {
+  const base = typeof brief === "string" ? brief : "";
+  const addition = typeof followUp === "string" ? followUp.trim() : "";
+  if (addition === "") return base;
+  if (base.trim() === "") return addition;
+
+  const parts = base.split(FOLLOW_UP_MARKER);
+  const original = parts[0];
+  const followUps = [...parts.slice(1), addition];
+
+  // Newest first, so the ones dropped are the oldest.
+  const kept: string[] = [];
+  let budget = MAX_BRIEF_CHARS - original.length;
+  for (let i = followUps.length - 1; i >= 0; i--) {
+    const cost = followUps[i].length + FOLLOW_UP_MARKER.length;
+    if (cost > budget) break;
+    budget -= cost;
+    kept.unshift(followUps[i]);
+  }
+  // The newest follow-up is the instruction that just arrived; it is never
+  // dropped, only truncated, or the steer would silently do nothing.
+  if (kept.length === 0) {
+    const room = MAX_BRIEF_CHARS - original.length - FOLLOW_UP_MARKER.length;
+    if (room <= 0) return original;
+    // The trailing slice is the guarantee: truncate() adds its own "… [N more
+    // chars]" marker, which is worth keeping when it fits and is not free.
+    return (original + FOLLOW_UP_MARKER + truncate(addition, room)).slice(0, MAX_BRIEF_CHARS);
+  }
+  return original + kept.map((f) => FOLLOW_UP_MARKER + f).join("");
+}
+
+/**
  * The reminder injected after a compaction, so the brief cannot be summarised away.
  *
  * Short on purpose: it lands in a context that was just cut down to make room,
@@ -191,16 +265,43 @@ export function buildAnchorMessage(brief: string): string {
   ].join("\n");
 }
 
-/** What the parent is told when the answer went out unverified or failed. */
-export function verificationNote(kind: "failed" | "unparsed" | "repaired"): string {
+/**
+ * English for a small count, so the note reads like a sentence rather than a
+ * log line. The parent model reads this text, and "1 attempts" is the kind of
+ * thing it copies into its own answer.
+ */
+function describeAttempts(attempts: number): string {
+  if (attempts <= 0) return "no attempt was made to correct it";
+  if (attempts === 1) return "one attempt to correct it did not fix it";
+  if (attempts === 2) return "two attempts to correct it did not fix it";
+  return `${attempts} attempts to correct it did not fix it`;
+}
+
+/**
+ * What the parent is told when the answer went out unverified or failed.
+ *
+ * `attempts` is how many repairs were actually spent, which is not the same as
+ * the configured ceiling: a run that stalls or comes back empty stops early,
+ * and claiming a budget that was never spent would misdescribe the effort
+ * behind the answer the parent is holding.
+ */
+export function verificationNote(kind: "failed" | "unparsed" | "repaired" | "stalled", attempts = 1): string {
   switch (kind) {
     case "failed":
       return (
-        "\n\n[verification: this answer was checked against the task and did not address it, " +
-        "and one attempt to correct it did not fix it. Treat it as unreliable.]"
+        "\n\n[verification: this answer was checked against the task and did not address it, and " +
+        `${describeAttempts(attempts)}. This is the agent's original answer, kept because the ` +
+        "corrections were no better. Treat it as unreliable.]"
+      );
+    case "stalled":
+      return (
+        "\n\n[verification: this answer did not address the task, and the agent repeated itself " +
+        "when asked again, so it was not asked a third time. Treat it as unreliable.]"
       );
     case "repaired":
-      return "\n\n[verification: the first answer did not address the task; this is the corrected one.]";
+      return attempts <= 1
+        ? "\n\n[verification: the first answer did not address the task; this is the corrected one, and it was re-checked.]"
+        : `\n\n[verification: the first answer did not address the task; this is the ${attempts}th attempt, and it was re-checked.]`;
     case "unparsed":
       return "\n\n[verification: the check could not be read, so this answer went out unchecked.]";
   }

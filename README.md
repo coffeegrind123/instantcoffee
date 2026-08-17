@@ -638,8 +638,12 @@ Be clear about what it buys here, because most of what is written about
 subagents does not apply to one llama slot. It is **not** parallelism:
 `PARALLEL_SLOTS=1` means concurrent children queue no matter where the queue
 forms, and the fork therefore defaults concurrency to 1 so at most one foreign
-prefix competes with the parent's at a time. What it buys is **context
-isolation** — the noisy search happens in a window that is not this one.
+prefix competes with the parent's at a time. (That default lived in the wrong
+file for a release and every session actually ran at 4 — the manager's constant
+was unreachable behind a config store that always supplies one. It is one number
+now, in `config/config-io.ts`, and a probe through the real wiring reports
+`{ limit: 1 }`.) What it buys is **context isolation** — the noisy search happens
+in a window that is not this one.
 
 **The real cost is the prefix cache, not the schema.** Measured against
 `cached_tokens` on both ports, with a repeat of the same prefix as the control:
@@ -686,15 +690,33 @@ both:
 | compaction guard | yes, by discovery | a child that blows its own window returns nothing |
 | forge patches | yes, server-side | same provider, same proxy |
 | `rtk` | **put back** | a child running `bash` uncompressed is the session that can least afford it |
-| `/loop` | **put back** | a bounded goal loop belongs in a window that is not the operator's |
+| `/loop` | **not given** | it keeps its loop in module scope, and a child binds the same module — see below |
 | `prinny` + its skills | **denied outright** | the model spawns subagents on its own initiative; they do not get to post to Matrix |
 
 The denial is unconditional and runs after the agent's own filter, so no agent
 file can widen it back, and `SUBAGENT_EXTRA_EXTENSIONS` cannot be used to smuggle
-it in. And because a child can now loop, every subagent has a turn ceiling —
-`DEFAULT_MAX_TURNS = 40`, which steers "wrap up immediately" at the limit and
-hard-aborts only after the grace turns, so hitting it produces an answer rather
-than a severed run. `StopAgent` is the parent's kill switch.
+it in. Every subagent also has a turn ceiling — `DEFAULT_MAX_TURNS = 40`, which
+steers "wrap up immediately" at the limit and hard-aborts only after the grace
+turns, so hitting it produces an answer rather than a severed run. `StopAgent` is
+the parent's kill switch.
+
+**`/loop` was put back, and then taken out again**, which is worth a paragraph
+because the reason is the sharpest edge in this whole design. Subagents run **in
+the parent's process**, so a child session binds the *same module object* — and
+`vendor/pi-loop-mode` keeps its entire loop in module scope while getting its own
+event bus per session. All thirteen of its handlers therefore ran a second time
+per delegation, against the operator's one loop. Reproduced, with a loop running
+and a subagent doing something unrelated: the child's system prompt gained
+*"Loop mode is active. Goal: `<the operator's goal>` … keep every response under
+1,200 characters … never stop on your own"*; the child's `agent_end` drove the
+operator's iteration ladder and had the operator's **next loop turn delivered
+into the child**; and a child that compacted had its whole conversation replaced
+by the operator's loop handoff summary. An earlier fix had guarded two of the
+thirteen. The package is now inert inside a spawn and is no longer handed to a
+child at all, which also returns ~177 tokens/turn of `loop` tool schema to the
+child's window. It goes back when its state is keyed by session rather than by
+module. `context/design/subagents-loop-verifier-evaluation.md` has the
+reproductions.
 
 **The model can start and stop a loop itself.** `/loop` was command-only, which
 meant only a human could start one — a model calls tools, it cannot type a slash
@@ -715,9 +737,25 @@ The judge is a fresh one-turn agent with no tools that sees **only** the task an
 the answer — not the child's session. A model shown its own reasoning ratifies
 its own answer, so the judge is made harder to fool by knowing less. A failed
 verdict continues the *child* once, since that is where the context to fix it
-lives. One judge call, one repair, then it hands back what it has and says so.
-A passing answer is returned undecorated; `details.verification` records what
-happened either way. `SUBAGENT_VERIFY=0` turns it off.
+lives — and that fix is then judged in its turn, because the answer least worth
+trusting unchecked is the one produced by a child already known to have drifted.
+That check→repair pair is a loop with a ceiling, exactly like the child's own
+turn limit: `SUBAGENT_VERIFY_ROUNDS` repairs (default 1, clamped to 3), stopping
+early on an empty retry or one identical to the answer just rejected. Worst
+case is `1 + 2×rounds` model calls for one subagent answer. If every attempt
+fails, the child's **original** answer goes back, flagged — it is what the
+parent would have received with the verifier off, and a retry from a child
+that has just been told twice it is wrong is not an upgrade.
+`SUBAGENT_VERIFY=0` turns the whole thing off.
+
+The answer **text** is only annotated when something went wrong — a note there
+is text the parent model reads and quotes, so a pass must not carry one. The
+verdict instead shows as a marker on the result line and in the agent list: dim
+`✓ checked` for a pass, `✎ repaired`, `✗ off-task`, and a `⊘` label naming the
+kind of skip. **No marker means it was never checked**, which is the distinction
+the whole layer exists to draw and which was previously impossible to see. While
+the judge is working the agent keeps its row in the widget and says so, because
+that call holds the one llama slot the session is waiting on.
 
 It costs nothing in schema — the verifier agent is hidden from the `Agent` tool's
 type list, and that was measured, not assumed. It does not catch subtly wrong

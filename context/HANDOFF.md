@@ -1,167 +1,164 @@
-# Handoff — 2026-08-17 (subagents)
+# Handoff — 2026-08-17 (second audit: the seam, not the pieces)
 
-The previous handoff's brief was "subagents on a local model". That is done: a
-fork is vendored, measured, wired and pushed. This one carries what changed, what
-is verified against a real run and what is not, and two jobs for the next
-session — both of them about **seeing** what the subagents are doing.
+The brief was to evaluate subagents, the loop and the verifier comprehensively
+and write it up. The evaluation found **eleven defects**, four of them proven by
+running code against the real modules rather than by reading, and **two of the
+first audit's conclusions were wrong at runtime**. Ten are now fixed. One is left
+open on purpose, and it is a scope call rather than a repair — see below.
 
-Detail lives in `design/decisions.md` under the four 2026-08-17 entries. This
-file is the map.
-
----
-
-## What landed
-
-| Commit | What |
-| --- | --- |
-| `db78545` | Vendor `pi-subagents-lite@1.11.0`, deny prinny, bound the loop, add the `loop` tool |
-| `11d7ec4` | Wire the answer verifier; subagents on by default |
-
-### Paths
-
-| Path | Change |
-| --- | --- |
-| `vendor/pi-subagents-lite/` | **New.** The fork. 55 tests. `FORK.md` is the full account. |
-| `vendor/pi-loop-mode/extensions/index.ts` | `loop` registered as a **tool**, not only a command. 48 tests (39 + 9 new). |
-| `.pi/extensions/compaction-guard/src/output-cap.ts` | `planOutputCap` takes its advice from the caller. 39 tests. |
-| `scripts/pi-local.sh` | Loads the fork; exports `SUBAGENT_VERIFY` and `SUBAGENT_EXTRA_EXTENSIONS`. |
-| `.env` | `SUBAGENTS_ENABLED=1`, `SUBAGENT_VERIFY=1`, `SUBAGENT_EXTRA_EXTENSIONS` documented. |
-| `context/testing/subagents-loop-verifier.md` | **New.** Hand-testing script for all of it. |
-
-### The shape of it, in one paragraph
-
-Subagents run **in process** via pi's own `createAgentSession` — on one llama
-slot a child `pi -p` process buys no parallelism, it queues, while costing a
-second system prompt. The three tools cost **710 chars / ~178 tokens** a turn,
-measured on the wire. A child does **not** inherit the parent's `-e` flags: it
-discovers its own extensions, so `.pi/extensions/` reaches it and `vendor/` does
-not. prinny is denied unconditionally on top of that; loop and rtk are put back
-deliberately. Every subagent has a 40-turn ceiling. Answers are checked against
-the task by a judge that sees only the task and the answer.
+The write-up is `context/design/subagents-loop-verifier-evaluation.md`: findings,
+reproductions, ASCII diagrams of the runtime shape, and §10 for what shipped.
+The first audit's `subagents-loop-verifier-anatomy.md` is still the document to
+read for *design*; it now carries five inline corrections pointing here. Decision
+history is the new `## 2026-08-17 (second audit)` entry in
+`context/design/decisions.md`.
 
 ---
 
-## Verified live, and not
+## The one-line version
 
-**Verified against the real model:** the 27B drives the description-free schema
-(it set `run_in_background` on an undescribed boolean and polled `AgentStatus`
-uninstructed); the background result cap firing at 14,218 → 10,495 chars with the
-parent then reading the spill file on its own; `"verification":"passed"` on a
-real delegation; the tool surface at 710 chars on the wire; a subagent's own
-inventory showing no prinny and no `Agent`; `git status --short` unrewritten
-before rtk was put back.
+Each of the three pieces is well built. **Every defect was in the wiring between
+two of them**, which is also why 133 passing tests caught none: every test in
+both packages exercises one module in isolation.
 
-**Not verified live, and worth attacking first:**
+## The big one — the loop was running inside every subagent
 
-- **The verifier's failure path.** Judge says NOT_ADDRESSED → repair → still
-  fails. Unit-tested only. The judge's real false-positive rate is unknown, and
-  whether a second attempt from a drifted child beats the first is an open
-  question.
-- **The anchor.** Needs a child that fills its own 32k window and compacts.
-- **The turn ceiling** at 40, and the steer-then-abort ladder.
-- **prinny forwarding of a background subagent result.** Answered from source
-  only: `forwardToMatrix` returns early unless a room has a *live*
-  `awaitingReply` entry, and `forwardResult` deletes every live entry when a run
-  settles. So a subagent that finishes **after** the run settled answers into
-  the void — the Matrix user who asked never sees it. Failure mode is silence,
-  not a leak, but it is a real gap.
+`vendor/pi-loop-mode` keeps its whole state machine in module scope. A subagent
+binds *the same module object* but gets its own `pi` and its own event bus, so
+all **thirteen** of its handlers ran a second time per delegation against the
+operator's one `LoopState`. The previous session's B4 fix guarded two of them.
 
----
-
-## Next session — two jobs, both about visibility
-
-### 1. Find who has already built the Claude-Code-style agent taskbar
-
-Claude Code shows a status line entry like
+Reproduced, with a loop running and a subagent doing something unrelated:
 
 ```
-· 2 shells ·  ← for agents  ↓ to manage
+child before_agent_start → "<<CHILD PROMPT>>\n\nLoop mode is active.
+   Goal: refactor the parser. … keep every response under 1,200 characters …
+   never stop on your own"
+child agent_end          → operator's iteration count 0 → 1, operator's pending
+   timer cancelled, operator's next loop turn SENT INTO THE CHILD
+child compaction         → replaced by the operator's loop handoff summary:
+   "the conversation above was dropped … Do not try to recall it"
 ```
 
-alongside the MCP indicator (`🔌 MCP: 1 server enabled · prinny: connected`), and
-the arrow keys **hop into a running agent's shell** — you can watch it work and
-come back. That is the ability to reproduce here.
+Per foreground verified delegation that fired **three** times — the child's run,
+the judge's run (the judge is itself a subagent session), and a repair.
 
-**Check what we already have before building anything.** The vendored fork ships
-more of this than it looks:
+Two things worth carrying forward beyond the fix:
 
-- `src/ui/agent-widget.ts` — a live widget with `setStatus(key, text)`, and a
-  `statusBarFormat: "full" | "compact"` setting already plumbed through config.
-- `src/ui/conversation-viewer.ts` — a viewer for a child's transcript.
-- `src/ui/menu/menu-running-agents.ts` — view / steer / continue / stop / clear.
-- `src/ui/viewer-keys.ts`, `src/ui/searchable-select.ts` — key handling.
+- **The anchor is load-bearing in a way nobody intended.** It was written as
+  prevention against pi's summaries gradually eroding the brief. It turns out to
+  have been the *sole survivor* of a total context substitution whenever a child
+  compacted under an active loop. Do not let anyone retire it as redundant.
+- **A subagent given the operator's goal and "never stop on your own" is a drift
+  cause**, injected by the stack, into precisely the mechanism the verifier
+  exists to detect drift in.
 
-So the question is probably not "build a fleet view" but "what is missing between
-the `/agents` menu and a one-keystroke hop from the status line", and whether
-someone upstream has solved the keyboard affordance better.
+**Fixed by making the package inert in a spawn** — the factory returns early, so
+no command, no tool, no handler — and by `subagent-denylist.ts` no longer handing
+`pi-loop-mode` to a child at all, which also returns ~177 tokens/turn of `loop`
+tool schema to the child's window.
 
-**Candidates already spotted while choosing the package** (all read, none
-adopted):
+## The pattern behind the two wrong conclusions
 
-| Package | What it has | Why it is interesting |
-| --- | --- | --- |
-| `pi-subagents` (nicobailon, 244k/mo, 3182★) | `src/tui/fleet.ts`, `src/tui/render.ts` (103KB), `test/unit/fleet.test.ts`, `render-fork-badge.test.ts` | The most developed TUI of the three. Its agent registry even names "FleetView's default when no agent name is typed", so the fleet concept is first-class. |
-| `@tintinweb/pi-subagents` (40k/mo, 895★) | `src/ui/fleet-list.ts`, `src/ui/agent-widget.ts`, `src/ui/conversation-viewer.ts`, a `fleetView` setting, `test/fleet-list.test.ts` | In-process like ours, so its widget code is directly portable. Also has mid-run steering. |
-| `@quintinshaw/pi-dynamic-workflows` (27k/mo, 419★) | an interactive `/workflows` TUI | Different shape — workflow-centric rather than agent-centric — but the live-progress problem is the same. |
+Both were fixes applied in a file whose value never reaches the code that reads
+it. Worth remembering as a class:
 
-The catalog is `pi.dev/packages?name=subagent` — 341 matches, server-rendered, so
-one `curl` gets the whole top-50 by downloads. `context/design/decisions.md`
-(2026-08-17, "subagents: picked in-process") has the parse and the ranking.
+- **Concurrency was 4, not 1.** `agent-manager.ts` reads
+  `concurrency?.default ?? DEFAULT_CONCURRENCY_LIMIT`, and `ConfigStore` always
+  supplies a `default` — from `config-io.ts`, which still said 4. So the `??`
+  never fired, and every session ran four children against `PARALLEL_SLOTS=1`:
+  the exact state the long measured comment argues against. The number now lives
+  in one place.
+- **`extensions: false` still did not reach the loader.** B5's fix reads
+  `config.extensions`, and `getConfig()` routes any `hidden` agent through
+  general-purpose. `__verifier` is hidden for an unrelated reason (11 chars of
+  tool schema), so its `false` became `true` and the guard was unreachable code.
+  It went unnoticed because `tools: false` is read from `getAgentConfig` directly
+  and *did* work — the property everyone checked was not the property the fix was
+  about.
 
-**What the answer has to respect here**, and it is why the popular one may still
-be the wrong donor: everything is charged against a 32k window and one slot. A
-fleet view that costs nothing in the model's context is free; one that adds tool
-schema is not. Measure any adoption on the wire, the same way the rest of this
-was measured.
+**The lesson: when a fix is a predicate on a value, test the predicate, not the
+value's neighbour.** One assertion on what the loader/manager actually decides
+would have caught both. Both now have one.
 
-### 2. A visual indicator for verifier work and its verdict
+## The rest
 
-Right now **a passing verification is completely invisible**, and that is a real
-defect rather than a nicety. Measured: `src/ui/renderer.ts` does not read
-`details.verification` at all. The field is set on every checked answer
-(`passed` / `repaired` / `failed` / `unparsed` / `errored` / `skipped-*`) and
-surfaced in the tool result's details, but the only things a person sees are:
+| Finding | Fix |
+| --- | --- |
+| Nothing could stop a verification — Esc, `StopAgent` and the watchdog all no-op once the status is terminal, while the parent's tool call is blocked on a gate only verification opens | per-call deadline, `SUBAGENT_VERIFY_TIMEOUT_MS` (default 300s), surfacing as the existing `errored` verdict |
+| A steered continuation was judged against the *original* brief, so the repair actively undid the operator's instruction and called it `✎ repaired` | `appendFollowUp()`, bounded, original preserved |
+| A stale `✓ checked` badge survived an unverified continuation | verdict cleared with the result |
+| The verifier's own tokens were tallied nowhere; the repair ran without `onCompaction`, i.e. with the anchor off on the turn most likely to compact | `stats.verifyUsage` + tracking callbacks on the repair |
+| An errored run was judged and its text then discarded unread by `executeAgentTool` | `error` added to the statuses not worth a judge |
+| The spawn bracket covered the whole child run, so an operator `/reload` mid-background-agent stripped the parent's subagent tools and permanently mis-branded the loop instance | bracket narrowed to `reloadAndMap()` → `bindExtensions()` |
+| The `loop` tool truncated any `--check` command containing a double quote, reporting it as a *failing goal check* | escape-pair aware pattern, `\"`/`\\` only |
 
-- a `ui.notify` line, and only on failure or an unreadable verdict;
-- an appended note in the answer text, and only when something went wrong.
+## Deliberately not done: per-session loop state
 
-So "checked and fine" and "never checked at all" look identical, which is
-exactly the distinction the verifier exists to make. Worse, there is no
-indication while the judge is *running* — the session simply appears to pause,
-on a stack where pauses are already common because of the single slot.
+The deep half of the loop problem — `state` keyed by session instead of by module
+— is **~450 references across 1,846 lines** plus 18 helper signatures. A closure
+around the whole file is the smallest logical change and an ~800-line reindent
+that ends the ability to diff this fork against upstream 2.5.4; threading a
+session handle preserves that but touches every reference.
 
-Two things to build:
+There is **no live bug left** either way: the guard makes the package inert in a
+child and it is no longer loaded there. What the refactor buys is a *feature* — a
+bounded loop inside a subagent — which is what the extension list originally
+wanted and which has never actually worked, because every version of it destroyed
+the operator's loop.
 
-- **In-flight:** the widget should show that verification is happening, the same
-  way it shows an agent running. It is a real model call on the shared slot and
-  the user is waiting on it.
-- **Verdict:** a compact marker on the finished agent line. `passed` should be
-  quiet but present (a tick), `repaired` and `failed` should be loud, and
-  `skipped-*` should say which kind of skip, because "empty answer" and "the run
-  was cut off" are different problems with different fixes.
+So it is your call, not a task. If the feature is wanted, take the threading
+shape with the isolation suite as the safety net. If it is not, delete the intent
+from `subagent-denylist.ts`'s comment and the guard becomes permanent.
 
-`src/ui/renderer.ts` (`renderAgentToolResult`, `renderSubagentResult`) and
-`src/ui/agent-widget.ts` are where this goes. `record.verification` is already
-populated and already in `buildAgentDetails` — the data exists, nothing reads it.
+## Gates
 
----
+```
+vendor/pi-subagents-lite   lint 65/65 files   tests 100/100   (was 81)
+vendor/pi-loop-mode        lint clean         tests  63/63    (was 52)
+.pi/extensions/compaction-guard                tests  39/39    (unchanged)
+```
+
+Every guard added was **control-run with the fix disabled**: 8 of the 9 new
+subagent-isolation assertions fail without it, and the `--check` test fails
+against the old pattern. The one assertion that passes either way is the
+pre-existing weak one, kept for continuity. A test that has not been watched
+failing is not evidence — the standing example is the first audit's B3, a test
+named *"survives an unknown action"* that passed **because** of the bug.
+
+## Next session
+
+1. **Run section I of `context/testing/subagents-loop-verifier.md`** on a quiet
+   box. Still the one thing this work has never had: eyes on the real TUI. The
+   claim to falsify is that the agent's row stays put, spinner running, while the
+   judge works.
+2. **Watch a delegation with a loop running.** That is the scenario this session
+   fixed and only tested at the module level. Start `/loop`, delegate, and check
+   that `/loop status` still shows the goal and the iteration count has not moved
+   — and that the subagent's answer is about the subagent's task.
+3. **Check the new accounting live.** `stats.verifyUsage` and the deadline have
+   never been exercised against a real model; the deadline in particular is a
+   behaviour change under load.
+4. **Still open from before, unchanged:** the verifier's failure path (judge says
+   no → repair) has never fired live and the judge's false-positive rate is
+   unknown; the anchor needs a child that fills its own 32k window; the 40-turn
+   ceiling and steer-then-abort ladder are untested live; a background subagent
+   that settles after its Matrix run has retired answers into the void
+   (`forwardToMatrix` returns early without a live `awaitingReply` entry); and
+   finished widget rows still leave after `finishedRetentionMinutes` (default 1),
+   so the keyboard hop cannot reach an agent that finished a few minutes ago —
+   `/agents` can, all session.
+5. **If the stall recurs:** `srv stop: cancel task` with no timing line means
+   llama accepted the task and dropped it; correlate with `prompt state size …
+   exceeds cache size limit 2048 MiB, skipping`, which appeared immediately
+   before both cancels last session.
 
 ## Where to look
 
-- `vendor/pi-subagents-lite/FORK.md` — why this package out of 341, what was
-  changed, the wire measurements, and the prefix-cache correction.
-- `vendor/pi-loop-mode/FORK.md` — the loop tool, and the three non-obvious
-  things it needed.
-- `context/design/decisions.md`, the four 2026-08-17 entries.
-- `context/testing/subagents-loop-verifier.md` — how to exercise all of it by
-  hand, including the two paths that have never fired live.
-
-## One environment note
-
-The box was at 911 MiB free with 4.5 GiB swapped during this session, and a
-`browser_navigate` timed out at exactly its 25s budget because Chrome's CDP
-endpoint stopped answering under that pressure — the supervisor logged the
-strike and the recovery. The navigation itself had succeeded. `/free --idle 8`
-reclaimed two 11h-idle sessions (~500 MB RSS, 700 MB swap); the dev-tool caches
-were already empty. If the browser stalls again, check `free -h` before
-suspecting the tool.
+- `context/design/subagents-loop-verifier-evaluation.md` — the audit, the
+  reproductions, §10 for what shipped and what did not.
+- `context/design/subagents-loop-verifier-anatomy.md` — the design account, now
+  with five inline corrections.
+- `context/design/decisions.md`, the `## 2026-08-17 (second audit)` entry.
+- `vendor/pi-subagents-lite/FORK.md` §2 (corrected), §5 (loop removed) and §11
+  (the six new fixes); `vendor/pi-loop-mode/FORK.md`, the fourth-change section.

@@ -3704,3 +3704,344 @@ subagent, which is to say almost never, which is to say it would rot unnoticed.
 The tests assert the *call counts* as well as the outcomes: a check that quietly
 costs two model calls where it promised one is a real regression on one slot and
 nothing else in the tree would catch it.
+
+## 2026-08-17 (verifier, part 3) — the check nobody could see, and the row that vanished
+
+Both halves of the next session's brief turned out to be the same defect wearing
+two hats: the verifier had no representation in the UI at all. What follows is
+what was measured, because one of the two is worse than the handoff described.
+
+### A pass and a no-check rendered identically
+
+`record.verification` is set on every checked answer and `buildAgentDetails`
+puts it in `details.verification`. Nothing read it. `src/ui/renderer.ts` never
+mentioned the field; the widget's finished line never mentioned it; the viewer
+and the `/agents` list never mentioned it. The only surfaces were a `ui.notify`
+line on failure and an appended note in the answer text on failure — so *every*
+good outcome was silent, and silence already meant "the verifier is off".
+
+That is the exact distinction the layer exists to draw, so it is a defect rather
+than a nicety, and the fix is a marker rather than a note: notes live in the
+answer text, which the parent model reads and quotes, and a passing answer must
+not be decorated. `src/ui/verification-badge.ts` owns the mapping once —
+icon, wording and tone — because it is painted in five places and a verdict that
+says `repaired` in one and `fixed` in another costs the reader more than it
+tells them. Absence deliberately renders nothing.
+
+### The row disappeared while the judge ran
+
+This one was not in the brief, and it is the sharper of the two. Verification
+runs inside the settlement chain's `.then`:
+
+```
+lifecycle.status = "completed"      ← already terminal
+await runVerification(...)          ← one model call, sometimes two
+lifecycle.completedAt ??= Date.now() ← stamped only afterwards
+```
+
+`AgentWidget.categorizeAgents()` sorts on precisely those two fields: running,
+queued, or completed *with a completedAt inside the retention window*. Between
+those three lines a record is none of them. The row was therefore **removed from
+the widget for the entire duration of the check** and re-appeared when it
+finished — on a stack where the session already pauses for every subagent
+because there is one llama slot, deleting the only on-screen explanation of the
+wait is the worst available behaviour. Verified by rendering the real
+`agent-widget.ts` against a fabricated record in that state: before the fix it
+returned zero lines.
+
+A `verifyPhase` field on the record fixes it, keeping the row in the active set
+and putting the phase in the activity line. It is reported by `verify-runner`
+through an `onPhase` dep rather than set around the call in `agent-manager`, so
+the free structural checks — which return before any model call — never flash a
+verifying row for a skip.
+
+### Two details that only a test would have caught
+
+- **A throwing phase hook must not change the verdict.** The hook is called from
+  inside the try that decides the outcome, so without a guard an exception from
+  a display concern is caught below and reported as `errored` on an answer that
+  passed. Guarded, and tested.
+- **`skipped-cutoff` was two different things.** It covered both "the run was
+  cut off" and "no brief was recorded to check against". The first explains
+  itself in the status note; the second is a fault in our own spawn path. One
+  label hid the only one of the two that is a bug in us, so there is now a
+  `skipped-nobrief`.
+
+### How the UI was verified without a TUI
+
+Neither the widget nor the renderer can be imported by the fork's plain-node
+test runner: they pull `.js` specifiers that resolve only under pi's loader,
+`@earendil-works/*` packages that live inside pi-coding-agent's own
+`node_modules`, and constructor parameter properties that node's strip-only mode
+refuses. A scratchpad resolve/load hook — bare specifiers resolved as if the
+importer sat in pi's `dist`, `./x.js` mapped to `./x.ts`, and
+`stripTypeScriptTypes(..., { mode: "transform" })` for the same reason
+`tests/lint.mjs` already uses it — renders the **real** modules against
+fabricated records. That is how the vanishing row was confirmed rather than
+argued, and how each verdict's line was read before it was committed.
+
+The pure mapping module has ordinary tests in the repo; the harness stays in the
+scratchpad, because a test that needs a bespoke loader to run is a test that
+will be deleted the first time it breaks.
+
+## 2026-08-17 (taskbar) — the agent taskbar we were going to build already exists
+
+The other half of the brief was to find who had built the Claude-Code-style
+agent taskbar — a status-line entry plus a keystroke that hops into a running
+agent's shell — and whether to port it. The answer is that this fork already has
+it, and the two candidate donors have the same design rather than a better one.
+
+Present, and read rather than assumed:
+
+| Piece | Where |
+| --- | --- |
+| Status-line entry `◈ Agents: 2 active · 3 done` | `agent-widget.ts` `updateStatusBar` → `ctx.ui.setStatus("subagents", …)`, with a `statusBarFormat: full \| compact` already in config |
+| Live list above the editor, spinner and per-agent stats | `agent-widget.ts` `renderWidget`, on an 80 ms timer |
+| `↓` on an empty prompt activates it, `↑↓` move, enter opens the child's live transcript, esc back | `events.ts` `createNavInputHandler` → `ConversationViewer` |
+| Steer / stop / continue / clear on a selected agent | `menu/menu-running-agents.ts` |
+| Scroll window, nav-order freeze, compact mode, finished-row retention | `agent-widget.ts` |
+
+`ctx.ui.getEditorText()` — which the activation gate depends on, and which
+would silently disable the whole affordance if it were absent — is present in
+pi 0.84.2 (`dist/core/extensions/types.d.ts:133`). Checked, because the gate
+fails closed: `undefined === ""` is false and `↓` would simply never activate.
+
+The donors, unpacked from npm and read:
+
+- **nicobailon `pi-subagents` 0.50.0** — `tui/fleet.ts` (1,314 lines),
+  `fleet-status.ts` (691), `fleet-transcript.ts` (530), `render.ts` (2,224). A
+  full-screen overlay with its own keymap (`j/k`, `s` steer, `D` stop, `H`
+  inspect), and its status widget advertises **`↓/← to inspect`** with
+  `↑↓/jk select · enter inspect · esc back` — the same affordance as ours. It is
+  built on out-of-process runs: artifact directories, status files, control
+  channels, external-run snapshots. Porting it means porting that architecture,
+  which is the one we deliberately did not choose.
+- **tintinweb `@tintinweb/pi-subagents` 0.16.1** — `ui/fleet-list.ts` (381
+  lines), whose header comment describes exactly what we already do: a widget
+  list, all key handling through `onTerminalInput`, gated on
+  `getEditorText() === ""`, enter opens the conversation overlay. Its only
+  substantive differences are `←` as a second activator, a `main` row for the
+  parent session, and `belowEditor` placement.
+
+So: no adoption. The one thing worth taking is the `←` activator, which is a
+single predicate and which both donors and Claude Code itself accept — done, with
+the hint now reading `↓/← to navigate`. Everything here is UI-side and costs
+nothing on the wire; the `Agent` tool schema is untouched.
+
+What is *not* solved, and is a config default rather than missing code: finished
+rows leave the widget after `finishedRetentionMinutes` (default 1), so the
+keyboard hop cannot reach an agent that finished a few minutes ago — `/agents`
+can, for the whole session. Claude Code keeps them listed. Raising the default
+is a one-line config change if that gap ever bites.
+
+## 2026-08-17 (verifier, part 4) — a budget of rounds, because the fix was the one thing nobody checked
+
+Asked, mid-session: if the judge rejects an answer, does the work restart and
+get re-judged, and for how long? The answer was "once, and the retry is never
+checked" — and saying it out loud exposed the asymmetry. The verifier judged the
+child's *original* answer and then shipped the repair on faith, so **the single
+answer that went out unverified was the one produced by a child already known to
+have drifted**. The cheap case was checked; the expensive case was not.
+
+So the check→repair pair is now a loop with a ceiling, and the ceiling is
+configurable the same way the child's turn limit is:
+`SUBAGENT_VERIFY_ROUNDS`, default 1, clamped to [0, 3], exported by
+`pi-local.sh` (a value that only ever lives in `.env` is a knob that silently
+does nothing — the same trap as `SUBAGENT_VERIFY` in part 2).
+
+### What a round costs, since that decides the default
+
+A round is a repair **plus** the re-check that follows it: two model calls on
+the one llama slot the parent is blocked on, so the worst case for a single
+subagent answer is `1 + 2×rounds` calls. The pass path is unchanged at one call,
+which matters because it is the common one.
+
+The non-obvious cost is the child's window. Each repair is another turn in a
+session that is already the most likely thing at fault, and re-asking a child
+whose context is nearly full pushes it toward exactly the compaction that
+produces the drift the verifier exists to catch. A verifier that insists hard
+enough manufactures the failure it is looking for. One round by default, three
+at most; past that the honest fix is a narrower task.
+
+### Three stop conditions, not one
+
+A counter alone is not a bound worth having. The loop also ends when a repair
+comes back **empty** (nothing to judge, and the structural gate would reject it
+anyway) and when a repair is **identical to the answer just rejected** — a child
+that repeats itself has nothing more to give, and another round buys the same
+verdict at full price. Both are tested; the counter is the least interesting of
+the three.
+
+### Which answer goes back when everything fails
+
+The child's **original**. It is what the parent would have received with the
+verifier switched off, so failing back to it is the least surprising behaviour,
+and the alternative ships text written by a child that has just been told twice
+that it was wrong — in practice shorter, more apologetic, and no better
+addressed. The note names how many attempts were actually spent rather than the
+budget that was configured, because claiming effort that was never made
+misdescribes the answer the parent is holding.
+
+Unreadable verdicts still fail **open** mid-loop: a chatty 27B must not be able
+to spend the whole budget by being unparseable.
+
+### Cost of the default, restated
+
+Nothing changes for a correct subagent: one judge call, undecorated answer, dim
+`✓ checked`. What changed is that `repaired` now means *checked and fixed*
+rather than *we tried something*, and a repair that is still off-task reports
+`failed` instead of quietly presenting itself as the corrected answer.
+
+## 2026-08-17 (second audit) — the seam between the three pieces, not the pieces
+
+A second pass over subagents, the loop and the verifier, written up in full with
+reproductions in `context/design/subagents-loop-verifier-evaluation.md`. Eleven
+findings; ten fixed. The pieces are individually sound — every defect is in the
+wiring between two of them, which is also why 133 passing tests caught none of
+them: every test in both packages exercises one module in isolation.
+
+Two of the first audit's conclusions were wrong at runtime, and both were wrong
+in the same way: a fix was applied in a file whose value never reaches the code
+that reads it. That is the pattern worth remembering from this session.
+
+### The loop was running inside every subagent
+
+The biggest one, and the correction to B4. `vendor/pi-loop-mode` keeps its state
+machine in module scope. A subagent binds *the same module object* but gets its
+own `pi` and its own event bus, so all **thirteen** of its handlers ran a second
+time per delegation against the operator's one `LoopState`. B4 guarded two of
+them — the two the first symptom had been traced to — and stopped.
+
+Reproduced against the real module, with a loop running and a subagent doing
+something unrelated:
+
+- `before_agent_start` appended *"Loop mode is active. Goal: `<the operator's
+  goal>` … keep every response under 1,200 characters … do one progress batch per
+  turn … never stop on your own"* to the **child's** system prompt. Every clause
+  of that is wrong for a subagent, and it is a drift *cause* injected into the
+  exact mechanism the verifier exists to detect drift in.
+- `agent_end` ran the whole iteration ladder on the operator's state with the
+  child's ctx: cancelled the operator's scheduled iteration, incremented its
+  iteration count (burning its `--max` budget), persisted its state into the
+  child's throwaway in-memory branch, and **delivered the operator's next loop
+  turn into the child**. `agent-session.js:779` continues a session for messages
+  queued by an `agent_end` handler, so the child then worked on the operator's
+  goal until its 40-turn ceiling — while the operator's loop, with no pending
+  timer, silently stopped advancing.
+- `session_before_compact` replaced the child's compaction with a handoff built
+  from the operator's loop state. On a 32k window `windowNeedsHandoff` is always
+  true, so any child that compacted lost its entire conversation and was told
+  *"the conversation above was dropped … Do not try to recall it … perform
+  exactly one concrete next progress batch"*. The task **anchor** turns out to be
+  the only thing that was saving those children — it was designed as prevention
+  against gradual summary erosion, and it was in fact the sole survivor of a
+  total context substitution. Worth knowing before anyone proposes removing it as
+  redundant.
+
+Plus sampling penalties, repetition fingerprints, tool counters, the
+degenerate-abort flag, and — with `--check` configured — the operator's goal
+check shell command, once per child turn.
+
+**The decision: inert, not guarded per handler.** A per-handler guard stops the
+damage without making a child loop work, because `runLoop()` writes the same
+shared state. So the factory returns early for an instance born inside a spawn —
+no command, no tool, no handler — and `subagent-denylist.ts` stops handing
+`pi-loop-mode` to a child at all, which also returns ~177 tokens/turn of `loop`
+tool schema to the window that can least afford it.
+
+**What was deliberately not done: per-session state.** It is ~450 references
+across 1,846 lines and 18 helper signatures. Both available shapes cost
+something real — a closure around the whole file is an ~800-line reindent that
+ends the ability to diff this fork against upstream 2.5.4, and threading a
+session handle touches every reference. Against that, there is no live bug left,
+and what the refactor buys is a *feature* (a bounded loop inside a subagent) that
+has never actually worked, because every version of it destroyed the operator's
+loop. It is a scope call, and it is left open rather than taken unilaterally.
+
+### Two fixes that were applied where nothing reads them
+
+**Concurrency.** `agent-manager.ts` carries a long, measured argument for a
+default of 1 on a one-slot server, and `FORK.md` §2 is titled "Default
+concurrency 4 → 1". The manager reads
+`concurrency?.default ?? DEFAULT_CONCURRENCY_LIMIT`, and `ConfigStore` always
+supplies a `default` — merged from `config-io.ts`'s `DEFAULT_CONCURRENCY`, which
+still said 4. So the `??` never fired and every session ran at 4: four children
+against `PARALLEL_SLOTS=1`, four foreign prefixes competing for one prompt cache,
+which is precisely the state the comment argues against. Probed through the real
+wiring: `{ limit: 4 }`. The number now lives only in `config-io.ts` and the
+manager reads it from there, so there is nothing left to diverge.
+
+**`extensions: false` on the verifier.** B5 diagnosed this correctly and fixed it
+in the wrong place. The fix reads `config.extensions`, where `config` is
+`getConfig()`'s output — and `getConfig` resolves through `findActiveConfig()`,
+which substitutes **general-purpose** for any agent marked `hidden`. `__verifier`
+is hidden for an unrelated reason (keeping it out of the `Agent` tool's enum,
+worth 11 chars of schema), so `getConfig("__verifier").extensions` came back
+`true` where the agent declares `false`, and the guard was unreachable code. The
+judge therefore still loaded `pi-loop-mode` and `rtk-pi` — the second spawning
+`rtk --version` per judge call, the first firing the loop clobber above a second
+time per verified delegation.
+
+It went unnoticed because `tools: false` is read from `getAgentConfig` directly
+and *did* take effect. The judge really had no tools on the wire, which is the
+property everyone checked; the property nobody checked was the one the fix was
+about. `declared-resources.ts` now states the precedence once, with a test whose
+control asserts the old value never fires the guard.
+
+The shared lesson: **when a fix is a predicate on a value, test the predicate,
+not the value's neighbour.** Both of these would have been caught by one
+assertion on what the loader/manager actually decides.
+
+### The verifier's boundary
+
+Five smaller findings, all at the edge of `verify-runner.ts` rather than inside
+it — the ladder itself was correct.
+
+- **Nothing could stop a verification.** It runs in the settlement chain after
+  the status has gone terminal, and every stop path keys off `status ===
+  "running"`: Esc reaches `stopAgent()` and gets `false`, `StopAgent` likewise,
+  and the watchdog's `check()` *deletes* the record's state rather than skipping
+  it. The parent's tool call is meanwhile blocked on a gate only verification
+  opens. Each call now carries a deadline (`SUBAGENT_VERIFY_TIMEOUT_MS`, default
+  300s) that surfaces as the existing `errored` verdict — the answer still goes
+  out, annotated. There is deliberately no way to spell "no deadline": 0 clamps
+  to the floor, because a disabled deadline is indistinguishable from the bug.
+- **A steered continuation was judged against the original brief**, so the judge
+  said NOT_ADDRESSED — correctly — and the repair then told the child to answer
+  the original instead, discarding the operator's instruction and labelling the
+  result `✎ repaired`. The brief now accumulates, bounded; when it has to drop
+  something it drops the oldest follow-up, never the original, because the
+  original is what everything else refers back to and the thing a drifting child
+  has most likely lost.
+- **A stale verdict survived an unverified continuation.** Cleared with the
+  result. Absence is the "never checked" signal the whole badge module is built
+  around, so clearing is the entire fix.
+- **The verifier's cost was tallied nowhere.** `stats.verifyUsage` now holds what
+  the verifier spent in its own sessions; the repair is a turn in the child's
+  session and lands in `lifetimeUsage`. Nothing is in both. The repair also gets
+  the tracking callbacks it never had — which matters beyond accounting, because
+  `onCompaction` is what fires the anchor, so the turn most likely to compact was
+  the one turn running without it.
+- **An errored run was judged and the result discarded.** `structuralVerdict` did
+  not list `error`, while `executeAgentTool` returns `errorResult(record.error)`
+  without ever reading `record.result`. Now skipped.
+
+### The spawn bracket was too wide
+
+`enterSubagentSpawn()` wrapped all of `runAgentImpl`, so the depth stayed above
+zero for a background subagent's entire run — minutes. An operator `/reload` in
+that window made `pi-subagents-lite`'s own factory return early (losing the
+Agent/StopAgent/AgentStatus tools and the widget) and made `pi-loop-mode` capture
+the subagent flag **permanently**, since it is read once at factory time. The
+flag answers "is a subagent session being built right now", and the build is over
+once extensions are bound, so the bracket now covers `reloadAndMap()` through
+`bindExtensions()` and nothing more.
+
+### Control runs, again
+
+Every guard added here was control-run with the fix disabled: 8 of the 9 new
+subagent-isolation assertions fail without it, and the `--check` round-trip test
+fails against the old pattern. The one assertion that passes either way is the
+pre-existing weak one, kept for continuity. A test that has not been watched
+failing is not evidence, and the first audit's B3 is the standing example — a
+test named *"survives an unknown action"* that passed **because** of the bug.

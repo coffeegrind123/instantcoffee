@@ -876,7 +876,67 @@ function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   sendLoopTurn(pi, "start", ctx);
 }
 
+/**
+ * Forge fork: is this extension instance being loaded into a SUBAGENT's session?
+ *
+ * `vendor/pi-subagents-lite` runs its children in the parent's process, and a
+ * child session binds the parent's extensions — which, through node's module
+ * cache, is this module, with the `state` / `pendingTimer` / `runToken` above
+ * shared between them. It publishes its spawn depth on this global for exactly
+ * this check; see that package's `src/shell.ts`. Absent (a plain pi session, or
+ * this package used anywhere else) reads as false, so nothing changes.
+ */
+function bornInsideSubagentSpawn(): boolean {
+  const depth = (globalThis as unknown as Record<string, unknown>)["__PI_SUBAGENT_SPAWN_DEPTH__"];
+  return typeof depth === "number" && depth > 0;
+}
+
 export default function (pi: ExtensionAPI) {
+  // Forge fork: a subagent's instance registers NOTHING. Not the command, not
+  // the tool, not one of the thirteen event handlers below.
+  //
+  // The reason is the module state above. A child session binds this module —
+  // the same `state`, `pendingTimer`, `runToken`, `degenerateAbortPending` — but
+  // gets its own `pi` and its own event bus, so every handler here runs twice
+  // per delegation against ONE loop. An earlier fix guarded `session_start` and
+  // `session_shutdown`, which were the two the first symptom was traced to. The
+  // other eleven were left, and they are worse. Measured, with the operator's
+  // loop running and a subagent doing something unrelated:
+  //
+  //   before_agent_start  the CHILD's system prompt gained "Loop mode is active.
+  //                       Goal: <the operator's goal> … keep every response under
+  //                       1,200 characters … never stop on your own" — an
+  //                       instruction set that is wrong for a subagent in every
+  //                       clause, injected into the exact mechanism the answer
+  //                       verifier exists to detect drift in.
+  //   agent_end           the whole iteration ladder ran on the operator's state
+  //                       with the child's ctx: it cancelled the operator's
+  //                       scheduled iteration, incremented its iteration count,
+  //                       persisted the state into the child's throwaway branch,
+  //                       and delivered the operator's next loop turn INTO THE
+  //                       CHILD. The operator's loop was then not paused and not
+  //                       stopped — just silently no longer advancing.
+  //   session_before_compact
+  //                       the child's compaction was replaced by a handoff built
+  //                       from the operator's loop state, so a compacting child
+  //                       lost its whole conversation and was told "the
+  //                       conversation above was dropped … perform exactly one
+  //                       concrete next progress batch".
+  //   before_provider_request / message_end / tool_result / message_update
+  //                       sampling penalties, repetition fingerprints, tool
+  //                       counters and the degenerate-abort flag all crossed.
+  //
+  // A per-handler guard would stop the damage but not make a child loop work,
+  // because `runLoop()` writes the same shared state. So the honest narrow fix
+  // is this: inert in a child, and `vendor/pi-subagents-lite`'s
+  // `subagent-denylist.ts` no longer hands this package to a subagent at all
+  // (which also saves the child ~177 tokens/turn of `loop` tool schema).
+  //
+  // Loading it into a child is safe again once `state` is per-session rather
+  // than per-module — the WeakMap<ExtensionAPI, LoopState> refactor. Both
+  // changes revert together at that point; see FORK.md.
+  if (bornInsideSubagentSpawn()) return;
+
   pi.on("session_before_compact", async (event, ctx) => {
     const usage = contextUsage(ctx);
     const percent = usage?.percent ?? 0;
@@ -1225,6 +1285,15 @@ export default function (pi: ExtensionAPI) {
     return { ctx: ctx as ExtensionContext, lines };
   };
 
+  /**
+   * The actions the tool will pass through to the command.
+   *
+   * A closed set on purpose: the command's final branch treats anything it does
+   * not recognise as a goal to start looping on, which is a sensible convenience
+   * for a person and a live grenade for a model that invents a verb.
+   */
+  const TOOL_ACTIONS = new Set(["start", "stop", "status", "finish", "resume", "end", "stats"]);
+
   /** Build the `/loop` argument string this tool call stands for. */
   const argsForLoopTool = (params: Record<string, unknown>): string => {
     const action = String(params.action ?? "status").trim().toLowerCase();
@@ -1259,7 +1328,7 @@ export default function (pi: ExtensionAPI) {
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", description: "start|stop|status|finish|resume|end" },
+        action: { type: "string", description: "start|stop|status|stats|finish|resume|end" },
         goal: { type: "string", description: 'start: "<goal>. Done when: <criteria>"' },
         max: { type: "number", description: "start: max iterations" },
         check: { type: "string", description: "start: shell command, exit 0 = done" },
@@ -1276,6 +1345,23 @@ export default function (pi: ExtensionAPI) {
       baseCtx: ExtensionContext,
     ) => {
       const action = String(params.action ?? "").trim().toLowerCase();
+      // An unrecognised action must NOT reach loopCommand. Its last branch is
+      // the `/loop <goal>` convenience — anything it does not recognise becomes
+      // a goal and starts an endless loop. That is the right behaviour for a
+      // human typing a slash command and a trap for a model that guesses a verb:
+      // `loop(action: "pause")` would have started an endless loop whose goal is
+      // the word "pause", and endless is the default.
+      if (!TOOL_ACTIONS.has(action)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `loop: unknown action ${JSON.stringify(action)}. Use one of: ${[...TOOL_ACTIONS].join(", ")}.`,
+            },
+          ],
+          isError: true,
+        };
+      }
       if (action === "start" && !String(params.goal ?? "").trim()) {
         return {
           content: [{ type: "text", text: 'loop start needs a goal. Give one that says when it is done: "<goal>. Done when: <criteria>".' }],
@@ -1302,6 +1388,17 @@ export default function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    // A subagent's session emits session_start too (pi's `bindExtensions()`
+    // ends with `_extensionRunner.emit(this._sessionStartEvent)`), and the
+    // three calls below are all writes to state shared with the operator's
+    // session. Run there, they cancelled the operator's next loop iteration,
+    // dropped its recovery marker, and replaced its loop with whatever the
+    // child's in-memory branch held — which is nothing. The symptom was a loop
+    // that simply stopped advancing the moment the model delegated anything.
+    //
+    // The guard is now at the top of the factory and covers every handler, not
+    // just this one; the note stays because this is the failure that found the
+    // whole class.
     clearPendingTimer();
     resetContextRecovery();
     restoreState(ctx);
@@ -1336,6 +1433,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    // Same reasoning as session_start: a child session ending is not a reason
+    // to cancel the parent's pending iteration, and these are shared timers.
     clearPendingTimer();
     resetContextRecovery();
   });

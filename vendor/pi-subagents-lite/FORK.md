@@ -102,12 +102,22 @@ dropped with the import, which is what keeps `vendor/` free of `node_modules`.
 
 ### 2. Default concurrency 4 → 1
 
+`src/config/config-io.ts` (`DEFAULT_CONCURRENCY`), with the reasoning in
 `src/agents/agent-manager.ts`. With `PARALLEL_SLOTS=1` the queue forms either
 way; the only question is where. Serialising here means at most one foreign
 prefix competes with the parent's at a time, and one child holding context
 instead of four. Per-provider overrides still work
 (`concurrency.providers.forge`), so raising it alongside `PARALLEL_SLOTS` needs
 no code change.
+
+**This was changed in the wrong file first, and did nothing for a release**
+(evaluation F3). `agent-manager.ts` reads
+`concurrency?.default ?? DEFAULT_CONCURRENCY_LIMIT`, and the config store always
+supplies a `default` — so the manager's constant was unreachable, and every
+session ran at 4 while both this document and the code comment said 1. Measured
+through the real wiring (`ConfigStore` → `AgentManager`): `{ limit: 4 }`. The
+number now lives only in `config-io.ts` and the manager reads it from there, so
+there is nothing left to diverge.
 
 ### 3. A background subagent's result is bounded before it is injected
 
@@ -147,6 +157,14 @@ justifies them.
 guard is missing the import cannot resolve and the extension fails to load, so
 `scripts/pi-local.sh` checks for the guard and leaves subagents out with a
 stated reason rather than letting that happen mid-launch.
+
+The path is `../../../../.pi/extensions/…`, four levels up from a vendored
+package, so **the two directories move together**: relocating `vendor/`, or
+installing this package with `pi install`, breaks it at load with a
+module-resolution error rather than degrading. The launcher's check covers the
+launcher's path and nothing else. Left as-is deliberately: the alternative is a
+second copy of constants that were measured against a test living in the other
+directory, and a copy drifting away from its justification is the worse failure.
 
 `tests/result-cap.test.ts` covers it, including the two paths that matter more
 than the arithmetic: a finished agent is still delivered when the context cannot
@@ -204,13 +222,35 @@ Two consequences, pulling in opposite directions:
   `excludeExtensions: ["prinny"]` matches nothing and `["index"]` removes all
   three. The test suite pins that as a control.
 
-- **loop and rtk should be there**, and are put back by default through
-  `additionalExtensionPaths`. rtk because a child running `bash` uncompressed is
+- **rtk should be there**, and is put back by default through
+  `additionalExtensionPaths`, because a child running `bash` uncompressed is
   the session that can least afford it — its whole value is coming back small.
-  loop because a bounded, goal-shaped loop grinding in a window that is not the
-  operator's is the best version of delegation on one slot.
-  `SUBAGENT_EXTRA_EXTENSIONS` replaces the list; denied paths are filtered out
-  of it too, so it cannot be used to smuggle the channel back in.
+  It has no module-level state, so a second instance in a child is genuinely
+  independent. `SUBAGENT_EXTRA_EXTENSIONS` replaces the list; denied paths are
+  filtered out of it too, so it cannot be used to smuggle the channel back in.
+
+- **loop was there too, and was removed.** The intent was right — a bounded,
+  goal-shaped loop grinding in a window that is not the operator's is the best
+  version of delegation on one slot — but `vendor/pi-loop-mode` keeps its entire
+  loop in module scope, and a child binds *the same module* with its own event
+  bus. All thirteen of its handlers therefore ran a second time per delegation
+  against the operator's single `LoopState`. Measured, with a loop running:
+
+  ```
+  child before_agent_start → "<<CHILD PROMPT>>\n\nLoop mode is active.
+     Goal: refactor the parser. … keep every response under 1,200 characters …
+     never stop on your own"
+  child agent_end          → operator's iteration count 0 → 1, operator's next
+     loop turn sent into the CHILD's session, operator's pending timer cancelled
+  child compaction         → replaced by the operator's loop handoff summary:
+     "the conversation above was dropped … Do not try to recall it"
+  ```
+
+  See that package's FORK.md for the full table. It goes back when its state is
+  keyed by session; until then its own factory guard makes it inert in a child,
+  so naming it in `SUBAGENT_EXTRA_EXTENSIONS` is safe and simply does nothing.
+  Removing it also gives the child back ~177 tokens/turn of `loop` tool schema,
+  in the window that can least afford it.
 
 ### 6. A subagent always has a turn ceiling
 
@@ -257,8 +297,23 @@ Three layers, cheapest first, so most runs pay nothing:
    paying a model to confirm it is waste. An empty answer is **replaced** by an
    explanation rather than appended to, because an empty string reads to the
    parent as a lookup that found nothing.
-3. **The judge, then one repair.** Only for a non-empty answer from a clean run,
-   because that is the only case where drift is invisible.
+3. **The judge, then a bounded repair loop.** Only for a non-empty answer from a
+   clean run, because that is the only case where drift is invisible.
+
+**The repair is re-judged, and the loop has a ceiling.** The first cut of this
+shipped the retry unverified — which meant the one answer nobody checked was the
+one already known to have come from a confused child. A repair is now judged in
+its turn, up to `SUBAGENT_VERIFY_ROUNDS` attempts (default 1, clamped to 3), so
+"was the fix any good?" is answered rather than assumed. The bound is the same
+argument as the child's own turn ceiling: a round costs two model calls on the
+one llama slot the parent is blocked on, plus two more turns in a child window
+that is already the most likely culprit — re-asking a child whose context is
+nearly full pushes it toward the compaction that causes the drift. Three
+conditions end the loop, not just the counter: the budget, an empty repair, and
+a repair identical to the answer just rejected. When everything fails, the
+child's **original** answer goes back annotated, because that is what the parent
+would have had with the verifier off; returning the last attempt was considered
+and rejected.
 
 **The judge does not run in the child's session, and that is the whole design.**
 Asking the child to review its own work is the weakest check available: every
@@ -282,8 +337,6 @@ with a test:
 - The repair prompt restates the brief **in full** rather than referring to it.
   Pointing at "the original task" points at the thing that may have gone
   missing.
-- One judge call and one repair is the entire budget. The repair is **not**
-  re-judged: that invites a loop on the slot the parent is waiting for.
 - A repair that returns empty keeps the *first* answer. Something beats nothing.
 - `verifyAnswer` never throws. A broken verifier must not turn a finished
   subagent into a failed one.
@@ -297,6 +350,147 @@ the parent is waiting on.
 **What it cannot do:** catch subtly wrong work. The judge is the same 27B that
 wrote the answer. It is a drift check, not a correctness proof, and calling it
 verification in the stronger sense would be a lie the parent would act on.
+
+### 8. The verifier is visible — in flight, and in its verdict
+
+`src/ui/verification-badge.ts` (new, pure), plus four call sites and one new
+field on the record. 15 tests. Nothing here touches the wire.
+
+**Two defects, both of them invisibility.**
+
+*A passing check looked exactly like no check at all.* `record.verification` was
+set on every checked answer and carried into `details.verification` by
+`buildAgentDetails` — and read by nothing. A pass is deliberately undecorated in
+the answer text (a note there is text the parent model will quote), so with the
+renderer ignoring the field there was no surface anywhere that distinguished
+"checked and fine" from "never checked", which is the one distinction the
+verifier exists to draw. It now renders as a marker on the finished line, the
+tool result, the subagent-result card, the viewer header and the `/agents` list:
+dim `✓ checked` for a pass, `✎ repaired` in warning, `✗ off-task` in error, and
+a distinct `⊘` label per skip. Absence still means unchecked — no badge is
+invented for it, because that would restore the ambiguity.
+
+*A verifying agent disappeared from the widget entirely.* Measured, not
+inferred: verification runs inside the settlement chain's `.then`, after
+`lifecycle.status` has been set to its terminal value and **before**
+`completedAt` is stamped. `categorizeAgents()` sorts on exactly those two
+fields — running, queued, or completed-within-the-retention-window — so for the
+whole length of a judge call (and a repair, which is a full child turn) the
+record matched none of them and its row vanished, then reappeared. On a stack
+where every subagent already pauses the session because there is one llama slot,
+that is the worst possible moment to remove the only thing on screen explaining
+the wait. A `verifyPhase` field now keeps the row in the active set and the
+activity line says which call is in flight — *"checking the answer against the
+task…"* or *"answer was off-task — asking once more…"*.
+
+The phase is reported by `verify-runner` through an `onPhase` dep rather than
+set around the call in `agent-manager`, so the free structural checks — which
+return before any model call — never flash a "verifying" row for a skip. Both
+directions are tested: the transitions on the four paths that make a call, the
+clear on every exit including the two throwing ones, and that a **throwing**
+phase hook cannot change a verdict. That last one is not hypothetical bookkeeping:
+without the guard the exception lands in `verifyAnswer`'s own catch and a passing
+answer is reported as `errored`, which is a display concern rewriting a result.
+
+One split came with it: `skipped-cutoff` used to cover both "the run was cut
+off" and "no brief was recorded to check against". They are now separate values
+(`skipped-nobrief`), because the first explains itself in the status note and
+the second is a fault in our own spawn path that one shared label would hide.
+
+### 9. `←` opens the agent list, not only `↓`
+
+`src/events.ts`, one predicate. The keyboard hop this fork already had —
+`↓` on an empty editor to enter the widget, `↑↓` to move, enter to open the
+child's live transcript, esc back — is the same affordance Claude Code
+advertises as *"← for agents"*, and both packages that have built it
+independently (nicobailon's `fleet-status.ts`, tintinweb's `fleet-list.ts`)
+accept `←` as well as `↓`. Adding it costs one predicate on a path that only
+fires when the editor is empty, where `←` has nothing to move over.
+
+### 10. Four defects found by an audit of the whole path
+
+Written up in full — symptom, root cause, evidence, reproduction — in
+`context/design/subagents-loop-verifier-anatomy.md` §9. In brief:
+
+- **`continueSettledAgent` threw `ReferenceError: pi is not defined`.** The
+  verifier wiring added `this.buildVerifyDeps(pi, ctx, record)` to the
+  continuation call site, where neither identifier exists — the first-run site
+  looks the same but destructures them from `SpawnArgs`. Continuing or steering
+  a *settled* agent rejected. The lint gate is `node --check` over stripped
+  types, which is syntax only, and nothing type-checks this tree, so a free
+  identifier passed everything.
+- **Every verified answer leaked an `AgentSession`.** The judge calls `runAgent`
+  directly (it must — a judge that asked for a concurrency slot would deadlock
+  against the child still holding one), which means no record, which means no
+  teardown ever reaches it. Disposed explicitly now.
+- **`extensions: false` did not suppress `additionalExtensionPaths`.** pi's
+  loader reads `noExtensions ? cliEnabledExtensions : merge(...)` and the extra
+  paths *are* the cli set, so the deliberately-empty `__verifier` was loading
+  `pi-loop-mode` and `rtk-pi` — the latter spawning `rtk --version` on every
+  judge call. The tool schema was never affected (`tools: false` empties it
+  regardless), so this cost process spawns and handlers, not context.
+  **The first fix for this did not work** — see §11.
+- **A background spawn rendered with a success tick.** The renderer decided
+  "background" by looking for `"running in background"` in the result text; the
+  message says `[Agent running] Success! You delegated…`. `details.background`
+  now carries it.
+
+### 11. Six more, from a second audit
+
+Written up in full — evidence class, reproduction, and the fix considered and
+rejected — in `context/design/subagents-loop-verifier-evaluation.md`. The two
+corrections to §10 and §2 are above; these are the rest.
+
+- **`extensions: false` still did not reach the loader** (`declared-resources.ts`,
+  new). §10's fix reads `config.extensions`, and `config` is `getConfig()`'s
+  output, which resolves through `findActiveConfig()` — that substitutes
+  **general-purpose** for any agent marked `hidden`. `__verifier` is hidden
+  precisely so it stays out of the `Agent` tool's enum (11 chars of schema), so
+  `getConfig("__verifier").extensions` came back `true` where the agent says
+  `false`, and the guard was unreachable code. Nothing noticed because
+  `tools: false` is read from `getAgentConfig` directly and *did* take effect —
+  the judge really had no tools, which is the property everyone checked. The
+  agent's own declaration now wins for `extensions` and `skills`, which for a
+  non-hidden agent is exactly what `getConfig` already returned.
+- **The spawn bracket covered the whole child run, not just the build.**
+  `enterSubagentSpawn()` wrapped all of `runAgentImpl`, so for a background
+  subagent the depth stayed above zero for minutes. An operator `/reload` in that
+  window made *this* extension's factory return early — losing the Agent,
+  StopAgent and AgentStatus tools and the widget — and made `pi-loop-mode`
+  capture the subagent flag **permanently**, so the operator's loop never did its
+  session housekeeping again. The bracket now covers `reloadAndMap()` (where
+  factories run) through `bindExtensions()`, and nothing more.
+- **Nothing could stop a verification.** It runs in the settlement chain, after
+  the status has gone terminal, and every stop path keys off
+  `status === "running"`: the operator's Esc reaches `stopAgent()` and gets
+  `false`, the `StopAgent` tool likewise, and the watchdog's `check()` *deletes*
+  the record's state rather than skipping it. Meanwhile the parent's tool call is
+  blocked on a gate that only verification opens. Each verifier model call now
+  carries a deadline (`SUBAGENT_VERIFY_TIMEOUT_MS`, default 300s), surfacing
+  through the existing `errored` verdict so the answer still goes out, annotated.
+- **A steered continuation was judged against the original brief.**
+  `execution.brief` was written once at spawn. Steering a settled agent produced
+  an answer to the steer, judged against the original prompt — NOT_ADDRESSED,
+  correctly — and the repair then told the child to answer the original instead,
+  discarding the operator's instruction and labelling the result `✎ repaired`.
+  `appendFollowUp()` now extends the brief, bounded, keeping the original when it
+  has to drop something.
+- **A stale verdict survived an unverified continuation**, so a `✓ checked` badge
+  and `verification: "passed"` appeared against text nothing had looked at.
+  Cleared with the result.
+- **The verifier's own cost was tallied nowhere.** Neither the judge's `runAgent`
+  nor the repair's `continueAgentSession` was given the tracking callbacks, so a
+  verified delegation under-reported itself by one to three model calls, and
+  `getTotalAgentCost()` never saw the judge at all. Worse, `onCompaction` is what
+  fires the task anchor — so the repair, the turn most likely to compact, was the
+  one turn with the anchor switched off. `stats.verifyUsage` now holds what the
+  verifier spent in its **own** sessions; the repair is a turn in the child's
+  session and lands in `lifetimeUsage`. Nothing is in both, and `tallyCompletion`
+  adds them.
+- **An errored run was judged, and the result thrown away.** `structuralVerdict`
+  did not list `error` as unworthy of a judge, while `executeAgentTool`
+  intercepts error status and returns `errorResult(record.error)` without ever
+  reading `record.result`. Now skipped.
 
 ## The prefix cache — measured, and not what was assumed
 

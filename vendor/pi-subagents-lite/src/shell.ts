@@ -97,12 +97,44 @@ export function setCoordinator(c: SpawnCoordinator | null): void {
  */
 let subagentSpawnDepth = 0;
 
+/**
+ * Forge fork: the same depth, published where a package that cannot import this
+ * one can see it.
+ *
+ * A subagent's session is created in the parent's process and binds the
+ * parent's extensions, and node's module cache means those extensions'
+ * module-level state is the SAME state — that is the entire reason
+ * `isInsideSubagentSpawn()` works at all, since the child's factory reads a
+ * counter the parent incremented. Every other extension in this stack has the
+ * same exposure and no way to detect it: `vendor/pi-loop-mode` keeps its whole
+ * loop in module scope, and its `session_start` handler clears the pending
+ * timer and reloads state from the session's own branch. Fired inside a
+ * subagent, that silently killed the operator's running loop.
+ *
+ * A global rather than an import because vendor packages must not depend on
+ * each other — pi-loop-mode is a fork of an upstream package that knows nothing
+ * about subagents, and one global read is a smaller wound than a cross-vendor
+ * import. Read it as "a subagent session is being built right now"; anything
+ * doing session-lifecycle housekeeping should sit that one out.
+ */
+const SPAWN_DEPTH_GLOBAL = "__PI_SUBAGENT_SPAWN_DEPTH__";
+
+function publishSpawnDepth(): void {
+  try {
+    (globalThis as unknown as Record<string, unknown>)[SPAWN_DEPTH_GLOBAL] = subagentSpawnDepth;
+  } catch {
+    // A frozen global is not a reason to fail a spawn.
+  }
+}
+
 export function enterSubagentSpawn(): void {
   subagentSpawnDepth++;
+  publishSpawnDepth();
 }
 
 export function exitSubagentSpawn(): void {
   if (subagentSpawnDepth > 0) subagentSpawnDepth--;
+  publishSpawnDepth();
 }
 
 /** True while a subagent is being spawned (factory/session_start run in subagent context). */

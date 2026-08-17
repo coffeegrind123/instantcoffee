@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { before, beforeEach, describe, it } from "node:test";
 
 import loopModeExtension from "../extensions/index.ts";
+import { parseStartArgs } from "../src/arguments.ts";
 
 type ToolDef = {
   name: string;
@@ -164,5 +165,58 @@ describe("loop tool behaviour", () => {
   it("survives an unknown action rather than throwing into the turn", async () => {
     const result = await call({ action: "wibble" });
     assert.ok(typeof result.content[0].text === "string");
+  });
+
+  it("refuses an unknown action instead of looping on it", async () => {
+    // This is the sharp edge the assertion above used to walk straight past.
+    // `loopCommand`'s last branch is the `/loop <goal>` convenience: anything it
+    // does not recognise becomes a GOAL. Right for a human typing a command,
+    // a trap for a model guessing a verb — `action: "pause"` started an endless
+    // loop whose goal was the word "pause", and endless is the default.
+    await call({ action: "end" });
+    const result = await call({ action: "pause" });
+    assert.equal(result.isError, true, "an unknown action is an error, not a goal");
+    assert.match(result.content[0].text, /unknown action/i);
+    assert.match(result.content[0].text, /start/, "it must say what the valid actions are");
+
+    const status = await call({ action: "status" });
+    assert.match(status.content[0].text, /Active: false/, "nothing may have been started");
+    assert.doesNotMatch(status.content[0].text, /Goal: pause/);
+  });
+});
+
+/**
+ * The tool builds a `/loop` argument string and hands it to the same parser the
+ * slash command uses, so the round-trip has to survive whatever the model puts
+ * in a check command.
+ */
+describe("loop tool — the --check round-trip", () => {
+  it("keeps a check command that contains double quotes", () => {
+    // argsForLoopTool builds this with JSON.stringify, so a command with a
+    // quote in it arrives escaped. The old `"([^"]*)"` stopped at the first
+    // backslash-quote and configured the loop with `grep \` — which runs, fails,
+    // and is reported as a failing goal check rather than as a broken config.
+    const command = 'grep -q "all tests passed" out.log';
+    const parsed = parseStartArgs(`start build it. Done when: green --check ${JSON.stringify(command)}`);
+    assert.equal(parsed.checkCommand, command);
+  });
+
+  it("leaves backslashes that are not escapes alone", () => {
+    // A Windows path is the case a general unescape would break.
+    const parsed = parseStartArgs(String.raw`goal --check "C:\bin\test.exe"`);
+    assert.equal(parsed.checkCommand, String.raw`C:\bin\test.exe`);
+  });
+
+  it("still handles the plain and single-quoted forms a human types", () => {
+    assert.equal(parseStartArgs('goal --check "npm test"').checkCommand, "npm test");
+    assert.equal(parseStartArgs("goal --check 'npm test'").checkCommand, "npm test");
+    assert.equal(parseStartArgs("goal --check npm-test").checkCommand, "npm-test");
+    assert.equal(parseStartArgs('goal --check="npm test"').checkCommand, "npm test");
+  });
+
+  it("does not leave the check flag behind in the goal text", () => {
+    const parsed = parseStartArgs('ship the parser. Done when: green --check "npm test"');
+    assert.equal(parsed.description, "ship the parser");
+    assert.equal(parsed.criteria, "green");
   });
 });

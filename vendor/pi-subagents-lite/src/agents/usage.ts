@@ -20,6 +20,11 @@ export function getLifetimeTotal(u?: LifetimeUsage): number {
   return u ? u.input + u.output : 0;
 }
 
+/** A zeroed accumulator. Every counter starts here, so the shape is written once. */
+export function emptyUsage(): LifetimeUsage {
+  return { input: 0, output: 0, cacheWrite: 0, cost: 0 };
+}
+
 /** Add a usage delta into a target accumulator (mutates target). */
 export function addUsage(into: LifetimeUsage, delta: LifetimeUsage): void {
   into.input += delta.input;

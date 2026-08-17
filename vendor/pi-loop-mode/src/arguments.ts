@@ -11,10 +11,36 @@ export interface StartArgs {
   goalFile: string;
 }
 
+/**
+ * A double-quoted value may contain escaped quotes: `"grep \"foo\" bar"`.
+ *
+ * The naive `"([^"]*)"` stopped at the first backslash-quote and handed the loop
+ * a truncated command — `grep \` — which then ran, failed, and was reported as a
+ * failing goal check. It matters more since the `loop` TOOL landed: that path
+ * builds this string with `JSON.stringify`, so every command containing a double
+ * quote arrived pre-broken.
+ *
+ * `(?:[^"\\]|\\.)*` consumes an escape pair as one unit, which is the standard
+ * shape and also exactly what `JSON.stringify` produces.
+ */
+const DOUBLE_QUOTED = String.raw`"((?:[^"\\]|\\.)*)"`;
+
+/**
+ * Undo only `\"` and `\\`.
+ *
+ * Deliberately not a general unescape: a Windows path in a check command
+ * (`--check "C:\bin\test.exe"`) contains backslashes that are not escapes, and
+ * turning `\b` into `b` would break a command that works today.
+ */
+function unescapeDoubleQuoted(text: string): string {
+  return text.replace(/\\(["\\])/g, "$1");
+}
+
 function extractCheckCommand(text: string): { rest: string; checkCommand: string } {
-  const match = text.match(/--check(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/);
+  const match = text.match(new RegExp(String.raw`--check(?:=|\s+)(?:${DOUBLE_QUOTED}|'([^']*)'|(\S+))`));
   if (!match || match.index === undefined) return { rest: text, checkCommand: "" };
-  const checkCommand = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+  const raw = match[1] !== undefined ? unescapeDoubleQuoted(match[1]) : (match[2] ?? match[3] ?? "");
+  const checkCommand = raw.trim();
   const rest = `${text.slice(0, match.index)} ${text.slice(match.index + match[0].length)}`.trim();
   return { rest, checkCommand };
 }

@@ -43,12 +43,17 @@
  * `read` result at 9,778 → 8,176 chars inside the child session. A child that
  * blows its own window is a child that returns nothing.
  *
- * `pi-loop-mode` and `rtk-pi` are not denied either; they are the opposite
- * problem. A child cannot see them at all, because this stack loads them by
- * `-e` from `vendor/` and a child discovers rather than inherits. They are put
- * back deliberately — see `defaultExtraExtensionPaths` below. What keeps a
- * looping child safe is the turn bound in `agent-runner.ts`, not exclusion:
- * see DEFAULT_MAX_TURNS there, and `StopAgent` for the parent's kill switch.
+ * `rtk-pi` is not denied either; it is the opposite problem. A child cannot see
+ * it at all, because this stack loads it by `-e` from `vendor/` and a child
+ * discovers rather than inherits. It is put back deliberately — see
+ * `defaultExtraExtensionPaths` below.
+ *
+ * `pi-loop-mode` was put back the same way and no longer is, for a reason that
+ * is neither denial nor discovery: its state is module-global, so a child's copy
+ * drove the operator's loop. `defaultExtraExtensionPaths` has the measurements.
+ * What keeps a looping child safe, if one is ever loaded again, is the turn
+ * bound in `agent-runner.ts` — see DEFAULT_MAX_TURNS there, and `StopAgent` for
+ * the parent's kill switch.
  */
 
 import fs from "node:fs";
@@ -88,17 +93,14 @@ export function isDeniedSkillName(name: unknown): boolean {
  * skill, none of them from `vendor/`.
  *
  * That is the right default, and it is why the denial above is belt-and-braces
- * rather than the only thing between a subagent and Matrix. But it also means
- * `/loop` is unavailable to a child, and a bounded loop in a window that is not
- * the parent's is worth having: `AgentSession.prompt()` expands commands, so a
- * child handed `/loop <goal>` would run a real one.
+ * rather than the only thing between a subagent and Matrix.
  *
- * So this list puts back what a child should have had. It defaults to
- * `pi-loop-mode` and `rtk-pi` (see `defaultExtraExtensionPaths` for why each),
- * and `SUBAGENT_EXTRA_EXTENSIONS` replaces it entirely — comma or colon
- * separated absolute paths, or the empty string for none. It is not free: an
- * extension costs schema in the child's window, and a bigger child prefix is
- * precisely what evicts the parent's from the one slot.
+ * So this list puts back what a child should have had — `rtk-pi`, and see
+ * `defaultExtraExtensionPaths` for why that one and why `pi-loop-mode` is no
+ * longer with it. `SUBAGENT_EXTRA_EXTENSIONS` replaces the list entirely — comma
+ * or colon separated absolute paths, or the empty string for none. It is not
+ * free: an extension costs schema in the child's window, and a bigger child
+ * prefix is precisely what evicts the parent's from the one slot.
  *
  * Denied paths are filtered out of this list too, so it cannot be used to give
  * back what the denial above just took away.
@@ -129,16 +131,30 @@ export function subagentExtraExtensionPaths(
 /**
  * What a subagent gets by default, resolved relative to this checkout.
  *
- * Both are things the parent has and a child has no way to inherit, and both
- * were asked for by name:
- *
- * - **pi-loop-mode.** A subagent is where a loop belongs — it grinds in a window
- *   that is not the operator's, and `DEFAULT_MAX_TURNS` in agent-runner.ts stops
- *   it whether or not the goal is met.
  * - **rtk-pi.** Measured absent and it should not be: a subagent handed `bash`
  *   ran `git status --short` unrewritten, so its output reached the child's
  *   window uncompressed. The child is the session that can least afford it —
- *   its whole value is coming back with a small answer.
+ *   its whole value is coming back with a small answer. It has no module-level
+ *   state, so a second instance in a child is genuinely independent.
+ *
+ * **`pi-loop-mode` used to be here, and was removed.** The intent was right — a
+ * bounded loop belongs in a window that is not the operator's — but that package
+ * keeps its entire loop in module scope, and a child binds *the same module*
+ * with its own event bus. So every one of its thirteen handlers ran a second
+ * time per delegation against the operator's single `LoopState`. Measured: the
+ * child's system prompt gained the operator's goal and "never stop on your own",
+ * the child's `agent_end` drove the operator's iteration ladder and had the
+ * operator's next loop turn delivered into the child, and a child that compacted
+ * had its conversation replaced by the operator's loop handoff summary. See that
+ * package's factory guard and FORK.md.
+ *
+ * Removing it is not only a safety fix: the `loop` tool costs a child ~177
+ * tokens of schema on every turn, which is the child's window, and no subagent
+ * was ever observed calling it.
+ *
+ * It goes back the moment `pi-loop-mode` keys its state by session instead of by
+ * module. Its factory guard makes it inert in a child until then, so naming it
+ * in `SUBAGENT_EXTRA_EXTENSIONS` is safe — it just does nothing.
  *
  * `vendor/prinny-channel` is deliberately not here, and could not be added if
  * someone tried: the denial above filters this list too.
@@ -146,10 +162,7 @@ export function subagentExtraExtensionPaths(
 function defaultExtraExtensionPaths(): string[] {
   // vendor/pi-subagents-lite/src/agents → up four is the repo root.
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-  return [
-    path.join(repoRoot, "vendor", "pi-loop-mode", "extensions", "index.ts"),
-    path.join(repoRoot, "vendor", "rtk-pi", "extensions", "index.ts"),
-  ];
+  return [path.join(repoRoot, "vendor", "rtk-pi", "extensions", "index.ts")];
 }
 
 /**
