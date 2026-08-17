@@ -148,7 +148,7 @@ cd ~/my-project && qpi
 | `./scripts/browser.sh down` | Stop Chrome and its server |
 | `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 | `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (39 tests, no install) |
-| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (231 tests, no install) |
+| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (241 tests, no install) |
 | `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (16 tests, no install) |
 
 ## Updating
@@ -659,6 +659,25 @@ thinking blocks and never tool calls, filtered by allowlist so a new content
 kind is excluded rather than leaked. `/prinny forward all` sends each message as
 it completes instead of just the final one; `/prinny forward off` restores
 upstream's behaviour.
+
+**A Matrix message reads as one line, and there is one tool.** Both were paid for
+on every turn. Upstream's `<channel …>` block carried up to fourteen attributes
+so the model could hand `room_id` back to a tool — 249 chars of wrapper around a
+29-char message on this stack's own traffic, 279 around 2. The extension already
+knows which room a turn came from, so it keeps that itself and the model sees
+`[matrix] <what they said>`, annotated only when it changes the answer
+(`image=`, `attachment=`, `from=` in rooms, `delayed=`). Same two messages: 38
+chars and 25.
+
+The six `prinny_*` tools became one `prinny`, dispatching on `action` —
+`reply`, `react`, `edit`, `download`, `history`, `search`. Measured off the wire
+with the same harness that measured the six: **1,333 chars against ~5,900**,
+~333 tokens against ~1,470. Nothing was lost, because the common path never
+needed a tool — an ordinary written answer is forwarded already.
+
+The `[matrix]` marker stays, at about a token, because it is the boundary
+between "the operator typed this" and "a stranger sent this" that every
+untrusted-input guideline depends on.
 
 `/prinny permissions dangerous` relays a Matrix approval prompt before `rm -rf`,
 `sudo`, force pushes and similar. pi has no approval system of its own, so this
@@ -1604,7 +1623,7 @@ each answers a different question:
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 (cd vendor/pi-loop-mode && npm test)      # 39 tests for the /loop fork
-(cd vendor/prinny-channel && npm test)    # 231 tests for the Matrix channel
+(cd vendor/prinny-channel && npm test)    # 241 tests for the Matrix channel
 (cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)
 docker compose --profile tools config     # validate compose
 ```
