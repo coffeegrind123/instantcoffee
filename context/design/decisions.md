@@ -2979,3 +2979,60 @@ about: measure with `./scripts/spec-sweep.sh --report` on both templates, same
 config, rather than trusting a model card. Swapping the embedded chat template
 is a real change with real blast radius — tool calling is downstream of it —
 so it wants the smoke test plus both bench workloads before adoption.
+
+## 2026-08-17 (correction) — "which effort?" was measured with the wrong metric
+
+The entry above compared reasoning tokens against **content length** and
+concluded `medium` gave the "best answer per token", treating `low`'s shorter
+output as worse. That is the wrong metric, and it was pointed out rather than
+caught here.
+
+The complaint about Qwen 3.8 at xhigh is not that answers are short. It is that
+they are **over-engineered**. Under that framing more content can mean *worse*,
+so a length comparison cannot see the thing in dispute — and the conclusion drawn
+from it was unsupported even though the token counts behind it were real.
+
+Re-measured with `scripts/bench_quality.py`: 5 coding tasks, 5 hidden edge-case
+assertions each, the model's code extracted and **executed**. LOC of the accepted
+solution stands in for over-engineering.
+
+| effort | pass% | LOC | reason chars | wall |
+| --- | --- | --- | --- | --- |
+| none | 84.0 | **164** | 0 | 23.3s |
+| low | 96.0 | **63** | 9,007 | 48.3s |
+| medium | **100.0** | 71 | 13,876 | 59.9s |
+| xhigh | **100.0** | 99 | 41,489 | 244.4s |
+
+**The advice to run on low is right on its own terms.** `low` writes the leanest
+correct code of any level. `xhigh` ties `medium` on correctness while writing 40%
+more code — 39 lines for `roman_to_int` where `low` used 13 — and costs 4x the
+wall clock. It buys nothing here, which is the strongest case yet for ignoring
+the shipped default.
+
+`none` is worst on both axes simultaneously: fewest passes *and* the most
+sprawling code (164 LOC). Without a planning phase it rambles, which is the
+opposite of the intuition that less thinking yields tighter output.
+
+**`medium` still stands as this stack's default**, now for a defensible reason:
+it is the only level at 100%, and a coding agent's failure mode is a wrong
+function rather than a verbose one. `low` is a legitimate alternative if
+terseness is worth 4 points of pass rate.
+
+### A second thing the correction exposed
+
+The earlier claim that "`low` reasons twice as much as `medium`" **does not
+generalise**. On the one HTML/UI prompt it did (6,409 vs 3,404 chars); across
+these five coding tasks it reasons *less* (9,007 vs 13,876). Effort level is not
+a monotonic dial on thinking volume — it interacts with the prompt. That was
+stated far too broadly on the strength of a single prompt, in a section that had
+already flagged "one prompt, two runs" as a caveat and then reasoned as though it
+had not.
+
+### Method note
+
+`bench_quality.py` executes model-written code, so it runs only in the throwaway
+bench container. Its pass rates are meaningless without the control: reference
+implementations for all five tasks were verified at **5/5** before any model
+output was scored, because a buggy assertion is otherwise indistinguishable from
+a model failure — in the direction that flatters the harness. Adding a task means
+adding its reference implementation and re-running that check first.
