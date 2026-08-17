@@ -785,6 +785,34 @@ the post-compaction floor from 20,000 tokens to 7,000. Global rather than a
 `.pi/settings.json` here, because `/loop` runs in whatever project you point it
 at — and project settings only load for a *trusted* project.
 
+**What that sizing cannot fix, and `.pi/extensions/compaction-guard/` does.**
+Two knobs are not enough, because `reserveTokens` is also the summarizer's own
+`maxTokens` and nothing bounds the summary pi carries from one compaction into
+the next. pi's `UPDATE_SUMMARIZATION_PROMPT` tells the model to *"PRESERVE all
+existing information from the previous summary"* and to include *"previously
+done items AND newly completed items"*, so the summary is monotonic by
+construction. Across the 42 real compaction points under `~/.pi/agent/sessions`
+it runs 456 → 4,029 → 11,054 chars, and inside one session it only ever went up:
+1,666 → 3,183 → 5,891 → 9,411 → 11,054.
+
+The guard caps what pi is allowed to feed back — 5% of the window (6,554 chars
+on 32k), trimmed section-aware so `## Goal` and `## Next Steps` survive and the
+accumulating `### Done` list is what goes. Replayed over those same 42 real
+summaries: 11 are trimmed, none exceed the cap, no `## Goal` or `## Next Steps`
+is lost, and that growth curve flattens to `6,458 → 6,538 → 6,550 → 6,516`.
+
+It also shows the model its own remaining budget above 60% of the window, which
+is the generic half of the `/loop` context work: above 87% of the window 52% of
+assistant turns came back empty (33 of 63) against 1.5% below it (3 of 196), and
+that cliff is a property of the model and the window, not of `/loop`.
+
+Both hooks only ever *add* a bounded line or *shrink* a string pi was about to
+send to the summarizer — `session_before_compact` returns `undefined`, so pi
+still writes its own model summary and the guard can never replace or cancel a
+compaction. What is deliberately **not** ported is `/loop`'s handoff, which
+throws the conversation away and rebuilds from `GOAL.md`/`PROGRESS.md`: that is
+right for a loop and wrong for a session where the conversation *is* the state.
+
 **And `httpIdleTimeoutMs`, for the same reason.** pi's default is 300,000 ms —
 how long a request may go without producing a single byte. Prefill produces no
 bytes while it runs. Measured 2026-08-16 in a real session: the first two
@@ -1528,6 +1556,10 @@ patches/
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction
+  compaction-guard/     bounds pi's carried-over summary and shows the model
+                        its context budget — in every session, not just /loop
+    src/                pure modules — the cap, the notice (no pi import)
+    tests/              node --test suite, 24 tests
 vendor/pi-loop-mode/    /loop — fork of pi-loop-mode@2.5.4, loaded from here
   FORK.md               what was changed and why (context-recovery race)
   tests/                node --test suite for the fork's recovery ladder

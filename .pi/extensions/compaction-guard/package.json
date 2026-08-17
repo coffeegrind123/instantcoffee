@@ -1,0 +1,11 @@
+{
+  "name": "compaction-guard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Bounds pi's carried-over compaction summary and shows the model its context budget, in every session (not only under /loop)",
+  "type": "module",
+  "scripts": {
+    "lint": "for file in index.ts src/*.ts tests/*.test.ts; do node --check \"$file\"; done",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  }
+}

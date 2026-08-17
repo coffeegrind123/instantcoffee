@@ -1271,7 +1271,16 @@ export default function (pi: ExtensionAPI) {
       return sanitized as typeof message;
     });
 
-    const budget = contextBudgetMessage(contextUsage(ctx));
+    // `.pi/extensions/compaction-guard` injects the same kind of line in every
+    // session, loop or not. pi runs `context` handlers in registration order, so
+    // whichever of the two runs second must stand down — otherwise a loop
+    // session pays for the notice twice and the model is told its budget by two
+    // slightly different sentences. Both sides check, so neither ordering breaks.
+    const budgetAlreadyPresent = messages.some((message) => {
+      const customType = (message as { customType?: unknown } | null)?.customType;
+      return typeof customType === "string" && /-context-budget$/.test(customType);
+    });
+    const budget = budgetAlreadyPresent ? undefined : contextBudgetMessage(contextUsage(ctx));
     if (budget) {
       messages.push(budget as (typeof messages)[number]);
       changed = true;

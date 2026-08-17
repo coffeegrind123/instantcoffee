@@ -3036,3 +3036,123 @@ implementations for all five tasks were verified at **5/5** before any model
 output was scored, because a buggy assertion is otherwise indistinguishable from
 a model failure — in the direction that flatters the harness. Adding a task means
 adding its reference implementation and re-running that check first.
+
+## 2026-08-17 — the half of the /loop context work that was never loop-specific
+
+`/loop`'s context fixes (2026-08-16, above) were built for unattended runs, but
+three of the four had nothing to do with a loop. This is the audit of which ones
+travel, done by measuring rather than by reading the diff.
+
+### What was already universal
+
+`pi-local.sh` writes `reserveTokens` / `keepRecentTokens` to pi's **global**
+`~/.pi/agent/settings.json`, so every pi session on this box has had that since
+2026-08-16 — loop or not. It is live: `keepRecentTokens: 6554`. Nothing to port.
+
+That fix is also better than it was given credit for. Re-measured with pi's own
+`estimateTokens()` rather than a chars/4 approximation, the kept tail after a
+compaction across the 42 real compaction points in `~/.pi/agent/sessions` is:
+
+| | min | p50 | p90 | max |
+| --- | --- | --- | --- | --- |
+| kept tokens | 4,339 | 6,526 | — | 10,225 |
+| as % of a 32,768 window | 13% | 20% | 21% | **31%** |
+
+Zero points above 35%. **An earlier pass of this analysis claimed a pathological
+tail reaching 54% and proposed porting the handoff's tighter cut to fix it. That
+number was an artifact of counting `JSON.stringify` chars instead of tokens, and
+the proposal was dropped.** pi's cut is fine at the current settings; only the
+summary is not.
+
+### The one defect the settings do not touch
+
+`reserveTokens` doubles as the summarizer's `maxTokens`, and pi merges each
+summary into the previous one under a prompt that forbids dropping anything:
+
+    - PRESERVE all existing information from the previous summary
+    - [x] [Include previously done items AND newly completed items]
+
+So growth is by construction, not by accident. Measured over the same 42 points:
+456 / 4,029 / 11,054 chars (min/median/max), monotonic within a session —
+1,666 → 3,183 → 5,891 → 9,411 → 11,054. On a 32k window the top of that range is
+~8% of the context spent restating history, and it is the only component with no
+ceiling as a session lengthens.
+
+### What was built: `.pi/extensions/compaction-guard/`
+
+- **The summary cap.** `session_before_compact` bounds
+  `preparation.previousSummary` to 5% of the window (6,554 chars on 32k),
+  section-aware: sections are dropped by usefulness (`## Goal`, `## Next Steps`
+  first to survive; `## Progress`, whose `### Done` list is the accumulator, first
+  to go) and reassembled in original order, so the result still matches the format
+  the update prompt asks the model to maintain. The handler returns `undefined` —
+  pi keeps ownership and still writes its own model summary. This bounds the
+  *accumulator*, not pi's output: each summary settles at `cap + one round of new
+  material` instead of growing with iteration count.
+- **The context notice**, the generic sibling of the loop's `context-budget.ts`:
+  same measured thresholds (60% advisory, 80% critical), wording with no loop
+  vocabulary — no iteration count, no `PROGRESS.md`. Justified by the empty-turn
+  cliff, which is a property of the model and the window: 3 empty turns of 196
+  below 87% of the window, 33 of 63 at or above it.
+- **One line, not two.** Both this and `vendor/pi-loop-mode` can append a budget
+  message; both now check for a `*-context-budget` `customType` and stand down if
+  one is already there, so neither registration order produces a duplicate. That
+  is the only change made to the loop fork.
+
+### What was deliberately not ported
+
+`/loop`'s handoff replaces pi's model-written summary with a locally-built one
+and cuts to the last turn — ~1.4k chars kept where pi keeps ~30k. That is correct
+**for a loop**, where the conversation is not the state: the goal lives in
+`GOAL.md`, progress in `PROGRESS.md`, and each iteration re-derives its bearings
+from the working tree. An ordinary session has no such durable substrate — the
+conversation *is* the state. Running `buildHandoffCompaction()` with an inactive
+`LoopState` produces 792 chars reading "No saved loop goal / Iteration: 0 / No
+durable loop files were readable", plus an instruction to write `PROGRESS.md`.
+Flipping the gate would delete the user's actual request and replace it with a
+form. The mechanism is generic; the content generator is not.
+
+### Verified, not assumed
+
+- `session_before_compact` is a first-class pi hook on **both** compaction paths
+  (`agent-session.js:1389` manual, `:1613` auto), and `{compaction}` replaces pi's
+  own entirely. Read, not inferred.
+- The cap works by mutating `event.preparation` in place. `ExtensionRunner.emit()`
+  passes the event **by reference** with no `structuredClone` (`runner.js:579`),
+  and `compact(preparation, …)` then destructures that same object. If a future pi
+  clones the event the mutation stops having an effect and pi's behaviour returns
+  — it cannot break, only stop helping.
+- The extension was loaded through **jiti**, pi's own loader, not only under the
+  `--experimental-strip-types` the tests use. It registers exactly two handlers
+  and no commands or tools.
+- That jiti run caught a real bug before it shipped: capping an already-capped
+  summary stripped the marker and shrank it again, so every compaction would
+  re-trim and re-notify. `capSummary()` now returns byte-identical output for
+  input already within the cap, with a test pinning it.
+- The cap was replayed over the 42 **real** summaries, not only fixtures: 11 are
+  trimmed, none exceed the cap, no `## Goal` or `## Next Steps` is lost on any of
+  them, and the real growth curve flattens to `6,458 → 6,538 → 6,550 → 6,516`.
+  This applies the cap to each recorded summary independently — it does not
+  simulate the feedback loop, where a smaller input would also yield a smaller
+  output, so the real effect is at least this good.
+- Both extensions were loaded together and driven through a replica of pi's
+  `emitContext()` chain: exactly one budget line with the loop inactive, one with
+  it active, and one with the registration order reversed.
+- 24 tests for the guard (`cd .pi/extensions/compaction-guard && npm test`); the
+  loop fork's 39 still pass after its one-line change.
+- **Verified live**, which the 2026-08-16 entry could not manage.
+  `./scripts/pi-local.sh -p "Reply with exactly: OK"` returned `OK` and exit 0
+  against the real model with the guard loaded, and `./scripts/pi-local.sh
+  --print-only` shows it at `.pi/extensions/compaction-guard/index.ts`, ordered
+  after `vendor/pi-loop-mode` — which is what makes the loop's budget line win
+  when a loop is running.
+- **The 2026-08-16 "pi will not reach a first token inside 180 s in this
+  container" limit no longer reproduces.** `pi --version` answers instantly and a
+  full print-mode round trip completes in well under the timeout. `pi --help`
+  does still hang, which is likely what that note actually measured; it is not a
+  barrier to running pi. Anything citing that limit as a live blocker should be
+  re-checked rather than believed.
+- Still **not** exercised: a real compaction inside a live session. That needs a
+  session long enough to compact twice, because the cap has nothing to trim until
+  there is a carried-over summary to trim. The cap itself is pinned by the replay
+  over the 42 real summaries above, and the hook by the jiti run.

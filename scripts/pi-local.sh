@@ -256,6 +256,30 @@ if pi list 2>/dev/null | grep -q "pi-loop-mode@"; then
   LOOP_NOTE=", /loop (conflicting npm install)"
 fi
 
+# The compaction guard carries the non-loop-specific half of the /loop context
+# work into every session: it bounds the summary pi carries from one compaction
+# into the next, and shows the model its remaining budget above 60% of the
+# window. Both were measured on THIS stack (42 real compaction points, 259
+# assistant turns) and neither depends on a loop being active — see the header
+# of .pi/extensions/compaction-guard/index.ts.
+#
+# It registers no tools and no commands, so it costs nothing in the window
+# except the ~40-token budget line it adds above 60%.
+#
+# Loaded AFTER vendor/pi-loop-mode on purpose. Both can append a context-budget
+# line, pi runs `context` handlers in registration order, and whichever runs
+# second stands down when it sees the other's message. With a loop running its
+# own loop-flavoured line is the better one, so the loop must get first refusal.
+# (Both sides check, so a different order costs a duplicate line, not a bug.)
+GUARD_DIR="$REPO_ROOT/.pi/extensions/compaction-guard"
+CGUARD_NOTE=""
+if [[ -r "$GUARD_DIR/index.ts" ]]; then
+  pi_flags+=(-e "$GUARD_DIR/index.ts")
+  CGUARD_NOTE=", compaction guard"
+else
+  warn "$GUARD_DIR is missing — compaction will use pi's unbounded summary this session."
+fi
+
 # /prinny comes from vendor/prinny-channel — the Matrix channel, converted from
 # the Claude Code plugin of the same name (see vendor/prinny-channel/FORK.md).
 # Loaded by absolute path for the same reasons as /stack and /loop above.
@@ -538,5 +562,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"
