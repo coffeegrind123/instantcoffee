@@ -136,6 +136,8 @@ cd ~/my-project && qpi
 | `./scripts/spec-sweep.sh --only baseline,pmin-050,pmin-040` | Is the MTP draft p-min-bound or n-max-bound |
 | `./scripts/spec-sweep.sh --workload repeat` | What `ngram-simple` is worth on repetitive output |
 | `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything |
+| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
+| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 | `./scripts/rtk.sh --install` | One-time: install the pinned rtk that filters bash output |
 | `./scripts/rtk.sh --status` | What is being filtered, and whether the pin matches |
@@ -189,8 +191,9 @@ The keys worth knowing:
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
 | `GGUF_FILE` | set by the active mode | `coding` uses `Qwen3.8-27B-UD-Q4_K_XL.gguf`; `prose` the Heretic-decensored IQ4_XS. See the VRAM table |
 | `CTX_SIZE` | `32768` | Context per slot; also what forge uses as its token budget. Capped by the f16 KV cache — see below |
-| `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it |
-| `REASONING_EFFORT` | `medium` | **New in 3.8.** `xhigh`\|`high`\|`medium`\|`low` — `high` is rewritten to `xhigh`, anything else fails the request. Upstream defaults to `xhigh`; this stack does not, see below |
+| `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it. The guard against a turn that thinks itself out of an answer entirely — at a cap, `xhigh` has been measured returning 12,582 reasoning chars and **zero** content |
+| `REASONING_BUDGET_MESSAGE` | *(see `.env`)* | What the engine injects when the budget runs out. Phrase it toward delivering, not toward answering — an agentic turn cut off mid-plan still needs to be free to call a tool |
+| `REASONING_EFFORT` | `medium` | **New in 3.8.** `xhigh`\|`high`\|`medium`\|`low` — `high` is rewritten to `xhigh`, anything else fails the request *for this setting*. A **request** may instead send `{"reasoning_effort":"none"}` (llama.cpp intercepts it before the template) or override per turn with `{"chat_template_kwargs":{"reasoning_effort":"low"}}`; forge forwards both. Upstream defaults to `xhigh`; this stack does not, see below |
 | `THINK_LANG` | set by the active mode | Reason in Mandarin, answer in English. `zh` in `coding`, `off` in `prose`. Unmeasured on this hardware — see below |
 | `FLASH_ATTN` | `on` | Recent llama.cpp requires a **value** here (`on`/`off`/`auto`) |
 | `LLAMA_EXTRA_FLAGS` | `-n 8192 --load-mode none` | `--load-mode none` disables mmap (mandatory on a 9p bind mount); `-n` is the server-side generation cap. **No KV quantization** — see below |
@@ -200,8 +203,13 @@ The keys worth knowing:
 | `SLOT_PROMPT_SIMILARITY` | `0.20` | Similarity threshold for cache reuse (0.0–1.0) |
 | `CTX_CHECKPOINTS` | `16` | KV checkpoints per slot for agentic rewind; 0 disables |
 | `CHECKPOINT_MIN_STEP` | `256` | Minimum tokens between checkpoints |
+| `SPEC_TYPE` | `ngram-simple,draft-mtp` | Comma-separated **list**; the engine hard-codes the priority (n-gram drafters ahead of draft-model ones, first non-empty wins). Set from a full sweep — see below |
+| `SPEC_DRAFT_N_MAX` | `4` | Draft length for `draft-mtp`. Does **not** cap `ngram-simple`, which is bounded by remaining context |
 | `SPEC_DRAFT_N_MIN` | `0` | Minimum MTP draft tokens; 0 = auto |
-| `SPEC_DRAFT_P_MIN` | `0.75` | Minimum MTP per-token acceptance probability |
+| `SPEC_DRAFT_P_MIN` | `0.40` | Minimum MTP per-token acceptance probability. **Sweep this before `n-max`** — the draft loop tests it first, so a tight p-min hides n-max entirely |
+| `SPEC_NGRAM_MIN_HITS` | *(empty)* | Times a span must be seen before `ngram-simple` drafts it. Empty = llama.cpp's default of **1**. Untested here; 2–3 may cut bad drafts on novel text |
+| `SPEC_NGRAM_SIZE_N` | *(empty)* | n-gram lookup width. Empty = default 12 |
+| `SPEC_NGRAM_SIZE_M` | *(empty)* | Max tokens drafted per lookup. Empty = default 48 |
 | `MMPROJ_FILE` | *(empty)* | Set to `mmproj-F16.gguf` for image input |
 | `FORGE_CAPABILITY` | `native` | Keep `native` — llama.cpp with `--jinja` does real function calling |
 | `FORGE_REASONING_REPLAY` | `full` | `keep-last` / `full` replay captured reasoning to the backend |
@@ -1227,8 +1235,51 @@ by rendering it:
 | anything else | `raise_exception()` — the request fails |
 
 That last row includes `none`, which several release-day write-ups list as a
-fourth level. It is not one. It also includes the empty string, so never leave
-`REASONING_EFFORT=` blank in `.env`.
+fourth level. It is not one — *for this setting*. It also includes the empty
+string, so never leave `REASONING_EFFORT=` blank in `.env`.
+
+### But the API is a different path, and it does accept `none`
+
+`REASONING_EFFORT` reaches the template through `--chat-template-kwargs`. A
+**request** has two routes the template never sees first
+(`tools/server/server-common.cpp:1073-1094`):
+
+```jsonc
+{"reasoning_effort": "none"}                              // thinking off entirely
+{"chat_template_kwargs": {"reasoning_effort": "low"}}     // per-turn override
+```
+
+llama.cpp intercepts a top-level `"none"` and maps it to `enable_thinking=false`
+before rendering, so it never raises. And a request's `chat_template_kwargs` are
+merged **over** the server's, so a client picks its own effort per turn with no
+restart. **forge forwards both** — verified end to end, content length through
+forge tracked llama within 1% on identical prompts. Only `none` is special-cased
+at the top level; `low`/`medium`/`xhigh` must go via `chat_template_kwargs`.
+
+### Which level is actually worth it
+
+Measured with `bench_quality.py` — 5 coding tasks, 5 hidden edge-case assertions
+each, the model's code **executed**, LOC standing in for over-engineering:
+
+| effort | pass% | LOC | reason chars | wall |
+| --- | --- | --- | --- | --- |
+| `none` | 84.0 | **164** | 0 | 23.3s |
+| `low` | 96.0 | **63** | 9,007 | 48.3s |
+| `medium` | **100.0** | 71 | 13,876 | 59.9s |
+| `xhigh` | **100.0** | 99 | 41,489 | 244.4s |
+
+`xhigh` ties `medium` on correctness while writing 40% more code and costing 4×
+the wall clock — 39 lines for `roman_to_int` where `low` used 13. It buys
+nothing. `none` is worst on both axes at once: fewest passes *and* the most
+sprawling code, because with no planning phase it rambles.
+
+`medium` stays the default because it is the only level at 100%, and a coding
+agent's failure mode is a wrong function rather than a verbose one. `low` writes
+the leanest correct code and is a fair choice if terseness is worth 4 points.
+
+Measure quality, not length: an earlier pass here compared output *size* and got
+the answer backwards, because the whole complaint about `xhigh` is that it
+produces **more** output, not less.
 
 Raising it is a two-key change, not one: `xhigh` without a matching increase to
 `REASONING_BUDGET` (and the context to hold it) just moves where the truncation
@@ -1448,6 +1499,14 @@ scripts/
   test_cjk_detector.py     standalone unit tests for the CJK leak detector
   bench.sh              runner for bench.py
   bench.py              prefill / decode / MTP acceptance, from llama's timings
+  bench_repeat.py       the repetition workload bench.py cannot measure — its
+                        nonce defeats ngram-simple as well as the prefix cache.
+                        Reports "echo" so a flat result can be told apart from
+                        a workload that failed to repeat
+  bench_quality.py      reasoning effort vs ANSWER QUALITY: hidden edge-case
+                        assertions, model code executed, LOC as the
+                        over-engineering proxy. Length is not quality
+  spec-sweep.sh         sweep SPEC_TYPE x n-max x p-min, report draft/cycle
   slot-cache.sh         save/restore KV cache — UNUSED, and read its header first
   mode.sh               switch between the regimes in modes/
   download_model.py     resumable GGUF fetch
