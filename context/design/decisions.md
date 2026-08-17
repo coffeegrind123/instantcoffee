@@ -3243,3 +3243,43 @@ defended by a number that is no longer true.
   message from `@kuso` and only the bot's credentials are on this box. The reply
   path is the thing to watch — a broken forward shows the answer in the terminal
   and nothing on the phone.
+
+## 2026-08-17 — the typing indicator was correct and still invisible
+
+Asked for a typing indicator while the model thinks. The sidecar already set one
+on message arrival; the reported behaviour was that it "only briefly displays and
+goes away even though we think way longer".
+
+### Two problems, and the second is the interesting one
+
+**Timing.** Matrix expires a typing indicator on its own timeout (20s) and a 27B
+local model routinely thinks for longer. Fixed by driving it from the turn
+lifecycle — up between `agent_start` and `agent_settled`, which is exactly when
+pi shows "Working…" — and refreshing every 8s.
+
+**Broadcast.** That refresh was working perfectly and changed nothing. The
+channel log showed PUTs at a clean 8s cadence, all returning 200, sustained over
+90 seconds. The indicator still vanished.
+
+Re-asserting `typing: true` while already typing is **invisible to clients**.
+Tested directly against the homeserver: first PUT produces an `m.typing` EDU;
+a second, with the typing set unchanged, produces *nothing*. Synapse only
+broadcasts when the set of typing users changes. The server-side expiry is
+refreshed so nothing ever removes the user either — no EDU says "started", none
+says "stopped", and a client that expires its own indicator locally goes quiet
+and never hears otherwise.
+
+The fix is to make the set genuinely change: clear, then assert. Measured over a
+simulated 8s loop — an EDU on every refresh, against only the first before.
+
+This is the "instrument before you build" case in its purest form. Every layer we
+own was doing the right thing, the logs said so, and the bug was one layer
+further out in a service whose behaviour nobody had checked. Reading our own code
+harder would never have found it; one `/sync` did.
+
+### Cost
+
+Nothing, and measured rather than claimed. `typing` is exposed on the sidecar's
+MCP interface but never passed to `pi.registerTool()`, so it never enters the
+model's schema. `tests/tool-budget.test.ts` reads the `tools` array off the wire
+and still reports 1,333 chars — unchanged by the whole feature.
