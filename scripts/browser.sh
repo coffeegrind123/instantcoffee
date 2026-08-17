@@ -52,6 +52,11 @@ HOST="$(env_get BROWSER_MCP_HOST)";      : "${HOST:=127.0.0.1}"
 DISP="$(env_get BROWSER_MCP_DISPLAY)";   : "${DISP:=${DISPLAY:-}}"
 AUTO="$(env_get BROWSER_MCP_AUTOSTART)"; : "${AUTO:=1}"
 TMO="$(env_get BROWSER_MCP_TIMEOUT)";    : "${TMO:=180}"
+# The server's own per-tool budget, which is NOT the same number as the CLI's.
+# It has to sit below whatever client is waiting (pi's adapter: 30s) or the
+# client times out first and the model gets a transport error instead of the
+# server's own "exceeded its Ns time budget".
+TOOLTMO="$(env_get BROWSER_MCP_TOOL_TIMEOUT)"; : "${TOOLTMO:=25}"
 
 export ZENDRIVER_MCP_DIR="$DIR"
 export BROWSER_MCP_HOST="$HOST"
@@ -59,5 +64,6 @@ export BROWSER_MCP_PORT="$PORT"
 export BROWSER_MCP_DISPLAY="$DISP"
 export BROWSER_MCP_AUTOSTART="$AUTO"
 export BROWSER_MCP_TIMEOUT="$TMO"
+export ZENDRIVER_MCP_TOOL_TIMEOUT="$TOOLTMO"
 
 exec python3 "$REPO_ROOT/scripts/browser_cli.py" "$@"
