@@ -46,11 +46,22 @@ whoever is on the other end of a chat channel. Setting
 ``--reasoning-format none`` on llama-server would have recovered the same tokens
 by putting them in ``content``, and would have leaked them to Matrix.
 
-``finish_reason`` is deliberately left alone. It is wrong too — hardcoded
-``"stop"`` in ``text_response_to_openai`` — but the streaming client never reads
-it from the backend at all, so fixing it means threading a new value through the
-delta loop. That is more surface for a diagnostic nicety, and this patch is
-already four edits wide.
+``finish_reason`` is fixed here too. ``text_response_to_openai`` hardcodes
+``"stop"``, so every text response claims the model finished naturally whether it
+did or not — llama-server said ``length`` for the truncated control above and
+forge said ``stop``.
+
+That is not only a diagnostic loss. A truncated ANSWER looks identical to a
+finished one: the model writes past ``max_tokens``, gets cut mid-sentence, and pi
+records a normal completed turn whose last half-sentence is now "the answer" —
+forwarded to a chat channel as though the model had said its piece. Nothing
+downstream can tell. With a truthful ``length`` the harness can continue
+generation instead of shipping a fragment.
+
+The llama.cpp client never read the field at all, which is why it needed adding
+rather than passing on: the streaming loop already has ``choice`` in scope
+(``choice = chunk["choices"][0]``), so it is one capture there plus the two
+non-streaming sites.
 
 Applied at image build time rather than vendored, so the upstream package stays a
 pinned dependency. It verifies the exact source text before rewriting and exits
@@ -85,6 +96,10 @@ WORKFLOW_NEW = '''class TextResponse:
     # is destroyed before the response is assembled. ToolCall has carried a
     # reasoning field all along; this is the same field for the other branch.
     reasoning: str | None = None
+    # Why generation stopped, straight from the backend. Without it the response
+    # builder hardcodes "stop" and a truncated answer is indistinguishable from
+    # a finished one.
+    finish_reason: str | None = None
 '''
 
 # --- 2. the llama.cpp client has to stop dropping it -------------------------
@@ -95,6 +110,31 @@ WORKFLOW_NEW = '''class TextResponse:
 # the non-streaming path.
 
 CLIENT_EDITS = [
+    # streaming: somewhere to put it
+    (
+        """        accumulated_content = ""
+        accumulated_reasoning = ""
+""",
+        """        accumulated_content = ""
+        accumulated_reasoning = ""
+        # Why the backend stopped. Only the LAST chunk carries it, so it is
+        # captured as it goes past rather than read at the end.
+        stream_finish_reason: str | None = None
+""",
+        1,
+    ),
+    # streaming: read it off each chunk
+    (
+        """                choice = chunk["choices"][0]
+                delta = choice.get("delta", {})
+""",
+        """                choice = chunk["choices"][0]
+                delta = choice.get("delta", {})
+                if choice.get("finish_reason"):
+                    stream_finish_reason = choice["finish_reason"]
+""",
+        1,
+    ),
     # streaming, tools present but no tool call extracted
     (
         """                    final = TextResponse(content=cleaned)
@@ -104,6 +144,7 @@ CLIENT_EDITS = [
                         reasoning=self._resolve_reasoning(
                             accumulated_reasoning, think_text
                         ),
+                        finish_reason=stream_finish_reason,
                     )
 """,
         1,
@@ -119,6 +160,7 @@ CLIENT_EDITS = [
                     reasoning=self._resolve_reasoning(
                         accumulated_reasoning, accumulated_content
                     ),
+                    finish_reason=stream_finish_reason,
                 )
 """,
         1,
@@ -144,6 +186,8 @@ CLIENT_EDITS = [
             reasoning=self._resolve_reasoning(
                 choice.get("reasoning_content", ""), think_text
             ),
+            # `choice` above is the MESSAGE; finish_reason sits on the choice.
+            finish_reason=choices[0].get("finish_reason"),
         )
 """,
         1,
@@ -162,6 +206,7 @@ CLIENT_EDITS = [
         return TextResponse(
             content=content,
             reasoning=self._resolve_reasoning(reasoning_content, think_text),
+            finish_reason=top_choice.get("finish_reason"),
         )
 """,
         1,
@@ -197,12 +242,19 @@ CONVERT_NEW = '''def text_response_to_openai(
     model: str = "forge",
     usage: Any | None = None,
     reasoning: str | None = None,
+    finish_reason: str | None = None,
 ) -> dict[str, Any]:
     """Convert a text response to an OpenAI chat completions response object.
 
     ``reasoning`` is emitted as ``reasoning_content``, never merged into
     ``content``: consumers treat the two differently, and a channel that relays
     assistant text to a person must not relay chain-of-thought with it.
+
+    ``finish_reason`` comes from the backend. It used to be hardcoded ``"stop"``,
+    which made a response truncated at ``max_tokens`` indistinguishable from one
+    the model chose to end — so a half-finished sentence was recorded as the
+    final answer. ``"stop"`` remains the default for callers that have nothing
+    better to say.
     """
     message: dict[str, Any] = {
         "role": "assistant",
@@ -217,7 +269,7 @@ CONVERT_NEW = '''def text_response_to_openai(
         "choices": [{
             "index": 0,
             "message": message,
-            "finish_reason": "stop",
+            "finish_reason": finish_reason or "stop",
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
@@ -249,12 +301,13 @@ HANDLER_NEW = '''def _emit_text(
     is_stream: bool,
     usage: Any | None = None,
     reasoning: str | None = None,
+    finish_reason: str | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Protocol-aware text response emitter.
 
-    ``reasoning`` is only carried on the non-streaming OpenAI path for now; the
-    other three emitters build their own event shapes and none of this stack's
-    clients reach them.
+    ``reasoning`` and ``finish_reason`` are only carried on the non-streaming
+    OpenAI path for now; the other three emitters build their own event shapes
+    and none of this stack's clients reach them.
     """
     if protocol == "anthropic":
         if is_stream:
@@ -263,7 +316,8 @@ HANDLER_NEW = '''def _emit_text(
     if is_stream:
         return text_to_sse_events(text, model=model, usage=usage)
     return text_response_to_openai(
-        text, model=model, usage=usage, reasoning=reasoning
+        text, model=model, usage=usage, reasoning=reasoning,
+        finish_reason=finish_reason,
     )
 '''
 
@@ -278,9 +332,12 @@ HANDLER_CALL_NEW = '''        text = response.content if isinstance(response, Te
         reasoning = (
             response.reasoning if isinstance(response, TextResponse) else None
         )
+        finish_reason = (
+            response.finish_reason if isinstance(response, TextResponse) else None
+        )
         return _emit_text(
             text, model_name, protocol, is_stream, usage=usage,
-            reasoning=reasoning,
+            reasoning=reasoning, finish_reason=finish_reason,
         )
 '''
 
@@ -317,18 +374,18 @@ def main(argv: list[str]) -> int:
         fail(f"{root} is not a directory")
 
     _apply(root / WORKFLOW_REL, WORKFLOW_REL, [(WORKFLOW_OLD, WORKFLOW_NEW, 1)],
-           marker="reasoning: str | None = None\n\n\ntype LLMResponse")
+           marker="finish_reason: str | None = None\n\n\ntype LLMResponse")
     _apply(root / CLIENT_REL, CLIENT_REL, CLIENT_EDITS,
-           marker="reasoning=self._resolve_reasoning(\n                            accumulated_reasoning")
+           marker="stream_finish_reason: str | None = None")
     # NOT 'message["reasoning_content"] = reasoning' — that string already
     # exists in the tool-call builder under reasoning_replay="keep-last", so it
     # reports "already patched" on a pristine install and silently skips the
     # text path. Caught by applying this to a real copy before shipping it.
     _apply(root / CONVERT_REL, CONVERT_REL, [(CONVERT_OLD, CONVERT_NEW, 1)],
-           marker='never merged into')
+           marker='finish_reason or "stop"')
     _apply(root / HANDLER_REL, HANDLER_REL,
            [(HANDLER_OLD, HANDLER_NEW, 1), (HANDLER_CALL_OLD, HANDLER_CALL_NEW, 1)],
-           marker="reasoning=reasoning,\n        )")
+           marker="reasoning=reasoning, finish_reason=finish_reason,")
     return 0
 
 
