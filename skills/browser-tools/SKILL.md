@@ -21,6 +21,11 @@ browser_type_text({ selector: "7", text: "hello" })
 is element **3**, a link labelled "Sign in", in the header. Anything that takes a
 `selector` accepts that number as a string, or a CSS selector.
 
+Pass `links: true` to get each link's target as `h` (a path when same-origin).
+Use it when you need to **follow or identify** a link rather than click blindly —
+a link labelled `[a]` has no usable text, and guessing its URL does not work. It
+roughly doubles the tree, so ask for it when you need it, not by default.
+
 You are a text model. **You cannot see screenshots.** Read pages as text.
 
 ## The other 93 tools

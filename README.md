@@ -148,7 +148,7 @@ cd ~/my-project && qpi
 | `./scripts/browser.sh down` | Stop Chrome and its server |
 | `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 | `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (39 tests, no install) |
-| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (241 tests, no install) |
+| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (296 tests, no install) |
 | `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (16 tests, no install) |
 
 ## Updating
@@ -679,6 +679,67 @@ The `[matrix]` marker stays, at about a token, because it is the boundary
 between "the operator typed this" and "a stranger sent this" that every
 untrusted-input guideline depends on.
 
+### The proxy was destroying the model's reasoning
+
+`patches/forge_reasoning_passthrough.py`. Empty assistant turns on this stack —
+`content: []`, `stopReason: "stop"`, a clean successful turn with no answer in it
+— were forge's doing, not llama.cpp's. The control, same request to both ports:
+
+```
+llama-server :8080  ->  finish_reason "length",  reasoning_content 490 chars
+forge        :8081  ->  finish_reason "stop",    no reasoning_content key at all
+```
+
+forge's `TextResponse` carried `content` and nothing else. `ToolCall` has always
+carried `reasoning`, and the llama client said so outright — "reasoning is only
+useful on ToolCall, TextResponse just gets clean content" — which holds right up
+until the model produces reasoning and *nothing else*. Then `accumulated_content`
+is empty, the reasoning has nowhere to live, and everything generated is gone
+before the response is assembled.
+
+`finish_reason` was hardcoded `"stop"` in the same place, so a **truncated
+answer** was indistinguishable from a finished one: the model writes past
+`PI_MAX_TOKENS`, gets cut mid-sentence, and the half-finished sentence is
+recorded as the answer.
+
+Reasoning is emitted as `reasoning_content` and **never merged into `content`**,
+which is the whole safety argument: pi maps it to a *thinking* block, and
+`vendor/prinny-channel` allowlists *text* blocks, so the harness sees the
+reasoning and a Matrix sender does not. Setting `--reasoning-format none` on
+llama-server would recover the same tokens by putting them in `content`, and
+would leak them.
+
+Verified against pristine PyPI source before the build, not against the running
+container — which is already patched and reports the pre-patch blocks as missing,
+loudly, which is what the source-text verification is for.
+
+**A Matrix sender can run a named few pi commands.** `sendUserMessage` passes
+`expandPromptTemplates: false`, so a `/` message had never executed anything — it
+reached the model as literal text. Allowed now: `/compact`, `/stack`, and the
+whole `/loop` lifecycle. Refused, each on its own grounds: `/prinny` (it edits
+the allowlist itself), `/trust` (loads a project's extensions — arbitrary code),
+`/login`, `/logout`, `/settings`, `/share`, `/export`, `/copy`, `/new`, `/fork`,
+`/resume`, `/session`, `/tree`, `/quit`, `/model`, `/name`, plus the `--model`
+flag on anything permitted, which would route around the `/model` refusal. A
+refused command is answered on Matrix and **not** delivered to the model, so it
+cannot be talked into running it another way. Anything unrecognised stays prose —
+`/usr/bin/foo is broken` is a sentence. See `src/command-routing.ts`.
+
+**The typing indicator follows "Working…".** Up between `agent_start` and
+`agent_settled`, refreshed every 8s against Matrix's 20s expiry. Two subtleties
+were paid for: re-asserting `typing: true` while already typing produces **no
+`m.typing` EDU at all** (Synapse only broadcasts when the set changes), so each
+assertion clears first; and the sidecar no longer signals typing on *arrival*,
+which was claiming work up to 89 seconds before pi had the message.
+
+**A run that ends without an answer is continued, not abandoned.** Empty turns
+have three observed causes — a truncated response, a turn that generated tokens
+but no answer, and a transport failure — and the diagnosis names which. Two
+retries, wording per cause, with the question restated so a compaction cannot
+lose it. Nothing is ever forwarded in place of an answer: an empty final turn
+used to make the forwarder walk *back* to the previous turn's deliberation and
+send that.
+
 `/prinny permissions dangerous` relays a Matrix approval prompt before `rm -rf`,
 `sudo`, force pushes and similar. pi has no approval system of its own, so this
 is the extension's own gate rather than a relay of one; it **fails closed**, so
@@ -846,6 +907,15 @@ still writes its own model summary and the guard can never replace or cancel a
 compaction. What is deliberately **not** ported is `/loop`'s handoff, which
 throws the conversation away and rebuilds from `GOAL.md`/`PROGRESS.md`: that is
 right for a loop and wrong for a session where the conversation *is* the state.
+
+**`BROWSER_MCP_TOOL_TIMEOUT` sizes the browser server's own budget below the
+client's.** `ToolBase._register` has always guarded each tool with a time budget,
+but at 120s against pi's `requestTimeoutMs` of 30s the server lost that race
+every time: it kept working on a tab the client had abandoned, the model fired
+the next call at the same tab, and the CDP session corrupted. That is what
+wedges the browser — not the page. On a fresh browser the exact URL that "hung"
+loads in 7.6s. At 25s the server answers first, with a sentence naming the tool
+and the number.
 
 **And `httpIdleTimeoutMs`, for the same reason.** pi's default is 300,000 ms —
 how long a request may go without producing a single byte. Prefill produces no
@@ -1119,6 +1189,7 @@ no npm package at all:
 ./scripts/browser.sh navigate --url https://example.com   # opens Chrome if needed
 ./scripts/browser.sh get_text_content                     # the page as plain text
 ./scripts/browser.sh get_interaction_tree                 # numbered clickable elements
+./scripts/browser.sh get_interaction_tree --links         # ...with each link's target
 ./scripts/browser.sh click --selector 3
 ./scripts/browser.sh --search cookie                      # find one of the other 98 tools
 ./scripts/browser.sh <tool> --help                        # that one tool's parameters
@@ -1587,6 +1658,9 @@ patches/
                         message content; fails the build if forge changes
   forge_cached_tokens.py      build-time fix for forge dropping llama's
                         prompt-cache counter; fails the build if forge changes
+  forge_reasoning_passthrough.py  build-time fix for forge destroying a
+                        reasoning-only turn and hardcoding finish_reason;
+                        fails the build if forge changes
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction
@@ -1603,7 +1677,7 @@ vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plug
   extensions/index.ts   the pi extension: tools, /prinny, forwarding, lifecycle
   src/                  pure modules — client, gate, block renderer, access
   server/               the Matrix sidecar, run as a child process
-  tests/                231 tests, no node_modules
+  tests/                296 tests, no node_modules
 vendor/rtk-pi/          bash output filtering — fork of rtk's own pi extension
   FORK.md               the measurements, and why it filters an allow-list
   src/gate.ts           what is filtered and what is accepted back (no pi import)
@@ -1639,7 +1713,7 @@ each answers a different question:
 python3 scripts/test_repeat_detector.py   # 14 unit tests
 python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
 (cd vendor/pi-loop-mode && npm test)      # 39 tests for the /loop fork
-(cd vendor/prinny-channel && npm test)    # 241 tests for the Matrix channel
+(cd vendor/prinny-channel && npm test)    # 296 tests for the Matrix channel
 (cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)
 docker compose --profile tools config     # validate compose
 ```
