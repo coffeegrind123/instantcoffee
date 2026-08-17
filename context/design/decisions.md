@@ -3283,3 +3283,63 @@ Nothing, and measured rather than claimed. `typing` is exposed on the sidecar's
 MCP interface but never passed to `pi.registerTool()`, so it never enters the
 model's schema. `tests/tool-budget.test.ts` reads the `tools` array off the wire
 and still reports 1,333 chars — unchanged by the whole feature.
+
+## 2026-08-17 — the empty turns are a reasoning-parser bug, reproducible on demand
+
+Chasing why a run ends with `content: []`. Two earlier explanations were wrong
+and are recorded here because the wrong ones cost the most time.
+
+### Wrong once: "the context filled up"
+
+The first empty turn was at 99% of the window, so context looked like the cause.
+The next one was at **43%**, with 126 output tokens generated. Reading
+`usage.input` alone had also made the first one look like 70% — `input` is only
+the *uncached* portion, and `cacheRead` has to be added to get the real prompt
+size. Both corrections are in `describeEmptyEnding`.
+
+### Wrong twice: "the CRITICAL notice did not fire"
+
+It fired. Reconstructed with `cacheRead` included, the turn that issued the
+17,790-char command was at **84.5%**, and pi's own estimate agreed with the
+provider to within 53 tokens. The model was told "do not run commands with large
+output this turn" and ran one. Not a threshold to tune.
+
+### What it actually is
+
+llama.cpp runs with `--reasoning-format deepseek`. Reproduced directly against
+forge, same prompt, three budgets:
+
+| max_tokens | completion | content | reasoning_content |
+| --- | --- | --- | --- |
+| 250 | 250 (cut off) | **0** | **0** |
+| 800 | 730 (finished) | 625 | 0 |
+| 2000 | 670 (finished) | 466 | 0 |
+
+**When generation stops before the model closes its `<think>` block, the deepseek
+parser discards everything — content and reasoning_content both empty — and
+reports `finish_reason: "stop"` rather than `"length"`.** Streaming shows it
+plainly: two chunks, `{"content": ""}` then `finish_reason: "stop"`, with usage
+reporting 250 completion tokens that reached nobody.
+
+llama-server's own log confirms the tokens were generated and released normally:
+task 7306, prompt 1,868 / eval 126, `truncated = 0`, matching the session's
+`input: 1868, output: 126` exactly. The loss is entirely in the parse.
+
+pi is not at fault: its `openai-completions` reader handles `reasoning_content`
+and turns it into a thinking block, ungated (`pi-ai/dist/api/openai-completions.js`,
+the branch commented "Some endpoints return reasoning in reasoning_content
+(llama.cpp)"). It never sees the tokens.
+
+### What follows
+
+- **`--reasoning-format none` is NOT a safe fix here.** It would deliver the raw
+  `<think>` text as ordinary content, which loses nothing — and prinny's
+  forwarder allowlists `text` blocks, so a stranger's phone would then receive
+  the model's thinking verbatim. That is the leak fixed in 9f7725d, reintroduced
+  by configuration.
+- The mitigation is the continuation in `vendor/prinny-channel/src/continuation.ts`:
+  the run is nudged to answer rather than left dead. It treats a symptom, and now
+  it is written down which one.
+- Worth reporting upstream: `finish_reason` should be `length` when the cap was
+  hit, and an unterminated reasoning block should surface as *something* rather
+  than as silence.
