@@ -1,0 +1,63 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 12.35,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 936.7431505975122,
+      "predicted_n": 1228,
+      "predicted_tps": 111.47937027954542,
+      "cache_n": 0,
+      "draft_n": 1026,
+      "draft_accepted": 970,
+      "draft_acceptance": 0.945,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 11.95,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1534.7783823106336,
+      "predicted_n": 1228,
+      "predicted_tps": 118.06244907475285,
+      "cache_n": 0,
+      "draft_n": 1020,
+      "draft_accepted": 972,
+      "draft_acceptance": 0.953,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 11.87,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1681.7482404830548,
+      "predicted_n": 1228,
+      "predicted_tps": 117.41959912872365,
+      "cache_n": 0,
+      "draft_n": 1020,
+      "draft_accepted": 972,
+      "draft_acceptance": 0.953,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    }
+  ],
+  "config": {
+    "name": "pmin-040-n4",
+    "spec_type": "draft-mtp",
+    "n_max": 4,
+    "p_min": 0.4,
+    "workload": "repeat"
+  }
+}

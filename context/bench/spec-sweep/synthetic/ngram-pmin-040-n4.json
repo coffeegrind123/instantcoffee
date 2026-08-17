@@ -1,0 +1,51 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 35.15,
+      "prompt_n": 1053,
+      "prompt_tps": 49.451385484116386,
+      "predicted_n": 256,
+      "predicted_tps": 18.536960273049427,
+      "cache_n": 0,
+      "draft_n": 342,
+      "draft_accepted": 172,
+      "draft_acceptance": 0.503
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 15.03,
+      "prompt_n": 1053,
+      "prompt_tps": 387.9534735836106,
+      "predicted_n": 256,
+      "predicted_tps": 67.83989043857694,
+      "cache_n": 0,
+      "draft_n": 285,
+      "draft_accepted": 173,
+      "draft_acceptance": 0.607
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 6.84,
+      "prompt_n": 1053,
+      "prompt_tps": 1407.2065546692395,
+      "predicted_n": 256,
+      "predicted_tps": 46.88901461819979,
+      "cache_n": 0,
+      "draft_n": 355,
+      "draft_accepted": 164,
+      "draft_acceptance": 0.462
+    }
+  ],
+  "config": {
+    "name": "ngram-pmin-040-n4",
+    "spec_type": "ngram-simple,draft-mtp",
+    "n_max": 4,
+    "p_min": 0.4,
+    "workload": "synthetic"
+  }
+}

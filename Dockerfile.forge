@@ -63,7 +63,7 @@ LABEL org.opencontainers.image.title="qwen3.8-forge proxy" \
 # `./scripts` expands to here) mounts an EMPTY directory instead of failing —
 # see context/design/decisions.md. Baking them in removes that whole class of
 # bug and makes the image self-contained.
-COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/ab_think_lang.py /work/scripts/
+COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/bench_repeat.py scripts/ab_think_lang.py /work/scripts/
 
 # System-prompt fragments. They have to be inside the image for the same reason
 # the scripts are: neither llama-server nor forge can inject a system prompt, so

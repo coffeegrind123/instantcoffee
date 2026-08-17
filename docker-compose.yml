@@ -48,6 +48,9 @@ services:
       -np ${PARALLEL_SLOTS}
       --no-context-shift
       ${SPEC_TYPE:+--spec-type ${SPEC_TYPE} --spec-draft-n-max ${SPEC_DRAFT_N_MAX} --spec-draft-n-min ${SPEC_DRAFT_N_MIN} --spec-draft-p-min ${SPEC_DRAFT_P_MIN}}
+      ${SPEC_NGRAM_MIN_HITS:+--spec-ngram-simple-min-hits ${SPEC_NGRAM_MIN_HITS}}
+      ${SPEC_NGRAM_SIZE_N:+--spec-ngram-simple-size-n ${SPEC_NGRAM_SIZE_N}}
+      ${SPEC_NGRAM_SIZE_M:+--spec-ngram-simple-size-m ${SPEC_NGRAM_SIZE_M}}
       --temp ${TEMPERATURE}
       --top-p ${TOP_P}
       --top-k ${TOP_K}

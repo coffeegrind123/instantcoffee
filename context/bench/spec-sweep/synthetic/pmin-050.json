@@ -1,0 +1,51 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 6,
+      "prompt_n": 1053,
+      "prompt_tps": 824.5546582639874,
+      "predicted_n": 256,
+      "predicted_tps": 55.212288012312335,
+      "cache_n": 0,
+      "draft_n": 184,
+      "draft_accepted": 144,
+      "draft_acceptance": 0.783
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.7,
+      "prompt_n": 1053,
+      "prompt_tps": 1518.7507301686203,
+      "predicted_n": 256,
+      "predicted_tps": 55.4252076875629,
+      "cache_n": 0,
+      "draft_n": 199,
+      "draft_accepted": 138,
+      "draft_acceptance": 0.693
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.72,
+      "prompt_n": 1053,
+      "prompt_tps": 1322.4356929537912,
+      "predicted_n": 256,
+      "predicted_tps": 59.51056742628652,
+      "cache_n": 0,
+      "draft_n": 194,
+      "draft_accepted": 146,
+      "draft_acceptance": 0.753
+    }
+  ],
+  "config": {
+    "name": "pmin-050",
+    "spec_type": "draft-mtp",
+    "n_max": 2,
+    "p_min": 0.5,
+    "workload": "synthetic"
+  }
+}

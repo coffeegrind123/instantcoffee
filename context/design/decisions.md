@@ -2530,3 +2530,351 @@ literals in a tool's module counts its rendering code too.
   token inside 180 s in this container, and even `pi --help` hangs" was written
   during the same memory storm. `pi --help` returns in under a second once the
   box is not thrashing. It was never a pi defect.
+
+## 2026-08-16 — the MTP draft is p-min-bound, and the engine ships a free drafter we do not use
+
+`versions.lock` recorded decode at **39.6 tok/s** with **86.2%** MTP acceptance
+and the note "2 is the 3.6 inherited value and 86.2% acceptance suggests it is
+too low for 3.8; sweep in progress". That framing was wrong, and the reason is
+visible in the engine source rather than in any benchmark.
+
+Everything below was read from `ggml-org/llama.cpp` at the exact commit this
+stack pins — `server-cuda-b10200` = `5f55650a7`, authored **2026-07-30** — not
+from documentation, a fork's README, or memory.
+
+### 1. p-min is tested before n-max, so n-max was never the binding knob
+
+`common/speculative.cpp:1520-1670`, the qwen35 branch of the MTP draft loop:
+
+```cpp
+while (n_drafting > 0) {
+    int ret = llama_decode(ctx_dft, batch);        // a full MTP forward pass
+    common_sampler_sample(smpl, ctx_dft, i_last[seq_id], true);
+    const auto * cur_p = common_sampler_get_candidates(smpl, true);
+    if (cur_p->data[0].p < params.p_min) { drafting = false; continue; }   // first
+    result.push_back(id);
+    if (params.n_max <= (int) result.size()) { drafting = false; continue; } // second
+}
+```
+
+With `SPEC_DRAFT_P_MIN=0.75` the second draft token survives only when the MTP
+head's top-1 probability clears 0.75, so the draft is frequently cut at length 1
+and `n_max` is never consulted. **High acceptance beside a low decode rate is
+the signature of that state**: acceptance is bought by refusing to draft, not
+earned by drafting well. Sweeping `n_max` under a tight `p_min` measures a knob
+that is not binding, which is why the inherited 2/3/4 numbers looked flat.
+
+The diagnostic that separates the two, now computed by `spec-sweep.sh`:
+
+    draft_per_cycle = draft_n / (predicted_n - draft_accepted)
+
+One verify cycle emits one target-sampled token plus its accepted drafts, so the
+denominator is the cycle count. Near 1.0 at `n_max=2` means p-min is truncating;
+near `n_max` means n-max is binding.
+
+### 2. Per-request speculative tuning does not exist here, so every config costs a reload
+
+`tools/server/server-schema.cpp:196` defines `speculative.n_max`,
+`speculative.p_min` and `speculative.type` as request fields — inside `#if 0`:
+
+```cpp
+// TODO: to keep things simple, we disable speculative parameter adjustments for now
+#if 0
+    add((new field_num("speculative.n_max", ...
+#endif
+```
+
+A restart-free sweep was designed off the grep hit and abandoned on reading the
+five lines above it. They are launch flags only, so each config is a container
+recreate — the ~27 min cold load in `versions.lock`. `spec-sweep.sh` is
+resumable for exactly this reason.
+
+### 3. `ngram-simple` is free, drafts up to 48 tokens, and is not in `SPEC_TYPE`
+
+`--spec-type` is a comma-separated list (`common/arg.cpp:4048`) over 11 types,
+five of them n-gram. Priority is hard-coded in `common_speculative_init`
+(`common/speculative.cpp:2404-2437`) under the comment *"this list here defines
+the priority of the speculators"*: **every n-gram impl is pushed ahead of every
+draft-model impl**, `ngram-simple` first of all. Arbitration in
+`common_speculative_draft()` is a first-non-empty cascade — `dp.drafting` is
+cleared as soon as an impl returns tokens — so an n-gram hit skips the MTP
+forward pass entirely.
+
+| | cost per draft | tokens per draft |
+| --- | --- | --- |
+| `draft-mtp` | one `llama_decode` **per token** | `SPEC_DRAFT_N_MAX` (2) |
+| `ngram-simple` | none — a lookup over the live context | `size_m` = **48** |
+
+Defaults are `size_n=12`, `size_m=48`, `min_hits=1` (`common/common.h:358-362`).
+
+The 48 is **not** clipped by `--spec-draft-n-max`. That was checked rather than
+assumed, because the cascade does `result.resize(dp.n_max)` and would have gutted
+it: `dp.n_max` is `slot.get_n_draft_max()` = `n_ctx - prompt.n_tokens() - 2`
+(`tools/server/server-context.cpp:470,3009`), a remaining-context budget with no
+relation to the draft-length flag.
+
+For a coding agent this is the largest speedup on the table and it costs no
+VRAM. pi regenerates verbatim spans constantly — a file rewritten with one line
+changed — and that is precisely what a context-built n-gram table predicts.
+
+### 4. Three hypotheses that did not survive the source
+
+- **"`n_max` is silently clamped to 1 for a single-head model."** The clamp
+  `params.n_max = min(n_max, n_mtp_layers)` (`speculative.cpp:1346`) is guarded
+  by `if (chain_heads)`, and `chain_heads = n_mtp_layers > 1 && !is_mem_shared`.
+  Line 1264 documents `qwen35` as "a single trained MTP head", so `chain_heads`
+  is false and no clamp runs. `n_max=2` is honoured.
+- **"Upstream feeds stale hidden states to the MTP head."** Claimed by the
+  `Indras-Mirror/llama.cpp-turboq-mtp` fork and fixed there in May. Upstream's
+  `accept()` (`speculative.cpp:1671`) copies
+  `verify_h[min(n_accepted, n_rows-1)]` into `pending_h`, indexing by acceptance
+  count correctly. Not present in b10200.
+- **"That fork is actively ahead of us."** Its `pushed_at` reads today, but
+  `master`'s last commit is **2026-05-16** — the day upstream merged MTP
+  (PR #22673) — and its headline "upstream 71.5 vs ours 82-93 tok/s" was
+  measured against day-one upstream code, ten weeks before the build we pin.
+  The comparison does not transfer. Its `feature/dsv4-tbq4-native` branch
+  (2026-08-16) does carry a genuine Qwen3.8 / qwen35 / RTX 4090 result at 262K
+  context, but it rides on fused TBQ4 flash-attention CUDA kernels, i.e.
+  maintaining a fork whose master is ten weeks behind our pinned image. Not
+  taken; revisit only after the free levers are exhausted.
+
+### What was built
+
+- **`scripts/spec-sweep.sh`** — sweeps `SPEC_TYPE` × `SPEC_DRAFT_N_MAX` ×
+  `SPEC_DRAFT_P_MIN`, one llama recreate per config, reporting decode,
+  acceptance and `draft/cycle`. Backs up `.env` whole and restores it on every
+  exit path including Ctrl-C, because a sweep value left behind would silently
+  change what the next `up.sh` starts. `--resume` skips configs already on disk.
+- **`scripts/bench_repeat.py`** — the workload `bench.py` structurally cannot
+  measure. `bench.py` nonce-randomises every prompt to defeat the prefix cache,
+  which also defeats `ngram-simple`, whose whole value is repeated spans. A flat
+  ngram row there means "this workload had no repetition", not "the drafter is
+  useless", and reading it the second way would retire the cheapest speedup we
+  have.
+
+### The control, which is the point of the second script
+
+A repetition benchmark that reports only tok/s can be fooled by the model
+ignoring the instruction: output is not repetitive, the drafter cannot fire, the
+row is flat — and the flatness is caused by the prompt. So every row reports
+**echo**, the share of generated 12-token windows (matching `ngram-simple`'s
+`size_n`) that also occur in the prompt, computed with the model's own tokenizer
+via `/tokenize` and falling back to whitespace only while saying so. Rows below
+`--min-echo` are marked `UNREPEATED` and excluded, exactly as `bench.py` excludes
+`CACHED` rows — a broken measurement, not a slow one.
+
+The metric was checked against a control before being trusted: **97.4%** for a
+faithful rewrite, **0%** for equal-length novel prose, **18.8%** for a
+half-and-half mix. Without that, the exclusion rule would be decoration.
+
+### Verified, not assumed
+
+- Every line, file and number cited above was read at `5f55650a7`, the commit
+  behind `server-cuda-b10200`, resolved via the git ref API rather than assumed
+  from the tag name. The b10200 release tag itself 404s; the ref does not.
+- `-ctkd` / `-ctvd` (`--spec-draft-type-k` / `--spec-draft-type-v`) were
+  confirmed present in **this** build at `common/arg.cpp:3920,3933`. The MTP
+  draft context holds its own KV cache, so the `.env` note that quantised V
+  moves prefill off the GPU governs `-ctk`/`-ctv` only and does not apply to it.
+- `spec-sweep.sh` was exercised on `--help`, `--dry-run`, `--only` and its
+  failure path, `--workload` validation, and `--report` against fixtures for
+  both workloads with the arithmetic hand-checked and an `UNREPEATED` row
+  confirmed excluded. `env_set` was tested writing the comma-containing value
+  `ngram-simple,draft-mtp` against a throwaway `.env`, with the full-file
+  restore verified.
+- The live `run_config` path is deliberately unexercised: it recreates llama at
+  ~27 min per config. **No sweep has been run yet, so no decode number in this
+  section supersedes `versions.lock`.**
+- One bug found and fixed while testing: `die` inside `select_configs` runs in a
+  process substitution, so a bad `--only` printed the error and continued with
+  an empty list. The length check now lives in the caller.
+
+## 2026-08-16 (results) — the sweep ran, and the free-drafter recommendation was wrong
+
+The section above predicted, from source, that `ngram-simple` would be the
+largest speedup available. Both sweeps then ran on this box against
+Qwen3.8-27B-UD-Q4_K_XL at `CTX_SIZE=32768`. The p-min prediction held. The
+`ngram-simple` recommendation did not survive its own control.
+
+### Novel text (`--workload synthetic`, nonce-randomised, zero repetition)
+
+| config | spec-type | n-max | p-min | decode | accept | draft/cycle |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline | draft-mtp | 2 | 0.75 | 55.1 | 89.8% | 1.30 |
+| pmin-050 | draft-mtp | 2 | 0.50 | 59.5 | 74.2% | 1.70 |
+| pmin-040 | draft-mtp | 2 | 0.40 | 63.6 | 67.9% | 1.84 |
+| pmin-040-n4 | draft-mtp | 4 | 0.40 | **67.9** | 54.5% | 3.48 |
+| ngram-baseline | ngram-simple,draft-mtp | 2 | 0.75 | **41.1** | 76.3% | 1.45 |
+
+### Repetitive text (`--workload repeat`, echo 98.8% on every row)
+
+| config | spec-type | n-max | p-min | decode | accept | draft/cycle |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline | draft-mtp | 2 | 0.75 | 74.7 | 98.7% | 1.95 |
+| pmin-050 | draft-mtp | 2 | 0.50 | 73.4 | 97.9% | 1.99 |
+| pmin-040 | draft-mtp | 2 | 0.40 | 85.1 | 98.0% | 2.00 |
+| pmin-040-n4 | draft-mtp | 4 | 0.40 | 118.1 | 95.0% | 3.98 |
+| ngram-baseline | ngram-simple,draft-mtp | 2 | 0.75 | 152.5 | 64.5% | 20.60 |
+| ngram-pmin-040-n4 | ngram-simple,draft-mtp | 4 | 0.40 | **164.4** | 63.7% | 28.38 |
+
+### What held
+
+**p-min was binding, n-max was not.** At the inherited `p-min=0.75` the draft
+was cut to a single token on ~70% of cycles (draft/cycle 1.30 against a ceiling
+of 2), so the earlier "2 fastest, 3 no better, 4 collapses" finding was
+measuring a knob held shut by a different one. Loosening p-min to 0.40 lifts
+draft/cycle to 1.84 and decode +15%; only then does raising n-max pay, and it
+pays twice as much again. draft/cycle pins against the ceiling at every n-max
+tried, including 4, so **6 and 8 are untested and probably still on the table**.
+
+### What did not
+
+**`ngram-simple` costs 25% on novel text: 55.1 → 41.1 tok/s.** The priority
+cascade documented above as the reason it works is also why it hurts. It runs
+ahead of `draft-mtp` and arbitration is first-non-empty, so any span the n-gram
+table produces preempts the MTP draft — including a bad guess. The counters show
+exactly that: draft/cycle rises 1.30 → 1.45 (it fires) while acceptance falls
+89.8% → 76.3% (the drafts are wrong). Cheap bad drafts displacing good expensive
+ones is a net loss.
+
+So the honest summary is **2.04× on repetitive traffic, 0.75× on novel**, and
+real agent traffic is a mix. `SPEC_TYPE` is therefore left at `draft-mtp`.
+
+The untried lever is `--spec-ngram-simple-min-hits`, which defaults to **1**
+(`common/common.h:361`) — a span is drafted after being seen once. Raising it to
+2-3 should suppress the garbage on novel text while keeping the rewrite win. The
+flag is not plumbed through `docker-compose.yml`.
+
+### What the control was worth
+
+`bench_repeat.py`'s echo metric held at **98.8% on all six repeat rows**, which
+is what makes those decode differences attributable to the config rather than to
+a workload that drifted. And the synthetic grid is the only reason the
+`ngram-simple` regression was found at all: measured on the repeat workload
+alone, the recommendation would have shipped as a 2× win and quietly cost 25% on
+every non-repetitive generation.
+
+### Environment, not configuration
+
+One config (`synthetic/ngram-pmin-040-n4`) failed and is missing from the first
+table. Cause was not the sweep:
+
+    E llama_model_load: error loading model: read error: Cannot allocate memory
+    E srv  llama_server: exiting due to model loading error
+
+The box was at **1.1 GiB free** with 7.8 GiB in page cache; with mmap off and
+`MODELS_DIR` on the 9p mount the load must pull 17.9 GB through host RAM.
+Dropping the Docker VM page cache took free memory to 6.3 GiB and the next load
+succeeded. The sweep handled it correctly — warned, dumped llama's tail, skipped
+the config, kept `.env` clean — but `--wait-timeout 3000` meant it sat waiting on
+an already-exited container instead of failing fast. Worth fixing.
+
+Also worth recording: the ~27 min cold load in `versions.lock` is genuinely
+cold. Once the GGUF is in page cache a recreate is **5-8 minutes**, which makes
+further sweeping far cheaper than the first one priced it.
+
+### Not adopted
+
+`.env` still reads `SPEC_TYPE=draft-mtp`, `SPEC_DRAFT_N_MAX=2`,
+`SPEC_DRAFT_P_MIN=0.75`. A benchmark should not silently rewrite the config it
+measured; the numbers are recorded here and in `context/bench/spec-sweep/` so
+the change can be made deliberately.
+
+## 2026-08-17 — the ngram regression was an n-max artifact, not a property
+
+The entry above reported `ngram-simple` as 2.04x on repetitive text and **0.75x
+on novel**, and concluded it could not be enabled unconditionally. One config
+was missing from that grid — `synthetic/ngram-pmin-040-n4`, lost to the ENOMEM
+described above. It has now run, and it overturns the conclusion.
+
+| config | spec-type | n-max | p-min | novel | repetitive |
+| --- | --- | --- | --- | --- | --- |
+| current | draft-mtp | 2 | 0.75 | 55.1 | 74.7 |
+| tuned MTP | draft-mtp | 4 | 0.40 | 67.9 | 118.1 |
+| ngram, untuned | ngram-simple,draft-mtp | 2 | 0.75 | **41.1** | 152.5 |
+| **ngram, tuned** | ngram-simple,draft-mtp | 4 | 0.40 | **67.8** | **164.4** |
+
+**The 25% novel-text loss exists only at n-max 2.** At n-max 4 it is gone:
+67.8 against 67.9 for MTP alone, identical within noise, while repetitive text
+keeps the full 164.4.
+
+The mechanism follows from the cascade. `ngram-simple` preempts the MTP draft
+whenever it produces anything, so it substitutes its guess for MTP's. At n-max 2
+the displaced MTP draft is short and cheap, and a bad n-gram guess is pure loss.
+At n-max 4 the draft budget is wide enough that the spans which land pay for the
+ones that do not — draft/cycle rises 3.48 → 3.79 while acceptance falls 54.5% →
+51.8%: more drafted, proportionally fewer kept, net wash on novel text and a
+large win on repetitive.
+
+So `ngram-simple,draft-mtp` at **n-max 4 / p-min 0.40** is a strict improvement
+over the current config on both workloads — **1.23x novel, 2.20x repetitive** —
+where at n-max 2 it was a real trade-off. **Enabling ngram-simple without also
+raising n-max is the trap**, and the previous entry's flat "do not enable blind"
+advice was drawn from exactly that incomplete grid.
+
+This is also the second time in this investigation that a conclusion drawn from
+a partial grid was wrong in the confident direction: first `n-max` looked
+settled while `p-min` was the binding knob, then `ngram-simple` looked harmful
+while the harm was an `n-max` interaction. Both were caught only by filling in
+the cell nobody had measured.
+
+`--spec-ngram-simple-min-hits` remains untested. It was proposed as the fix for
+a regression that turns out to be an n-max artifact, so it is no longer urgent,
+but it may add headroom. It is now plumbed as `SPEC_NGRAM_MIN_HITS` (with
+`SPEC_NGRAM_SIZE_N` / `_SIZE_M`) in `docker-compose.yml`, default empty so
+llama.cpp's own defaults apply and the flags are omitted entirely when unset.
+
+### Still not adopted
+
+`.env` remains `draft-mtp` / n-max 2 / p-min 0.75. The numbers now argue clearly
+for `ngram-simple,draft-mtp` / n-max 4 / p-min 0.40, but that is a config change
+for a human to make deliberately, not something a benchmark should do to itself.
+
+## 2026-08-17 — adopted: `ngram-simple,draft-mtp` at n-max 4 / p-min 0.40
+
+`.env` now carries the measured optimum instead of the inherited 3.6 values.
+Verified on the live stack after the change, not inferred from the sweep:
+
+| check | result |
+| --- | --- |
+| smoke test | **11/11**, including a real tool call through forge (`get_weather({'city':'Paris'})`, args parsed as JSON) |
+| live argv | `--spec-type ngram-simple,draft-mtp --spec-draft-n-max 4 --spec-draft-p-min 0.40` |
+| repetition bench | **191.0 tok/s**, echo 99%, draft/cycle 26.8, acceptance 63.6% |
+| synthetic bench | 53.5 tok/s, prefill 1375, acceptance 48.1% |
+| VRAM | **21998 / 24564 MiB** |
+
+**Output is unchanged.** Speculative decoding verifies every draft against the
+target model, so this buys decode speed and alters nothing the model says. That
+is why it was adopted on benchmark evidence alone; a sampler change would not
+have been.
+
+### Two costs that are not in the headline
+
+**VRAM is up 529 MiB** (21469 → 21998). `n_outputs_per_seq` is
+`1 + common_speculative_n_max()` (`tools/server/server-context.cpp:50`) and
+`common_speculative_n_max` returns `size_m` = **48** for ngram-simple
+(`common/speculative.cpp:2251`), so the server sizes output buffers for 49 rather
+than 3. ~2.5 GiB of headroom remains at `CTX_SIZE=32768`; a future context bump
+will hit the ceiling sooner than it used to.
+
+**The synthetic number regressed against the sweep** — 53.5 tok/s now versus
+67.8 for the same config during the sweep. This is contention, not the config:
+13 other claude sessions were live, and one of the three runs saw prefill
+collapse to 124.6 tok/s against a 1375 best. The repetition bench went the other
+way (191.0 now versus 164.4 in the sweep). **Single decode numbers on this box
+are contention-sensitive; only compare configs measured within one sweep run.**
+That is recorded in `versions.lock` as `spec_variance_note` so the next person
+does not read the 53.5 as a regression caused by the change.
+
+### What is still open
+
+- **n-max 6/8 untested.** draft/cycle pins against the ceiling at every n-max
+  tried, 3.79 at n-max 4, so the constraint has not been reached.
+- **`--spec-ngram-simple-min-hits` untested.** Plumbed as `SPEC_NGRAM_MIN_HITS`
+  (default empty). Proposed as a fix for a regression that turned out to be an
+  n-max artifact, so no longer urgent, but it may add headroom.
+- **Memory, not configuration, is the limiting factor on further sweeping.** Two
+  configs died with `read error: Cannot allocate memory` because the load pulls
+  17.9 GB through host RAM with mmap off. It needs ~10 GiB free; a page-cache
+  drop plus quiet sessions gets there.

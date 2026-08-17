@@ -28,6 +28,18 @@ pi. `coding` is the default.
 > draft depth of **2** points at the inherited `SPEC_DRAFT_N_MAX` being too low
 > for 3.8's draft head, and that sweep is not finished.
 >
+> **Settled 2026-08-17 — and the draft depth was not the problem.** A full 2×6
+> sweep (`./scripts/spec-sweep.sh`) found **p-min** was the binding knob: at
+> `p-min=0.75` the draft was cut to a single token on ~70% of cycles, so raising
+> `n-max` under it measured nothing. `.env` now runs
+> **`SPEC_TYPE=ngram-simple,draft-mtp`, `n-max 4`, `p-min 0.40`** — the measured
+> optimum, worth **1.23× on novel text and 2.20× on repetitive** against the old
+> values, and re-verified at 11/11 on the smoke test. `ngram-simple` drafts up to
+> 48 tokens per lookup with no forward pass, but it is only safe at n-max 4 — at
+> n-max 2 it *costs* 25% on novel text. Costs 529 MiB of VRAM. Full tables in
+> `context/design/decisions.md` (2026-08-16 / 2026-08-17) and raw results in
+> `context/bench/spec-sweep/`.
+>
 > forge went 0.8.2 → **0.9.0** in the same change, and that one is not a version
 > bump: 0.9 rejects `--budget-mode` for externally managed backends (the proxy
 > refuses to start), and `/health` now forwards the *backend's* readiness while
@@ -120,6 +132,10 @@ cd ~/my-project && qpi
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
+| `./scripts/spec-sweep.sh --dry-run` | Plan the speculative-decoding sweep and price it |
+| `./scripts/spec-sweep.sh --only baseline,pmin-050,pmin-040` | Is the MTP draft p-min-bound or n-max-bound |
+| `./scripts/spec-sweep.sh --workload repeat` | What `ngram-simple` is worth on repetitive output |
+| `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 | `./scripts/rtk.sh --install` | One-time: install the pinned rtk that filters bash output |
 | `./scripts/rtk.sh --status` | What is being filtered, and whether the pin matches |
@@ -1530,21 +1546,33 @@ rather than counted.
 
 When `SPEC_TYPE=draft-mtp` is on, llama reports `draft_n` and
 `draft_n_accepted`, and `bench.sh` prints acceptance per run and in aggregate.
-That is the measurement `SPEC_DRAFT_N_MAX` should be set from:
+**Do not hand-tune `SPEC_DRAFT_N_MAX` with `bench.sh` — that is the trap this
+repo fell into.** Use `./scripts/spec-sweep.sh`, which sweeps the knobs together
+and reports the number that tells them apart.
+
+In llama.cpp b10200 the MTP draft loop (`common/speculative.cpp:1520-1670`)
+tests the **p-min gate before the n-max gate**. At `p-min=0.75` the second token
+survives only if the head's top-1 probability clears 0.75, so the draft is cut
+to length 1 on most cycles and `n-max` is never reached — raising it measures a
+knob held shut by a different one. That is exactly why the inherited "2 fastest,
+3 no better, 4 collapses" result looked settled and was wrong.
+
+The diagnostic is `draft/cycle` = `draft_n / (predicted_n - draft_accepted)`:
+near 1.0 at n-max 2 means p-min is truncating; near n-max means n-max is
+binding. **Acceptance is not the target** — it falls as p-min drops, and that is
+the trade being bought.
 
 ```bash
-./scripts/bench.sh --repeat 3                      # baseline at the current n-max
-./scripts/set.sh SPEC_DRAFT_N_MAX=4 2>/dev/null \
-  || sed -i 's/^SPEC_DRAFT_N_MAX=.*/SPEC_DRAFT_N_MAX=4/' .env
-docker compose up -d --force-recreate llama        # ~20 min cold load
-./scripts/bench.sh --repeat 3                      # compare decode tok/s
+./scripts/spec-sweep.sh --dry-run                    # plan and cost
+./scripts/spec-sweep.sh                              # novel text (pessimistic)
+./scripts/spec-sweep.sh --workload repeat            # repetitive (agentic)
+./scripts/spec-sweep.sh --report                     # re-print, run nothing
 ```
 
-Raise n-max while decode improves; stop when the extra drafted tokens stop being
-accepted. The current value of `2` is inherited from a **Qwen3.6** rig and 3.8
-has a different draft head — public 3.8 reports on a 4090 run 4-5, and the
-prose model's card puts llama.cpp's own default at 3. All three are guesses
-until measured on this box.
+Run **both** workloads. `bench.sh` nonce-randomises every prompt to defeat the
+prefix cache, which also defeats `ngram-simple` — measured on the repeat
+workload alone, `ngram-simple` looks like a flat 2× win; measured on novel text
+at n-max 2 it *costs* 25%. Only the pair gives the real answer.
 
 If no draft counters appear at all, either `SPEC_TYPE` is empty or the GGUF has
 no MTP head — check `block_count`, which must be **65**, not 64.
