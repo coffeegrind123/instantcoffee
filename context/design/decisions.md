@@ -2878,3 +2878,104 @@ does not read the 53.5 as a regression caused by the change.
   configs died with `read error: Cannot allocate memory` because the load pulls
   17.9 GB through host RAM with mmap off. It needs ~10 GiB free; a page-cache
   drop plus quiet sessions gets there.
+
+## 2026-08-17 — HN "Qwen 3.8 27B overthinks" thread + Simon Willison's post, checked against this stack
+
+Source: <https://simonwillison.net/2026/Aug/16/qwen-38-27b/> and its HN thread.
+Everything below was re-measured here rather than adopted on the thread's word;
+two of the thread's headline claims do not survive that.
+
+### Already fixed here before the thread ran
+
+`xlayn` and `Gracana` describe the template keeping `<think>` only for the last
+message, so a harness that replays reasoning every turn desynchronises from
+llama.cpp's cache and re-prefills the whole conversation. That is
+`FORGE_REASONING_REPLAY=full` plus `--chat-template-kwargs
+'{"preserve_thinking": true}'`, adopted here from an earlier HN thread and
+already recorded above. `bitexploder`'s 2K-thinking-token cutoff proxy is
+`REASONING_BUDGET` + `REASONING_BUDGET_MESSAGE`. Simon's MTP recipe
+(`--spec-type draft-mtp`, "~72% improvement") is the thing this repo spent the
+last two days going well past.
+
+### New capability: reasoning effort is per-REQUEST, and forge forwards it
+
+`tools/server/server-common.cpp:1073-1077` merges a request's
+`chat_template_kwargs` **over** the server's `--chat-template-kwargs`, so a
+caller sets its own effort per turn with no restart:
+
+    {"chat_template_kwargs": {"reasoning_effort": "low"}}
+
+Verified end to end: content length through forge tracked llama within 1% on
+identical prompts (5464 vs 5530, 8189 vs 8150 chars), and wall times matched.
+**forge passes both fields through untouched.** This makes the long-standing
+`.env` wish — "drop to low for tool-loop turns where the thinking is pure
+overhead" — a client-side change rather than a server setting.
+
+### Correction: `reasoning_effort: "none"` works via the API
+
+`.env` said `none` "hits raise_exception() and the request fails". True for
+`--chat-template-kwargs`, which hands the value to the template. False for the
+OpenAI-style top-level field, which llama.cpp intercepts first
+(`server-common.cpp:1089-1094`):
+
+    if (reasoning_effort == "none") { inputs.enable_thinking = false; }
+    // other reasoning_effort values are model-specific and not yet handled
+
+Measured: 0 reasoning chars against 97 on the same prompt. This settles the
+disagreement in the thread — `xscott` (it works) is right about the API field,
+`xlayn` (no effect, only three values) is right about the kwargs path. Only
+`none` is special-cased; `low`/`medium`/`xhigh` must go through
+`chat_template_kwargs`.
+
+### Measured: xhigh does not merely run slow, it can return NOTHING
+
+One HTML-tool prompt, same token cap, this box:
+
+| effort | reasoning chars | content chars | wall |
+| --- | --- | --- | --- |
+| xhigh | 12,582 | **0** | 75.0s |
+| low | 4,459 | 5,530 | 38.4s |
+| none | 0 | 8,150 | 41.1s |
+
+At xhigh the entire budget went to thinking and the content field came back
+empty — a failed turn, not a slow one. That is the sharp form of what Simon
+reports as 22,276 reasoning tokens over 21 minutes, and it is why
+`REASONING_BUDGET` exists here.
+
+### The thread's main advice is backwards on this stack
+
+Simon: "Run Qwen 3.8 27B on low or even no reasoning levels at first." `dofm`:
+medium loops, low does not. Measured here at a 6000-token cap, two runs each:
+
+| effort | reasoning chars | content chars |
+| --- | --- | --- |
+| medium | 3,404 / 1,476 | **16,353 / 17,912** |
+| low | 6,409 / 5,573 | 13,662 / 13,933 |
+
+**`low` reasons more than twice as much as `medium` and delivers less answer.**
+The mechanism is already documented in `.env`: `medium` is the only level that
+injects nothing into the system prompt, while `low` prepends a steering
+sentence — and the model reasons about the steering. `REASONING_EFFORT=medium`
+therefore stays, now on measurement rather than inheritance.
+
+Caveat: one prompt, two runs per level, both hitting the cap. Directionally
+clear, not a precise figure.
+
+### Worth evaluating, not yet done
+
+`hedgehog` recommends **`froggeric/Qwen-Fixed-Chat-Templates`** on HF (covers
+3.5/3.6/3.8 in one drop-in file). Its claims that matter here, none verified:
+
+- flattens the template AST to remove an "80% inference throughput drop" on C++
+  engines, and strips Python-only Jinja that `minijinja` — which is what
+  llama.cpp uses — cannot run;
+- handles tool-call args arriving as either Python dicts or JSON strings,
+  "fixing crashes from standard OpenAI proxies", which is exactly what forge is;
+- fixes "empty think poisoning", blank `<think></think>` aborting a turn early;
+- adds `none`/`minimal`/`max` aliases and inline `<|think_low|>` tags.
+
+The throughput claim is the one to test first and the easiest to fool oneself
+about: measure with `./scripts/spec-sweep.sh --report` on both templates, same
+config, rather than trusting a model card. Swapping the embedded chat template
+is a real change with real blast radius — tool calling is downstream of it —
+so it wants the smoke test plus both bench workloads before adoption.
