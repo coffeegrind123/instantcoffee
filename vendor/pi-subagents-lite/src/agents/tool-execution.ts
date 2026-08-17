@@ -47,6 +47,14 @@ export function buildAgentDetails(
     details.worktreePath = record.display.worktreePath;
   }
 
+  // Forge fork: whether the answer was checked, and what came back. A passing
+  // check is deliberately invisible in the answer text — a passing answer must
+  // not be decorated — which left no way to tell "checked and fine" from "never
+  // checked", including for the operator reading a transcript. It is one field.
+  if (record.verification) {
+    details.verification = record.verification;
+  }
+
   if (opts?.includeStatus) {
     details.status = record.lifecycle.status;
     details.outputFile = record.display.outputFile;

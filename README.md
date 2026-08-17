@@ -629,8 +629,10 @@ pi package"), so this is a vendored fork of `pi-subagents-lite@1.11.0`;
 `vendor/pi-subagents-lite/FORK.md` is the full account, including why this
 package out of the 341 the catalog matches on "subagent".
 
-**Off by default** (`SUBAGENTS_ENABLED=0`). Turn it on with
-`SUBAGENTS_ENABLED=1 ./scripts/pi-local.sh`, or set it in `.env`.
+**On by default** (`SUBAGENTS_ENABLED=1`). It is not free — a registered tool is
+charged on every turn whether or not it is called — but the bill was measured:
+710 chars, ~178 tokens, 0.54% of a 32k window for all three tools. Set
+`SUBAGENTS_ENABLED=0` to get those back.
 
 Be clear about what it buys here, because most of what is written about
 subagents does not apply to one llama slot. It is **not** parallelism:
@@ -699,6 +701,27 @@ meant only a human could start one — a model calls tools, it cannot type a sla
 command. `vendor/pi-loop-mode` now registers a `loop` tool alongside the command
 (709 chars, ~177 tokens/turn on the wire) so the model can run its own bounded
 goal loop and stop it, in the main session or inside a subagent.
+
+**Answers are checked against the task before you see them.** A subagent gets a
+brief it has no context for and compacts its window as it fills — and what a
+monotonic summary erodes first is the oldest thing in it, which is the brief. So
+three layers, cheapest first: the task is restated into the child's context
+after every compaction (free, and the layer that matters most, because it stops
+the drift instead of catching it); an empty answer or a run that hit the turn
+ceiling is handled with no model call at all; and only a non-empty answer from a
+clean run is worth asking a judge about.
+
+The judge is a fresh one-turn agent with no tools that sees **only** the task and
+the answer — not the child's session. A model shown its own reasoning ratifies
+its own answer, so the judge is made harder to fool by knowing less. A failed
+verdict continues the *child* once, since that is where the context to fix it
+lives. One judge call, one repair, then it hands back what it has and says so.
+A passing answer is returned undecorated; `details.verification` records what
+happened either way. `SUBAGENT_VERIFY=0` turns it off.
+
+It costs nothing in schema — the verifier agent is hidden from the `Agent` tool's
+type list, and that was measured, not assumed. It does not catch subtly wrong
+work: the judge is the same 27B. It is a drift check, not a correctness proof.
 
 One thing was fixed rather than inherited. A **foreground** subagent returns as a
 tool result, so the compaction guard bounds it like everything else. A

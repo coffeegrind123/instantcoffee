@@ -3664,3 +3664,43 @@ judge call costs on one slot. The prefix probe says a *small* session leaves the
 parent's cache alone (99.2% across six small child turns), so a two-block judge
 should be nearly free — but that is an inference from a different measurement,
 and this one has not been made.
+
+## 2026-08-17 (verifier, part 2) — wired, and one leak the wire test caught
+
+The design in part 1 is now live: `verify-runner.ts` for the control flow, a
+hidden `__verifier` agent type for the judge, `execution.brief` holding the
+prompt verbatim, and two wiring points in `agent-manager.ts` — the anchor on
+`onCompaction`, and the check inside the settlement chain's first `.then`, where
+a failure cannot turn a finished subagent into a failed one. `SUBAGENT_VERIFY=0`
+skips it. Subagents are also on by default now (`SUBAGENTS_ENABLED=1`), at a
+measured 178 tokens a turn.
+
+### The leak
+
+The wire measurement is not ceremony. Adding the verifier agent type moved the
+`Agent` tool from **357 to 368 chars**, because `getAvailableTypes()` feeds the
+`agent` parameter's enum and `__verifier` had joined it — an internal type
+offered to the model, charged on every turn, in a schema this fork exists to
+keep small. `hidden: true` (a flag upstream already had) put it back to 357.
+Nothing in the source would have shown that; the difference is only visible in
+what pi decided to send.
+
+### The other thing that would have been silently dead
+
+`SUBAGENT_VERIFY` and `SUBAGENT_EXTRA_EXTENSIONS` are read from `process.env`,
+and `.env` in this repo is a file the scripts *parse*, not an environment. A
+value written there reaches nothing unless `pi-local.sh` exports it, exactly as
+it already does for `RTK_TELEMETRY_DISABLED` and the browser host/port. Both are
+exported now, and an empty value stays unset on purpose: exporting an empty
+`SUBAGENT_EXTRA_EXTENSIONS` would mean "no extra extensions", which is the
+opposite of "not configured".
+
+### Test shapes worth keeping
+
+The model calls are injected into `verifyAnswer`, so the expensive branch —
+judge says no, repair runs, repair also fails — is exercised without a model.
+That branch only ever fires in a live session containing a deliberately bad
+subagent, which is to say almost never, which is to say it would rot unnoticed.
+The tests assert the *call counts* as well as the outcomes: a check that quietly
+costs two model calls where it promised one is a real regression on one slot and
+nothing else in the tree would catch it.

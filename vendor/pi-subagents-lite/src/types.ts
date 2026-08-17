@@ -35,6 +35,12 @@ export interface RunTunables {
 export interface AgentRecord {
   id: string;
   result?: string;
+  /**
+   * Forge fork: what the answer verifier concluded, or absent when it did not
+   * run. Kept on the record rather than only in the text so the widget and the
+   * tests can tell "passed" from "was never checked".
+   */
+  verification?: "skipped-empty" | "skipped-cutoff" | "passed" | "unparsed" | "repaired" | "failed" | "errored";
   error?: string;
   lifecycle: AgentLifecycle;
   display: AgentDisplayInfo;
@@ -144,6 +150,16 @@ export interface AgentDisplayInfo {
  */
 export interface AgentExecutionState {
   session?: AgentSession;
+  /**
+   * Forge fork: the prompt this agent was given, kept verbatim.
+   *
+   * The verifier needs the task to check the answer against, and the anchor
+   * needs it to restate after a compaction — and the transcript is exactly
+   * where it stops being reliable, because a monotonic summary erodes the
+   * oldest thing in it first, which is this. Held outside the session for that
+   * reason.
+   */
+  brief?: string;
   abortController?: AbortController;
   /**
    * Completion gate, created at spawn, opened exactly once at the terminal

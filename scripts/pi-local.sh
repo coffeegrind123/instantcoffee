@@ -313,6 +313,18 @@ if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
   else
     pi_flags+=(-e "$SUBAGENTS_DIR/src/index.ts")
     SUBAGENTS_NOTE=", subagents"
+
+    # Exported, not passed as a flag: the fork reads both from `process.env`,
+    # and a value that only ever lives in .env is a knob that silently does
+    # nothing. Empty stays unset so the fork's own defaults apply — exporting an
+    # empty SUBAGENT_EXTRA_EXTENSIONS would mean "no extra extensions", which is
+    # the opposite of "not configured".
+    SUBAGENT_VERIFY_VALUE="$(env_get SUBAGENT_VERIFY)"
+    [[ -n "$SUBAGENT_VERIFY_VALUE" ]] && export SUBAGENT_VERIFY="$SUBAGENT_VERIFY_VALUE"
+    [[ "$SUBAGENT_VERIFY_VALUE" == "0" ]] && SUBAGENTS_NOTE=", subagents (unverified)"
+
+    SUBAGENT_EXTRAS_VALUE="$(env_get SUBAGENT_EXTRA_EXTENSIONS)"
+    [[ -n "$SUBAGENT_EXTRAS_VALUE" ]] && export SUBAGENT_EXTRA_EXTENSIONS="$SUBAGENT_EXTRAS_VALUE"
   fi
 fi
 

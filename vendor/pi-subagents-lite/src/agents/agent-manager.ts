@@ -10,6 +10,9 @@ import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.j
 import { AgentOutputLog } from "./output-file.js";
 import { Watchdog } from "./watchdog.js";
 import { getStore } from "../shell.js";
+import { buildAnchorMessage } from "./verify.ts";
+import { verifyAnswer, type VerifyDeps } from "./verify-runner.ts";
+import { VERIFIER_AGENT_TYPE } from "./default-agents.js";
 import {
   type AgentRecord,
   type AgentStatus,
@@ -247,6 +250,8 @@ export class AgentManager {
         modelKey: options.modelKey,
         settled: false,
         settlementCount: 0,
+        // Forge fork: kept for the verifier and the compaction anchor.
+        brief: prompt,
       },
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
@@ -295,6 +300,76 @@ export class AgentManager {
       throw err;
     }
     return id;
+  }
+
+  /**
+   * Forge fork: the model calls the verifier needs, or undefined to skip it.
+   *
+   * Two different sessions on purpose, and the asymmetry is the design:
+   *
+   * - **judge** runs as a fresh `__verifier` agent — no tools, no extensions,
+   *   no skills, one turn — and is shown only the task and the answer. Asking
+   *   the child to review its own work is the weakest check available, because
+   *   every step that led it astray is in its context with a justification
+   *   attached, and a model handed its own reasoning ratifies it. The judge is
+   *   harder to fool because it knows less.
+   * - **repair** goes the other way and continues the CHILD's session, which is
+   *   the only place with the context to actually fix the answer.
+   *
+   * Returns undefined when SUBAGENT_VERIFY=0, and for the verifier's own runs —
+   * a judge that spawns a judge does not terminate.
+   */
+  private buildVerifyDeps(
+    pi: ExtensionAPI,
+    ctx: ExtensionContext,
+    record: AgentRecord,
+  ): VerifyDeps | undefined {
+    if (process.env.SUBAGENT_VERIFY === "0") return undefined;
+    if (record.display.type === VERIFIER_AGENT_TYPE) return undefined;
+
+    return {
+      judge: async (prompt: string) => {
+        // runAgent directly, NOT this.spawn(): verification happens inside the
+        // settlement chain's .then, and the child's concurrency slot is only
+        // released in the .finally that follows it. A judge that asked for a
+        // slot would wait for a slot that is waiting for the judge, and with
+        // the fork's default of 1 that is a deadlock rather than a slowdown.
+        const result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, { pi, maxTurns: 1 });
+        return result.responseText;
+      },
+      repair: async (prompt: string) => {
+        const session = record.execution.session;
+        if (!session) throw new Error("the subagent's session is gone");
+        const result = await continueAgentSession(session, prompt, {
+          maxTurns: 1,
+          graceTurns: DEFAULT_GRACE_TURNS,
+        });
+        return result.responseText;
+      },
+      notify: (message: string) => {
+        try {
+          ctx.ui?.notify?.(`[subagents] ${message}`, "info");
+        } catch {
+          // Headless is fine; the verdict still applied.
+        }
+      },
+    };
+  }
+
+  /**
+   * Run the verifier over a settled record, in place.
+   *
+   * Rewrites `record.result` so every reader — the foreground tool result, the
+   * background nudge, the widget, the completion gate — sees the same checked
+   * answer. There is deliberately no second copy of the original: two answers in
+   * the tree is how a parent ends up quoting the one that failed.
+   */
+  private async runVerification(record: AgentRecord, deps: VerifyDeps | undefined): Promise<void> {
+    if (!deps) return;
+    const brief = record.execution.brief ?? "";
+    const outcome = await verifyAnswer(record, brief, deps);
+    record.verification = outcome.status;
+    record.result = outcome.answer;
   }
 
   /** Start an agent now or from queue drain; manages the slot's running count when one is held. */
@@ -357,7 +432,7 @@ export class AgentManager {
         options.onSessionCreated?.(session);
       },
     });
-    this.attachSettlementChain(record, promise, concurrencySlot);
+    this.attachSettlementChain(record, promise, concurrencySlot, this.buildVerifyDeps(pi, ctx, record));
   }
 
   /**
@@ -371,9 +446,10 @@ export class AgentManager {
     record: AgentRecord,
     runPromise: Promise<RunResult>,
     concurrencySlot?: ConcurrencySlot,
+    verifyDeps?: VerifyDeps,
   ) {
     runPromise
-      .then(({ responseText, session, aborted, turnLimited, modelError }) => {
+      .then(async ({ responseText, session, aborted, turnLimited, modelError }) => {
         // Don't overwrite status if externally stopped via abort()
         if (record.lifecycle.status !== "stopped") {
           // Precedence: an abort during a model error wins; a model error outranks a turn limit.
@@ -386,6 +462,11 @@ export class AgentManager {
                 : "completed";
         }
         record.result = responseText;
+        // Forge fork: check the answer against the task before anyone reads it.
+        // Inside this .then rather than chained after it, so the try/catch in
+        // verifyAnswer is the only failure path — a broken verifier must never
+        // turn a finished subagent into a failed one.
+        await this.runVerification(record, verifyDeps);
         if (modelError) {
           record.error = formatModelError(record.display.type, session?.model, modelError);
         }
@@ -520,6 +601,20 @@ export class AgentManager {
       },
       onCompaction: (info) => {
         record.stats.compactionCount++;
+        // Forge fork: the anchor. pi merges each summary into the last under a
+        // "PRESERVE all existing information" prompt, so a summary grows and
+        // what it erodes first is the oldest thing in the transcript — the task
+        // the child was given. Restating it here costs ~50 tokens in a context
+        // that was just cleared, and it is the difference between a child that
+        // finishes the job and one that answers a question which has quietly
+        // drifted. Prevention; the verifier at settle is only the backstop.
+        const brief = record.execution.brief;
+        const session = record.execution.session;
+        if (brief && session) {
+          // Advisory, like every other steer here: a session that is already
+          // tearing down is not a reason to fail the run.
+          void session.steer(buildAnchorMessage(brief)).catch(() => {});
+        }
         forward?.onCompaction?.(info);
       },
       onTextDelta: (delta: string, fullText: string) => {
@@ -634,7 +729,7 @@ export class AgentManager {
       graceTurns: getStore().agent.graceTurns ?? DEFAULT_GRACE_TURNS,
       signal: abortController.signal,
     });
-    this.attachSettlementChain(record, promise, concurrencySlot);
+    this.attachSettlementChain(record, promise, concurrencySlot, this.buildVerifyDeps(pi, ctx, record));
     // The run proceeds asynchronously; the caller only learns the wiring
     // succeeded. The parent abort binding is deliberately NOT re-attached —
     // the parent turn that spawned the agent is over.

@@ -14,9 +14,10 @@ Nothing needs installing, and there is no `node_modules` under `vendor/` — see
 "The typebox import" below for the one dependency that made that a real
 question rather than an assumption.
 
-**Off by default** (`SUBAGENTS_ENABLED=0` in `.env`). A registered tool costs its
-schema on every turn whether or not the model ever calls it, so this is a charge
-to opt into. What it costs is measured below rather than estimated.
+**On by default** (`SUBAGENTS_ENABLED=1` in `.env`). A registered tool costs its
+schema on every turn whether or not the model ever calls it, so the charge is
+real — but it is measured below rather than estimated, and at ~178 tokens for
+all three tools it is small enough to carry standing.
 
 **If the upstream npm package is ever installed** (`pi list`), remove it —
 `pi uninstall npm:pi-subagents-lite`. pi dedupes extensions by path, so a second
@@ -108,96 +109,6 @@ instead of four. Per-provider overrides still work
 (`concurrency.providers.forge`), so raising it alongside `PARALLEL_SLOTS` needs
 no code change.
 
-### 5. What a subagent may and may not load
-
-`src/agents/subagent-denylist.ts` (new), wired into the child's resource loader.
-
-**A child does not inherit the parent's `-e` flags.** It builds its own
-`DefaultResourceLoader` and *discovers* extensions, so everything under
-`.pi/extensions/` reaches it and everything this stack loads by absolute path
-from `vendor/` does not. Measured: a subagent asked to inventory itself reported
-
-```
-TOOLS:  read bash edit write stack_status mcpScript mcp browser_×5
-SKILLS: mcp-scripting
-```
-
-— no `prinny`, no `loop`, no `Agent` (so no recursive subagents), and a second
-probe confirmed `rtk` was absent by running `git status --short` unrewritten.
-
-Two consequences, pulling in opposite directions:
-
-- **prinny must never be there**, and a layout accident is not a guarantee.
-  Someone moves the channel under `.pi/extensions/` and a subagent — which the
-  model spawns on its own initiative, with a prompt the operator never sees —
-  can post to a Matrix room. The denial is unconditional and runs after the
-  agent's own filter, so no agent `.md` can widen it back. The `prinny-access`
-  and `prinny-configure` skills go with it, through `skillsOverride`, a loader
-  hook upstream was not using.
-
-  It has to key on **path**. `extractExtensionName()` reduces
-  `vendor/prinny-channel/extensions/index.ts` to `index` — the same name loop
-  and rtk get — and `resolvePackageShortName()` only returns a name when
-  `pi.extensions` lists the entry *file*, while prinny's lists the directory. So
-  `excludeExtensions: ["prinny"]` matches nothing and `["index"]` removes all
-  three. The test suite pins that as a control.
-
-- **loop and rtk should be there**, and are put back by default through
-  `additionalExtensionPaths`. rtk because a child running `bash` uncompressed is
-  the session that can least afford it — its whole value is coming back small.
-  loop because a bounded, goal-shaped loop grinding in a window that is not the
-  operator's is the best version of delegation on one slot.
-  `SUBAGENT_EXTRA_EXTENSIONS` replaces the list; denied paths are filtered out
-  of it too, so it cannot be used to smuggle the channel back in.
-
-### 6. A subagent always has a turn ceiling
-
-`DEFAULT_MAX_TURNS = 40` in `agent-runner.ts`. Upstream leaves `maxTurns`
-undefined unless an agent file sets it, and undefined means unbounded — fine
-when a subagent is a short search, not fine now that a child can loop.
-`AgentSession.prompt()` defaults `expandPromptTemplates` to **true** and this
-fork calls it bare, so a child handed `/loop …` starts a real one; an unbounded
-loop on a one-slot server is not a runaway subagent, it is a stopped machine,
-because the parent's next turn queues behind it forever.
-
-Upstream's ladder does the rest well: at the ceiling it steers *"wrap up
-immediately — provide your final answer now"* and only hard-aborts
-`graceTurns` later, so hitting the limit produces an answer rather than a
-severed run. An agent file can still raise it, and `max_turns: 0` still means
-unbounded for anyone who wants that deliberately. The parent's kill switch is
-`StopAgent`, which aborts running *and* queued agents.
-
-## The prefix cache — measured, and not what was assumed
-
-The assumption going in, inherited from the handoff, was that a subagent's own
-system prompt evicts the parent's cached prefix from the single slot. **That is
-false**, and it was worth measuring rather than repeating. Probed directly
-against `/v1/chat/completions` with
-`prompt_tokens_details.cached_tokens` (which `patches/forge_cached_tokens.py`
-exposes), with a repeat of the same prefix as the control:
-
-| child | parent's next call | |
-| --- | --- | --- |
-| six small turns (≤3.3k tokens) | 2,117 cached / 2,134 — **99.2%** | unaffected |
-| four turns growing to 18k tokens | 0 cached / 2,134 — **full re-prefill** | evicted |
-
-Same result on `:8080` and `:8081`, so it is llama.cpp's behaviour and not
-something forge does. The eviction reproduced twice; the "small child" case
-survived nine trials out of nine at 1–6 turns.
-
-So the mechanism is **capacity, not identity**. A subagent that answers from its
-own knowledge is nearly free to the parent's cache. A subagent that reads files
-and runs searches — the reason to have one — pushes the parent out.
-
-What that costs, timed on the same runs: the parent's next call went from
-**442 ms to 2,949 ms**, a 2.5-second re-prefill of 2,133 tokens. A real parent
-session carries far more than 2,133 tokens, so this is a floor rather than an
-estimate of the worst case.
-
-The practical consequence is that the standing schema charge (~178 tok/turn) is
-**not** the main cost of delegating on this stack. The re-prefill on the turn
-after a substantial subagent is.
-
 ### 3. A background subagent's result is bounded before it is injected
 
 `src/spawn/result-cap.ts` (new) and its call site in
@@ -259,41 +170,164 @@ Upstream's `prettier`/`vitest`/`tsc` scripts and devDependencies went with it �
 none of those are installed here, and a script that cannot run is worse than no
 script.
 
-### 7. Answer verification — LANDED BUT NOT WIRED
+### 5. What a subagent may and may not load
 
-`src/agents/verify.ts` and `tests/verify.test.ts` (20 tests) exist and nothing
-calls them yet. Said plainly here because a module that looks finished and is
-never invoked is the worst kind of dead code: the next person reads the tests,
-believes subagent answers are checked, and acts on an answer nothing checked.
+`src/agents/subagent-denylist.ts` (new), wired into the child's resource loader.
 
-**They are not. As of this commit every subagent answer goes back to the parent
-unverified**, exactly as upstream does it.
+**A child does not inherit the parent's `-e` flags.** It builds its own
+`DefaultResourceLoader` and *discovers* extensions, so everything under
+`.pi/extensions/` reaches it and everything this stack loads by absolute path
+from `vendor/` does not. Measured: a subagent asked to inventory itself reported
 
-What the module holds, for the wiring that follows:
+```
+TOOLS:  read bash edit write stack_status mcpScript mcp browser_×5
+SKILLS: mcp-scripting
+```
 
-- **`structuralVerdict`** — the checks that need no model call: an empty answer,
-  and runs that ended aborted / turn-limited / stopped. It deliberately reports
-  those as *not worth judging*, because `status-note.ts` already tells the
-  parent they were cut off and paying a model to re-confirm it is waste.
-- **`buildJudgePrompt` / `parseJudgeVerdict`** — a judge that sees **only** the
-  brief and the answer. Not the child's session: a model reviewing its own work
-  with its own justifications in front of it ratifies it, so the judge is made
-  harder to fool by knowing less. The prompt asks for the verdict *before* the
-  reasoning, because a local model allowed to reason first talks itself into
-  agreement — there is a test on that ordering. The parse checks
-  `NOT_ADDRESSED` before `ADDRESSED` (one contains the other; getting it
-  backwards turns every failure into a silent pass) and fails **open** on an
-  unreadable reply while flagging that it went unchecked.
-- **`buildRepairPrompt`** — one attempt, sent into the child's own session,
-  which does have the context to fix things. It restates the brief in full
-  rather than referring to it: pointing at "the original task" points at
-  precisely the thing compaction may have removed.
-- **`buildAnchorMessage`** — the cheapest layer and the one that matters most.
-  Re-injected after each compaction so the brief cannot be summarised away.
-  Prevention, not detection.
+— no `prinny`, no `loop`, no `Agent` (so no recursive subagents), and a second
+probe confirmed `rtk` was absent by running `git status --short` unrewritten.
 
-What it will not do, once wired: catch subtly wrong work. The judge is the same
-27B that wrote the answer. It is a drift check, not a correctness proof.
+Two consequences, pulling in opposite directions:
+
+- **prinny must never be there**, and a layout accident is not a guarantee.
+  Someone moves the channel under `.pi/extensions/` and a subagent — which the
+  model spawns on its own initiative, with a prompt the operator never sees —
+  can post to a Matrix room. The denial is unconditional and runs after the
+  agent's own filter, so no agent `.md` can widen it back. The `prinny-access`
+  and `prinny-configure` skills go with it, through `skillsOverride`, a loader
+  hook upstream was not using.
+
+  It has to key on **path**. `extractExtensionName()` reduces
+  `vendor/prinny-channel/extensions/index.ts` to `index` — the same name loop
+  and rtk get — and `resolvePackageShortName()` only returns a name when
+  `pi.extensions` lists the entry *file*, while prinny's lists the directory. So
+  `excludeExtensions: ["prinny"]` matches nothing and `["index"]` removes all
+  three. The test suite pins that as a control.
+
+- **loop and rtk should be there**, and are put back by default through
+  `additionalExtensionPaths`. rtk because a child running `bash` uncompressed is
+  the session that can least afford it — its whole value is coming back small.
+  loop because a bounded, goal-shaped loop grinding in a window that is not the
+  operator's is the best version of delegation on one slot.
+  `SUBAGENT_EXTRA_EXTENSIONS` replaces the list; denied paths are filtered out
+  of it too, so it cannot be used to smuggle the channel back in.
+
+### 6. A subagent always has a turn ceiling
+
+`DEFAULT_MAX_TURNS = 40` in `agent-runner.ts`. Upstream leaves `maxTurns`
+undefined unless an agent file sets it, and undefined means unbounded — fine
+when a subagent is a short search, not fine now that a child can loop.
+`AgentSession.prompt()` defaults `expandPromptTemplates` to **true** and this
+fork calls it bare, so a child handed `/loop …` starts a real one; an unbounded
+loop on a one-slot server is not a runaway subagent, it is a stopped machine,
+because the parent's next turn queues behind it forever.
+
+Upstream's ladder does the rest well: at the ceiling it steers *"wrap up
+immediately — provide your final answer now"* and only hard-aborts
+`graceTurns` later, so hitting the limit produces an answer rather than a
+severed run. An agent file can still raise it, and `max_turns: 0` still means
+unbounded for anyone who wants that deliberately. The parent's kill switch is
+`StopAgent`, which aborts running *and* queued agents.
+
+### 7. Answer verification
+
+`src/agents/verify.ts` (the judgement), `src/agents/verify-runner.ts` (the
+control flow), the hidden `__verifier` agent type, and two wiring points in
+`agent-manager.ts`. 35 tests. `SUBAGENT_VERIFY=0` turns it off.
+
+**The problem is drift, not correctness.** A child gets a brief it has no
+context for, compacts its window as it fills, and continues from a summary. pi
+merges each summary into the last under a *"PRESERVE all existing information"*
+prompt, so summaries grow — 456 → 4,029 → 11,054 chars across 42 real
+compactions before the guard capped them — and what they erode first is the
+oldest thing in the transcript, which is the brief. After three compactions the
+child is answering a question that has quietly moved, and nothing notices: the
+parent sees only the final text.
+
+Three layers, cheapest first, so most runs pay nothing:
+
+1. **The anchor.** On every `compaction_end`, the brief is steered back into the
+   child's freshly-summarised context. ~50 tokens, no model call, and it stops
+   the drift rather than detecting it. `execution.brief` holds the prompt
+   verbatim, outside the session, because the session is exactly where it stops
+   being reliable.
+2. **The structural gate.** An empty answer, or a run that ended aborted /
+   turn-limited / stopped. No model call. It reports those as *not worth
+   judging* — `status-note.ts` already tells the parent they were cut off, and
+   paying a model to confirm it is waste. An empty answer is **replaced** by an
+   explanation rather than appended to, because an empty string reads to the
+   parent as a lookup that found nothing.
+3. **The judge, then one repair.** Only for a non-empty answer from a clean run,
+   because that is the only case where drift is invisible.
+
+**The judge does not run in the child's session, and that is the whole design.**
+Asking the child to review its own work is the weakest check available: every
+step that led it astray is in its context with a justification attached, and a
+model handed its own reasoning ratifies it. The judge is a fresh `__verifier`
+agent — no tools, no extensions, no skills, one turn — shown only the task and
+the answer. Harder to fool because it knows less. The **repair** goes the other
+way and continues the child's own session, which is the only place with the
+context to fix anything.
+
+Details that are easy to get wrong and impossible to notice afterwards, each
+with a test:
+
+- The verdict is asked for **before** the reasoning (`VERDICT:` then `WHY:`). A
+  local model allowed to reason first argues itself into agreement.
+- The parse checks `NOT_ADDRESSED` **before** `ADDRESSED`. One contains the
+  other; the wrong order turns every failure into a silent pass, forever.
+- An unreadable verdict **fails open** — a chatty 27B must not discard good work
+   — but the answer is annotated as having gone out unchecked rather than
+  reported as verified.
+- The repair prompt restates the brief **in full** rather than referring to it.
+  Pointing at "the original task" points at the thing that may have gone
+  missing.
+- One judge call and one repair is the entire budget. The repair is **not**
+  re-judged: that invites a loop on the slot the parent is waiting for.
+- A repair that returns empty keeps the *first* answer. Something beats nothing.
+- `verifyAnswer` never throws. A broken verifier must not turn a finished
+  subagent into a failed one.
+
+**Cost: zero standing schema.** Measured — the `__verifier` type is `hidden`, so
+it stays out of the `Agent` tool's enum. Without that flag the tool grows 357 →
+368 chars and the model is offered an internal type it has no reason to call.
+What a judged answer does cost is one small model call on the same single slot
+the parent is waiting on.
+
+**What it cannot do:** catch subtly wrong work. The judge is the same 27B that
+wrote the answer. It is a drift check, not a correctness proof, and calling it
+verification in the stronger sense would be a lie the parent would act on.
+
+## The prefix cache — measured, and not what was assumed
+
+The assumption going in, inherited from the handoff, was that a subagent's own
+system prompt evicts the parent's cached prefix from the single slot. **That is
+false**, and it was worth measuring rather than repeating. Probed directly
+against `/v1/chat/completions` with
+`prompt_tokens_details.cached_tokens` (which `patches/forge_cached_tokens.py`
+exposes), with a repeat of the same prefix as the control:
+
+| child | parent's next call | |
+| --- | --- | --- |
+| six small turns (≤3.3k tokens) | 2,117 cached / 2,134 — **99.2%** | unaffected |
+| four turns growing to 18k tokens | 0 cached / 2,134 — **full re-prefill** | evicted |
+
+Same result on `:8080` and `:8081`, so it is llama.cpp's behaviour and not
+something forge does. The eviction reproduced twice; the "small child" case
+survived nine trials out of nine at 1–6 turns.
+
+So the mechanism is **capacity, not identity**. A subagent that answers from its
+own knowledge is nearly free to the parent's cache. A subagent that reads files
+and runs searches — the reason to have one — pushes the parent out.
+
+What that costs, timed on the same runs: the parent's next call went from
+**442 ms to 2,949 ms**, a 2.5-second re-prefill of 2,133 tokens. A real parent
+session carries far more than 2,133 tokens, so this is a floor rather than an
+estimate of the worst case.
+
+The practical consequence is that the standing schema charge (~178 tok/turn) is
+**not** the main cost of delegating on this stack. The re-prefill on the turn
+after a substantial subagent is.
 
 ## Verified live, against the real model
 

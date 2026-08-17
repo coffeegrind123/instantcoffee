@@ -7,6 +7,9 @@
 
 import type { AgentConfig } from "./types.js";
 
+/** Internal agent type used by the answer verifier. */
+export const VERIFIER_AGENT_TYPE = "__verifier";
+
 const READ_ONLY_TOOLS = ["read", "bash", "grep", "find"];
 
 export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
@@ -58,6 +61,39 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
 - Report findings as regular messages
 - Do not use emojis
 - Be thorough and precise`,
+      isDefault: true,
+    },
+  ],
+  [
+    // Forge fork. The judge from src/agents/verify.ts, as an agent type so it
+    // reuses model resolution, settings and the subagent denylist rather than
+    // building a session by hand.
+    //
+    // It is deliberately the emptiest agent in the file. No tools, no
+    // extensions, no skills, one turn: it is shown a task and an answer and
+    // asked whether one addresses the other, and every capability it does not
+    // need is a way for it to do something other than judge. `max_turns: 1`
+    // also makes its cost predictable, which matters when the check runs on the
+    // same single llama slot the parent is waiting on.
+    VERIFIER_AGENT_TYPE,
+    {
+      name: VERIFIER_AGENT_TYPE,
+      displayName: "verify",
+      description: "Checks a subagent's answer against the task it was given (internal)",
+      // Kept out of the Agent tool's type list. Measured: without this the
+      // schema grows 357 -> 368 chars because "__verifier" joins the enum, and
+      // the model is offered an internal type it has no reason to call.
+      hidden: true,
+      registeredTools: [],
+      tools: false,
+      extensions: false,
+      skills: false,
+      preloadSkills: false,
+      maxTurns: 1,
+      systemPrompt:
+        "You judge whether an answer addresses the task it was given. You are shown only the task and the answer — " +
+        "never how the answer was produced, and you do not need it. You are not checking whether the work is correct. " +
+        "Reply in exactly the two lines you are asked for and nothing else.",
       isDefault: true,
     },
   ],
