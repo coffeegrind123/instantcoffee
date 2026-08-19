@@ -50,6 +50,20 @@ export default async function (pi: ExtensionAPI) {
   // session over — scripts/pi-local.sh has already said so at launch, in a place
   // the operator can see, and the stack works fine without any of this.
   const ver = await pi.exec("rtk", ["--version"], { timeout: REWRITE_TIMEOUT_MS })
+  // `killed` before `code`, for the same reason `rewriteCommand` does it: pi's
+  // `execCommand` resolves a child it killed on the timeout with `code: code ?? 0`
+  // — a signalled child exits with no code — so a WEDGED rtk arrives here looking
+  // exactly like a healthy one that printed nothing. Without this, the probe
+  // passed, `parseSemver("")` returned null, the version guard was skipped, and
+  // every allow-listed command then paid a 2s timeout before failing open, with
+  // nothing said about it. Same shape as AA2, one call site over; see AB3 in
+  // context/design/subagents-loop-verifier-signals.md.
+  if (ver.killed) {
+    console.warn(
+      `[rtk] rtk --version did not answer within ${REWRITE_TIMEOUT_MS}ms - bash output will not be filtered`
+    )
+    return
+  }
   if (ver.code !== 0) {
     console.warn("[rtk] rtk is not on PATH - bash output will not be filtered")
     return

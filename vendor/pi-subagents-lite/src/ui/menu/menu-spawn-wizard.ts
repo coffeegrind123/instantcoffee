@@ -21,6 +21,7 @@ import { createModelSelectSubmenu } from "./submenus/model-select.js";
 import { createNumericSubmenu, createInputSubmenu } from "./submenus/numeric-input.js";
 import { SettingsListWrapper } from "./wrappers/settings-list.js";
 import { getPiInstance, getSessionCtx, getWidget, getStore, getCoordinator } from "../../shell.js";
+import { classifyGitFailure } from "../../spawn/git-failure.ts";
 
 // --- Worktree picker helpers ---
 
@@ -75,6 +76,13 @@ function truncatePath(p: string): string {
 /**
  * Fetch worktrees via `git worktree list --porcelain`.
  * Returns null if git is unavailable or the command fails.
+ *
+ * Forge fork, seventeenth pass (AH3): `classifyGitFailure`, not `result.code`.
+ * The sentence above is the claim that was false — `pi.exec` resolves a child it
+ * killed on the timeout with `code: code ?? 0` and an empty stdout, so a wedged
+ * git parsed as an EMPTY LIST and the operator was shown "no worktrees" for a
+ * probe that never answered. `null` is the value that renders as "git
+ * unavailable", and it is the value a timeout has to produce.
  */
 async function listWorktrees(cwd: string): Promise<WorktreeEntry[] | null> {
   try {
@@ -82,7 +90,7 @@ async function listWorktrees(cwd: string): Promise<WorktreeEntry[] | null> {
       cwd,
       timeout: WORKTREE_LIST_TIMEOUT_MS,
     });
-    if (result.code !== 0) return null;
+    if (classifyGitFailure(result)) return null;
     return parseWorktreeList(result.stdout);
   } catch {
     return null;
@@ -92,6 +100,14 @@ async function listWorktrees(cwd: string): Promise<WorktreeEntry[] | null> {
 /**
  * Check whether a directory is inside a git repository.
  * Uses `git rev-parse --git-common-dir` — the same strategy as the worktree validator.
+ *
+ * Forge fork, seventeenth pass (AH3): and now it really is the same strategy.
+ * The sentence above names `worktree-validator.ts`, which classifies the result
+ * with `classifyGitFailure` because `killed` has to be read before `code`; this
+ * re-implemented the pre-AA2 version of the test one directory away. The
+ * direction it failed in was safe — a wedged git reported "not a repo" — but the
+ * difference between a probe that answered and one that did not is exactly what
+ * that module exists to keep.
  */
 async function isInGitRepo(cwd: string): Promise<boolean> {
   try {
@@ -99,7 +115,7 @@ async function isInGitRepo(cwd: string): Promise<boolean> {
       cwd,
       timeout: WORKTREE_LIST_TIMEOUT_MS,
     });
-    return result.code === 0 && result.stdout.trim() !== "";
+    return !classifyGitFailure(result) && result.stdout.trim() !== "";
   } catch {
     return false;
   }

@@ -22,10 +22,19 @@ export interface AgentConfigFromMd {
   name?: string;
   display_name?: string;
   description?: string;
-  tools?: string[];
-  exclude_tools?: string[];
+  /**
+   * Same shape as `extensions` / `skills`: `true`/`all`, `false`/`none`, or a
+   * list. It used to be `string[]` only, read by `parseStringArray`, which
+   * treats ANY non-empty scalar as a comma list — so `tools: true` became the
+   * one-element allowlist `["true"]` and the agent ran with NO tools, which is
+   * the opposite of what the word says. `extensions:` and `skills:` on the next
+   * line of the same frontmatter block accept exactly those words and mean
+   * "all". See parseExtensions.
+   */
+  tools?: boolean | string[];
+  exclude_tools?: true | string[];
   extensions?: boolean | string[];
-  exclude_extensions?: string[];
+  exclude_extensions?: true | string[];
   skills?: boolean | string[];
   preload_skills?: string[] | false;
   model?: string;
@@ -36,6 +45,7 @@ export interface AgentConfigFromMd {
   output_transcript?: boolean;
   include_context_files?: boolean;
   include_system_prompt?: boolean;
+  include_environment?: boolean;
   systemPrompt: string;
   source: "user" | "project";
 }
@@ -169,6 +179,33 @@ export function parseExtensions(raw: unknown): boolean | string[] | undefined {
 }
 
 /**
+ * The `exclude_*` keys, read with the same vocabulary as their whitelist twins.
+ *
+ * Forge fork: these went through `parseStringArray`, which treats ANY non-empty
+ * scalar as a comma list — so `exclude_tools: none` became the one-element
+ * exclusion `["none"]` (a phantom tool nobody has) and `exclude_tools: all`
+ * became `["all"]`, which excludes nothing at all, i.e. the exact opposite of
+ * the word. That is U6 one field over: `tools:`, `extensions:` and `skills:`
+ * each accept `true|all|false|none` on the lines above, and these two did not.
+ *
+ *   false | "false" | "none"  →  undefined   exclude nothing
+ *   true  | "true"  | "all"   →  true        exclude everything
+ *   "a, b" | ["a","b"]        →  ["a","b"]
+ *
+ * `true` is representable because `resolveVisibleTools` and `buildExtOverride`
+ * both handle it. Writing it is equivalent to `tools: false` / `extensions:
+ * false`; it is accepted rather than reinterpreted so that the same four words
+ * mean the same thing on all six keys.
+ */
+export function parseExcludeList(raw: unknown): true | string[] | undefined {
+  if (raw === false || raw === "false" || raw === "none") return undefined;
+  if (raw === true || raw === "true" || raw === "all") return true;
+  if (typeof raw === "string" && raw.length > 0) return splitCommaList(raw);
+  if (Array.isArray(raw)) return raw.map(String);
+  return undefined;
+}
+
+/**
  * Parse the preload_skills field from frontmatter.
  * Unlike parseExtensions, does NOT accept true/"true"/"all" —
  * preload requires an explicit list of skill names.
@@ -234,10 +271,10 @@ export function parseAgentFile(content: string, source: "user" | "project"): Age
     name: parseString(frontmatter, "name"),
     display_name: parseString(frontmatter, "display_name"),
     description: parseString(frontmatter, "description"),
-    tools: parseStringArray(frontmatter, "tools"),
-    exclude_tools: parseStringArray(frontmatter, "exclude_tools"),
+    tools: parseExtensions(frontmatter.tools),
+    exclude_tools: parseExcludeList(frontmatter.exclude_tools),
     extensions: parseExtensions(frontmatter.extensions),
-    exclude_extensions: parseStringArray(frontmatter, "exclude_extensions"),
+    exclude_extensions: parseExcludeList(frontmatter.exclude_extensions),
     skills: parseExtensions(frontmatter.skills),
     preload_skills: parsePreloadSkills(frontmatter.preload_skills),
     model: parseString(frontmatter, "model"),
@@ -248,6 +285,7 @@ export function parseAgentFile(content: string, source: "user" | "project"): Age
     output_transcript: parseBoolean(frontmatter, "output_transcript"),
     include_context_files: parseBoolean(frontmatter, "include_context_files"),
     include_system_prompt: parseBoolean(frontmatter, "include_system_prompt"),
+    include_environment: parseBoolean(frontmatter, "include_environment"),
     systemPrompt: body,
     source: source,
   };
@@ -350,7 +388,11 @@ function fromMd(md: AgentConfigFromMd): Partial<AgentConfig> {
     name: md.name,
     displayName: md.display_name,
     description: md.description,
-    registeredTools: md.tools,
+    // `registeredTools` is a list of names or nothing; `true`/`false` are
+    // statements about VISIBILITY and belong only on `tools`, where both
+    // resolvers already honour them (`tools: false` -> no registry entries and
+    // no visible tools; `tools: true` -> no filter).
+    registeredTools: Array.isArray(md.tools) ? md.tools : undefined,
     tools: md.tools,
     excludeTools: md.exclude_tools,
     extensions: md.extensions,
@@ -365,6 +407,7 @@ function fromMd(md: AgentConfigFromMd): Partial<AgentConfig> {
     outputTranscript: md.output_transcript,
     includeContextFiles: md.include_context_files,
     includeSystemPrompt: md.include_system_prompt,
+    includeEnvironment: md.include_environment,
     systemPrompt: md.systemPrompt,
     source: md.source === "project" ? "project" : "global",
   };

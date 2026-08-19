@@ -3924,7 +3924,7 @@ something unrelated:
   child's ctx: cancelled the operator's scheduled iteration, incremented its
   iteration count (burning its `--max` budget), persisted its state into the
   child's throwaway in-memory branch, and **delivered the operator's next loop
-  turn into the child**. `agent-session.js:779` continues a session for messages
+  turn into the child**. `agent-session.js:781` continues a session for messages
   queued by an `agent_end` handler, so the child then worked on the operator's
   goal until its 40-turn ceiling — while the operator's loop, with no pending
   timer, silently stopped advancing.
@@ -4045,3 +4045,2178 @@ fails against the old pattern. The one assertion that passes either way is the
 pre-existing weak one, kept for continuity. A test that has not been watched
 failing is not evidence, and the first audit's B3 is the standing example — a
 test named *"survives an unknown action"* that passed **because** of the bug.
+
+## 2026-08-17 (third pass) — inside the modules, under a comment that said otherwise
+
+A third pass over the same three pieces, written up in full with reproductions in
+`context/design/subagents-loop-verifier-mechanics.md` — which is also the
+complete mechanical account of the machine, stage by stage, that the other two
+documents only sketch. Nine findings (T1–T9); four fixed, three of them proved by
+running code rather than by reading it.
+
+The shape of this pass is different from the last one and worth recording. The
+second audit found that every one of its defects lived in the **wiring between**
+two packages. None of these do. They live inside a module and depend on a fact
+about someone *else's* runtime — and in two of the three proven cases they sat
+directly underneath a comment that described the correct behaviour, confidently
+enough to stop the reader looking.
+
+### T1 — every one-turn run took two model calls and returned the wrong one
+
+The verifier's judge and its repair both run with `maxTurns: 1`. Both cost two
+provider calls, and both returned the second one's text.
+
+`wireTurnTracking` steers *"wrap up immediately"* on reaching the turn ceiling.
+`AgentSession._emit` calls subscribers synchronously (`agent-session.js:298`) and
+`session.steer()` enqueues synchronously, so the message is in the steering queue
+before the emit returns — and pi's agent loop drains that queue immediately after
+`turn_end` (`agent-loop.js:160`), inside `while (hasMoreToolCalls ||
+pendingMessages.length > 0)`. pi never sets `shouldStopAfterTurn` (grepped across
+the whole `dist/`), so the drain always happens. A non-empty drain re-enters the
+loop, and `collectResponseText` resets its buffer on the injected user message's
+`message_start`.
+
+For the 40-turn child that is the design: the ceiling fires on a run that was
+going to continue anyway, and the extra turn is the graceful final answer. For a
+one-turn budget the soft limit fires on the turn that was supposed to *be* the
+whole run, so the steer manufactures a call and discards the first one's output.
+
+Reproduced with the real `continueAgentSession` against a stub mirroring
+`agent-loop.js:83-170`:
+
+```
+model calls made by a maxTurns:1 run : 2
+responseText handed back            : "I have already given my final answer above."
+parseJudgeVerdict(responseText)     : { addressed: true, unparsed: true }   ← a pass
+parseJudgeVerdict(turn 1, the real one): { addressed: false, why: "…" }     ← discarded
+CONTROL (maxTurns:0): 1 call, the verdict comes back intact
+```
+
+Three consequences, and the third is the one that matters most. **Cost:** every
+verification was double — a passing answer 2 calls not 1, a repair round 6 not 3
+— on the single slot the parent's `Agent` call is blocked on. **The check:** the
+judge's real verdict was thrown away, and when the replacement did not parse,
+fail-open turned a `NOT_ADDRESSED` into "unchecked". **The repair:** the text
+delivered to the parent as the repaired answer was the child's reply to "wrap up
+immediately", not the repair — and it defeated the `repaired === candidate` stall
+check, one of the three conditions that terminate the repair loop.
+
+The anatomy doc looked straight at this and concluded the opposite: *"the field
+is never read on that path, so it is cosmetic."* True of the field, false of the
+steer. And nothing could have tested it — `wireTurnTracking` lived inside
+`agent-runner.ts`, which imports pi and cannot be loaded under the plain node the
+suite runs on.
+
+**Fixed** by skipping the soft-limit steer when the budget is one turn, in a new
+`agents/turn-tracking.ts` that imports nothing and is therefore testable. A
+one-turn run that *did* call a tool still continues on pi's side and is still
+bounded by the hard abort, so nothing loses its ceiling.
+
+**Deliberately not changed:** the same mechanism wastes a turn whenever the real
+ceiling is reached on a turn with no tool calls — the run would have stopped
+there, and the wrap-up steer buys a call to replace a final answer that already
+existed. Steering only when `event.toolResults.length > 0` fixes both, but the
+40-turn path is live-observed behaviour and this was not the change that should
+alter it.
+
+### T2 — the loop's per-turn tool counter outlived its turn
+
+`state.toolCallsThisTurn` was reset near the bottom of the `agent_end` ladder,
+below every early return. Soft stop, context pressure, model error, degenerate
+abort and operator abort all returned above it.
+
+`emptyResponse` requires that counter to be zero, and `isContextPressure`'s
+`starvedTurn` rung requires `emptyResponse`. That rung *is* the 87%-cliff fix. So
+a stale count switched starvation detection off for exactly the turn most likely
+to be starved: the retry of a turn that had already failed.
+
+Reproduced at 90% context, one process per scenario because the state is
+module-global:
+
+```
+control (starved turn, nothing before it) → "context pressure detected (1/3) — recovering"
+stale   (same turn after a two-tool turn that died on a provider error)
+                                          → no notice at all, iteration burned,
+                                            another turn scheduled into the same
+                                            saturated context
+```
+
+**Fixed** by reading the counter into a local and clearing the field at the top
+of the handler, so every exit path clears it.
+
+### T3 — "never throws" covered only the part inside the try
+
+`verifyAnswer`'s structural gate, brief check and `clampRounds` ran *above* its
+`try`, and `runVerification` wrapped the call in `try/finally` with no `catch`.
+Both run inside `attachSettlementChain`'s `.then`, whose `.catch` sets
+`record.result = undefined` and the status to `error`. So a throw in the **check**
+would have discarded the child's finished answer and reported a successful run to
+the parent as a failure — the exact inversion the layer exists to prevent.
+
+Nothing in the prologue throws today. The guarantee should not depend on that
+staying true, and the gate has already grown once (`error` joined the
+not-worth-judging list in the second audit). **Fixed** in both places.
+
+### T4 — the errored verdict borrowed the unparsed one's words
+
+A check that timed out told the parent model *"the check could not be read"* —
+describing a judgement that was never made. `errored` now has its own note.
+
+### Reported, not fixed
+
+- **T5** — the second audit's deadline fixed the *hang* in the verification
+  window; it did not restore *control*. Esc, `StopAgent` and the watchdog all
+  still no-op there, so the worst case is a bounded 900 s wait the operator
+  cannot shorten. The fix is a policy choice (a fourth watchdog state, a shorter
+  deadline, or holding the abort controller on the record), and picking one blind
+  is worse than naming it.
+- **T6** — `worktree_path` accepts any directory in any git repo on the host, and
+  the trust gate governs only what the child *loads*, not where it can *write*.
+  The presence of a trust gate reads like containment and is not.
+- **T7** — the `Agent` schema carries the agent-type list as a property
+  description, so every agent `.md` on disk costs its own name in schema on every
+  turn of every session. `hidden: true` on `__verifier` saves exactly 11 chars,
+  which is the whole reason it exists — and is what set off the second audit's F2.
+- **T8** — the model/thinking injection is legal only because pi validates tool
+  arguments *before* the `tool_call` hook and passes the same object through. A pi
+  that validated after, or cloned, would break subagent model routing.
+- **T9** — the concurrency slot is released after verification, so a queued
+  subagent waits for the previous one's judge and repair too.
+
+### Gates
+
+```
+vendor/pi-subagents-lite   lint 67/67 files   tests 117/117   (was 65 / 100)
+vendor/pi-loop-mode        lint clean         tests  69/69    (was 63)
+.pi/extensions/compaction-guard                tests  39/39    (unchanged)
+```
+
+Every new guard control-run with the fix disabled, and the failing count recorded
+in the write-up. Where a case passes either way it is called out as a control
+rather than counted as evidence. The second audit's F1, F2 and F3 probes were
+re-run unchanged and all three still hold; the isolation suite was control-run
+again (8 of 10 fail with the factory guard disabled).
+
+The reproductions now live in `context/testing/probes/`, with a README saying
+what each prints post-fix and what it printed before — a diagnostic that shows
+the *mechanism* is worth keeping next to the document that explains it.
+
+## 2026-08-17 (fourth pass) — the declaration and the implementation disagreed
+
+Fourth audit of subagents, the loop and the verifier. Ten findings (S1–S10), six
+proved by executable probes, **all ten fixed**, plus three of the smaller notes.
+The write-up is `context/design/subagents-loop-verifier-surfaces.md`; the probes
+are `context/testing/probes/h1`–`h6`.
+
+**The place they all lived.** The first three audits found defects inside a
+module, then in the wiring between two modules, then between a module and pi's
+runtime. This one found a fourth place: **between a declaration and its
+implementation.** A tool's JSON Schema that is not the tool's real parameter
+surface. An agent that declares five switches and silently inherits the two that
+decide what goes into its prompt. A constant documented in turns that decays on
+one of nine exits. Section budgets that do not fit inside the total they are
+measured against. Every one of those declarations is correct — it just is not
+what runs, and it is the artefact a reader checks.
+
+**225 passing tests caught none of them**, because every test asserts the shape
+the declaration promises.
+
+### The two that were wrong on every run
+
+**The judge's verdict parser inverted on its own instruction line.** The judge
+prompt ends `VERDICT: ADDRESSED or NOT_ADDRESSED`; `parseJudgeVerdict`'s loose
+alternative `/\bNOT[_\s-]ADDRESSED\b/i` matched that echo anywhere in the reply,
+and was tested first — correctly, since one token contains the other. A 27B
+echoing its own instructions is one of the most common reply shapes there is. A
+reply that echoed the menu and then gave an explicit `VERDICT: ADDRESSED` on its
+own line came back as NOT_ADDRESSED: three model calls on the blocked slot, and
+the original answer delivered with `✗ off-task` and "Treat it as unreliable".
+Now a `VERDICT:` line outranks a bare token, scanned newest-first, with the menu
+recognised as not-a-choice; the bare-token pass survives because it is what
+catches `NOT-ADDRESSED — …` and `**VERDICT:** ADDRESSED`.
+
+**The loop's sampling penalties never expired.** `PENALTY_TURNS` is documented as
+three iterations, and the only decrement sat at the bottom of `agent_end` below
+thirteen early returns — two of which, `LOOP_DONE` in endless mode and
+`LOOP_BLOCKED`, are the loop's own every-iteration outcomes. Temperature stayed
++0.2 with both repetition penalties at 0.5 for the rest of the session. **This is
+T2's sibling three lines away**: T2 was the same shape, was fixed by moving its
+reset to the top of the handler, and this counter was not part of that change.
+
+### The rest
+
+- **The `loop` tool's `goal` was an argument line, not a text field.**
+  `argsForLoopTool` rebuilt a `/loop` string and re-parsed it, so `--check` (run
+  through `bash -lc` every iteration, forever), `--model` (reaches
+  `pi.setModel()`), `--max`, `--delay`, `--until-done` and `--file` were all
+  reachable from the goal — and the goal's `--check` beat the `check` parameter
+  the schema documents, because `extractCheckCommand` takes the first match. The
+  round-trip is gone.
+- **The judge inherited the project's instructions.** `includeContextFiles`
+  defaults to true and `__verifier` did not declare it, so every AGENTS.md /
+  CLAUDE.md from cwd to `/` went into the prompt of the agent whose whole design
+  argument is that it knows *less*. 571 → 6,543 chars, measured. Its prompt is
+  now 463 characters: its own instructions and nothing else.
+- **The handoff summary degraded by position.** A blind `slice()` dropped
+  `## File Operations`, then the durable-file excerpts, then `## Loop State` —
+  the same failure `compaction-guard/src/summary-budget.ts` was written to fix
+  for pi's summary, in the builder that replaced pi's *because* pi's was badly
+  bounded. Now allocated by priority with a floor per section.
+- **A concurrency change lost the running subagent.** `setConcurrency()` must
+  delete stale slots for precedence to work, and threw the running counts away
+  with them — including when re-confirming the limit the operator already had.
+  Counts are now rebuilt from the records holding one.
+- Three small ones: the prinny denial was keyed on this checkout's install path;
+  `registeredTools: []` resolved to the default four tools; a provider error wore
+  the "cut off" badge. Plus `graceTurns: 0`, which did not remove the grace turn
+  but relabelled a complete answer as `aborted`.
+
+### Two things worth carrying forward
+
+**A measurement killed a fix.** The obvious repair for the judge's ~100 ms of git
+probing was collapsing two invocations into one. A/B'd interleaved, 30 runs each,
+the combined call is *not faster and sometimes slower* — the cost is process
+startup on the 9p mount, not the count. That change would have shipped as an
+optimisation with a plausible commit message and done nothing. The fix that works
+is not running it at all for the one agent with no working tree.
+
+**Four of the ten lived in a rule no test could reach**, because the rule sat in
+a file importing pi and the suite runs under plain
+`node --experimental-strip-types`. The prompt-source precedence, the
+registered-tool precedence, the slot arithmetic — and, in the third pass, the
+turn ceiling. In each case the real repair was not the one-line change; it was
+moving the rule somewhere it could be executed. `declared-resources.ts`,
+`concurrency-slots.ts` and `turn-tracking.ts` are all the same shape for the same
+reason. That suggests a standing check: **list every decision this stack makes
+that no test imports, and move it** — the list is discoverable, since it is
+anything reachable only through a module that imports
+`@earendil-works/pi-coding-agent`.
+
+### Gates
+
+```
+                                    before    after
+vendor/pi-subagents-lite   tests    117       154     lint 69/69 files
+vendor/pi-loop-mode        tests     69        88
+.pi/extensions/compaction-guard      39        39     (untouched)
+                                   ─────     ─────
+                                    225       281
+```
+
+Every new guard was control-run with its fix disabled and the failing count
+recorded in the write-up's §11; where a case passes either way it is labelled a
+control rather than counted as evidence.
+
+**Still not watched running**, and this is now the fourth pass to say so: the
+verifier's failure path has never fired live, section I of the hand-testing
+script has never been run, and a delegation with a loop running has been fixed at
+the module level twice without anyone watching one. One thing was deliberately
+left undone and belongs on that list — **the judge's raw reply is logged
+nowhere**. S2 was invisible from outside because a false NOT_ADDRESSED and a true
+one produce the same badge, the same note and the same `record.verification`, and
+the fix does not change that; it only makes the common false case stop happening.
+Until the reply is recorded, no live verification result can be checked by
+anyone, which is the same sentence the third pass had to write about T1.
+
+---
+
+## 2026-08-18 (fifth pass over subagents / loop / verifier — the units)
+
+Evaluate, write up, then fix. **All nine findings are fixed**, plus the
+`consecutiveStuckCount` note in the write-up's §10, each with a regression test
+that fails when the fix is removed and a probe that prints BEFORE and NOW.
+
+```
+                                    before    after
+vendor/pi-subagents-lite   tests    154       182     lint 70/70 files
+vendor/pi-loop-mode        tests     88       108
+.pi/extensions/compaction-guard      39        39     (untouched)
+                                   ─────     ─────
+                                    281       329
+```
+
+New: `context/design/subagents-loop-verifier-units.md`, nine probes (`i1`–`i9`,
+plus `_host.mjs` and `_ts-hook.mjs`), three regression-test files
+(`stuck-ladder.test.ts`, `goal-check-errors.test.ts`,
+`agent-frontmatter.test.ts`) and blocks added to five existing ones.
+
+### The place these live
+
+Each pass has found defects one step further from the code:
+
+```
+   inside a module            B1–B8    a function does not do what it says
+   between two modules        F1–F11   two correct functions disagree at the seam
+   module ↔ pi's runtime      T1–T9    correct code, wrong assumption about the host
+   declaration ↔ code         S1–S10   the artefact a reader checks is not what runs
+   unit ↔ unit                U1–U9    both halves are right, and count different things
+```
+
+The fifth is the hardest to write a test for, because there is nothing to assert
+against. A test for U2 would have to know that one pi turn contains several
+assistant messages — a fact about pi, not about the loop — and then decide the
+loop's window *should* have been per turn. Nothing in the loop says so; it is
+visible only when the comment ("consecutive assistant **responses**") is read
+against the handler that fills the array.
+
+### The two that cost a real run (as found; both fixed)
+
+**U1 — `LOOP_DONE:` and `LOOP_BLOCKED:` returned from `agent_end` above every
+stuck check.** The markers are the third and fourth guard on the success path;
+`detectStuck()` was the seventh. So degenerate repetition, the narration-only
+counter, both identical-response tests, the near-duplicate test, the
+repeated-tool-result test and the repeated-question test were all unreachable
+for a response carrying either marker — and this is endless mode, where the loop's own
+`loopInstructions()` asks for `LOOP_DONE:` by name and then answers each one with
+the `improve` directive. Proved against the real module: the same tool-free
+response eight times gives seven interventions plain and **zero** with the
+marker. The turn after the marker came off reported *"no tool usage for 9
+turns"* — nine turns of evidence had been accumulating one branch above the only
+line that reads it.
+
+**U2 — the repetition windows were filled per assistant message and per tool
+result; every rule and every notice on top of them is written in turns.** Both
+directions reproduced: four turns with a byte-identical final answer were caught
+on turn 2 when each turn was one message and never caught when each turn was five
+(an 8-slot fingerprint window, flushed by the intermediate messages); and one
+productive turn — edit a file, then three greps confirming nothing references it
+— was reported *stuck*, while the same turn with the greps first was not.
+
+### The other seven, in one line each (all fixed — see below)
+
+- **U3** a goal check that *cannot run* is handled identically to one that *ran
+  and failed* — `execFailed` is consumed by a single operator-facing notify and
+  by nothing else. In `--until-done` that removes the loop's only terminating
+  condition, silently.
+- **U4** the judge's `VERDICT` is read newest-first and menu-guarded; its `WHY`
+  is the first match anywhere and guarded by nothing, so an echo of the prompt's
+  own instruction line becomes the repair's stated reason. S2's fix, five lines
+  up, on the same reply.
+- **U5** `loop(action:"start")` replaces a running loop — goal, criteria, counters
+  and the iteration cap discarded, `Active` never false, and the replacement
+  endless. `/loop run` and `/loop goal` both refuse while active; `start` does
+  not, because for a human typing it replacement is the intent.
+- **U6** `tools: true` / `tools: all` in an agent .md give the agent **no** tools:
+  `parseStringArray` reads the word as a one-element allowlist. `extensions:` and
+  `skills:` on the next line accept the same words through `parseExtensions` and
+  mean "all". Three of the four spellings are accidentally correct, which is what
+  keeps it quiet.
+- **U7** the subagent denylist reasons entirely about `vendor/`, which a child
+  cannot see. A child *discovers* `.pi/extensions/`, and picks up `stack_status`
+  at 173 tokens/turn — measured against the 177 that justified removing the
+  `loop` tool from children.
+- **U8** the verifier's repair adds a cumulative turn number every turn, so a
+  five-turn repair takes `turnCount` from 5 to 20 instead of 10. Display only;
+  one line to fix.
+- **U9** `Explore`'s ten-line "CRITICAL: READ-ONLY MODE — NO FILE MODIFICATIONS"
+  ships with a live `bash`. `edit` and `write` really are absent; the other nine
+  prohibitions have no mechanism. This repo has already measured this model
+  ignoring a CRITICAL prompt-level prohibition about tool use — that measurement
+  is why `.pi/extensions/compaction-guard/src/output-cap.ts` exists.
+
+### Two habits worth keeping from how the reading went
+
+- **When a comment names a unit, go and read the handler that fills the array.**
+  U1, U2, U3 and U8 are each a comment or a notice naming one unit against a line
+  of code counting another. Nothing else found them; four passes of reading for
+  correctness did not.
+- **The two directions of a wrong unit look nothing alike.** U2's false positive
+  is loud — an intervention on a good turn, visible in the transcript — and its
+  blindness is silent. Only the loud half would ever be reported, and it is the
+  quiet half that costs a run. When a check can be wrong in both directions,
+  reproduce both before believing either.
+
+### The fixes, and the two that changed more than they were aimed at
+
+`context/design/subagents-loop-verifier-units.md` §8 carries each one in full,
+with its control-run failing count. Two are worth restating here because they
+changed behaviour the fix was not pointed at, and in both cases the change is
+wanted:
+
+- **U2's tool rule got stronger.** "The last three tool RESULTS are identical"
+  became "the last three TURN signatures are identical" — the ordered
+  (tool, result) pairs of a whole turn, hashed. That is what the notice always
+  claimed ("same grep result repeated", read by anyone as *three turns*), it
+  cannot be tripped by one turn that searched three times, and it catches a model
+  making the same calls turn after turn, which the old rule could only catch by
+  accident.
+- **U6's `tools: false` reaches "no tools" by a different route.** It used to get
+  there through an allowlist containing one tool that does not exist; it now goes
+  through `resolveSessionAllowedTools`' `tools === false` branch, which returns
+  `[]` immediately. Same outcome, now for the stated reason — and the tests assert
+  on the registry gate rather than on the outcome, so the difference is visible.
+
+**U9 is a product decision, not just a repair.** `Explore` lost `bash` and gained
+`ls`, so its "READ-ONLY" header is now true because of its tool set rather than
+because of ten sentences asking nicely. The cost is real: it can no longer run
+`git log` or `git diff`, which its own prompt used to recommend by name. The
+reasoning for preferring the guarantee is that this agent is spawned by the model
+on its own initiative, with a prompt the operator never sees, and it is the type a
+model reaches for when it wants a *safe* look around — at a dirty tree, or at
+another repo through `worktree_path`. That is the one situation where an
+unenforced boundary is worth least. Reverting is one line in `default-agents.ts`;
+if it turns out most real `Explore` tasks wanted git, the honest alternative is
+the other fix — keep `bash` and reword the header — and not a third state where it
+has a shell and claims not to.
+
+### Two things worth keeping from how the fixes went
+
+- **A control has to be able to fail.** The first version of U1's streak test
+  asserted on the next intervention's counter and passed with the fix removed,
+  because an ordinary turn in between reset the streak anyway. Asserting on
+  `/loop status` immediately after the marker turn isolates it. Every control in
+  this pass was run with the fix reverted; the failing counts in §11 are those
+  runs, not estimates.
+- **When a rule cannot be moved somewhere testable, test the file.** The fourth
+  pass's standing check was "list every decision this stack makes that no test
+  imports, and move it". Two of these could not be moved — `agent-manager.ts` and
+  `stack.ts` both import pi — so they are pinned at the source instead: no
+  turn-count callback may re-read the field it writes (U8), and nothing in
+  `.pi/extensions/` may register a model-visible tool without the
+  `__PI_SUBAGENT_SPAWN_DEPTH__` guard (U7). Both strip comments before matching,
+  because the fix's own comment quotes the defective form — which is the right
+  thing for a comment to do and the wrong thing for an assertion to match. The
+  second of the two is deliberately about the CLASS rather than about `stack.ts`,
+  so the next extension dropped into that directory cannot arrive unnoticed.
+
+### Still not watched running
+
+Unchanged, and this is the fifth pass to say it. Nine defects were fixed against
+probes and tests and none against a running model. **The judge's raw reply is
+still logged nowhere**, and it is now load-bearing for two *fixed* findings: a
+false NOT_ADDRESSED and a true one still produce the same badge, the same note and
+the same `record.verification`, and U4's repair reason is text nobody can see
+either. It was not attempted here because it is a question about the transcript
+format rather than about the verifier, and it wants an answer to "where does an
+operator read this".
+
+## 2026-08-18 (sixth pass over subagents / loop / verifier — the shapes)
+
+Evaluate, write up, then fix. **All eight findings are fixed**, plus the
+`graceTurns` note in the write-up's §8, each with a regression test that fails
+when the fix is removed and a probe that prints BEFORE and NOW.
+
+```
+                                    before    after
+vendor/pi-subagents-lite   tests    182       193     lint 70/70 files
+vendor/pi-loop-mode        tests    108       127
+.pi/extensions/compaction-guard      39        39     (untouched)
+                                   ─────     ─────
+                                    329       359
+```
+
+New: `context/design/subagents-loop-verifier-shapes.md`, eight probes
+(`j1`–`j8`), two regression-test files (`reasoning-turns.test.ts`,
+`run-restart.test.ts`) and blocks added to three existing ones.
+
+### The place these live
+
+```
+   inside a module            B1–B8    a function does not do what it says
+   between two modules        F1–F11   two correct functions disagree at the seam
+   module ↔ pi's runtime      T1–T9    correct code, wrong assumption about the host
+   declaration ↔ code         S1–S10   the artefact a reader checks is not what runs
+   unit ↔ unit                U1–U9    both halves are right, and count different things
+   whole ↔ part               V1–V8    a reader takes a subset that used to be the
+                                       whole thing, or is the whole thing only in
+                                       the common case
+```
+
+A message's content blocks, a run's five-field result, `LoopState`'s forty-five
+fields, a ladder's three rungs, a function's two exits, a flag and its target.
+Eight places where a reader took a subset — and in two of them the subset had
+been the whole thing until two days earlier.
+
+### The two a patch of ours created, 24 hours before this pass
+
+On 2026-08-17, `patches/forge_reasoning_passthrough.py` (commit `e81a7e5`)
+stopped forge discarding `reasoning_content` when the model produced reasoning
+and no accompanying text. That was a real fix — 126 generated tokens were being
+delivered nowhere — and its commit message states the consequence for consumers
+in a sentence:
+
+> with the reasoning restored, **a thinking-only turn reaches pi as
+> `content:[thinking]` rather than `content:[]`**, so `describeEmptyEnding` would
+> have stopped noticing it.
+
+`vendor/prinny-channel` was changed in the same commit to keep noticing.
+`vendor/pi-subagents-lite` never had the problem (`extractText` filters for text
+blocks). `vendor/pi-loop-mode` consumes the same shape **twice** and was changed
+neither time:
+
+- **V1 — the starvation rung.** `emptyResponse` required no text, no thinking and
+  no tool call, which was the same test as "no content blocks at all" until the
+  patch. Measured against the shipped module, the same 126-token turn at 90% of a
+  32k window: `content: []` → "context pressure detected (1/3) — recovering",
+  iteration not counted, error counted; `content: [thinking]` → **no notice at
+  all**, counted as a successful iteration. And the success path *resets*
+  `consecutiveErrorCount`, `contextCooldownCount` and `contextCompressionLevel`,
+  so the ladder could never accumulate the three consecutive failures it needs.
+  The cliff the rung exists for: below 87% of the window, 3 empty assistant turns
+  out of 196; at or above it, 33 out of 63.
+- **V2 — the repetition windows.** `commitTurnMemory` fills them from
+  `messageToText(m) || messageToRepetitionText(m)`; `detectStuck` was handed
+  `messageToText(lastAssistant)`, and three of its seven comparisons are gated on
+  that string's length while a fourth tests whether it ends in "?". A model
+  rephrasing itself at exactly `SIMILARITY_THRESHOLD` was caught on turn 2 as text
+  and **never** as thinking.
+
+### The other six, in one line each (all fixed)
+
+- **V3** — `/loop run` reset twenty-five `LoopState` fields and left seven pieces
+  of per-run state standing, six of them the goal check's: run 2's first check was
+  reported as a regression against run 1's best score, and a `lastCheckPassed:
+  true` from run 1 satisfied the `!== true` guard U3 added, so an `--until-done`
+  run 2 completed on the model's word with a check that had never run.
+- **V4** — a stuck intervention charged the whole ladder and delivered its
+  directive only `if (!ctx.hasPendingMessages())`, while the two rungs above it
+  are unguarded — so with a background subagent's result queued the ladder
+  escalated to a rescue-model switch and a compaction having never once sent the
+  cheap rung.
+- **V5** — the verifier's repair read one of its `RunResult`'s five fields, so the
+  structural gate that refuses to judge a cut-off run never saw the repair: a
+  repair hard-aborted at `maxTurns + graceTurns` went back to the parent as
+  `✎ repaired` … "re-checked", cut mid-token.
+- **V6** — `softLimitReached` was set for `maxTurns: 1`, which T1 established is a
+  run that *finished*, so every one-turn agent was labelled "output may be
+  partial" to its parent and was never verified (`skipped-cutoff`).
+- **V7** — the judge's session was disposed via `result?.session`, and `result` is
+  only assigned when `runAgent` resolves; a rejection after `createAgentSession()`
+  returned leaked a live session with its history and bound extensions. The one
+  exit the comment above it did not cover.
+- **V8** — a re-issued goal preserved `preparedAt` and reset `goalFile`, so both
+  lines that exist *because* the spec is prepared pointed at a `GOAL.md` nobody
+  wrote.
+
+### The fixes, and the one that was deliberately not the smaller edit
+
+- **V2 had two repairs available and the one-line one was wrong.** Storing
+  `messageToText` only also makes the window and the rules agree — and it loses
+  detection, because the broken code *does* catch byte-identical thinking, late
+  and under the wrong rule's name, via the one ungated rule.
+  `commitTurnMemory` now returns what it committed and `detectStuck` compares that
+  string, which gets both directions: a turn that committed nothing compares
+  nothing, and a turn whose only output was reasoning is compared on the
+  reasoning. Two ways to make a unit mismatch go away are not equivalent just
+  because both make it go away.
+- **V6 needed two variables, not one line.** `softLimitReached` was also arming
+  the grace-turn abort, so keying it on `shouldSteerAtSoftLimit` would have
+  removed the hard abort for one-turn runs. `ceilingReached` keeps the ceiling;
+  `turnLimited` is set exactly where the wrap-up steer is sent, because "cut
+  short" and "asked to stop early" are the same fact under the same condition.
+- **V5's extraction is what made V6 one line.** `classifyRun(result)` came out of
+  `attachSettlementChain` so both callers use one classification — which is the
+  general shape of the whole pass: a five-field result read one field at a time is
+  a decision, and it should read like one.
+- **Two changes were not what the fix was aimed at, and both were wanted.**
+  `message_end` now returns its sanitized replacement unconditionally (it sat
+  below an early return keyed on the tracked text, so a degenerate message with no
+  text block never got truncated — a shape that did not exist before the patch),
+  and the repair now honours the operator's `graceTurns` instead of hardcoding the
+  default.
+
+### The habit this pass adds
+
+**A test fixture set is a claim about which shapes exist.** `pi-loop-mode`'s 108
+tests contained no `thinking` content block — every assistant message the suite
+and the probe host built was `[{type:"text"}]` or `[]`, which are exactly the two
+shapes that behaved correctly. That claim was true until 2026-08-17. No amount of
+adding more tests of the same shape would have caught V1 or V2; the fix is one
+fixture, and `reasoning-turns.test.ts` builds it for eight cases.
+
+The transferable version: **when a shape on the wire changes, grep for every
+consumer of it, including the ones in other vendor packages.** The commit that
+changed this one named the hazard in a sentence and then named one consumer.
+There were three.
+
+### Still not watched running
+
+Unchanged, and this is the sixth pass to say it. Seventeen defects have now been
+fixed across three passes against probes and tests, and none against a running
+model. **The judge's raw reply is still logged nowhere**, and it is now
+load-bearing for four fixed findings rather than two — S2, U4, V5 ("was the text
+the judge passed actually a whole answer?") and the reason line the repair
+carries.
+
+One item is new, and it is the only one on the list where the *rate* is the
+unknown rather than the behaviour: **a reasoning-only turn, in the wild, with the
+loop running.** `j1` and `j2` say what the module does with the shape and both are
+fixed; only a run says how often the shape arrives, which is the difference
+between a defect that cost a run and one that never fired.
+
+---
+
+## 2026-08-18 (seventh pass over subagents / loop / verifier — the second reader)
+
+Evaluate, write up, then fix. **All six findings are fixed**, each with a
+regression test that fails when the fix is removed and a probe that prints BEFORE
+and NOW. Write-up: `design/subagents-loop-verifier-readers.md`.
+
+```
+                                    before    after
+vendor/pi-subagents-lite   tests    193       207     lint 71/71 files
+vendor/pi-loop-mode        tests    127       137
+.pi/extensions/compaction-guard      39        39     (untouched)
+                                   ─────     ─────
+                                    359       383      33 probes, all clean
+```
+
+### The place these were, and it is a new one
+
+The first six passes each found defects one step further from the code than the
+last: inside a module (B), between two modules (F), between a module and pi's
+runtime (T), between a declaration and its implementation (S), between the unit a
+rule is written in and the unit it is enforced in (U), between a thing and the
+part of it a reader takes (V).
+
+This one is the first that is **about the earlier passes themselves**: the
+distance between the site a rule was fixed at and the sites next to it that read
+the same fact.
+
+Every one of W1–W6 is downstream of a numbered earlier finding, and none of them
+is a regression — all twenty-seven prior fixes are in the tree and their probes
+still run clean. Each is the **second reader**: a pass established the right rule,
+applied it to the instance in front of it, and left a sibling still governed by
+the old one.
+
+```
+   V2  → W1   detectStuck was moved onto the turn's committed answer;
+              emptyResponse, LOOP_DONE and LOOP_BLOCKED still read the last MESSAGE
+   V2  → W2   which string the window holds was fixed; how MUCH of it — 1,500
+              chars — was not, and rule 5 compared a full answer against that prefix
+   fork→ W3   continueSettledAgent grows the brief; steer()'s two RUNNING branches
+              did not, and "steer" is the running case by the viewer's own naming
+   V6  → W4   turnLimited stopped meaning "cut short" for a one-turn budget; the
+              graceTurns <= 0 branch one line above still severed and said aborted
+   S2/U4→ W5  the judge's verdict and reason are parsed carefully because the parent
+              acts on them; the NOTES the parent reads built their own counts
+   V7  → W6   the capture was moved into onSessionCreated on the strength of a claim
+              that it fires before bindExtensions. It was the last line of the function
+```
+
+### The two that cost a run
+
+**W1.** `agent_end` derives "what did the model say this turn" three times.
+`commitTurnMemory` already answers it correctly — the last message of the turn
+that produced text — and V2 moved `detectStuck` onto that. The starvation flag and
+both completion markers were left on `messageToText(lastAssistant)`.
+
+Identical for a one-message turn, which is every turn in the suite and every turn
+in every earlier probe. pi runs another assistant message inside the SAME turn
+whenever a message arrives mid-turn (`agent-loop.js`, `while (hasMoreToolCalls ||
+pendingMessages.length > 0)`), and this stack injects one deliberately:
+`SpawnCoordinator.emitIndividualNudge` delivers a settled background subagent's
+result with `deliverAs: "steer", triggerTurn: true` whenever the parent is busy.
+Since `patches/forge_reasoning_passthrough.py` that extra message can be
+reasoning-only.
+
+Measured against the shipped module, one turn of `[text LOOP_DONE:] [thinking]`:
+at 20% the `--until-done` run that had finished did not stop; at 90% the same turn
+was read as starved and charged to the context-recovery ladder — no iteration
+counted, no goal check run. Fixed with a per-turn answer buffer and a fallback to
+the old value whenever the buffer is empty, so no path that could not have filled
+it changes behaviour.
+
+**W2.** `commitTurnMemory` stores `finalText.slice(0, 1_500)`; `detectStuck`'s
+near-duplicate rule compared the current answer *in full* against it.
+`textSimilarity` is Jaccard over word trigrams, so a stored prefix scores about
+`1500 / length`:
+
+```
+   1200 → 1.000   1875 → 0.790   3000 → 0.493   6000 → 0.246
+   1500 → 1.000   2500 → 0.590   4000 → 0.370        threshold 0.80
+```
+
+Above ~1,875 characters the rule could not fire for a byte-identical repeat. Rules
+3, 4 and 6 still catch exact repetition, so what was lost is the case rule 5 is
+the only rule for — a model saying almost the same LONG thing, which is also the
+model ignoring the 1,200-character output budget the loop asks for. The 1,500 was
+the one bound in `commitTurnMemory` that did not come from `PERSISTED_WINDOW`,
+whose own comment says the bounds live there so the two cannot drift. Fixed by
+naming it `textChars` and cutting both sides to it.
+
+### The other four
+
+- **W3** — `steer()` has three branches and only the settled one grew
+  `record.execution.brief`. Steering a RUNNING agent is the advertised affordance
+  (`conversation-viewer.ts`: `const steerVerb = this.isActive() ? "steer" :
+  "continue"`), and the brief has three readers: the judge, `buildRepairPrompt`
+  and `buildAnchorMessage`. Fixed with one `growBrief()` called from every branch
+  that reaches the model, and only *after* `session.steer()` resolves.
+- **W4** — with `graceTurns: 0`, a supported `/agents` setting (`min: 0`), a
+  one-turn run that ANSWERED was severed and reported `aborted`: the stronger of
+  the two labels, so "output may be incomplete" to the parent AND verification
+  switched off. V6's repair undone by a setting. Fixed by gating the sever on
+  `shouldSteerAtSoftLimit(maxTurns)`; the ceiling is not lost, because
+  `ceilingReached` is still set and the branch below severs on the next turn.
+- **W5** — three of the verifier's five notes built their own counts.
+  `${attempts}th` is correct from four upwards and `MAX_VERIFY_ROUNDS` is 3, so
+  every reachable value read "the 2th attempt"; `stalled` hardcoded "a third
+  time"; `unparsed` handed the parent a REPAIRED answer with no record that the
+  original failed. This is text the parent model reads and copies, which the file
+  itself argues on the line above the function. Fixed with one `describeOrdinal`,
+  an `attempts`-aware `unparsed`, and a default of 0 rather than 1.
+- **W6** — V7's capture rests on a claim that `onSessionCreated` "fires before
+  `bindExtensions` returns". It was the last line of `createAndConfigureSession`.
+  The reasoning was right, the code was right, and the regression test asserted
+  the wrong half: the presence of a line, in the file the line is in, when the
+  load-bearing claim was about ordering in a different file. Fixed by moving the
+  hand-over to the line after `initSession`, with a new pin that asserts the
+  **order**, in `agent-runner.ts`.
+
+### The habit this pass adds
+
+**After a fix, grep the identifier the fix replaced, and read every remaining
+hit.** Five of these six were reachable that way, and two of them are one screen
+from the change that established their rule. A fix has a blast radius; the sibling
+sites inside it are the cheapest defects there are to find and the least likely to
+be looked for, because the pass that made the fix has already stopped looking.
+
+Two corollaries, both paid for here:
+
+- **A fix that rests on a fact in another file has to pin that fact in the other
+  file.** A source pin is a good tool and it points at whatever you point it at.
+- **"Both branches" is a coverage question**, and the branch that gets the fix is
+  the one the failing report came from. W3 and W4 are the same shape — a running
+  case and a settled case, a grace case and a no-grace case — and the test that
+  would have caught either is the same assertion run against the other branch.
+
+### Still not watched running
+
+Unchanged, and this is the seventh pass to say it. **Twenty-three defects have now
+been fixed across four passes against probes and tests, and none against a running
+model.** The judge's raw reply is still logged nowhere, and it is now load-bearing
+for five fixed findings — S2, U4, V5, V7/W6 and W5's "did the note the parent got
+describe what actually happened".
+
+Two items are sharper than they were. **A delegation with a loop running** has now
+been fixed at the module level three times (the loop's factory guard, V4, W1) and
+never watched — and W1 makes it the most informative it has been, because the
+mid-turn steer that produces a two-message turn IS a background subagent's result:
+one run exercises V4 and W1 on the same turn. And **an operator steer to a RUNNING
+subagent**, which is W3's path, has never been exercised end to end.
+
+One thing was found and deliberately not fixed: `vendor/prinny-channel`'s
+`describeEmptyEnding` has W1's shape — it returns on the first assistant message
+it finds scanning back, so a turn that answered and then produced a trailing
+reasoning-only message reads as `produced-no-answer` and nothing reaches Matrix.
+The loop could fix its version with a per-turn buffer because it owns
+`message_end`; `forwarding.ts` is handed a message list with no turn boundaries,
+and stopping at an empty final turn was paid for by a real incident (a
+17,790-character tool result filled the window, the model returned `content: []`,
+and walking further back delivered mid-investigation deliberation to somebody's
+phone as the answer). It wants a Matrix-side decision, not a patch.
+
+---
+
+## 2026-08-18 — eighth pass over subagents, the loop and the verifier: the turn as a unit, and a harness that could not see it
+
+Full account: `context/design/subagents-loop-verifier-turns.md`. Six findings
+(**X1–X5, Y1**), **all six fixed**, each with a probe that prints BEFORE and NOW
+and a regression test that fails when the fix is removed. Gates:
+`vendor/pi-subagents-lite` 215 tests (from 207) and lint 73/73;
+`vendor/pi-loop-mode` 150 (from 137); `compaction-guard` 39, untouched. **404
+total, from 383.** Thirty-nine probes, all clean.
+
+### The place these were
+
+The seventh pass found defects between the site a rule was fixed at and the sites
+next to it. Five of these six are still that shape — siblings of W1, one screen
+away. The sixth is somewhere new and it is the reason none of them could have
+been found by running the probes harder: **between what the host does and what
+the harness that stands in for it does.**
+
+`context/testing/probes/_host.mjs` ignored what a `message_end` handler returned.
+pi does not: `ExtensionRunner.emitMessageEnd` (`runner.js:610`) threads the
+returned message through the remaining handlers and
+`AgentSession._emitExtensionEvent` (`agent-session.js:481`) calls
+`_replaceMessageInPlace` (`:425`), which deletes every key of the object
+agent-core holds and copies the replacement over it. pi's own comment says the
+mutation keeps "agent state, **later turn/agent events**, listeners …" in sync —
+and `agent_end` is a later agent event holding those same objects.
+
+`pi-loop-mode` uses that hook to truncate degenerate repetition, and
+`detectStuck`'s first rule then looks for degenerate repetition in the result,
+with the **same** threshold constant on both sides. So rule 1 has been
+unreachable in every real session since the fork, while every probe showed it
+firing — on text that no longer existed by the time the rule looked.
+
+### The two that cost the most
+
+**X1 — `commitTurnMemory` committed the turn's last MESSAGE, not its last
+ANSWER**, so a trailing reasoning-only message (a background subagent's mid-turn
+steer, which is the ordinary shape for a loop that delegates) became "the turn's
+final answer" in all three repetition windows and in the string `detectStuck`
+compares. Five of the eight rules read it, and it failed in both directions:
+four byte-identical answers with distinct trailing thoughts produced **no
+intervention at all** where the one-message control was caught on turn 2 and
+escalated to a streak of 3; four genuinely different answers with one identical
+trailing thought were reported as "assistant repeated the same response" from
+turn 2, charging sampling penalties and, at streak 3, a rescue-model switch —
+against a run that was working. Fixed by preferring the turn's answers, with the
+old buffer as the fallback so V1/V2's reasoning-only case is untouched.
+
+**X5 — the degenerate rule could not fire at all**, above. Fixed by buffering the
+ORIGINAL message for that question while the two buffers beside it keep taking
+the sanitized one, and by making `_host.mjs` and the new test host replay the
+in-place replacement. The control for the harness change is the rest of the probe
+directory: `g2`, `h4`, `i1`, `i2`, `j1`, `j2`, `k1` and `k2` all print what they
+printed before it.
+
+### The other four
+
+- **X2** — `detectStuck`'s degenerate rule is about ONE response and was handed
+  the turn's LAST message, so a degenerate answer followed by one thought was
+  scanned by nobody. Fixed with the same third buffer, scanned per entry.
+- **X3** — `GOAL_READY:` is read off the last message, and it is the one reader
+  W1 could not move (`message_end` was gated on `state.active`, and
+  `/loop prepare` runs with it false). A missed marker leaves `preparedAt` at 0,
+  so the run never learns the specification exists — V8's failure by another
+  route.
+- **X4** — `state.toolCallsThisTurn` is per-turn state that only `agent_end`
+  reset, and `/loop stop` makes `agent_end` return at its first line. A starved
+  turn at 90% context after a stop/resume produced no notice and counted as a
+  successful iteration, retiring the recovery ladder: T2's defect, on a path T2's
+  fix did not cover. Fixed by moving the counter into `resetTurnBuffers()` and
+  calling that AFTER `restoreState` in `session_start`.
+- **Y1** — `/agents` offered **Clear** on a record whose verifier was still
+  running, and it worked: `removeRecord` disposes the session a repair runs in
+  and opens the parent's completion gate with `""`. The widget had known since
+  the phase field existed ("it is active work the user is waiting on"); the menu
+  had its own copy of `isActive`, status-only, so the same record was drawn as
+  running in one view and finished-with-a-✓ in the other — the one with the
+  buttons on it. Fixed by moving the predicate into
+  `src/agents/record-activity.ts` and having all three readers import it.
+
+### Three habits this pass adds
+
+- **A harness is a claim about the host, and the claim is testable.** For every
+  event a fake host serves, read what the host does with the handler's *return
+  value*, and either replay it or write down why not. `_host.mjs` was faithful on
+  every event it serves but one, and that one is precisely the mechanism the
+  module under test uses.
+- **When a fix makes a control fail, the control is right.** X2's obvious first
+  form — buffer the same message the two neighbouring buffers take — made the
+  degenerate answer stop being detected on a one-message turn. Chasing that is
+  how X5 was found.
+- **The second reader of a fact is a design smell, not just a defect.** W1's
+  lesson was to grep for other readers after a fix; Y1's is one step earlier —
+  two readers existed because the question was answered inline in two files.
+  Moving it into a module both import is the only version that ends.
+
+### Still not watched running
+
+Unchanged in kind: six more defects fixed against probes and tests, none against
+a running model, which is now true of every fix in the last five passes. The
+judge's raw reply is still logged nowhere.
+
+Two items got sharper. **A delegation with a loop running** has now been fixed at
+the module level five times (the loop's factory guard, V4, W1, X1, X2) and never
+watched — one run exercises four of those on the same turn. And there is a new
+one: **a degenerate turn in the wild**, which is worth watching for the first
+time, because rule 1 has never fired in a real session and nobody has seen what
+the loop does after it does.
+
+---
+
+## 2026-08-18 — ninth pass over subagents, the loop and the verifier: the call side
+
+Full account: `context/design/subagents-loop-verifier-answers.md`. Four findings
+(**Z1–Z4**), **all four fixed**, each with a probe that prints BEFORE and NOW and
+a regression test that fails when the fix is removed. Gates:
+`vendor/pi-subagents-lite` 226 tests (from 215) and lint 77/77;
+`vendor/pi-loop-mode` 156 (from 150); `compaction-guard` 39, untouched. **421
+total, from 404.** Forty-three probes, all clean.
+
+### The place these were
+
+The eighth pass found the harness not replaying what pi does with a handler's
+**return value**, and told the next session to run that check for every event it
+fakes. **That check is done and it came back clean** — §8.1 of the write-up is the
+complete table, one row per `emit*` in `dist/core/extensions/runner.js`, and every
+event `_host.mjs` serves behaves the way the harness assumes.
+
+The defects were on the other side of the same contract: **what pi does with the
+arguments a module PASSES it.** Three of the four are a call that is correct,
+under a comment citing the right line of pi, with the value ending up somewhere
+nobody had read.
+
+- **Z4 — `deliverAs: "nextTurn"` has one drain site and it is `AgentSession
+  .prompt()`, the operator-typed path.** V4's stuck directive was queued there,
+  so an unattended loop never delivered it: two "Loop stuck (Nx)" notices, two
+  intervention counts, six turns of sampling penalties armed, and
+  `everything the model ever received : start`. The comment cited
+  `agent-session.js:880` correctly and paraphrased it as "the turn the pending
+  message triggers"; pi's own comment on that line says "alongside the next
+  **user** message". Fixed to `{ triggerTurn: true, deliverAs: "steer" }`, which
+  `_handlePostAgentRun` → `Agent.continue()` drains onto the same turn as the
+  pending message.
+- **Z2 — `session.steer()` restarts an agent loop that has already stopped, and
+  pi never compacts mid-run.** `_checkCompaction()` has exactly two call sites,
+  both outside the agent loop. So the task anchor — "restate the brief into the
+  child's freshly-summarised context" — only ever fired after the child had
+  finished, buying one extra model call on the single llama slot and handing the
+  parent the reply to *"Nothing here is new work"* instead of the answer. T1's and
+  V6's rule, written into `turn-tracking.ts` two passes ago with a measurement,
+  never applied to the package's other `steer()` call site. Fixed with
+  `src/agents/compaction-anchor.ts` and an `afterRun` flag the runner OBSERVES
+  from `agent_start`/`agent_end` rather than infers.
+- **Z1 — `collectResponseText` resets on every `message_start`, including the
+  injected ones**, so a subagent returns its last message rather than its run's
+  answer; and its fallback indexes into `session.messages`, which pi REPLACES on
+  every compaction (`agent.state.messages = sessionContext.messages`), so a
+  settled child came back as `""` and its parent was told "The agent returned no
+  answer at all." The eighth pass's §2.2 lists this reader as "correct by
+  construction". Fixed in a new `src/agents/run-answer.ts`: one entry per message,
+  last non-empty wins, and the fallback holds the run's own messages by reference.
+- **Z3 — `sanitizeDegenerateText` had a fixed point that was still degenerate.**
+  The cut was `max(200, …)`, and 200 characters of a 20-character sentence is ten
+  of them; `DEGENERATE_REPEATS` is 4. So for the short units a model actually
+  loops on, the sanitized message still repeated, `message_end` wrote it over the
+  stored message, and it was re-sent every turn under a marker saying it had been
+  truncated. `…-turns.md` §7 had recorded the opposite. Fixed by searching for the
+  longest prefix whose sanitized form is not itself degenerate — which also stops
+  a real answer being cut off by a stutter that follows it.
+
+### Three habits this pass adds
+
+- **Read the implementation of every host API the module CALLS**, not only of
+  every event it handles. §1 of the write-up is that artefact for pi: every route
+  by which a message reaches a model, who drains each queue, the three nested
+  units of a "turn", and pi's two compaction call sites. It is a morning's reading
+  and three of these four were in it.
+- **A cited line number is not a citation of behaviour.** Two of these sit under
+  comments naming exactly the right file and line and paraphrasing it slightly
+  wrong. Read the cited line and ask what would have to be true for the paraphrase
+  to hold.
+- **When a rule gets a module, move every caller into it.** `record-activity.ts`
+  (Y1) worked — nothing this pass touched that question. `turn-tracking.ts` is the
+  counter-example: the rule was in a module, with a measurement, and the second
+  call site never learned about it. `compaction-anchor.ts` and `run-answer.ts` are
+  the same move for two more.
+
+### Still not watched running
+
+Unchanged in kind: four more defects fixed against probes and tests, none against
+a running model, which is now true of every fix in the last six passes. The
+judge's raw reply is still logged nowhere.
+
+One new item, and it is the highest-value single run available: **a child that
+compacts.** Z1 and Z2 are both on that path, and `record.stats.compactionCount`
+on a settled record is the one-glance check that it happened. **A delegation with
+a loop running** has now been fixed at the module level six times (the factory
+guard, V4, W1, X1, X2, Z4) and still never watched.
+
+---
+
+## 2026-08-18 — tenth pass over subagents, the loop and the verifier: the rest of the contract
+
+Full account: `context/design/subagents-loop-verifier-hosts.md`. Four findings
+(**AA1–AA4**), **all four fixed** — and then, in the same pass, every open note
+in §9 that had a fix needing no decision from anyone (nineteen), plus **T5** and
+**`prinny-channel`'s W1 shape**, both of which had been "open by decision" for
+three passes. Every fix carries a probe or a regression test that fails when it is
+removed. Gates: `vendor/pi-subagents-lite` 266 tests (from 226) and lint 84/84;
+`vendor/pi-loop-mode` 180 (from 156); `vendor/prinny-channel` 301 (from 296);
+`compaction-guard` 39, untouched. **786 total, from 717.** Forty-seven probes, all
+clean.
+
+### The place these were
+
+The ninth pass ended with an instruction rather than a conclusion: *read the
+implementation of every pi API the module CALLS*. Carrying it out is what this
+pass is. Thirty-one calls, pi's implementation read for each — §7 of the write-up
+is the ledger, and it is the artefact worth keeping.
+
+What fell out is that the contract has **four surfaces, not two**, and nine passes
+had only ever asked about two of them:
+
+```
+   1. what we RETURN from a handler        X5      read
+   2. what we PASS to a call               Z1–Z4   read
+   3. which events REACH us at all         AA1     never asked
+   4. what a host function's answer CAN    AA2     never asked
+      say
+```
+
+Both HIGH findings are on the two that had never been asked about.
+
+### AA1 — the loop's rules never reached a loop turn, and would not leave an operator's · HIGH · fixed
+
+pi emits `before_agent_start` from **one** call site, `AgentSession.prompt()`
+(`agent-session.js:885`) — the operator-typed path. `pi-loop-mode` delivers every
+turn it drives through `pi.sendMessage(…, {triggerTurn:true})` →
+`sendCustomMessage` (`:1068`) → `_runAgentPrompt` (`:1090`, defined `:744`), which
+does not emit it; and `/loop start` is an extension command, dispatched at `:800`
+before any turn machinery. So the handler that appends the loop's goal and rules
+to the system prompt **never ran in an unattended session**.
+
+And when a human did type, what it returned did not leave. `prompt()` writes the
+value to `_systemPromptOverride` and to `agent.state.systemPrompt` (`:902`/`:903`);
+`_runAgentPrompt`'s finally clears only the first (`:753`); turn 1 of any later run
+reads `agent.state.systemPrompt` while turns 2+ are rebuilt from
+`_systemPromptOverride ?? _baseSystemPrompt` (`:286`). So the block was pinned for
+the rest of the session, reappeared on turn 1 of every later iteration, and
+vanished at turn 2 — a system-prompt change at offset 0 of llama.cpp's cached
+prefix, i.e. a full re-prefill mid-iteration, which is the eviction the
+concurrency default of 1 exists to avoid.
+
+Fixed by returning a per-turn `message` instead of a `systemPrompt`.
+`emitBeforeAgentStart` collects it (`runner.js:863`) and `prompt()` appends it as
+one `role:"custom"` message for that turn only. Nothing is lost: every turn the
+loop drives already carries the goal, criteria and rules in `loopInstructions()`,
+and the only turn this handler ever reached is the one that carries none of them.
+
+### AA2 — a goal check that was killed reported that it PASSED · HIGH · fixed
+
+`pi.exec` is `execCommand` (`core/exec.js`), a `new Promise((resolve) => …)` with
+**no `reject` in the body**. U3's whole "the check could not RUN" branch was wired
+to `runGoalCheck`'s `catch`, so `execFailed` was unreachable and
+`MAX_CHECK_ERRORS` never fired.
+
+Worse than unreachable: a SIGTERM'd child exits with a **signal and no code**,
+`waitForChildProcess` resolves `null`, and `execCommand` does `code: code ?? 0`.
+`runGoalCheck` reads `passed: result.code === 0`. So a goal check that hung until
+it was killed was recorded as a check that PASSED — and `lastCheckPassed === true`
+is the only terminating condition `--until-done` has, and is the guard V3 added
+so that "the check decides" cannot mean "the model decides when the check is
+broken". Measured with the shipped loop and `--check "sleep 5" --check-timeout 1
+--until-done`: `Status: completed`, `Check status: passing`, on iteration 1.
+
+Fixed by reading `result.killed`. Exit code 127 is deliberately left as a failing
+check — the shell's "command not found" is usually a broken harness and sometimes
+a real failure, and misreading the second as the first pauses a run that should
+keep working.
+
+### AA3 and AA4 — a premise and a dead branch
+
+**AA3.** `ctx.hasPendingMessages()` reads `_steeringMessages.length +
+_followUpMessages.length`, and the only writers of those arrays are reachable from
+`prompt()` while streaming and from `session.steer()`/`.followUp()`.
+`pi.sendMessage` calls `agent.steer()` directly and never touches them — so a
+background subagent's result, which V4's comment calls "the ordinary state" for
+that branch, leaves the answer **false**. Nothing below the guard is wrong; two
+passes of reasoning about the unattended case were about the attended one. The
+claim at the call site was corrected, with the citations; the branch stays,
+because it is right when a human is typing.
+
+**AA4.** The background result's `deliverAs` was `parentIdle ? "followUp" :
+"steer"`, and pi reads `deliverAs` only on the streaming branch — which is
+exactly the case the ternary answers `"steer"` to. The idle arm lands on
+`_runAgentPrompt`, which discards it, so the mode was never actually chosen.
+
+Now that it is a real choice it is made: **`followUp`** — with one correction on
+the way, because the obvious argument for it is wrong. Choosing `followUp` does
+NOT retire the two-message turn W1, X1, X2 and X3 were each written to repair:
+`pi-agent-core`'s `runLoop` drains follow-ups in an OUTER while that feeds them
+back into the inner loop, so both queues end in the same agent run and the same
+`agent_end`. What the choice really controls is where in the run the result lands
+— a steer before the next assistant response, i.e. possibly mid-tool-chain; a
+follow-up once the model has stopped calling tools. A background result is by
+construction not urgent, so the later injection point is the coherent one, and on
+a one-slot server it costs one turn rather than a queue wait.
+
+### `compaction-guard`, documented for the first time
+
+Nine passes listed it as "untouched, 39 tests". It is the only extension a CHILD
+inherits by discovery that does substantive work there (`browser-guard` is
+harmless, `stack` guards itself), it shares two events with the loop, and §5 of
+the write-up
+is its account: the summary cap (5% of the window, section-aware, because pi's
+update prompt says "PRESERVE all existing information" and the summary is
+monotonic by construction — 456 / 4,029 / 11,054 chars across 42 real compaction
+points), the tool-output cap (10% of the remaining window, head 70 / tail 30,
+overflow spilled to a temp file), and the context notice. No defects found in it.
+
+### Three habits this pass adds
+
+- **Count the emit sites before trusting a handler.** An extension API presents
+  every event as a fact about the world and pi's are not all like that. `grep -c`
+  in the host's `dist/` answers it in a second, and from inside a module a handler
+  that never fires is indistinguishable from one that fires and does nothing.
+- **Ask what a host function's return value is ABLE to say before branching on
+  it.** List the distinct values a caller can observe from the happy path and the
+  error path. It catches a whole class of "the fallback never runs" defects
+  before they need a probe.
+- **A value the host writes for you is one the host must also take back.**
+  `agent.state.systemPrompt` is written from a handler's return value and only
+  pi's own copy is cleared. Anything handed to a host to *store* rather than to
+  *use* needs the question "and who unsets it?".
+
+### The note list, emptied
+
+Ten passes had each ended with a list of things they decided not to do, and this
+pass read the whole accumulated list rather than adding to it. Nineteen entries
+had a fix that needed no decision from anyone and now have one; the grouping is
+§9 of the write-up. The biggest of them, by consequence:
+
+- **`ctx.ui.notify` is a no-op outside a TUI** (`noOpUIContext.notify` is
+  `() => {}`), and the loop called it 56 times — so an unattended run's entire
+  operator-facing narrative was discarded in `pi -p` or a cron job. All 56 now go
+  through a helper that writes the sentence to `.pi-loop-log.jsonl` when there is
+  no UI.
+- **The provider-error retry had no terminal state**, and shared its counter with
+  context pressure. It now has `providerErrorStreak` and pauses at
+  `MAX_PROVIDER_ERRORS` — **ten**, not the three the other two ladders use,
+  because a provider error is usually transient and an unattended run should ride
+  out a restarted server. Ten against the escalating backoff is about half an hour
+  of nothing working.
+- **`SlotTable` limits could stop being limits**: an unreadable `default` made
+  them NaN, and `running >= NaN` is false for every count, so the bound did not
+  become large — it stopped existing. A per-model limit of `0` was applied,
+  clamped to 1, and then deleted by a falsy check.
+- **`pi.exec` never rejects in the worktree validator either**, so `GIT_NOT_FOUND`
+  and `GIT_TIMEOUT` were dead constants — AA2 one package over, fixed with the
+  three shapes measured out of the real `execCommand`.
+- **`AgentStatus` listed every agent ever spawned**, unbounded, into the parent's
+  context.
+- Plus `detectStuck` rule 6, `degenerateAbortPending`, `branchEndsInCompaction`,
+  `saturatedManualCompaction`, `exclude_tools`, `__verifier`'s reachability,
+  `turnCount`, `getFinalModelError`, `--goal-file=`, `DEGENERATE_REPEATS`,
+  `penaltyTurnsRemaining` and `SUBAGENT_VERIFY`'s read timing.
+
+And the two that had genuinely been decisions:
+
+- **T5 — a verification was uninterruptible.** `runVerification` now arms
+  `record.execution.verifyAbort`, `stopAgent()` aborts it before the
+  `status === "running"` test that would return false, and `startDeadline`
+  composes it with the timer. `/agents` offers "Stop the answer check"; Clear is
+  still refused, because `removeRecord` disposes the session a repair runs in.
+- **`prinny-channel`'s W1 shape.** It had wanted "a Matrix-side decision" for
+  three passes, blocked on a real incident where walking back past an empty tail
+  delivered a previous turn's deliberation to Matrix. Naming the mechanism made it
+  decidable: the extra message exists because a background subagent's result was
+  injected mid-run as `role: "custom"`, `customType: "subagent-result"`, so the
+  walk steps over exactly that pair and nothing else. A `user` message — the
+  incident's own boundary — still stops it.
+
+**The lesson is the list itself.** A note is a defect that has already been read
+and dismissed once, which is the strongest possible reason not to read it again.
+X5 sat in this list for four passes.
+
+### Still not watched running
+
+Unchanged in kind, and now the whole of what is left: every fix in the last seven
+passes is verified against probes and tests and none against a running model. The
+cheapest run available is **§M of the hand-testing script** — one `/loop start`
+with a deliberately slow `--check`, and `/loop status`. Both of this pass's HIGH
+findings are on that path, it needs no subagent and no verifier, and stopping the
+server mid-run now also exercises the provider ladder's terminal state. The
+judge's raw reply is still logged nowhere.
+
+### The homework this pass leaves
+
+All four contract surfaces are now surveyed for `pi-loop-mode`,
+`pi-subagents-lite` and `compaction-guard`. **`prinny-channel` and `rtk-pi` have
+never had their host calls read.** The W1 fix above touches prinny, but it came
+from the subagent side — its trigger is a message this stack injects — not from
+reading prinny's own calls. Prinny forwards Matrix traffic through
+`pi.sendUserMessage()`, i.e. the `prompt()` path AA1 is about; `rtk-pi` has never
+been read at all. That is the next mechanical sweep.
+
+---
+
+## 2026-08-18 — eleventh pass over subagents, the loop and the verifier: the whole stack, and the facts that expire
+
+Full account: `context/design/subagents-loop-verifier-signals.md`. Four findings
+(AB1–AB4), all four fixed, plus three notes. **832 tests across five packages,
+lint 85/85, fifty-one probes** — up from 802 and 47, and none of the old ones
+caught any of these.
+
+This pass did the homework the tenth left: the host-call ledger, run over the two
+packages ten passes had never opened. It found one defect in each — and then the
+same question turned out to be behind the two findings in the packages that HAD
+been read ten times.
+
+### The question the four-surface checklist does not ask
+
+The tenth pass ended with a checklist: what we return from a handler, what we pass
+to a call, which events reach us at all, what a host function's answer can say.
+All four are about the SHAPE of the contract. Every finding here is about its
+TIMING:
+
+```
+   surface 5   WHEN can the host's answer be read, and how long does it stay true?
+```
+
+- **AB1** — a child's death signal, discarded before the promise resolves.
+- **AB2** — a rejection, consumed by the host before an extension could subscribe.
+- **AB3** — a hang, flattened into the same integer as success at the moment
+  `waitForChildProcess` resolves.
+- **AB4** — an abort event, dispatched before its listener existed.
+
+### AB1 — `killed` is pi's own kill, and nothing else · HIGH
+
+The tenth pass (AA2) replaced an unreachable `catch` with `result.killed`, which
+is the right field. It is set inside `execCommand`'s own `killProcess()`, whose
+two callers are the `options.timeout` timer and the `options.signal` listener — so
+it answers **"did pi stop this"**, not "did this finish". Every other death is
+discarded one layer lower: Node reports a signalled child as `code === null`,
+`waitForChildProcess` resolves that, `execCommand` does `code: code ?? 0`, and
+`runGoalCheck` reads `passed: result.code === 0`.
+
+Measured against pi 0.84.2's real `execCommand`: `kill -9 $$` → `{code: 0,
+killed: false}`, which is the same shape as a check that passed. On a 27B model in
+a 32k window on one llama slot in a container that OOMs, a `--check "cargo test"`
+reaped by the OOM killer is not a hypothetical — and `lastCheckPassed === true` is
+the only terminating condition `--until-done` has.
+
+**Fixed by taking the evidence from inside the child**, because pi keeps none: the
+check runs under a bash `EXIT` trap that prints a marker, and bash cannot run an
+`EXIT` trap when it is SIGKILLed. The marker's VALUE is deliberately not used —
+`result.code` already agrees with it, and reading an exit code out of the child's
+own stdout would let a check that prints attacker-controlled text choose its own
+verdict. SIGTERM from outside is left undecided and said so, on the same grounds
+the tenth pass declined to guess about exit code 127.
+
+**The harness half is the part worth carrying.** Every `exec` stub in the loop's
+tests, and `_host.mjs`'s default, returned `{code: 0, stdout: "", stderr: ""}` —
+a faithful shape for a check that passed silently AND for a check the OOM killer
+reaped. Six suites and forty-seven probes were built on a stub that could not tell
+the two apart, which is exactly why nothing failed when the module could not
+either. `tests/exec-shapes.ts` now holds the three real shapes. The eighth pass's
+lesson was "a harness is a claim about the host"; this is the same lesson asked of
+a return value: **can the harness produce every distinct value the host can
+return?**
+
+### AB2 — a Matrix message pi refused, dropped in silence · MEDIUM
+
+`pi.sendUserMessage` returns `void`; pi's binding `.catch`es the rejection into
+`emitError`; `emitError` walks a listener set whose one possible member is
+registered only when a UI bound one; and `ExtensionEvent` has no error member to
+subscribe to instead. So `prinny-channel`'s `try`/`catch` around the call can see
+exactly one thing — a synchronous stale-runtime throw — while
+`AgentSession.prompt()` throws for three reasons that happen on this stack, the
+first being **a compaction in progress**, which `/loop`'s stuck ladder and its
+context recovery both cause.
+
+The room then sat in `awaitingReply` un-live for the life of the session: never
+marked live, so never answered, never retired, never reported, no typing
+indicator, no give-up message. From Matrix that is indistinguishable from being
+ignored — which is the failure prinny's empty-turn continuation exists to prevent,
+one layer further out. It is also the only user-visible defect in this tree,
+because prinny is the only component with a second person on the far side of it.
+
+**Fixed by reading the evidence prinny already collects.** `markLive` fires when
+pi echoes the message back as a `user` message, which is pi saying it took it. An
+entry still not live once the session is IDLE and past a minute's grace was not
+taken. Idleness is the load-bearing half: a message delivered while pi is
+streaming drains inside that same run, so it is live before `agent_settled`. The
+clock covers the one thing idleness cannot — `prompt()` awaits `_checkCompaction`
+before starting a run. It reports and does **not** retire, so a late delivery
+still gets its answer; the worst case of a wrong verdict is one extra sentence.
+
+### AB3 and AB4
+
+- **AB3 · LOW** — rtk's load-time version probe read `ver.code !== 0` and never
+  `ver.killed`, so a WEDGED rtk passed the presence test, `parseSemver("")`
+  returned null so the `>= 0.23.0` guard was skipped entirely, the handler
+  registered, and every allow-listed command paid a 2 s timeout, silently. Forty
+  lines below, `rewriteCommand` tests `killed` first and was already right — the
+  seventh pass's shape (a rule applied to the instance in front of it, its sibling
+  left alone) in a package the seventh pass never opened.
+- **AB4 · MEDIUM** — `addEventListener("abort")` on an already-aborted signal
+  never fires, and `forwardAbortSignal` had no `.aborted` test. It runs at the top
+  of `runTurnLoop`, i.e. after the whole build window (`reloadAndMap` running every
+  extension factory, `createAgentSession`, `bindExtensions`,
+  `setActiveToolsByName` — seconds on a 9p mount). So `stopAgent()` during a
+  child's build did not stop it, and the tenth pass's T5 fix lost the same race
+  during the judge's build: `startDeadline` composes the operator's stop correctly
+  and then hands it to a consumer that could not see it. Fixed as a **refusal**
+  rather than an abort — `session.abort()` before `session.prompt()` is consumed
+  by nothing, so the prompt would run anyway with the stop spent. The test ends
+  with the invariant: every abort listener in `src/` must be paired with an
+  `.aborted` test.
+
+### Three notes, all fixed
+
+- **`compaction-guard`'s spill directory was never pruned.** Every file is by
+  construction a tool result that did not fit the context, and an unattended loop
+  writes one per capped iteration for days. Bounded at 50, oldest first, pruned
+  after the write. A count rather than a teardown hook, because `spillDir` is
+  module-global and a CHILD shares it — a `session_shutdown` sweep on either side
+  would delete files the other's markers still name.
+- **`prinny-channel` must load before `rtk-pi`, and nothing said so.** Both
+  register `tool_call`; prinny's is the permission relay and rtk's rewrites
+  `event.input.command` in place. With prinny first, the command a human approves
+  is the command the model wrote, and a blocked command never reaches rtk —
+  `emitToolCall` returns immediately on `{block:true}`. The third ordering in the
+  launcher that decides behaviour, and the first that is asymmetric. Documented
+  beside the flag.
+- **A cast that asserted a type onto itself** (`as Parameters<typeof
+  api.sendUserMessage>[1]`), which could only ever have hidden a real signature
+  change. Removed.
+
+### Two facts about pi worth keeping
+
+- **`emitToolCall` has no try/catch around handlers** (unlike `emitUserBash`), and
+  agent-session rethrows a handler's error as "Extension failed, blocking
+  execution" — so a throwing `tool_call` handler BLOCKS the tool. rtk's blanket
+  `try`/`catch` and "fail open, always" is the only correct shape for that hook,
+  not defensiveness.
+- **Mutating `event.input` in place is the sanctioned way to change a tool's
+  arguments** — pi's own `ToolCallEventResult` documents it, and the reference
+  chain holds (`beforeToolCall({args: validatedArgs})` → `emitToolCall` with no
+  clone → `prepareToolCall` returns the same object). Arguments are validated
+  *before* the hook, so a rewrite is never re-validated.
+
+### Still not watched running
+
+Unchanged in kind, and now true of eight passes. The cheapest runs available are
+**§M and §M.2** of the hand-testing script (one `/loop start` with a slow
+`--check`, then one with `--check "kill -9 $$"`) and **§O** (a Matrix message sent
+while pi is compacting), all three new or newly load-bearing. The judge's raw
+reply is still logged nowhere, and that has been top of the list since the fourth
+pass.
+
+### The homework this pass leaves
+
+The five-package sweep is done, so "the packages nobody has read" is no longer an
+item. Surface 5 has been run over the four host ANSWERS this stack branches on
+(`ExecResult`, `AbortSignal`, a `void`-returning send, `emitError`). It has not
+been run over the EVENTS: `message_end`'s replacement is written back in place,
+`tool_result`'s fields are merged into one shared object, `context` gets a
+`structuredClone`. Each of those is a fact with a lifetime, and nobody has asked
+how long the object a handler is holding stays the object pi is using.
+
+---
+
+## 2026-08-18 — twelfth pass over subagents, the loop and the verifier: sending against receiving
+
+Full write-up: `context/design/subagents-loop-verifier-deliveries.md`. Five
+findings, all five fixed, each with a regression test that fails when the fix is
+removed. 853 tests across five packages (was 832), lint 85/85, 55 probes (was 51).
+
+**The question this pass asked.** The eleventh pass asked, of every value the host
+hands back, *how long is this true and who is listening when it becomes true*.
+This one asked it from the other end, of everything this stack produces: **name
+the reader, and say what the reader sees when the delivery fails.** §8 of the
+write-up is the ledger that produced — every answer the stack emits, its carrier,
+its reader, and the failure mode. Fourteen carriers; eleven of them are `void`,
+fire-and-forget, or a `catch`. "It was sent" and "it arrived" are therefore
+different claims in eleven places, and only one carrier in the tree (the
+foreground `Agent` tool result) distinguishes them without help.
+
+**AC1 — HIGH, and it had been live for two passes.** `SpawnCoordinator.emit-
+IndividualNudge` is the only route by which a background subagent's answer, or any
+continuation's, reaches the parent model. The tenth pass (AA4) replaced the
+delivery-mode ternary with a constant — correct, and the behaviour it chose
+ships — and deleted the `const ctx = getSessionCtx()` that fed it, while three
+lines below still read `ctx`. `ReferenceError: ctx is not defined`, thrown three
+lines before `pi.sendMessage`, inside a `try` whose `catch` was written for a
+stale runtime and reports "Result available" through `ctx.ui.notify` —
+`noOpUIContext.notify` is `() => {}`. So: every background delegation's first
+settlement and every continuation's settlement delivered nothing to the model, the
+verifier's model calls were spent on answers nobody read, `capBackgroundResult`
+never ran, and headless there was no trace at all. The foreground path uses the
+completion gate, a different mechanism, and was never affected — which is why it
+survived, since every hand test except §B is a foreground test.
+
+Nothing in the tree could say so: `npm run lint` is `node --check`, pi loads `.ts`
+through jiti (types stripped, not checked), there is no `tsc`, and the test
+guarding AA4 reads the file as TEXT and asserts a regex — both assertions true of
+the broken tree. Its header explains that the module imports pi and so cannot be
+loaded by the suite; four probes in this repo already load pi-importing modules
+through pi's own bundled jiti. **The rule this leaves: a fix whose test cannot
+EXECUTE the function it changed is pinned against editing, not against breaking.**
+A source pin catches a revert; not a deletion three lines away, a rename, or a
+refactor that keeps the matched text.
+
+**AC2 — MEDIUM.** `/loop resume` carries `lastCheckPassed` and `checkErrorStreak`
+from the run that ended. V3 gave `/loop run` a `resetCheckState()` and left resume
+alone, on the correct reason that a resumed run IS the same run — but a verdict
+and a streak are decisions the *previous* run already acted on. A completed
+`--until-done` run, resumed with a check the OOM killer now reaps, printed
+`Status: completed` four lines above `the check has not run for 1/3 turns`: the
+model's first `LOOP_DONE:` accepted on a verdict from a different run, which is
+the exact thing V3's guard exists to refuse. And a resume after
+`pauseForCheckFailure` (whose own notice says "fix the check, then /loop resume")
+reported "(4/3)" — a counter past its own maximum — and re-paused at once, which
+is the failure the eighth pass already fixed for `providerErrorStreak` with the
+reason written beside it. Fixed by clearing the ERROR streak on resume (not the
+verdict — "LAST KNOWN" is the honest reading) and by adding `checkErrorStreak > 0`
+to the `LOOP_DONE` guard, which covers every route to a stale verdict at once.
+
+**AC3 — MEDIUM.** A bash `EXIT` trap is a slot, not a stack. AB1's completion
+marker — the only evidence that a goal check reached its own exit, since pi
+discards the signal — is removed by a check that sets its own trap
+(`trap 'docker compose down' EXIT; docker compose run tests`) or `exec`s. So a
+check that ran perfectly read as one a signal killed, and three of those pause an
+unattended run; meanwhile `--until-done` has no terminating condition at all. The
+opposite direction from AB1 and not obviously better. Fixed by running the
+operator's command in a subshell: its traps and its `exec` cannot reach the shell
+that prints the marker, the exit status still propagates, and the SIGKILL case
+(what the OOM killer sends) is unchanged. Measured against pi's real
+`execCommand` on nine checks, both wrappers.
+
+**AC4 — MEDIUM.** AB2's undelivered sweep infers "pi never took this" from the
+absence of `markLive`, which is sound for a message that was handed to pi. Two
+paths never hand one over: a refused Matrix command (the sender gets the refusal;
+the text is deliberately not delivered to the model either) and an allowed one
+(pi dispatches it and returns before any turn, so there is no user message to
+echo). Both left an entry identical, in every field the sweep reads, to a message
+pi refused — so a minute later the sender was told "I could not hand that to the
+session … please send it again" about a message that had been answered, and for
+the command case immediately after being told it had run. §O's fourth control
+names this exact risk as worse than the bug it fixes. Fixed by asking `answered`
+first: an entry this extension resolved itself was never pi's to take.
+
+**AC5 — MEDIUM.** `/compact` was on the Matrix allow-list and in the advertised
+command menu, and pi cannot dispatch it. `AgentSession.prompt()`'s command branch
+is `_tryExecuteExtensionCommand` → `getCommand(name)`, the **extension** registry
+— four names here (`/stack`, `/loop`, `/agents`, `/prinny`). `/compact` is a pi
+BUILT-IN (`core/slash-commands.js`) executed only by the TUI's own input handler.
+So a Matrix `/compact` fell through, was expanded as a prompt template and
+delivered as a model turn on the literal text "/compact" — a whole call on the one
+llama slot — while the sender was told "Ran `/compact`. Its output stays in the
+terminal." The allow-list had been reviewed as a security boundary, thoroughly and
+repeatedly; nobody had asked whether pi could execute the entries at all. Fixed
+with a second table (`MATRIX_LOCAL` — commands this extension performs itself) and
+`/compact` through `ctx.compact({onComplete, onError})`, answered from the
+callbacks rather than from the call. The durable part is the split: an entry in
+`MATRIX_ALLOWED` is a promise pi keeps, an entry in `MATRIX_LOCAL` is one the file
+keeps, and a test now pins that every allow-listed name is one something calls
+`pi.registerCommand` for.
+
+**The eleventh pass's homework, done and clean.** Surface 5 was run over the
+EVENTS as well as the host answers: `message_end`'s replacement is written back
+over the object agent-core holds (`_replaceMessageInPlace` deletes every key and
+`Object.assign`s), `tool_result` passes ONE shared event object to every handler
+and merges each returned field into it, and `context` gets a `structuredClone`
+before the first handler. All three re-read against pi 0.84.2; every handler in
+this stack that reads a message extracts strings synchronously, so none holds an
+object across a replacement, and the loop-then-guard order on `tool_result` is
+correct in both directions. No finding.
+
+**Two notes.** (1) `vendor/pi-loop-mode`'s suite bailed a whole test FILE twice
+under memory pressure while three other suites ran — `node --test` reports that as
+one failure and a silently lower total, so the number to check when re-running the
+gates is the test COUNT, not only `# fail 0`. (2) The `catch` in AC1 did three
+things wrong at once and the shape is general: it named a cause it could not know,
+its message described the outcome it wanted rather than the one it had, and it
+reported through a channel that is a no-op in the mode the failure matters most.
+All three are fixed there and are worth checking wherever else a delivery is
+wrapped in a `try`.
+
+---
+
+## 2026-08-18 — the thirteenth pass over subagents, the loop and the verifier: who obeys this?
+
+Write-up: `context/design/subagents-loop-verifier-controls.md`. Seven findings
+(AD1–AD7), all seven fixed, each with a regression test that fails when the fix is
+removed and a probe that prints BEFORE and NOW. 874 tests across five packages
+(was 853), lint 85/85 + clean, 59 probes (was 55).
+
+**The question.** The twelfth pass followed the answers outward — *name the
+reader, and say what the reader sees when the delivery fails*. This one follows
+the instructions inward: **name the mechanism, and say what happens to the
+instruction it was given.** An instruction is anything whose whole purpose is to
+change what some mechanism does — a model override, a `--check` command, a
+`StopAgent` call, a permission mode, an allow-list entry, an env var. §2 of the
+write-up is the ledger that produced: twenty-eight of them, with where each is
+set, where it is resolved, which mechanism is supposed to obey it, and whether
+that mechanism ever sees it. **Five were not obeyed.**
+
+**AD1 — the model override four components reported and nobody applied. HIGH.**
+`pi-subagents-lite` resolves a subagent's model through six layers (session
+per-type → session default → config per-type → config default → the agent `.md`'s
+frontmatter → the parent's model). `ConfigStore.modelFor()` resolves it,
+`toolCallListener` writes the answer onto the tool call's arguments,
+`renderAgentToolCall` prints `▸ Explore (qwen3-4b)` beside the call,
+`menu-model-settings` lists it as "effective". The twelfth pass changed the fifth
+reader to `findModelInRegistry(undefined, …)` under a comment saying the tool's
+schema is `additionalProperties: false`, so "the model cannot send either key".
+True of the *model*, and the model is not the sender: pi passes ONE object from
+`validateToolArguments` through `beforeToolCall` to `tool.execute`
+(pi-agent-core `agent-loop.js:403/406/452`), and the handler writes onto it —
+which the same function proves three lines below by reading `params.thinking`.
+Blast radius: every spawn the model starts, including the frontmatter override
+(`agent-runner`'s own `options.model ?? …` fallback was unreachable while the tool
+always supplied the left side), and the concurrency key with it. Measured through
+pi's own bundled jiti: `q1`.
+
+**And the test is why nobody looked.** The twelfth pass pinned its own removal
+with `assert.doesNotMatch(execution, /params\.model\b/)`, so the defect was the
+*protected* state — fixing the line turned the suite red. First time in the series
+a fix required deleting a prior pass's regression test. The transferable rule:
+**a test that pins an ABSENCE is a test of a premise**, and an assertion about an
+absence cannot be wrong about whether the text is there, only about why it should
+not be. If a test asserts something is NOT read, it must also assert what supplies
+the value instead.
+
+**AD3 — the compaction that cancelled somebody else's turn. HIGH.** AC5 (twelfth
+pass) made `/compact` from Matrix real, through `ctx.compact({onComplete,onError})`.
+pi's implementation begins `await this.abort()` (`agent-session.js:1367`). So a
+remote message cancelled the turn in flight — from a phone, with the command
+advertised in the client's menu, in an extension whose every other inbound path
+delivers `followUp` specifically so as not to interrupt the operator. And
+`pi-loop-mode`'s `agent_end` has a rung for an aborted turn, so an unattended run
+was **paused by a remote message and recorded as `Turn aborted by operator`**. The
+loop's rung is correct and cannot tell the two apart; both arrive as
+`stopReason: "aborted"`. Now deferred to `agent_settled`, after the answer is
+forwarded — the sender asked for something reasonable and usually asked because
+the bot had gone slow, so "no" is the wrong answer when "in a moment" is
+available. The rule moved into `src/compaction-request.ts` so it can be executed
+by the suite rather than pinned as text.
+
+**AD2 — the stop the tool could not reach. MEDIUM.** T5 made a verifying record
+stoppable in `AgentManager.stopAgent()`; `executeStopAgentTool` has its own
+precondition keyed on `lifecycle.status`, which is terminal for the whole of a
+verification, so the manager was never asked. The model was told "already
+completed. Running agents: none" while a judge held the one llama slot its next
+call was queued behind — and `formatRunningAgents()` had the same filter, so the
+hint omitted the agent that was running. Both now ask `isBusyRecord`.
+
+**AD4 — a receipt written before the outcome existed. MEDIUM.** "Ran `X`" is
+AC5's own objection, fixed for the one command pi cannot dispatch and left for the
+rest. pi's `_tryExecuteExtensionCommand` catches a throwing handler, emits an
+error nobody listens to headless, and `return true`s — so `prompt()` resolves on a
+command that failed — and AC4's `answered` flag exempts the entry from the sweep
+that would have said so. No observable exists, so the CLAIM changed: "Handed `X`
+to the session … I cannot see whether it succeeded."
+
+**AD5 — `/agents` in none of the three routing tables. LOW.** Neither run nor
+refused but spent as a model turn.
+
+**AD6 — `--check` is a shell channel no tool gate can see. MEDIUM.**
+`MATRIX_ALLOWED.loop` is `null`, justified in the file by "a sender can already
+direct arbitrary work in prose … **subject only to the permission gate**". That
+clause is false for exactly one argument on the allowed surface: `--check CMD`
+runs as `pi.exec("bash", ["-lc", …])`, which emits no `tool_call`, so
+`prinny-channel`'s permission relay, `rtk-pi`'s rewrite gate and
+`compaction-guard`'s output cap all never see it — once per iteration for the life
+of the run, and it survives `/loop resume`. The identical string sent as prose
+becomes a `bash` tool call and IS gated (`needsApproval` → `gate=true`). Refused
+from Matrix; left open from the terminal and the `loop` tool, where the caller is
+already inside the trust boundary, and recorded as open in §11.4.
+
+**AD7 — `--rescue-model`. MEDIUM.** The same `switchModel` `--model` is refused
+for, reached from `interveneStuck()` at the third consecutive stuck turn. The
+`--model` pattern needs whitespace before the flag and `--rescue-model` has `e-`
+there, so the existing guard could not catch it.
+
+**The pattern worth carrying.** Five of the seven are the previous two passes' own
+fixes, one layer out: AC5 made `/compact` real without asking what `compact()`
+does; AC5 fixed one receipt and left the others; AC4's flag closed the sweep over
+the branch that still needed it; AA4's edit and the twelfth pass's test between
+them retired the model override; T5's fix landed at the mechanism and not at its
+caller. Every one of those changes is correct in the thing it was aimed at. The
+missing question is the second one: **this fix is now a mechanism; who instructs
+it, and what does obeying it cost?** And the narrower rule that falls out of AD1:
+**resolution is not application** — trace an instruction to the code that OBEYS
+it, never to the code that resolves it.
+
+**Homework left.** `grep -rn "doesNotMatch" vendor/*/tests .pi/extensions/*/tests`
+returns 59. Most are fine — an absence assertion is right when the excluded thing
+has no legitimate writer. The ones to re-read are those where something else in
+the machine still computes the value.
+
+---
+
+## 2026-08-18 — the fourteenth pass over subagents, the loop and the verifier: the flag and the fact
+
+Write-up: `context/design/subagents-loop-verifier-claims.md`. Seven findings
+(AE1–AE7), all seven fixed, each with a regression test that fails when the fix is
+removed and a probe that prints BEFORE and NOW. **906 tests** across five packages
+(was 874), lint 85/85 + clean, **62 probes** (was 59).
+
+**The question.** The thirteenth pass followed the instructions inward — *name the
+mechanism, and say what happens to the instruction it was given*. This one asks
+about the machine's account of **itself**: **name the flag, name the fact it
+stands for, and then name everything that can make the fact false, and say
+whether the flag hears about it.** A flag is any value the stack keeps about its
+own state and later acts on — `state.active`, `lifecycle.status`, `entry.live`,
+`retrying`, `params.model`, `pendingCompaction`. §2 of the write-up is the ledger
+that produced: twenty-four of them, organised by FALSIFIER rather than by writer,
+because the distance between the two is the whole finding. **Five had a falsifier
+that never wrote them; one more was falsified by the handler that read it.**
+
+**AE1 — the pause that kept running. HIGH.** `agent_end`'s operator-abort rung set
+`state.status = "paused"` and returned. `status` is a display field —
+`/loop status` prints it and *nothing branches on it*. `state.active` is what all
+thirteen of `pi-loop-mode`'s handlers test at their first line, and it was left
+`true`. So "Loop paused (turn aborted). Use /loop resume to continue" was a
+sentence about a loop that still owned the session, and the next `agent_end` from
+any source ran the whole ladder, counted an iteration and scheduled the next one —
+no notice, no record, `/loop resume` never involved. The other four ways a run
+stops short (`pauseForContextFailure`, `pauseForCheckFailure`,
+`pauseForProviderFailure`, the iteration cap) all clear it, which is exactly the
+shape that made the fifth invisible. The turn that trips it is not exotic: a
+question typed into the terminal (the likeliest — the operator has just been shown
+a notice inviting a reply), a Matrix message, or a background subagent settling,
+which needs no human at all. `/loop status` is a slash command and produces no
+`agent_end`, so the one thing an operator would do to check is the one thing that
+does not trip it. Second half: `before_agent_start` is gated on the same flag, so
+every operator-typed turn during the "pause" was told *"Loop mode is active …
+keep every assistant response under 1,200 characters … never wait for a human"*.
+Measured: `r1`. **One keypress and one sentence to reproduce by hand — §U of the
+testing script, and the cheapest run on that whole list.**
+
+**AE3 — the room entry a second message destroyed. HIGH.** `awaitingReply` is a
+`Map` keyed by room holding ONE entry, and `deliverInbound` `set()` a fresh one
+for every inbound message. `live` is not a property of a message — it is evidence
+about the ROOM, and `forwardToMatrix` filters on it so an answer only goes to a
+room that is owed one. A second message reset it. For two ordinary questions that
+self-corrects inside the same run (pi echoes the second, `markLive` fires again);
+for a message this extension answers ITSELF — a refused command, an allowed one,
+`/compact` — it cannot, ever, because no user message is produced. So: one person,
+one room, "what is the status of the build?" then "/compact", and the answer to
+the first was computed, found no live room, and was **dropped in silence** — with
+`answered: true` set by the local branch keeping the undelivered sweep quiet about
+it too. `mergeAwaiting()` in `src/delivery.ts` now folds a new message into what
+the room already had: `live` only ever goes up, and a message pi was never given
+does not become the room's marker. Measured: `r3 same-room`.
+
+**AE4 — the continuation that was claimed, not evidenced. HIGH.** `retrying = true`
+is set on the strength of having CALLED `api.sendUserMessage`, whose `catch` sees
+exactly one thing — a synchronous stale-runtime throw. Everything else
+(`prompt()` refusing during a compaction, no model, no auth, i.e. llama-server
+down) rejects a promise **pi itself** `.catch`es into `emitError`, whose listener
+set is empty headless. That is the fact `src/delivery.ts` exists for in the
+*inbound* direction; the retry is the same call and was written as though it did
+not apply. `retrying` is what suppresses the retirement of every live room, so a
+continuation that never happened left a stranger's room live and unanswered — and
+**the next unrelated turn's answer was forwarded to it**: the operator's own
+answer, to a question typed in the terminal, sent to whoever had messaged. That is
+precisely the leak `markLive` exists to prevent, reached from the other side, with
+no window in which it self-corrects. The repair is not a better flag: the room
+stands back DOWN until `markLive` fires for the nudge, so pi taking it re-arms the
+answer and pi refusing it produces exactly the entry `undeliveredRooms` reports.
+**The failure stopped being invisible without anything new being built to see it.**
+Measured: `r3 never-taken`, and `PROBE_SLOW=1` to watch the sweep.
+
+**AE2 — the compaction that cancelled its own continuation. MEDIUM.** AD3 deferred
+a mid-turn Matrix `/compact` to `agent_settled` on one premise, written down in
+`src/compaction-request.ts`: *"by then aborting costs nothing because the run is
+over."* True of the run that ended, and false of the one `forwardResult()` starts
+one line above the drain — and `src/continuation.ts` carries the same premise from
+the other side (*"nothing is in flight at agent_settled"*). Two modules agreeing
+about a moment, and the first falsifying it for the second. The conditions are
+correlated rather than independent: a sender asks for a compaction *because* the
+bot has gone quiet, and an empty ending is what quiet looks like from inside.
+`standAside(pending, continuationStarted)`, bounded by `MAX_EMPTY_RETRIES` read
+from the module that owns it. Measured: `r3 settling-together`.
+
+**AE6 — the name the model override is keyed on. MEDIUM.** AD1 made `params.model`
+the value the spawn obeys, which made the KEY the listener resolved it against
+load-bearing — and the two ends were keyed differently. `toolCallListener` used
+`input.agent` verbatim against the registry as it stood; `executeAgentTool` uses
+the canonical name after a discovery re-scan. Two reachable consequences:
+`resolveType` is deliberately case-insensitive but `resolveModel` is not (it reads
+`sessionOverrides[type]`, and `/agents` writes those keys from `getAllTypes()`),
+so an operator's pin on `Explore` was silently skipped for `agent: "explore"` —
+with `renderAgentToolCall` printing the *unpinned* model beside the call, so the
+display agreed with the miss; and an agent found only by the discovery retry (a
+worktree-local one, which is the case that retry exists for) had no config at
+listener time, so its own `model:` frontmatter fell through to the parent's model
+— **AD1's damage exactly, restored for one class of agent**, concurrency slot
+included. Fixed with one resolver called from both ends, the canonical name, and a
+`_resolvedAgent` stamp that lets the tool ask whether the injection is about the
+type it is spawning. Measured: `r2`.
+
+**AE5 — three readers of a status that describes a different run. MEDIUM.**
+`lifecycle.status` goes terminal before `runVerification` is awaited.
+`record-activity.ts` exists so "is this record busy" has one answer; Y1 moved two
+readers onto it, T5 a third, AD2 a fourth and fifth, and three still had their
+own. The `AgentStatus` TOOL is the one that matters: a verifying record fell into
+the SETTLED bucket, so it was not merely mislabelled — it became eligible for
+`MAX_SETTLED_LISTED`, whose own comment says an actionable agent "is never
+dropped, however many there are". With seven finished agents behind it, the one
+agent holding the llama slot was **elided from a reply that ends "Don't poll"**.
+Also the conversation viewer's Stop (hidden for a record the manager has been able
+to stop since T5) and `session_shutdown`'s "N agent(s) killed by reload" count,
+two lines above the `dispose()` that kills it.
+
+**AE7 — the boundary one walk crossed and its sibling stopped at. LOW.**
+`describeEmptyEnding` `continue`d past a `user` message that `finalAssistantText`
+breaks at, so after stepping over an injected `subagent-result` pair it could find
+an answer from *before* the message being answered and report `empty: false` for a
+run that answered nobody. The sender's question was then retired with no answer,
+no continuation and no notice. The comment above that step-over says the boundary
+"is never crossed" — true of the sibling, false of the function it was written in.
+
+**The three things worth carrying.**
+
+1. **A flag is a cache, and every cache has an invalidation problem.** That is why
+   §2 is organised by falsifier. `state.active` caches "is this loop driving the
+   session"; `entry.live` caches "does this room have an answer coming";
+   `lifecycle.status` caches "is this record working"; `params.model` caches a
+   six-level resolution. The habit is not "reset more things" — it is **when you
+   write a flag, go and find everything that can make it false, and check that
+   each of those places knows the flag exists.** All five failures had a falsifier
+   somewhere else: a different branch, a different extension, a later filesystem
+   scan, a promise somebody else catches.
+2. **"Nothing is in flight here" is a claim about the future, and the code below
+   it is what makes it false.** AD3 wrote it about `agent_settled`; three lines
+   later the same handler starts a run. Neither was careless. **When a comment
+   says what is or is not happening at a moment, list what runs at that moment —
+   including the rest of the function you are in.**
+3. **A fix is a new mechanism, and the pass that ships it is the last one to look
+   at it with fresh eyes** — repeated from the thirteenth pass, and it repeated
+   with the same shape twice (AE2 is AD3's fix one layer out, AE6 is AD1's, AE5 is
+   AD2's predicate at the callers AD2 did not visit). Third phrasing: **this fix
+   is now a mechanism; what does the rest of the machine now believe because of
+   it, and who could make that false?**
+
+**Two smaller rules, both about evidence rather than code.** A **text pin over one
+expression** cannot tell a change in the expression from a change in the
+behaviour — AD1's pin needed widening this pass for that reason, one pass after
+the same test needed replacing. And **a probe that shares module-global state
+between its own scenarios has an unstated precondition**: `r3`'s `never-taken`
+block passed for the wrong reason until the four scenarios were split into four
+processes, because a leftover live room from an earlier block made
+`forwardToMatrix` refuse to send at all.
+
+**New tooling.** `context/testing/probes/_sidecar.mjs` — a stand-in for the prinny
+sidecar that a PROBE can drive, taking inbound messages from a file and recording
+every `tools/call` to another. `tests/fixtures/fake-sidecar.mjs` is unchanged and
+still right for its own suite; it sends one message at a moment it chooses and
+discards its tool calls, which is why AE2, AE3 and AE4 could not have been
+executed against the real extension before. `r3` is the first probe in the series
+that drives a whole extension over its real transport.
+
+**Homework left.** The eighth surface is now on the checklist. The narrower thing
+to carry forward: **§11.7 — two extensions can call `ctx.compact()` on the same
+`agent_settled`**, and pi's `compact()` does not refuse a second call. AE2 closed
+`prinny-channel`'s half; the cross-extension half needs a shared "a compaction is
+in flight" flag that neither package owns, and is recorded rather than guessed at.
+
+## 2026-08-19 — the fifteenth pass over subagents, the loop and the verifier: the thing that was not done
+
+Write-up: `context/design/subagents-loop-verifier-omissions.md`. Six findings
+(AF1–AF6), all six fixed, each with a regression test that fails when the fix is
+removed, and four of them with a probe that prints BEFORE and NOW. **946 tests**
+across five packages (was 906), lint 87/87 + clean, **66 probes** (was 62).
+
+**The question.** The fourteenth pass asked about the machine's account of itself
+— *name the flag, name the fact it stands for, and name what can make the fact
+false.* This one asks about the places it decides **not to act**: **name the guard
+that declines, name what it was holding when it declined, and say who owns that
+thing afterwards.** §2 of the write-up is the ledger that produced: forty-five
+refusals, each with the object it was holding and where that object went. **Every
+one of them is correct and none is reversed here.** Six were holding something a
+person or a model was waiting for, and had nowhere to put it down.
+
+**AF1 — the answer two rooms were both owed. HIGH.** `forwardToMatrix` refuses to
+send when more than one room is live, because with two there is no way to tell
+whose answer this is and sending one person's conversation to another is not
+undoable. Eight lines later, in the same handler, `forwardResult` retires every
+live room — and the entries that proved either question had ever been asked go
+with them, which is also why `sweepUndelivered` could not report it:
+`undeliveredRooms` reads a map that no longer contains them. **Two people, two
+questions, zero answers, zero notices, and one line in `channel.log`.** It is the
+ordinary case for a channel with two people on it: `deliverInbound` hands each
+message over as a follow-up and pi's agent loop drains the follow-up queue inside
+the SAME run (`pi-agent-core/dist/agent-loop.js:162`), so both rooms go live and
+one answer arrives. The fourteenth pass looked straight at this — `r3`'s header
+explains that a leftover live room from an earlier scenario suppresses the leak
+the next one is about — and read it as a fact about the probe. **The fix is not a
+change to the refusal:** the ambiguity is remembered, and the retirement tells
+every live room that has had nothing sent for it, in one of two sentences
+(`ambiguous`, `nothing-to-send`), with a notice for the operator rather than a
+log line. Two smaller repairs fall out: the give-up message now marks `answered`
+(it IS something sent), and the `forward: "off"` branch tells the sender too.
+Measured: `s1`.
+
+**AF6 — the cap that exempted what it was built for. HIGH.**
+`.pi/extensions/compaction-guard`'s output cap began `if (event.isError) return
+undefined;` under *"an error is short and is the one thing worth reading in
+full"*. That is a claim about pi's bash tool, and `dist/core/tools/bash.js:346`
+says otherwise: a non-zero exit **throws the whole formatted output** — bash's own
+bound is 2,000 lines or 50 KB — and `createErrorToolResult` makes the thrown
+message the result's only text block, `isError: true`. So the exemption covered up
+to ~12,500 tokens of a 32,768-token window, on the most common path an unattended
+`/loop` has: every run of a test suite that is still failing is an error result.
+The incident this extension was BUILT for — 17,790 characters taking the window
+from 84.5% to 100% and the next turn to nothing — would not have been capped had
+the command exited non-zero. The fix is to delete the exemption; a short error is
+still handed over untouched because it is under the allowance, and the
+head-plus-tail cut keeps the failing assertion and the `Command exited with code
+N` line. Measured: `s3`, with a 17,738-character failing suite.
+
+**AF3 — five directives the ladder was charged for. MEDIUM.** Six exits of the
+loop's `agent_end` ended in `if (!ctx.hasPendingMessages()) scheduleLoopTurn(…)`,
+and five of them carry a DIRECTIVE that is the loop's whole answer to what it has
+just decided — `improve`, `unblock`, `check_failed`, `regression`, `audit` — with
+every counter charged ABOVE the guard. V4 (sixth pass) found exactly this on the
+seventh exit, `interveneStuck`, and fixed it there with the sentence that names
+the rule: *"the guard is right for every OTHER exit of agent_end, where the loop
+only needs A turn to happen"*. True of `continue`; false of the other five.
+`audit` is the worst of them, because it resets the window that lets it fire
+again, so dropping the text costs eight more iterations of silence. Reachability
+is not the corner it looks: `agent_end` **awaits the goal check**, up to
+`checkTimeoutSeconds` (120 s), with the operator free to type into it. Fixed with
+one helper (`deliverLoopTurn`) using V4's own `queueOnly` and Z4's own `steer`;
+`continue` still drops, deliberately. Measured: `s4`.
+
+**AF2 — the operator's action, and the answer nobody read. MEDIUM.** `abort()`,
+`clear()` and `steer()` each answer with a boolean, and each `false` is a refusal
+installed on purpose — Y1's (a verifying record must not be cleared, because
+`removeRecord` disposes the session a repair runs in), T5's, or a full concurrency
+slot. Five of six call sites discarded it: "Stopped X" and "Cleared X" about
+records still there, three bulk counts taken from a snapshot made *before* the
+menu opened, and the conversation viewer's steer, which said nothing at all. The
+sixth — the `/agents` menu's own single-agent Steer — has always read it, which is
+what makes this W-shaped. The steer half is worse on this fork than upstream:
+`continueSettledAgent` REFUSES rather than queues when the slot is full, and the
+default limit is 1. Fixed with `src/ui/action-report.ts` (a module that imports
+nothing), read at every call site; the bulk actions re-derive their targets when
+the action is chosen and count the manager's `true`s.
+
+**AF4 and AF5 — the same defect in two packages: a bound that keeps the wrong
+end. MEDIUM.** `AgentStatus`'s `settled.slice(-limit)` sits under a comment saying
+the caller hands records over in spawn order; `AgentManager.listAgents()` sorts
+them NEWEST FIRST, so the tool listed the six oldest agents of the session and
+reported the batch the model had just launched as "(+N older, see /agents)" — in a
+reply whose own closing line is "Don't poll". Its unit test built its array
+oldest-first, the one order the caller never uses. And `brief` grows at the TAIL
+(`appendFollowUp` puts every steer there, up to 6,000 chars) while its two
+model-facing readers cut it at the HEAD (`truncate(brief, 1_500)`), so on an
+original brief of 1,500 characters or more the judge was shown a task the answer
+was not answering, said NOT_ADDRESSED correctly about the question it was given,
+and the round trip that follows ends at `stalled` with the parent holding the
+answer it already had. W3 made `growBrief` run on every branch of `steer()` so the
+judge would check the accumulated task; the accumulation reached the field and the
+field's readers cut it off. Fixed by reading the field the rule is about
+(`completedAt ?? startedAt`) and by `briefForCheck()`, which applies
+`appendFollowUp`'s own newest-first rule from the other side.
+
+**The three transferable rules.** **A refusal is half a decision — the other half
+is the object**; the habit is one question at every `return` inside a guard, *what
+was I holding when I decided not to, and who has it now?*, and in three of the six
+the code that deletes the object is in the same function as the refusal. **A bound
+is a refusal with a rule in it, and the rule has to be checked against what the
+caller actually hands over** — write down which end your bound keeps, then look at
+what the caller's end is. And **"something else will handle this" is a claim about
+another piece of code**, which costs one read of that code to check: AF3's guard
+is right that a turn is coming and wrong that it carries the directive; AF1's
+refusal is right that the answer cannot be attributed and wrong that anything
+downstream notices the rooms it left behind.
+
+**One evidence rule.** **A stub that repeats itself is an input the module has an
+opinion about.** `s4`'s audit block reported `stuck/steer` instead of
+`audit/steer` because the harness returned the same tool result every turn, and
+`detectStuck`'s rule 7 is "the same TURN tool signature three turns running" — the
+probe had driven the loop into a different, correct verdict. That is X1's lesson
+one layer down.
+
+**Homework left.** The ninth surface is now on the checklist. The narrower thing
+to carry forward is **§11.1 — `emitIndividualNudge` has three refusals with no
+owner** (`this.disposed`, `!pi`, `!record`), each of which drops a background
+subagent's answer in silence; two are session-replacement guards where the
+recipient no longer exists, and the honest fix for the third is a delivery queue
+that survives a session swap. **And the fourteenth pass's own homework is still
+open**: `pi-loop-mode` and `prinny-channel` can both call `ctx.compact()` on the
+same `agent_settled`, and pi's `compact()` does not refuse a second call (§11.12).
+
+## 2026-08-19 — three open items closed after the fifteenth pass
+
+Same session, after AF1–AF6. Not findings: three things that were already on the
+open list, two of them for more than one pass. **991 tests** across five packages
+(was 946 at the end of the findings, 906 before the pass), lint 91/91 + clean,
+**67 probes** (was 66). §10.6–§10.8 of
+`context/design/subagents-loop-verifier-omissions.md` are the accounts.
+
+**§11.12 — two extensions can call `ctx.compact()` on the same `agent_settled`.
+This was the fourteenth pass's own homework.** `pi-loop-mode`'s handler runs first
+and may ask for an emergency compaction; `prinny-channel`'s runs second and may
+drain a `/compact` deferred by AD3; pi's `compact()` does not refuse the second
+call — `await this.abort()` is its first statement and it overwrites
+`_compactionAbortController` on the way past, so the second request cancels the
+first one's work and `prompt()` throws for anything in between, into a rejection pi
+swallows into `emitError`. Two passes recorded it and both stopped at the same
+sentence: *the fix is a flag neither package owns.* It is — and `shell.ts` had
+already established how this stack does that, publishing
+`__PI_SUBAGENT_SPAWN_DEPTH__` on `globalThis` under the reasoning that **a global
+read is a smaller wound than a cross-vendor import**. So: one key
+(`__PI_COMPACTION_IN_FLIGHT__`), two implementations, one per package, each
+asserted to agree with the other by a test that imports it — the arrangement
+`stateDir()` already has between `prinny-channel/src/config.ts` and
+`server/src/state.ts`. Neither caller queues, and what each does with a refusal is
+the part that matters: `requestEmergencyCompaction` **adopts** the other
+extension's compaction (the same answer it already gives when pi has compacted the
+branch itself, with `freedRoom: false` so the error streak still escalates);
+`interveneStuck`'s rung **waits** for it (that rung wants the window cleared, and
+somebody else's compaction clears the same window); and prinny tells the sender *"A
+compaction is already running — I will let that one finish rather than cutting it
+off"*, which is the honest answer, because their request is satisfied by the
+compaction that is happening. The holder carries a timestamp and expires after five
+minutes: pi's `ctx.compact` wrapper does guarantee a callback (checked —
+`try { … onComplete } catch { onError }` at `agent-session.js:1911`), so the bound
+is a backstop for the process outliving the session rather than the expected path,
+and **a latched lock is worse than the collision it prevents**. Measured:
+`context/testing/probes/s5-two-extensions-one-compaction.mjs`, the first probe in
+the series that drives two extensions against each other — which it has to, because
+the collision only exists in one process. Left open, deliberately: pi's own
+threshold and overflow compactions, which no extension requests and therefore none
+can mark.
+
+**The judge's raw reply, kept. #1 on the *still unwatched* list since the fourth
+pass — twelve passes.** Never a defect and never a symptom; it is the reason four
+findings needed a probe before anyone could believe them (S2's menu echo read as a
+chosen verdict, U4's `WHY:` instruction quoted back to the child as a reason, V5's
+hard-aborted repair reaching the judge as an answer, W5's "the 2th attempt"), and
+every one of the four is a claim about a string that lived for a few milliseconds
+inside `verifyAnswer` and was then dropped. `parseJudgeVerdict` is careful and
+heavily tested — against replies somebody *imagined* a 27B writing.
+`src/agents/verify-log.ts` now writes one JSONL line per verifier model call to
+`~/.pi/agent/subagent-verify.jsonl`, carrying the prompt, the raw reply and **the
+parse the stack acted on** — the parse is the point, because a reply and a verdict
+side by side are the only thing that can show the parser was wrong. Bounded at
+4,000 chars a field and 2,000 lines newest-kept (an unattended loop verifies every
+delegation and nothing else would ever remove a line — the argument
+`MAX_SPILL_FILES` exists for), `SUBAGENT_VERIFY_LOG=0` to disable, and injected as
+`deps.log` so `verify-runner.ts` still imports nothing and a logger that throws
+costs a log line rather than a verdict. Under the agent directory rather than the
+working directory, because a verification is a fact about this install and not
+about whatever repository the parent happened to be looping on.
+
+**§11.1 — the three silent drops of a background result, closed in part.**
+`emitIndividualNudge`'s guards (`this.disposed`, `!pi`, `!record`) are each correct
+and each dropped a finished delegation's answer with nothing said anywhere — which
+is the one thing AC1 established this class of failure must never be: *"a delivery
+that did not happen is the loudest thing this class can report; it must not be the
+quietest."* AC1 built exactly that for the `catch` around the send; all three
+guards return before that `try`. They now report through `console.warn` (which runs
+headless, where `noOpUIContext.notify` is `() => {}`) and through the spawning
+session's own context, naming the agent, the cause and the one recovery that always
+works — the answer is still on the record, and `AgentStatus` prints it. The record
+is looked up BEFORE the guards so the notice can say which agent it was, and the
+sentences live in `src/spawn/nudge-drop.ts`, which imports nothing, because
+`spawn-coordinator.ts` imports pi and the suite cannot load it. Still open: the
+delivery QUEUE that would make the send happen across a session swap, which is a
+capability change rather than a repair — but the drop is no longer invisible.
+
+**One evidence note.** The compaction lock is the first piece of process-global
+state SHARED BY TWO PACKAGES in this stack, and it inherits `r3`'s discipline one
+scope out: `tests/context-recovery.test.ts`'s `compact` stub never calls back — a
+faithful model of a compaction that is still running — so `reset()` has to clear the
+lock, or one test's in-flight compaction makes the next test's loop stand aside,
+correctly, for a session that no longer exists.
+
+---
+
+## 2026-08-19 — sixteenth audit pass over subagents/loop/verifier (AG1–AG6)
+
+A full re-read of the whole stack, written up as
+`context/design/subagents-loop-verifier-references.md` — 2,700 lines, and the
+first document in the series meant to be readable on its own: §1 the machine in
+one drawing, §2 **pi itself**, §3 the event bus rebuilt from the source, §4–§9
+the five packages in full, assuming none of the fifteen documents before it.
+
+**The axis.** The fifteenth pass's closing lesson was *"'something else will
+handle this' is a claim about another piece of code, and it costs one read of
+that code to check."* This pass pointed that at everything the stack **names**:
+name the flag, the tool, the entry point, the surface or the sibling function's
+rule that a decision or a sentence points at, then go and read it. Five of the
+six findings are a pointer that was never followed, and they share a shape the
+previous fifteen passes do not — **in every one, the thing pointed at already
+existed and already worked.**
+
+**The gates were run before anything was written**, so the *before* column is a
+measurement of the tree as the pass found it rather than a claim about it: 991
+tests, 67 probes, lint clean. After: 1,018 tests, 72 probes, lint clean.
+
+**AG2 and AG3 — the same moment, from two extensions.** pi has one refusal for
+"you cannot prompt while a compaction is in progress" and it is on
+`AgentSession.prompt()` (`:807`). Every turn `pi-loop-mode` drives, and prinny's
+empty-turn continuation, go through the *other* entry point:
+`sendCustomMessage`'s `triggerTurn` branch is `await this._runAgentPrompt(...)`
+(`:1090`), and neither it nor `_runAgentPrompt` makes that check. So a loop turn
+on its delay timer started a whole agent run inside somebody else's compaction —
+and pi's `compact()` ends with `this.agent.state.messages =
+sessionContext.messages`, which replaces the array that run is streaming into.
+Meanwhile `forwardResult`, which runs on the `agent_settled` the loop has just
+requested an emergency compaction on (loop first, prinny second), sent a
+continuation nudge pi silently refused, charging one of the message's two
+retries for a send that never happened.
+
+The flag was already there. `compactionInFlight()` — the fifteenth pass's
+cross-package lock — is read by `requestEmergencyCompaction` and by
+`interveneStuck`'s compaction rung, and was not read by the other two of its four
+possible callers. The two fixes are one lock read each, in **opposite idioms**,
+because the objects differ: `sendLoopTurn` **reschedules** (an unattended run
+must not lose an iteration; it waits `COMPACTION_WAIT_MS = 5 s` and goes when the
+lock frees, bounded by the lock's own five-minute staleness), while
+`forwardResult` **holds and reports** (a continuation deferred forever is worse
+than one that never happens, so it charges no retry and hands the room to AF1's
+retirement notice with a third reason, `compacting`, whose sentence is the true
+one *now* where the delivery sweep's could only hedge a minute later).
+
+Both are reproduced with **both shipped extensions in one process**, through pi's
+own bundled jiti, in `scripts/pi-local.sh`'s order, with pi's own facts pinned
+out of its source first — `t1` and `t2`, which extend the `s5` harness the
+fifteenth pass built for the compaction↔compaction collision to the two
+compaction↔*something else* ones.
+
+**AG1 — a reserve applied as a cap.** `briefForCheck` is AF5's own fix, and its
+docstring says it applies the split `appendFollowUp` owns "so the two cannot
+drift". `appendFollowUp` gives the accumulated follow-ups **everything the
+original does not use**; `briefForCheck` gave them a flat
+`floor(max * FOLLOW_UP_CHECK_SHARE)` and returned the remainder unspent. On a
+long original the two agree — and every AF5 test uses a long original. On a short
+one, which is the ordinary shape because a brief is one sentence and the steers
+are what accumulate, the judge was shown 481 characters of a 1,500-character
+budget and one steer of four. The fix is one `Math.max`: the share is a **floor**,
+the least the follow-ups may have, not the most.
+
+**AG4 — the map itself.** §1.D of five documents, the event-bus table every
+ordering argument in this series is read off, drew `pi-subagents-lite` handling
+`agent_start`, `message_end` and `agent_end` — it registers none of the three —
+omitted `tool_call`, which it does (and which AD6's whole argument is about), and
+had no `turn_start` row at all. The same documents' §1.C summary said "4
+handlers" and was right, so two tables in one document disagreed. Carried since
+the eleventh pass. All five are corrected in place with a note recording what
+they drew and for how long, and `t5` is now a **standing check**: it re-derives
+the table from every `.ts` in the five packages and diffs it against any document
+given as an argument.
+
+**AG5 and AG6 — two operator-facing sentences that named the wrong thing.**
+`bulkReport`'s partial line said "N were still busy and were left alone" for both
+verbs; `AgentManager.stopAgent()` has exactly one reachable `return false` and it
+means the record had already *finished*, which is the one thing that sentence
+ruled out. And all four notices about an undelivered background result ended
+"Read it with AgentStatus", where `executeAgentStatusTool` prints
+`id (type) status` and never touches `record.result` — `/agents` → **View
+result** is the surface that can show it, and `nudge-drop.ts`'s own header
+already named both and shipped the half that does not work.
+
+**Four things to carry forward.**
+
+- **The thing you named is a file you can open.** In all five pointer findings
+  the cost of checking was one file open, and the reason none of them was opened
+  is that the sentence sounded true.
+- **A fix has a shape, and the shape has more than one instance.** AG1 is AF5 at
+  the other end of its own distribution; AG5 is AF2's module at the one call site
+  whose two verbs have opposite refusal causes; AG3 is AE2's rule with the parties
+  swapped. When a fix lands, write down what shape it was and go and find the
+  other instances *before* writing the test — AF5's seven assertions are all
+  about one shape, and the eighth would have caught AG1.
+- **A reserve is not a cap.** When you reserve room for something, say what
+  happens to the room nobody used.
+- **A scan for wiring must not read the prose about the wiring.** `t5`'s first
+  draft reported a `tool_result` handler that does not exist, because
+  `src/spawn/result-cap.ts`'s header comment contains the literal string
+  `pi.on("tool_result")` while the module registers nothing. Every module in this
+  stack quotes its own wiring at length, which is a virtue everywhere except in a
+  tool that greps for it.
+
+**The bound this leaves, and it is not a defect.** The compaction lock can only
+be read for compactions an *extension* asked for. pi's own threshold and overflow
+compactions mark nothing, so AG2's deferral, AG3's hold and §11.12's mutual
+exclusion all stop at the same edge; marking those would need a hook pi does not
+have. Unchanged from when the lock was built, and stated again because two more
+callers now depend on it.
+
+---
+
+## 2026-08-19 — seventeenth audit pass over subagents/loop/verifier (AH1–AH6)
+
+A full re-read of the whole stack, written up as
+`context/design/subagents-loop-verifier-instances.md` — ~2,970 lines, and
+self-contained in the same way the sixteenth pass's was: §1 the machine in one
+drawing, §2 pi itself (and §2.5 is new — what a run started *inside* a compaction
+actually costs, measured out of `pi-agent-core`'s `createContextSnapshot` rather
+than argued), §3 the event bus, §4–§9 the five packages in full.
+
+**The axis, and it is the sixteenth pass's own residue.** That pass ended with a
+question in its handoff: *"`compactionInFlight()` now has four readers, and there
+is no test that a fifth would be noticed … it will produce another one the next
+time a sender is ADDED."* There was no next time — the fifth reader already
+existed. Generalised, that is the axis: **a rule that is right is applied where
+it was found; name every other place it belongs, from the code that COULD need it
+rather than from the code that already asks.** All six findings are a rule that
+exists, is correct, is documented at length and usually has its own module — and
+is applied to fewer places than need it.
+
+**The gates were run before anything was written**, so the *before* column is a
+measurement of the tree as the pass found it: 1,018 tests, 72 probes, lint 91/91.
+After: 1,041 tests, 77 probes, lint 95/95.
+
+**AH1 — the third sender.** There are exactly three senders in this stack that
+reach `AgentSession.sendCustomMessage`'s `triggerTurn` branch, which is
+`_runAgentPrompt` and checks nothing (pi's only compaction refusal is on
+`prompt()`). The sixteenth pass closed two. The third is
+`SpawnCoordinator.emitIndividualNudge`, the only route a background subagent's
+answer has to the parent model — and the only one of the three with nothing to
+fall back on: it runs once per record, from a 200 ms batch timer that is not
+ordered against anything on the event bus, on a record whose slot is already
+released and whose completion gate is already open. Measured out of pi's source:
+`compact()` begins `await this.abort()`, which ends in `waitForIdle()`, so the
+session is idle for the whole compaction and `_runAgentPrompt` is the ONLY branch
+a nudge can take; and `Agent.prompt()` snapshots the message array with
+`.slice()`, so the run it starts is built from the pre-compaction context — the
+oversized one the compaction exists to shrink — for its whole life. It now
+defers, bounded by the lock's own five-minute staleness. There are three
+implementations of the protocol; the new one is read-only, because nothing in
+that package compacts.
+
+**AH2 — §11.11 closed after three passes.** `parseJudgeVerdict("VERDICT:
+UNADDRESSED")` returned `{addressed: true, unparsed: false}` — a false PASS with
+`unparsed: false`, so the answer reached the parent model as `passed` with no
+annotation at all, where a genuinely unreadable verdict at least says so. The
+reasoning that left it open (§11.5 of `…-controls.md`) had three clauses: one
+irrelevant, one **true and load-bearing** — a `\b` really would break
+`VERDICT: _ADDRESSED_`, because `_` is a word character — and one naming the
+fail-open policy, which does not cover a verdict that WAS parsed. The fix is a
+widening of the negative alternation, which touches nothing on the positive side.
+
+**AH6 — AG2's fix reopening the sixth pass's.** `deliverLoopTurn` and
+`interveneStuck` take their `queueOnly` path in exactly one situation: a message
+is pending, i.e. a turn is already coming. AG2 taught that path to defer through
+the loop's ONE `pendingTimer` slot, and `agent_end` clears that slot at its first
+line — and "a turn is already coming" is precisely what guarantees a second
+`agent_end` within milliseconds. So the deferral deleted the directive rather
+than delaying it, after the ladder had charged for it and told the operator it
+had been sent. The fix remembers the KIND rather than re-timing the turn.
+
+**The other three.** AH3: `killed` before `code`, the property of `pi.exec` that
+has now produced AA2, AB3 and `git-failure.ts` — three more call sites in the
+package whose own module header says the rule is "AA2 one package over", plus
+`stack.ts`'s `docker ps`, where a wedged daemon reported every container "not
+running" on a box whose documented failure mode is exactly that. AH4: two spill
+directories in one process, and only the one whose docstring names the unattended
+`/loop` was bounded — in a file that already imports the guard's constants
+deliberately so they cannot drift. AH5: `verificationNote("failed", 0)` said "no
+attempt was made to correct it" and "kept because the corrections were no better"
+in one sentence.
+
+**Four things to carry forward.**
+
+- **W1–W6 is not a stage this series passed through; it is the steady state.**
+  The seventh pass named it and it has recurred in every pass since, because a
+  fix is written while looking at a failure and a failure is one shape. What is
+  different here is the remedy: AF5's answer was a better fix and AG1's was a
+  better fix. **A better fix covers the instance in front of you; only a LIST
+  covers the ones behind you.** §10.5 of the write-up is that list — the
+  second-instance graph, six rules with every instance laid out by distance.
+- **Two of six fixes are standing scans, and a scan that matches nothing
+  passes.** `tests/exec-verdicts.test.ts` (new) and
+  `tests/subagent-denylist.test.ts` (fifth pass) assert that a RULE is applied
+  everywhere its shape appears, so they fail on the NEXT instance rather than the
+  last one. Both carry a control assertion that the scan matched anything at all,
+  which is the one way this kind of test rots silently.
+- **A decision to leave something open is a claim, and it ages.** When you write
+  down why you are leaving something, write down **which fix you considered**.
+  AH2's rationale was better than most and still cost three passes, because
+  nobody could check whether the fix it rejected was the only one.
+- **A fake whose handles cannot be cancelled cannot fail where the module does.**
+  AH6's regression test passed with the fix removed, because the loop's test host
+  replaced `setTimeout` and not `clearTimeout` — and AH6 is entirely about a
+  timer being cleared. X1 pointed at the scaffolding: when you write a fake, list
+  what the code under test DOES to the thing you are faking, not only what it
+  asks of it.
+
+**The bound this leaves is the sixteenth pass's, one caller wider.** The
+compaction lock can only be read for compactions an *extension* asked for; pi's
+own threshold and overflow compactions mark nothing, so AG2's deferral, AG3's
+hold, **AH1's hold** and §11.12's mutual exclusion all stop at the same edge. pi
+emits `compaction_start` internally but not as an `ExtensionEvent`, so marking
+those is an upstream change rather than a fork change.
+
+**And the residue, stated in the tense that would have helped last time:**
+`__PI_COMPACTION_IN_FLIGHT__` now has five readers in three packages and three
+implementations, and **the next package to send into pi will not know the
+protocol exists.** There is no scan for that one; a grep for
+`sendMessage`/`sendUserMessage` across `vendor/` and `.pi/extensions/` is the
+whole of it, and it takes about ten seconds.

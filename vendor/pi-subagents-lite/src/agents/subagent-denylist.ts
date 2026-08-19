@@ -36,12 +36,40 @@
  * window that is not the operator's, and they describe a tool the child does
  * not have.
  *
+ * ## The two routes, and which one this file governs
+ *
+ * A child inherits none of the parent's `-e` flags. It builds its own
+ * `DefaultResourceLoader`, and extensions reach it by exactly two routes:
+ *
+ *   route A — DISCOVERY.  `~/.pi/agent/extensions/**` and `<cwd>/.pi/extensions/**`,
+ *             when the project is trusted. Everything in this repo's own
+ *             `.pi/extensions/` therefore reaches a subagent for free, and
+ *             nothing in this file can stop it arriving — the denial below can
+ *             only filter it back out after the loader has found it.
+ *   route B — `additionalExtensionPaths`, i.e. `subagentExtraExtensionPaths()`
+ *             below. Everything under `vendor/` is invisible to a child unless
+ *             it is named there.
+ *
+ * The ledger below is entirely about route B, and that is the file's blind spot:
+ * it prices `pi-loop-mode`'s `loop` tool at ~177 tokens/turn of a child's window
+ * and removes it, while `.pi/extensions/stack.ts` was arriving by route A with
+ * `stack_status` at ~173 tokens/turn and nobody had counted it (U9's sibling,
+ * U7). The repair there was a factory guard in `stack.ts` itself — the same
+ * `__PI_SUBAGENT_SPAWN_DEPTH__` check this package's own factory uses — because
+ * a guard at the source cannot be defeated by a path that moves, and because a
+ * path fragment naming this checkout's layout is exactly the mistake the prinny
+ * pattern above was rewritten to stop making.
+ *
+ * `tests/subagent-denylist.test.ts` carries the standing check: every entry point
+ * under `.pi/extensions/` that registers a model-visible tool must guard itself.
+ *
  * ## What is deliberately NOT denied
  *
- * `compaction-guard` stays, and reaches the child on its own because it lives
- * under `.pi/extensions/` — a live run showed it capping the *child's* own
- * `read` result at 9,778 → 8,176 chars inside the child session. A child that
- * blows its own window is a child that returns nothing.
+ * `compaction-guard` stays, and reaches the child by route A — a live run showed
+ * it capping the *child's* own `read` result at 9,778 → 8,176 chars inside the
+ * child session. A child that blows its own window is a child that returns
+ * nothing. `browser-guard` stays for the same reason: it registers no tools and
+ * only ever rewrites the text of a browser call that already failed.
  *
  * `rtk-pi` is not denied either; it is the opposite problem. A child cannot see
  * it at all, because this stack loads it by `-e` from `vendor/` and a child
@@ -52,7 +80,7 @@
  * is neither denial nor discovery: its state is module-global, so a child's copy
  * drove the operator's loop. `defaultExtraExtensionPaths` has the measurements.
  * What keeps a looping child safe, if one is ever loaded again, is the turn
- * bound in `agent-runner.ts` — see DEFAULT_MAX_TURNS there, and `StopAgent` for
+ * bound in `turn-tracking.ts` — see DEFAULT_MAX_TURNS there, and `StopAgent` for
  * the parent's kill switch.
  */
 
@@ -60,8 +88,29 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** Path fragments that disqualify an extension from loading in a subagent. */
-const DENIED_EXTENSION_PATH_FRAGMENTS = ["/vendor/prinny-channel/"];
+/**
+ * Directory names that disqualify an extension from loading in a subagent.
+ *
+ * Keyed on the PACKAGE directory, not on where this checkout happens to keep it.
+ * The rule used to be the literal fragment `/vendor/prinny-channel/`, which is
+ * only true while the package sits in this tree's `vendor/`. Move it and the
+ * denial matches nothing, silently in both directions — no warning that it
+ * matched nothing, and no signal in the child that it now has Matrix. Two moves
+ * are entirely ordinary:
+ *
+ *   - `npm i` puts it at `node_modules/pi-prinny-channel/…` (that IS the
+ *     package's name — see its package.json), which the old fragment misses and
+ *     a bare `prinny-channel/` fragment would also miss, because the segment is
+ *     prefixed;
+ *   - dropping it in `~/.pi/agent/extensions/prinny-channel/` is worse, because
+ *     that is a DISCOVERY directory: a child picks it up on its own initiative,
+ *     and this denial is the only thing between a subagent and posting to a room.
+ *
+ * So the match is on a path SEGMENT that is `prinny-channel` with an optional
+ * package prefix (`pi-`, a scope directory, …), which covers every layout above
+ * and still does not fire on an unrelated `my-prinny-channel-notes/`.
+ */
+const DENIED_EXTENSION_DIR_PATTERNS = [/(?:^|\/)(?:[a-z0-9._@-]*-)?prinny-channel\//];
 
 /** Skill names a subagent never sees, matched case-insensitively. */
 const DENIED_SKILL_NAMES = new Set(["prinny-access", "prinny-configure"]);
@@ -74,7 +123,7 @@ function normalize(p: string): string {
 /** True when this extension path is denied to subagents. */
 export function isDeniedExtensionPath(extPath: string): boolean {
   const p = normalize(String(extPath ?? ""));
-  return DENIED_EXTENSION_PATH_FRAGMENTS.some((fragment) => p.includes(fragment));
+  return DENIED_EXTENSION_DIR_PATTERNS.some((pattern) => pattern.test(p));
 }
 
 /** True when this skill is denied to subagents. */

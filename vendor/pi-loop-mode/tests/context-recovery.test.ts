@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 
+import { resetCompactionLock } from "../src/compaction-lock.ts";
+
 import {
   branchEndsInCompaction,
   buildEmergencyCompaction,
@@ -25,6 +27,7 @@ import {
 } from "../src/context-recovery.ts";
 import { defaultState, type LoopState } from "../src/loop-state.ts";
 import loopModeExtension from "../extensions/index.ts";
+import { completedCheck } from "./exec-shapes.ts";
 
 // The extension logs to `.pi-loop-log.jsonl` in the process cwd; keep that out of the checkout.
 const WORKDIR = mkdtempSync(join(tmpdir(), "loop-mode-test-"));
@@ -54,8 +57,35 @@ describe("branchEndsInCompaction", () => {
     assert.equal(branchEndsInCompaction([]), false);
     assert.equal(branchEndsInCompaction([{ type: "message" }]), false);
     assert.equal(branchEndsInCompaction([{ type: "message" }, { type: "compaction" }]), true);
-    // Anything appended after the compaction makes a fresh compaction possible again.
-    assert.equal(branchEndsInCompaction([{ type: "compaction" }, { type: "custom" }]), false);
+    // A real message after the compaction is something to summarize again.
+    assert.equal(branchEndsInCompaction([{ type: "compaction" }, { type: "message" }]), false);
+  });
+
+  test("the loop's own state entries do not make a fresh compaction possible", () => {
+    // This assertion used to say the opposite, with the comment "anything
+    // appended after the compaction makes a fresh compaction possible again".
+    // That is true of a MESSAGE and false of a `custom` entry, and the loop
+    // appends one of those through `pi.appendEntry()` on ~33 paths — including
+    // the `session_compact` handler, which persists immediately after pi
+    // finishes compacting. So the branch stopped ending in a compaction the
+    // moment the loop recorded that one had happened, and the short circuit was
+    // lost on exactly the path it was written for.
+    //
+    // pi agrees: `prepareCompaction` gets past its own last-entry check but then
+    // finds no messages between the previous compaction's boundary and the cut
+    // point, and returns undefined anyway ("Nothing to compact"). A custom entry
+    // carries no message, so it cannot change the answer.
+    assert.equal(branchEndsInCompaction([{ type: "compaction" }, { type: "custom" }]), true);
+    assert.equal(
+      branchEndsInCompaction([{ type: "compaction" }, { type: "custom" }, { type: "custom" }]),
+      true,
+    );
+    assert.equal(branchEndsInCompaction([{ type: "compaction" }, { type: "session_info" }]), true);
+    // Control: a state entry AFTER a real message still reads as compactable.
+    assert.equal(
+      branchEndsInCompaction([{ type: "compaction" }, { type: "message" }, { type: "custom" }]),
+      false,
+    );
   });
 });
 
@@ -236,6 +266,93 @@ describe("buildHandoffCompaction", () => {
     assert.match(result.summary, /PROGRESS\.md/);
     assert.equal(result.tokensBefore, 29_000);
   });
+
+  /**
+   * The per-section budgets do not fit inside the total, and they never did:
+   * level 0 has room for 3,531 characters of body while its sections may claim
+   * 7,500, and levels 1 and 2 are over by 1,469 and 489. That is fine — a
+   * summary has to degrade somehow. What was not fine is that it degraded by
+   * POSITION: the whole body was assembled and then cut with a blind `slice()`
+   * from the front, so `## File Operations` fell off first and `## Durable
+   * Project Context` next, and the levels that cut hardest are only reached
+   * after a recovery that did not free enough room.
+   *
+   * `.pi/extensions/compaction-guard/src/summary-budget.ts` exists because pi's
+   * own summary had exactly this failure. These pin the same repair on the
+   * loop's own builder.
+   */
+  describe("every section survives every compression level", () => {
+    const SECTIONS = [
+      "## Goal",
+      "## Completion Criteria",
+      "## Loop State",
+      "## Durable Project Context",
+      "## File Operations",
+      "## Next Step",
+    ];
+
+    /** A long-run state: the goal, criteria and last notice all outgrow their budgets. */
+    function crowded(): LoopState {
+      return {
+        ...defaultState(),
+        description: "Port the legacy importer to the new pipeline, keeping the CSV and JSONL front ends working. ".repeat(6),
+        completionCriteria: "npm test passes and the 2GB fixture imports in under 90 seconds. ".repeat(6),
+        iterationCount: 137,
+        status: "retrying",
+        lastNotice: "Context pressure 2/3: empty response at 91% context (no text, no thinking, no tool call). ".repeat(4),
+      };
+    }
+
+    const crowdedPrep = {
+      firstKeptEntryId: "pi-cut",
+      tokensBefore: 30_000,
+      fileOps: {
+        read: new Set(Array.from({ length: 30 }, (_, i) => `src/read${i}.ts`)),
+        written: new Set(["src/importer.ts", "src/stream.ts"]),
+        edited: new Set(["src/pipeline.ts"]),
+      },
+    };
+
+    for (const level of [0, 1, 2]) {
+      test(`handoff level ${level} keeps all six sections`, () => {
+        const { summary } = buildHandoffCompaction(crowded(), crowdedPrep, WORKDIR, [], level);
+        for (const section of SECTIONS) {
+          assert.ok(summary.includes(section), `level ${level} dropped ${section}`);
+        }
+      });
+
+      test(`emergency level ${level} keeps all six sections`, () => {
+        const { summary } = buildEmergencyCompaction(crowded(), crowdedPrep, WORKDIR, level);
+        for (const section of SECTIONS) {
+          assert.ok(summary.includes(section), `level ${level} dropped ${section}`);
+        }
+      });
+    }
+
+    test("still respects the total budget it was given (control)", () => {
+      // Keeping every section must not be bought by overshooting the size the
+      // whole mechanism exists to enforce.
+      const budgets = [4_000, 2_000, 1_000];
+      for (const level of [0, 1, 2]) {
+        const { summary } = buildHandoffCompaction(crowded(), crowdedPrep, WORKDIR, [], level);
+        assert.ok(summary.length <= budgets[level], `level ${level} produced ${summary.length} chars`);
+      }
+    });
+
+    test("still shrinks with the level (control)", () => {
+      const sizes = [0, 1, 2].map((l) => buildHandoffCompaction(crowded(), crowdedPrep, WORKDIR, [], l).summary.length);
+      assert.ok(sizes[0] > sizes[1] && sizes[1] > sizes[2], `sizes were ${sizes.join(", ")}`);
+    });
+
+    test("spends the room on the sections that are written down nowhere else", () => {
+      // The durable excerpts are the only section that is also on disk, and the
+      // Next Step block already tells the model to read those files — so it is
+      // the section that absorbs the shortfall, not the goal or the loop state.
+      const { summary } = buildHandoffCompaction(crowded(), crowdedPrep, WORKDIR, [], 2);
+      assert.match(summary, /- Iteration: 137/, "the iteration count exists nowhere else");
+      assert.match(summary, /Port the legacy importer/, "and neither does the goal");
+    });
+  });
 });
 
 // --------------------------------------------------------------------------------------------
@@ -273,7 +390,9 @@ const pi = {
     branch.push({ type: "custom", customType: "loop" });
   },
   async exec() {
-    return { code: 0, stdout: "", stderr: "" };
+    // Faithful to what pi resolves for a check that reached its own exit; see
+    // tests/exec-shapes.ts for why a bare `{ code: 0 }` is not (AB1).
+    return completedCheck(0);
   },
   async setModel() {
     return true;
@@ -363,6 +482,14 @@ function reset(): void {
   statuses.length = 0;
   compactRequests.length = 0;
   sentTurns.length = 0;
+  // Fifteenth pass: the compaction lock is process-global on purpose — it is how
+  // two extensions in one process avoid aborting each other's compaction (§11.12)
+  // — and this harness's `compact` stub never calls back, which is a faithful
+  // model of a compaction that is STILL RUNNING. So without this, one test's
+  // in-flight compaction makes the next test's loop stand aside, correctly, for a
+  // session that no longer exists. Same shape as `r3`'s one-process-per-scenario
+  // rule, one scope smaller.
+  resetCompactionLock();
 }
 
 /** Reads the loop's own /loop status report — the only supported view of its private state. */

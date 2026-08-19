@@ -25,6 +25,14 @@ export interface LoopState {
   bestScoreIteration: number;
   checkFailStreak: number;
   lastCheckOutput: string;
+  /**
+   * Consecutive goal checks that could not RUN (pi.exec rejected). Kept apart
+   * from `checkFailStreak`, which counts checks that ran and reported failure —
+   * see `applyCheckOutcome` for why the two must not be the same number.
+   */
+  checkErrorStreak: number;
+  /** The last exec error, for the operator. Never shown to the model as check output. */
+  lastCheckError: string;
   goalFile: string;
   loopModel: string;
   rescueModel: string;
@@ -42,7 +50,21 @@ export interface LoopState {
   toolCallsThisTurn: number;
   consecutiveStuckCount: number;
   interventionCount: number;
+  /**
+   * Consecutive CONTEXT-pressure turns. Named for history; it is the context
+   * ladder's counter and nothing else reads it.
+   *
+   * Forge fork: the provider-error retry used to share it, so one context event
+   * lengthened the next provider backoff and one provider error advanced the
+   * context-recovery ladder toward its cooldown. Two mechanisms, two questions,
+   * two counters — `providerErrorStreak` is the other one.
+   */
   consecutiveErrorCount: number;
+  /**
+   * Consecutive turns that ended in a MODEL/PROVIDER error, which drives the
+   * retry backoff and the terminal state at MAX_PROVIDER_ERRORS.
+   */
+  providerErrorStreak: number;
   totalErrorCount: number;
   /** Cooldown escalations in the current unrecovered context-pressure streak. */
   contextCooldownCount: number;
@@ -72,6 +94,8 @@ export function defaultState(): LoopState {
     bestScoreIteration: 0,
     checkFailStreak: 0,
     lastCheckOutput: "",
+    checkErrorStreak: 0,
+    lastCheckError: "",
     goalFile: "GOAL.md",
     loopModel: "",
     rescueModel: "",
@@ -90,6 +114,7 @@ export function defaultState(): LoopState {
     consecutiveStuckCount: 0,
     interventionCount: 0,
     consecutiveErrorCount: 0,
+    providerErrorStreak: 0,
     totalErrorCount: 0,
     contextCooldownCount: 0,
     contextCompressionLevel: 0,
@@ -115,12 +140,40 @@ export function restoreLoopState(entries: readonly unknown[]): LoopState {
   return { ...defaultState(), ...(restored?.data ?? {}) };
 }
 
+/**
+ * How much of each rolling window survives a persist, and therefore a restart.
+ *
+ * These must match the `pushLimited` bounds in `extensions/index.ts`, or a
+ * restored loop silently runs with a shorter memory than the one that was
+ * persisted. `lastAssistantTexts` was kept to 4 in memory and written at 3, so
+ * after every restore the near-duplicate check in `detectStuck` had one fewer
+ * response to compare against than it was designed for.
+ *
+ * `textChars` is the same rule for the OTHER dimension of that window, and it
+ * was the one bound in `commitTurnMemory` that did not come from here — a bare
+ * `.slice(0, 1_500)`. It bounds how much of each answer is kept, and
+ * `detectStuck`'s near-duplicate rule has to cut the current answer to the same
+ * length before comparing: `textSimilarity` is Jaccard over word trigrams, so a
+ * stored string that is a PREFIX of the current one scores roughly
+ * `textChars / length` however identical the two turns were. Measured: a
+ * rephrasing that scores 0.86 same-unit scores 0.47 at 2,800 characters, and the
+ * threshold is 0.80. See W2 in
+ * `context/design/subagents-loop-verifier-readers.md`.
+ */
+export const PERSISTED_WINDOW = {
+  fingerprints: 8,
+  snippets: 5,
+  texts: 4,
+  textChars: 1_500,
+  toolResults: 10,
+} as const;
+
 export function persistedLoopState(state: LoopState): LoopState {
   return {
     ...state,
-    lastAssistantFingerprints: state.lastAssistantFingerprints.slice(-8),
-    lastAssistantSnippets: state.lastAssistantSnippets.slice(-5),
-    lastAssistantTexts: state.lastAssistantTexts.slice(-3),
-    recentToolResults: state.recentToolResults.slice(-10),
+    lastAssistantFingerprints: state.lastAssistantFingerprints.slice(-PERSISTED_WINDOW.fingerprints),
+    lastAssistantSnippets: state.lastAssistantSnippets.slice(-PERSISTED_WINDOW.snippets),
+    lastAssistantTexts: state.lastAssistantTexts.slice(-PERSISTED_WINDOW.texts),
+    recentToolResults: state.recentToolResults.slice(-PERSISTED_WINDOW.toolResults),
   };
 }

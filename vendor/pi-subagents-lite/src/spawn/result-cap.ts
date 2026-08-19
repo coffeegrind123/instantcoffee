@@ -35,13 +35,10 @@
  * them, so this imports them instead and the coupling is stated in FORK.md.
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { allowanceChars, planOutputCap } from "../../../../.pi/extensions/compaction-guard/src/output-cap.ts";
+import { createSpillWriter } from "../../../../.pi/extensions/compaction-guard/src/spill.ts";
 
 /** Shape of what `ctx.getContextUsage()` reports; matches the guard's own view. */
 interface ContextUsageLike {
@@ -50,21 +47,29 @@ interface ContextUsageLike {
   percent: number | null;
 }
 
-/** Where a capped result's full text is kept, created on first use. */
-let spillDir: string | undefined;
+/**
+ * Where a capped result's full text is kept, created on first use.
+ *
+ * Forge fork, seventeenth pass (AH4). The writer comes from the guard, for the
+ * reason this file already gives about the CONSTANTS two paragraphs up: it used
+ * to carry its own copy of mkdtemp-sanitise-write, which was the guard's
+ * `spill()` minus its `pruneSpills` call and its `MAX_SPILL_FILES` bound.
+ *
+ * The bound is not incidental to that function. Its own docstring names the
+ * shape it exists for — *"An unattended `/loop` run is exactly the shape that
+ * fills a disk with them: days of iterations, each capping the test-runner
+ * output it just produced"* — and the payloads here are the same size and arrive
+ * on the same run: a `/loop` that delegates in the background writes one file
+ * per capped subagent answer, keyed by a record id that is unique per
+ * delegation, and nothing here ever removed one.
+ *
+ * Its own directory, not the guard's, so the two counts stay independent and the
+ * guard's parent/child sharing argument is untouched.
+ */
+const spillFile = createSpillWriter("pi-subagent-result-");
 
 function spill(agentType: string, agentId: string, text: string): string | undefined {
-  try {
-    spillDir ??= mkdtempSync(join(tmpdir(), "pi-subagent-result-"));
-    const safeType = String(agentType).replace(/[^\w.-]+/g, "_").slice(0, 24) || "agent";
-    const safeId = String(agentId).replace(/[^\w.-]+/g, "_").slice(0, 32);
-    const file = join(spillDir, `${safeType}-${safeId}.txt`);
-    writeFileSync(file, text, "utf8");
-    return file;
-  } catch {
-    // A cap that cannot save the overflow still caps — the marker says so.
-    return undefined;
-  }
+  return spillFile(agentType || "agent", agentId, text);
 }
 
 /**

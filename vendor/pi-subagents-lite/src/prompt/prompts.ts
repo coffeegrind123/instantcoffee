@@ -66,20 +66,16 @@ function stripScaffolding(prompt: string): string {
 export function buildAgentPrompt(
   config: AgentConfig,
   cwd: string,
-  env: EnvInfo,
+  env: EnvInfo | undefined,
   extras?: PromptExtras,
   mode: SystemPromptMode = "replace",
 ): string {
-  const envLines = [
-    "# Environment",
-    `Working directory: ${cwd}`,
-    env.isGitRepo ? "Git repository: yes" : "Not a git repository",
-  ];
-  if (env.isGitRepo && env.branch) {
-    envLines.push(`Branch: ${env.branch}`);
-  }
-  envLines.push(`Platform: ${env.platform}`);
-  const envBlock = envLines.join("\n");
+  // Forge fork: `env` is undefined for an agent that declared
+  // `include_environment: false`, and the block is then omitted entirely rather
+  // than emitted empty. Detecting it costs two git subprocesses per spawn
+  // (~100 ms on this box), and the one agent that opts out — the verifier's
+  // judge — has no working tree and no tools to reach one with.
+  const envBlock = env ? buildEnvBlock(cwd, env) : undefined;
 
   // Unified skill index — all skills in one <available_skills> block
   const hasSkills = extras?.skillMetas?.length || extras?.skillBlocks?.length;
@@ -143,12 +139,26 @@ export function buildAgentPrompt(
     mode === "inherit" ? extras?.parentSystemPrompt : mode === "custom" ? extras?.customSystemPrompt : undefined;
   // Parent/custom headers carry pi's scaffolding (context, skills, date, cwd); strip it since we re-add these from the subagent's own config.
   const customHeader = rawHeader ? stripScaffolding(rawHeader) : rawHeader;
-  const basePrompt = customHeader
-    ? `${customHeader}\n\n${envBlock}`
-    : `You are a Pi, an expert coding sub-agent.\nYou have been invoked to handle a specific task autonomously.\n\n${envBlock}`;
+  const header =
+    customHeader ??
+    "You are a Pi, an expert coding sub-agent.\nYou have been invoked to handle a specific task autonomously.";
+  const basePrompt = envBlock ? `${header}\n\n${envBlock}` : header;
 
   // active_agent goes AFTER shared prefix (header + env + context) for KV cache
   return `${basePrompt}${contextSuffix}\n${activeAgentTag}\n${agentInstructions}${extrasSuffix}`;
+}
+
+function buildEnvBlock(cwd: string, env: EnvInfo): string {
+  const envLines = [
+    "# Environment",
+    `Working directory: ${cwd}`,
+    env.isGitRepo ? "Git repository: yes" : "Not a git repository",
+  ];
+  if (env.isGitRepo && env.branch) {
+    envLines.push(`Branch: ${env.branch}`);
+  }
+  envLines.push(`Platform: ${env.platform}`);
+  return envLines.join("\n");
 }
 
 function escapeXml(value: string): string {

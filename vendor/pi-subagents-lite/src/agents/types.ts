@@ -20,11 +20,11 @@ export interface AgentConfig {
    */
   tools?: true | string[] | false;
   /** Tool blacklist — all tools except these are visible. Mutually exclusive with tools (when tools is string[]). */
-  excludeTools?: string[];
+  excludeTools?: true | string[];
   /** true = inherit all, string[] = only listed, false = none. undefined = not set (uses global default). Mutually exclusive with excludeExtensions. */
   extensions?: true | string[] | false;
   /** Extension blacklist — all extensions except these load. Mutually exclusive with extensions (when extensions is string[]). */
-  excludeExtensions?: string[];
+  excludeExtensions?: true | string[];
   /** Whitelist of allowed skills (metadata only in system prompt). true = all, string[] = listed, false = none. undefined = not set (uses global default). */
   skills?: true | string[] | false;
   /** Skills to preload with full content into system prompt. string[] = listed, false/undefined = none */
@@ -44,6 +44,18 @@ export interface AgentConfig {
   includeContextFiles?: boolean;
   /** Whether to inherit the parent's system prompt. Undefined = use global systemPromptMode. */
   includeSystemPrompt?: boolean;
+  /**
+   * Include the "# Environment" block (cwd, git repo, branch, platform) in this
+   * agent's system prompt. Undefined = true, which is right for anything that
+   * touches the working tree.
+   *
+   * Forge fork: it is false for `__verifier`, and that is the only reason the
+   * field exists. Building it costs a `git rev-parse` and a `git branch` per
+   * spawn — ~100 ms measured on this box, on the 9p mount, on the one llama slot
+   * the parent is blocked on — and the judge is shown a task and an answer and
+   * asked whether one addresses the other. It has no working tree.
+   */
+  includeEnvironment?: boolean;
   /** true = agent is hidden from the schema enum but can still be called by name. */
   hidden?: boolean;
   /** Where this agent was loaded from */

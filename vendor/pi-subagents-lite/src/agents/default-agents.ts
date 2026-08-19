@@ -10,7 +10,36 @@ import type { AgentConfig } from "./types.js";
 /** Internal agent type used by the answer verifier. */
 export const VERIFIER_AGENT_TYPE = "__verifier";
 
-const READ_ONLY_TOOLS = ["read", "bash", "grep", "find"];
+/**
+ * Forge fork: `bash` removed.
+ *
+ * `Explore`'s prompt opens "# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS"
+ * and lists ten prohibitions, of which exactly one was enforced — `edit` and
+ * `write` really are absent. The other nine were enforced by the prompt, and a
+ * shell is a superset of both missing tools: `sed -i`, `tee`, `> file`, `rm`,
+ * `git checkout`.
+ *
+ * This repo has already measured what a prompt-level prohibition on tool use is
+ * worth against this model, on this stack. From
+ * `.pi/extensions/compaction-guard/src/output-cap.ts`:
+ *
+ *   "The notice was in front of the model, saying 'Do not read whole files or run
+ *    commands with large output this turn', at 84.5% of the window. It ran the
+ *    command regardless. That is not a bug in the notice and not a threshold that
+ *    needs tuning: a soft instruction does not bind."
+ *
+ * That measurement is the whole argument. `Explore` is one of the two types the
+ * `Agent` tool advertises, so it is what a model reaches for when it wants a safe
+ * look around — including at a dirty tree, or at another repo through
+ * `worktree_path`. The guarantee a reader takes from the name and the header is
+ * now the one the tool set actually gives.
+ *
+ * The cost is real and is named in the prompt below: no `git log`, no `git diff`,
+ * no shell pipelines. `general-purpose` is the agent for those. Reverting is one
+ * line — put "bash" back and restore the prohibition list — and the decision is
+ * recorded in `context/design/subagents-loop-verifier-units.md` (U9).
+ */
+const READ_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
   [
@@ -33,26 +62,23 @@ export const DEFAULT_AGENTS: Map<string, AgentConfig> = new Map([
       description: "Fast codebase exploration agent (read-only)",
       registeredTools: READ_ONLY_TOOLS,
       // extensions and skills intentionally omitted — resolved by global default,
-      systemPrompt: `# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS
+      systemPrompt: `# READ-ONLY MODE — ENFORCED BY YOUR TOOL SET
 You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
-Your role is EXCLUSIVELY to search and analyze existing code. You do NOT have access to file editing tools.
+Your role is EXCLUSIVELY to search and analyze existing code.
 
-You are STRICTLY PROHIBITED from:
-- Creating new files
-- Modifying existing files
-- Deleting files
-- Moving or copying files
-- Creating temporary files anywhere, including /tmp
-- Using redirect operators (>, >>, |) or heredocs to write to files
-- Running ANY commands that change system state
+You have four tools: read, grep, find, ls. There is no edit, no write, and no shell,
+so you cannot change anything on disk even by accident. This is not a rule you are
+being asked to follow — it is the whole of what you can do.
 
-Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find, cat, head, tail.
+What that means in practice:
+- You cannot run git. If the task needs history, a diff, or a build, say so plainly
+  and stop: it wants a general-purpose agent, not this one.
+- You cannot create files, including temporary ones, anywhere.
+- Report everything as your final message. That message is your only output.
 
 # Tool Usage
-- Use the find tool for file pattern matching (NOT the bash find command)
-- Use the grep tool for content search (NOT bash grep/rg command)
-- Use the read tool for reading files (NOT bash cat/head/tail)
-- Use Bash ONLY for read-only operations
+- Use find for file pattern matching, grep for content search, read for file contents
+- Use ls to list a directory
 - Make independent tool calls in parallel for efficiency
 - Adapt search approach based on thoroughness level specified
 
@@ -89,6 +115,39 @@ Use Bash ONLY for read-only operations: ls, git status, git log, git diff, find,
       extensions: false,
       skills: false,
       preloadSkills: false,
+      // The two switches that decide what goes into a system PROMPT, as opposed
+      // to what the session can DO. Both were left undeclared, and both resolve
+      // from global config when an agent does not set them:
+      //
+      //   includeContextFiles = agentConfig?.includeContextFiles ?? store.agent.includeContextFiles
+      //   mode = resolveEffectiveSystemPromptMode(store.agent.systemPromptMode, agentConfig?.includeSystemPrompt)
+      //
+      // `DEFAULT_AGENT.includeContextFiles` is TRUE, so the judge was handed
+      // every AGENTS.md / CLAUDE.md on the path from cwd to "/" plus the agent
+      // dir, inside `<project_context>`. Measured with the real builder: 571 →
+      // 6,543 chars of system prompt, ~4.6% of the judge's window, per verified
+      // delegation. The cost is the smaller half. A project context file is
+      // where house rules live — "never simplify what was asked for", "an answer
+      // without file:line is incomplete" — and those are instructions for the
+      // WORKER. Given to the judge they become extra criteria nobody wrote into
+      // the verifier, silently changing what ADDRESSED means.
+      //
+      // The whole argument for a separate judge (verify.ts, "Why the judge must
+      // not run in the child's own session") is that it is harder to fool
+      // BECAUSE IT KNOWS LESS. These two lines are what make that true.
+      //
+      // `includeSystemPrompt: false` is the same shape and worse: an operator
+      // who sets systemPromptMode to "inherit" for their subagents — a supported
+      // setting in the /agents menu — would otherwise hand the judge the
+      // operator's entire system prompt.
+      includeContextFiles: false,
+      includeSystemPrompt: false,
+      // And the environment block, which costs a `git rev-parse` and a `git
+      // branch` per judge call — ~100 ms measured on this box's 9p mount, on the
+      // one llama slot the parent's Agent call is blocked on. The judge is shown
+      // a task and an answer; it has no working tree, no tools to use one with,
+      // and one turn in which not to.
+      includeEnvironment: false,
       maxTurns: 1,
       systemPrompt:
         "You judge whether an answer addresses the task it was given. You are shown only the task and the answer — " +

@@ -32,6 +32,7 @@ const ALL = [
   "errored",
   "skipped-empty",
   "skipped-cutoff",
+  "skipped-error",
   "skipped-nobrief",
 ] as const;
 
@@ -63,9 +64,17 @@ describe("verificationBadge — the loud ones are loud", () => {
     assert.equal(verificationBadge("failed")!.tone, "error");
   });
 
-  it("keeps the three skips distinguishable from each other", () => {
-    const labels = ["skipped-empty", "skipped-cutoff", "skipped-nobrief"].map((s) => verificationBadge(s as any)!.label);
-    assert.equal(new Set(labels).size, 3, "collapsing the skips hides which problem to go and fix");
+  it("keeps the four skips distinguishable from each other", () => {
+    // Four different problems with four different fixes: nothing was said, the
+    // run was cut off, the run failed on the provider, or no brief was recorded
+    // to check against. One label for all of them hides the only one that is a
+    // bug in us — and, until the fourth pass, "cut off" was worn by a provider
+    // error too, which describes the wrong thing to whoever reads the widget.
+    const labels = ["skipped-empty", "skipped-cutoff", "skipped-error", "skipped-nobrief"].map(
+      (s) => verificationBadge(s as any)!.label,
+    );
+    assert.equal(new Set(labels).size, 4, "collapsing the skips hides which problem to go and fix");
+    assert.doesNotMatch(verificationBadge("skipped-error")!.label, /cut off/, "a failed run was not cut off");
   });
 
   it("does not reuse the stats line's glyphs", () => {

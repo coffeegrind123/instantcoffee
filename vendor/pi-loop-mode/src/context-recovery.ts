@@ -92,17 +92,49 @@ export function isBenignCompactionError(message: string): boolean {
 }
 
 /**
- * True when the branch already ends in a compaction entry. pi's `prepareCompaction()` refuses to
- * compact in that state ("Already compacted"), so asking for one is a guaranteed error.
+ * True when the branch has nothing to compact because it already ends in a compaction.
+ *
+ * pi's `prepareCompaction()` returns undefined — surfacing as "Already compacted" — when the
+ * branch's LAST entry is a compaction, so asking for one then is a guaranteed error.
+ *
+ * Forge fork: entries that are not conversation are skipped. This used to test the literal last
+ * entry, and the loop appends its own `{type:"custom"}` state entry through `pi.appendEntry()` on
+ * roughly thirty-three paths — including `session_compact`'s own handler, which persists
+ * immediately after pi finishes compacting. So the branch stopped *ending* in a compaction the
+ * moment the loop recorded that one had happened, this guard read false, and the short circuit it
+ * exists to provide was lost on exactly the path it was written for.
+ *
+ * The consequence was mild — pi still refuses ("Nothing to compact (session too small)", which
+ * `BENIGN_COMPACTION_ERROR` also matches) and recovery finishes one round trip later — but that
+ * round trip runs `AgentSession.compact()`, whose first statement is `await this.abort()`. A guard
+ * that is meant to avoid a call should not be defeated by bookkeeping the same module wrote.
+ *
+ * `custom` and `session_info` entries carry no messages and are invisible to `prepareCompaction`,
+ * which is why skipping them asks pi's question rather than a different one.
  */
+const NON_CONVERSATION_ENTRY_TYPES = new Set(["custom", "session_info", "label_change"]);
+
 export function branchEndsInCompaction(entries: readonly unknown[]): boolean {
-  const last = entries.length > 0 ? (entries[entries.length - 1] as { type?: string } | null) : undefined;
-  return Boolean(last) && last?.type === "compaction";
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i] as { type?: string } | null | undefined;
+    if (!entry) continue;
+    if (NON_CONVERSATION_ENTRY_TYPES.has(String(entry.type))) continue;
+    return entry.type === "compaction";
+  }
+  return false;
+}
+
+function budgetIndex(length: number, level: number): number {
+  return Math.min(Math.max(Math.trunc(level) || 0, 0), length - 1);
 }
 
 function budget(budgets: readonly number[], level: number): number {
-  const index = Math.min(Math.max(Math.trunc(level) || 0, 0), budgets.length - 1);
-  return budgets[index];
+  return budgets[budgetIndex(budgets.length, level)];
+}
+
+/** The same clamped lookup, for the per-level text blocks. */
+function budgetText(texts: readonly string[], level: number): string {
+  return texts[budgetIndex(texts.length, level)];
 }
 
 export interface ContextPressureInput {
@@ -110,7 +142,17 @@ export interface ContextPressureInput {
   errorMessage?: string;
   outputTokens?: number;
   contextPercent?: number | null;
-  /** True when the assistant produced no visible text, no thinking, and no tool call at all. */
+  /**
+   * True when the assistant produced no ANSWER: no visible text and no tool call.
+   *
+   * Forge fork: this used to require "no thinking" as well, which was the same
+   * test until `patches/forge_reasoning_passthrough.py` began delivering a
+   * reasoning-only turn as `content: [thinking]` rather than `content: []`. A
+   * turn that spends its output budget on reasoning and answers nothing is
+   * starvation in exactly the way this rung exists for — see the caller in
+   * `extensions/index.ts` and V1 in
+   * `context/design/subagents-loop-verifier-shapes.md`.
+   */
   emptyResponse?: boolean;
 }
 
@@ -161,9 +203,12 @@ export function isContextPressure(input: ContextPressureInput): boolean {
   return lowOutputLength || saturatedLength || contextLikeError || explicitOverflow || starvedTurn;
 }
 
+/** Appended by `bounded` when it cuts, and charged against the budget by `claim`. */
+const TRUNCATION_MARKER = "\n[truncated]";
+
 function bounded(value: unknown, maxChars: number): string {
   const text = String(value ?? "").trim();
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[truncated]`;
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars)}${TRUNCATION_MARKER}`;
 }
 
 function readDurableFile(cwd: string, file: string, maxChars: number): string | undefined {
@@ -175,6 +220,111 @@ function readDurableFile(cwd: string, file: string, maxChars: number): string | 
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The least a section may be cut to before it is dropped instead, and the floor
+ * each section holds back for the ones after it.
+ *
+ * Without it the allocation is still positional in one respect: the first
+ * section claims up to its own budget, and at the tightest level a per-section
+ * budget can exceed the whole body's room — `HANDOFF_GOAL_CHAR_BUDGETS[2]` is
+ * 600 against 531 characters of body. A long goal then starves everything after
+ * it, which is the failure this repair exists to remove, one level down.
+ *
+ * 150 characters is a sentence: enough for a section to say something, small
+ * enough that reserving four of them costs nothing at level 0, where there are
+ * thousands to spare.
+ */
+const MIN_SECTION_CHARS = 150;
+
+/** Section separator, and the order the sections are READ in. */
+const SECTION_SEPARATOR = "\n\n";
+const SECTION_ORDER = ["goal", "criteria", "state", "durable", "files"] as const;
+
+/**
+ * The order the sections are ALLOCATED budget in, which is not the order they
+ * are read in.
+ *
+ * The per-section budgets do not fit inside the total — measured on the handoff
+ * ladder, level 0 has room for 3,531 characters of body while its sections may
+ * claim 7,500, and levels 1 and 2 are over by 1,469 and 489. That is not by
+ * itself a defect; a summary has to degrade somehow. The defect was that it
+ * degraded by position: the whole body was assembled and then cut with a blind
+ * `slice()` from the front, so what fell off the end was `## File Operations`
+ * first and `## Durable Project Context` next — and the compression levels that
+ * cut hardest are reached only after a recovery that did not free enough room,
+ * which is exactly when the carried state matters most.
+ *
+ * `.pi/extensions/compaction-guard/src/summary-budget.ts` exists because pi's
+ * summary had the same failure, and says so: a blind slice "keeps `## Goal`
+ * while cutting exactly the two sections that carry the work forward, because
+ * they are last". This is the same repair applied to the loop's own builder.
+ *
+ * The order below is by what cannot be recovered any other way:
+ *
+ *   goal      the objective. Without it the next context is not doing this job.
+ *   state     iteration, check status, last notice — a few hundred characters,
+ *             and written down nowhere else at all.
+ *   criteria  what "done" means. Usually short.
+ *   files     what was read and changed. Recoverable from `git status`, but cheap.
+ *   durable   the GOAL.md / PROGRESS.md / IMPROVEMENTS.md / ASSUMPTIONS.md
+ *             excerpts. By far the largest, and the ONLY section that is also
+ *             sitting on disk — the Next Step block the summary ends with
+ *             already tells the model to read those files. So it is the section
+ *             to shrink, and it now absorbs whatever the others leave rather
+ *             than being cut off mid-file by an arithmetic accident.
+ *
+ * Every section still appears at every level; what changes with the level is how
+ * much of the excerpts come with it.
+ */
+const SECTION_PRIORITY = ["goal", "state", "criteria", "files", "durable"] as const;
+
+type SectionKey = (typeof SECTION_ORDER)[number];
+
+const SECTION_HEADINGS: Record<SectionKey, string> = {
+  goal: "## Goal",
+  criteria: "## Completion Criteria",
+  state: "## Loop State",
+  durable: "## Durable Project Context",
+  files: "## File Operations",
+};
+
+/**
+ * The durable-file excerpts, sized to the room actually left for them.
+ *
+ * `perFileCap` is the level's own budget; `room` is what the other sections did
+ * not use. Whichever is smaller wins, shared equally between the files that
+ * exist — so a run with one PROGRESS.md gets a long excerpt and a run with four
+ * durable files gets four short ones, instead of the first two crowding the
+ * others off the end.
+ */
+function durableExcerpts(cwd: string, goalFile: string, perFileCap: number, room: number): string {
+  const candidates = [...new Set([goalFile || "GOAL.md", "PROGRESS.md", "IMPROVEMENTS.md", "ASSUMPTIONS.md"])];
+  if (perFileCap <= 0 || room <= 0) {
+    return "Excerpts omitted to fit the context; read the durable files listed under Goal from disk.";
+  }
+
+  // Which of them exist at all, before deciding how to divide the room.
+  const present = candidates
+    .map((file) => ({ file, text: readDurableFile(cwd, file, perFileCap) }))
+    .filter((entry): entry is { file: string; text: string } => Boolean(entry.text));
+  if (present.length === 0) return "No durable loop files were readable.";
+
+  const separators = SECTION_SEPARATOR.length * (present.length - 1);
+  const share = Math.floor((room - separators) / present.length);
+  const sections = present
+    .map((entry) => {
+      const heading = `### ${entry.file}\n`;
+      const forBody = Math.min(perFileCap, share - heading.length - TRUNCATION_MARKER.length);
+      if (forBody <= 0) return undefined;
+      return `${heading}${bounded(entry.text, forBody)}`;
+    })
+    .filter((section): section is string => section !== undefined);
+
+  return sections.length > 0
+    ? sections.join(SECTION_SEPARATOR)
+    : "Excerpts omitted to fit the context; read the durable files listed under Goal from disk.";
 }
 
 function buildSummary(
@@ -193,51 +343,90 @@ function buildSummary(
     .sort()
     .slice(0, fileListEntries);
 
-  const durableSections = [...new Set([state.goalFile || "GOAL.md", "PROGRESS.md", "IMPROVEMENTS.md", "ASSUMPTIONS.md"])]
-    .map((file) => ({ file, text: readDurableFile(cwd, file, excerptChars) }))
-    .filter((entry): entry is { file: string; text: string } => Boolean(entry.text))
-    .map((entry) => `### ${entry.file}\n${entry.text}`);
-
-  const fileContext =
-    durableSections.length > 0
-      ? durableSections.join("\n\n")
-      : excerptChars > 0
-        ? "No durable loop files were readable."
-        : "Excerpts omitted to fit the context; read the durable files listed under Goal from disk.";
-  const files = [
+  const filesBody = [
     readFiles.length > 0 ? `<read-files>\n${readFiles.join("\n")}\n</read-files>` : "<read-files>\n</read-files>",
     modifiedFiles.length > 0
       ? `<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`
       : "<modified-files>\n</modified-files>",
   ].join("\n\n");
-  const body = `## Goal
-${bounded(state.description || "No saved loop goal.", budgets.goalChars)}
 
-## Completion Criteria
-${bounded(state.completionCriteria || "Continuous improvement until the operator stops the loop.", budgets.criteriaChars)}
+  const stateBody = [
+    `- Iteration: ${state.iterationCount}`,
+    `- Status before recovery: ${state.status}`,
+    `- Last check passed: ${state.lastCheckPassed ?? "unknown"}`,
+    `- Last check score: ${state.lastCheckScore ?? "unknown"}`,
+    `- Last notice: ${bounded(state.lastNotice || "none", budgets.noticeChars)}`,
+  ].join("\n");
 
-## Loop State
-- Iteration: ${state.iterationCount}
-- Status before recovery: ${state.status}
-- Last check passed: ${state.lastCheckPassed ?? "unknown"}
-- Last check score: ${state.lastCheckScore ?? "unknown"}
-- Last notice: ${bounded(state.lastNotice || "none", budgets.noticeChars)}
+  // The direction block is appended after the body, so it is never part of what
+  // has to fit — it is subtracted up front instead.
+  let left = Math.max(0, summaryChars - finalDirection.length);
+  const parts = new Map<SectionKey, string>();
 
-## Durable Project Context
-${fileContext}
+  /**
+   * Claim room for one section, truncating it to whatever is still available
+   * once the sections after it have been left their floor.
+   */
+  const claim = (key: SectionKey, body: string, cap: number, sectionsAfter: number): void => {
+    const heading = SECTION_HEADINGS[key];
+    const overhead = (parts.size > 0 ? SECTION_SEPARATOR.length : 0) + heading.length + 1;
+    const reserved = MIN_SECTION_CHARS * sectionsAfter;
+    const forBody = Math.min(cap, left - overhead - TRUNCATION_MARKER.length - reserved);
+    if (forBody <= 0) return;
+    const text = bounded(body, forBody);
+    parts.set(key, `${heading}\n${text}`);
+    left -= overhead + text.length;
+  };
 
-## File Operations
-${files}`;
+  claim("goal", state.description || "No saved loop goal.", budgets.goalChars, 4);
+  claim("state", stateBody, stateBody.length, 3);
+  claim(
+    "criteria",
+    state.completionCriteria || "Continuous improvement until the operator stops the loop.",
+    budgets.criteriaChars,
+    2,
+  );
+  claim("files", filesBody, filesBody.length, 1);
+  // Last, and it takes everything still unspent — see SECTION_PRIORITY.
+  const durableOverhead = (parts.size > 0 ? SECTION_SEPARATOR.length : 0) + SECTION_HEADINGS.durable.length + 1;
+  claim(
+    "durable",
+    durableExcerpts(cwd, state.goalFile, excerptChars, left - durableOverhead),
+    Number.POSITIVE_INFINITY,
+    0,
+  );
+
+  const body = SECTION_ORDER.filter((key) => parts.has(key))
+    .map((key) => parts.get(key) as string)
+    .join(SECTION_SEPARATOR);
+  // Backstop. The allocation above should already fit; this guarantees it even
+  // if a future section is added without a budget.
   const summary = `${body.slice(0, Math.max(0, summaryChars - finalDirection.length))}${finalDirection}`;
 
   return { summary, readFiles, modifiedFiles };
 }
 
+/** Exported for the tests: allocation order is the load-bearing part of the fix. */
+export { SECTION_ORDER, SECTION_PRIORITY };
+
 const RECOVERY_DIRECTION =
   "\n\n## Next Step\nRe-establish bearings from the working tree: inspect git status and recent git history, read the durable files above, then perform exactly one concrete next progress batch.";
 
-const HANDOFF_DIRECTION =
-  "\n\n## Next Step\nThis is a handoff: the conversation above was dropped, and everything that survived it is written down here or in the files named above. Do not try to recall it. Re-establish bearings from the working tree (git status, git log, the durable files), then perform exactly one concrete next progress batch and write what you did to PROGRESS.md before the next handoff.";
+/**
+ * The handoff's closing instruction, per compression level.
+ *
+ * It is appended after the body, so its length is subtracted from the budget
+ * before anything else is allocated — and at level 2 the long form is 469
+ * characters of a 1,000-character summary. Explaining what a handoff is at
+ * length, in the summary that has the least room to say anything, spends
+ * half the budget on boilerplate the model has read on every previous handoff.
+ * The short forms say the same three things in a fifth of the space.
+ */
+const HANDOFF_DIRECTIONS = [
+  "\n\n## Next Step\nThis is a handoff: the conversation above was dropped, and everything that survived it is written down here or in the files named above. Do not try to recall it. Re-establish bearings from the working tree (git status, git log, the durable files), then perform exactly one concrete next progress batch and write what you did to PROGRESS.md before the next handoff.",
+  "\n\n## Next Step\nHandoff: the conversation above was dropped and is not recoverable. Re-establish bearings from the working tree (git status, git log, the durable files), do one concrete progress batch, and write it to PROGRESS.md.",
+  "\n\n## Next Step\nHandoff; the conversation is gone. Read the working tree, do one concrete batch, write it to PROGRESS.md.",
+];
 
 export function buildEmergencyCompaction(
   state: LoopState,
@@ -346,7 +535,7 @@ export function buildHandoffCompaction(
       noticeChars: budget(HANDOFF_NOTICE_CHAR_BUDGETS, compressionLevel),
       fileListEntries: budget(HANDOFF_FILE_LIST_BUDGETS, compressionLevel),
     },
-    HANDOFF_DIRECTION,
+    budgetText(HANDOFF_DIRECTIONS, compressionLevel),
   );
 
   return {

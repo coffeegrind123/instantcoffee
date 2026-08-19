@@ -45,6 +45,37 @@ function extractCheckCommand(text: string): { rest: string; checkCommand: string
   return { rest, checkCommand };
 }
 
+/**
+ * Split a goal into the objective and its completion criteria at "Done when:".
+ *
+ * Extracted so a caller that already HAS a goal — the `loop` tool, whose schema
+ * has a `goal` field — can use it without handing the text to the flag scanner
+ * below. See `parseStartArgs`' warning.
+ */
+export function splitGoal(text: string): { description: string; criteria: string } {
+  const match = text.match(/^(.*?)(?:\bDone when\b\s*:?\s*)(.*)$/i);
+  return {
+    description: (match?.[1] ?? text).trim().replace(/[.\s]+$/, ""),
+    criteria: (match?.[2] ?? "").trim(),
+  };
+}
+
+/**
+ * Parse a `/loop` argument line: flags anywhere, and whatever is left is the goal.
+ *
+ * **This scans the whole string for flags, so never hand it text that came from
+ * a structured field.** The `loop` tool used to build a `/loop` line by splicing
+ * its `goal` parameter into one and re-parsing it, which made every flag the
+ * command accepts reachable from a text field: `--check "<shell>"` (run through
+ * `bash -lc` once per iteration, forever), `--model` (switches the operator's
+ * session model), `--max`, `--delay`, `--file`, `--until-done`. A goal's own
+ * `--check` even won over the tool's declared `check` parameter, because
+ * `extractCheckCommand` takes the first match and the goal is spliced in first.
+ *
+ * The tool now builds a `StartArgs` directly (see `startArgsFromToolParams` in
+ * extensions/index.ts) and uses {@link splitGoal}. This function is for the
+ * slash command, where a human typing flags is the intent.
+ */
 export function parseStartArgs(args: string): StartArgs {
   const { rest, checkCommand } = extractCheckCommand(args.trim());
   const tokens = rest.split(/\s+/);
@@ -79,6 +110,12 @@ export function parseStartArgs(args: string): StartArgs {
       goalFile = tokens[++i];
     } else if (token.startsWith("--file=")) {
       goalFile = token.slice("--file=".length);
+      // The alias had only the space form. Every other flag here accepts both,
+      // and a `--goal-file=SPEC.md` fell through to `kept` and became part of
+      // the GOAL text — so the run's goal read "… --goal-file=SPEC.md" and the
+      // spec pointed at GOAL.md, which nobody wrote. V8's shape, one flag over.
+    } else if (token.startsWith("--goal-file=")) {
+      goalFile = token.slice("--goal-file=".length);
     } else if (token === "--check-timeout" && tokens[i + 1]) {
       checkTimeoutSeconds = Math.max(1, Number.parseInt(tokens[++i], 10) || 120);
     } else if (token.startsWith("--check-timeout=")) {
@@ -90,10 +127,7 @@ export function parseStartArgs(args: string): StartArgs {
     }
   }
 
-  const text = kept.join(" ").trim();
-  const match = text.match(/^(.*?)(?:\bDone when\b\s*:?\s*)(.*)$/i);
-  const description = (match?.[1] ?? text).trim().replace(/[.\s]+$/, "");
-  const criteria = (match?.[2] ?? "").trim();
+  const { description, criteria } = splitGoal(kept.join(" ").trim());
   return {
     description,
     criteria,

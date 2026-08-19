@@ -59,6 +59,14 @@ const BADGES: Record<AgentVerification, VerificationBadge> = {
   errored: { icon: "?", label: "check errored", tone: "warning" },
   "skipped-empty": { icon: "⊘", label: "empty answer", tone: "warning" },
   "skipped-cutoff": { icon: "⊘", label: "unchecked (cut off)", tone: "dim" },
+  // Split from `skipped-cutoff`. Both are skipped for the same reason — a judge
+  // would tell the parent what the status note already says — but "cut off"
+  // describes a run that was stopped or ran out of turns, and this one died on
+  // the provider. Warning rather than dim because a failed run is not a routine
+  // outcome the eye should learn to skip.
+  // "unchecked (failed)" rather than "unchecked (run failed)": the line budget
+  // the test pins is 22 characters including the icon, and the longer form is 24.
+  "skipped-error": { icon: "⊘", label: "unchecked (failed)", tone: "warning" },
   "skipped-nobrief": { icon: "⊘", label: "unchecked (no task)", tone: "dim" },
 };
 

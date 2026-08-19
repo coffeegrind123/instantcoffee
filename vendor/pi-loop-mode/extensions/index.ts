@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { parseStartArgs, type StartArgs } from "../src/arguments.ts";
+import { parseStartArgs, splitGoal, type StartArgs } from "../src/arguments.ts";
 import {
   contextBudgetMessage,
   contextBudgetStatus,
@@ -17,11 +17,20 @@ import {
   isContextPressure,
   MAX_COMPRESSION_LEVEL,
 } from "../src/context-recovery.ts";
-import { applyCheckOutcome, type CheckOutcome } from "../src/goal-check.ts";
+import {
+  applyCheckOutcome,
+  MAX_CHECK_ERRORS,
+  readCheckCompletion,
+  resetCheckState,
+  wrapCheckCommand,
+  type CheckOutcome,
+} from "../src/goal-check.ts";
+import { beginCompaction, compactionInFlight, endCompaction, LOOP_OWNER } from "../src/compaction-lock.ts";
 import { appendLogEntry, formatLoopStats, LOG_FILE, readLogEntries } from "../src/loop-log.ts";
 import {
   defaultState,
   persistedLoopState,
+  PERSISTED_WINDOW,
   restoreLoopState,
   STATE_ENTRY_TYPE,
   type LoopState,
@@ -29,6 +38,7 @@ import {
 } from "../src/loop-state.ts";
 import {
   contentToText,
+  DEGENERATE_REPEATS,
   detectDegenerateRepetition,
   fingerprint,
   messageToRepetitionText,
@@ -36,6 +46,7 @@ import {
   normalizeText,
   sanitizeDegenerateMessage,
   snippet,
+  stripShorteningMarkers,
   textSimilarity,
 } from "../src/repetition.ts";
 
@@ -43,6 +54,15 @@ export { detectDegenerateRepetition, sanitizeDegenerateText } from "../src/repet
 export type { DegenerateInfo } from "../src/repetition.ts";
 
 const MESSAGE_TYPE = "loop";
+/**
+ * customType of the per-turn "a loop is running" note appended to an
+ * OPERATOR-TYPED turn. Distinct from MESSAGE_TYPE because it is not a loop turn:
+ * it carries no `kind`, no iteration number, and nothing reads it back. Kept
+ * clear of the `-context-budget` suffix that `context-budget.ts` and
+ * `compaction-guard` use to recognise each other. See the `before_agent_start`
+ * handler for why it is a message rather than a system prompt.
+ */
+const LOOP_RULES_MESSAGE_TYPE = "loop-rules";
 const BASE_BACKOFF_SECONDS = 5;
 const MAX_BACKOFF_SECONDS = 300;
 const NO_PROGRESS_WINDOW = 8;
@@ -55,14 +75,31 @@ const REPEAT_WINDOW_COUNT = 3;
 const MAX_TOOLLESS_TURNS = 3;
 /** Consecutive stuck interventions before the hard-reset escalation kicks in. */
 const HARD_RESET_AFTER = 3;
-/** A sentence repeated this often inside ONE response = degenerate generation. */
-const DEGENERATE_REPEATS = 4;
+// DEGENERATE_REPEATS is imported from ../src/repetition.ts, not declared here.
+// It was declared in both files, both `4`, with nothing keeping them equal —
+// and X5's argument (the sanitizer and rule 1 "share DEGENERATE_REPEATS", so
+// everything the rule could match had already been truncated) rests on them
+// being the same constant rather than the same number. One source now.
 /** During streaming, abort once the repeated-sentence count reaches this. */
 const DEGENERATE_STREAM_REPEATS = 6;
 /** Re-run the degeneration check every N new streamed characters. */
 const DEGENERATE_CHECK_INTERVAL = 500;
 /** Consecutive context-pressure turns before the loop stops retrying and waits out a cooldown. */
 const CONTEXT_RECOVERY_ATTEMPTS = 3;
+/**
+ * Consecutive MODEL/PROVIDER errors before the loop pauses for a human.
+ *
+ * Ten, not three. The other two ladders (CONTEXT_RECOVERY_ATTEMPTS,
+ * MAX_CHECK_ERRORS) escalate at three because their failures are structural — a
+ * context that will not fit, a check that will not run — and more attempts do
+ * not change the answer. A provider error is usually transient, and an
+ * unattended run should ride out a restarted llama-server rather than give up on
+ * it. Against `backoffSeconds()` (5, 10, 20, 40, 80, 160, then 300 capped), ten
+ * consecutive failures is roughly half an hour of nothing working, which is the
+ * point at which "the provider is down" is a better description of the situation
+ * than "the loop is retrying". See pauseForProviderFailure.
+ */
+const MAX_PROVIDER_ERRORS = 10;
 /** Cooldowns survived without a single successful turn before the loop finally pauses for a human. */
 const MAX_CONTEXT_COOLDOWNS = 3;
 /** First context cooldown; doubles per escalation, capped at MAX_BACKOFF_SECONDS. */
@@ -79,6 +116,19 @@ const RESCUE_AFTER = 3;
 const COMPACT_AFTER = 5;
 /** Iterations that anti-repetition sampling penalties stay active after a stuck intervention. */
 const PENALTY_TURNS = 3;
+/**
+ * How long to wait before asking again when ANOTHER extension is compacting
+ * this session.
+ *
+ * Sixteenth pass (AG2). Five seconds, matching `BASE_BACKOFF_SECONDS`: long
+ * enough that a real compaction is not polled a hundred times, short enough that
+ * the iteration it holds back is delayed rather than lost. The wait cannot
+ * become a stall — `compaction-lock.ts` treats a holder older than `STALE_MS`
+ * (five minutes) as absent, so the worst case is one five-minute pause and then
+ * the turn goes, which is the same bound the loop's own two compaction call
+ * sites already rely on.
+ */
+const COMPACTION_WAIT_MS = 5_000;
 type TurnKind =
   | "start"
   | "continue"
@@ -107,6 +157,58 @@ let emergencyCompactionPending = false;
 /** True while the compaction pi is running is one WE asked for; session_compact then stays out of it. */
 let ownCompactionInFlight = false;
 /**
+ * A loop turn is being held back for somebody else's compaction (AG2).
+ *
+ * Only so the operator is told ONCE rather than every `COMPACTION_WAIT_MS`.
+ * Cleared by `resetContextRecovery` — the wait is not run state, but every
+ * lifecycle transition that drops a recovery marker should drop this too, or a
+ * resumed run's first deferral would go unannounced.
+ */
+let waitingForCompaction = false;
+/**
+ * The set of kinds whose TEXT the ladder has already been charged for.
+ *
+ * Seventeenth pass (AH6). These are the six deliveries `deliverLoopTurn` and
+ * `interveneStuck` make with `queueOnly` — the ones V4 and AF3 exist to
+ * guarantee arrive, because everything above them in `agent_end` runs
+ * unconditionally: `doneSignalCount`, `blockedSignalCount`, `interventionCount`,
+ * `penaltyTurnsRemaining`, `turnsWithoutTools`, `lastStateChangeIteration`, and
+ * the operator's notice saying what the model has been told. A `continue` is not
+ * one of them: it carries no decision and dropping it costs nothing.
+ */
+const DIRECTIVE_KINDS: ReadonlySet<TurnKind> = new Set<TurnKind>([
+  "improve",
+  "unblock",
+  "check_failed",
+  "regression",
+  "audit",
+  "stuck",
+]);
+/**
+ * A DIRECTIVE that was held back for somebody else's compaction, and has not
+ * been said yet (AH6).
+ *
+ * AG2's deferral reschedules through `pendingTimer`, which is the loop's ONE
+ * timer slot, and `agent_end` clears it at its first line. That is right for a
+ * `continue` — the ladder is about to re-derive one — and wrong for the six
+ * kinds above, which are answers to a decision that has already been charged and
+ * already been announced.
+ *
+ * It is not a hypothetical ordering. `deliverLoopTurn` and `interveneStuck` take
+ * the `queueOnly` path precisely when `ctx.hasPendingMessages()` is true, i.e.
+ * when a turn is already coming — so `_handlePostAgentRun()` will run
+ * `agent.continue()` and produce another `agent_end` within milliseconds, well
+ * inside `COMPACTION_WAIT_MS`. Measured against this module: a `LOOP_BLOCKED`
+ * turn under a held lock charged `blockedSignalCount`, told the operator
+ * "continuing with assumptions", and then sent `continue` — the model was never
+ * told to assume anything.
+ *
+ * Remembered rather than re-timed, so exactly one turn is still sent and it is
+ * the one that carries the text. A newer directive supersedes it, because that
+ * is a fresher reading of the same run.
+ */
+let deferredDirective: TurnKind | undefined;
+/**
  * Context pressure seen in agent_end, held until agent_settled. pi runs its own overflow recovery
  * AFTER agent_end and before it settles; compacting from agent_end raced that recovery and lost,
  * and pi reports the loser as "Already compacted" — which used to strand the loop.
@@ -114,6 +216,116 @@ let ownCompactionInFlight = false;
 let contextRecoveryPending: { reason: string; token: number } | undefined;
 /** Stream position of the last degeneration check (throttle). */
 let lastDegenerateCheckLength = 0;
+/**
+ * The CURRENT turn's assistant text and tool results, drained in `agent_end`.
+ *
+ * Forge fork: the repetition memory used to be filled per assistant MESSAGE and
+ * per tool CALL, and read once per TURN — while every rule and every notice built
+ * on it is written in turns ("assistant repeated the same response", "same grep
+ * result repeated", "stuck intervention #3 in a row").
+ *
+ * `pi.on("message_end")` fires once per assistant message, and a tool-using turn
+ * produces several: one that announces a call, another after the results, and a
+ * final answer. Measured against this module, the mismatch cut both ways:
+ *
+ *   BLIND    four turns whose FINAL answer was byte-identical produced no
+ *            intervention at all when each turn emitted five messages — the
+ *            8-slot fingerprint window was flushed by the intermediate ones
+ *            before the next comparison — while the same four turns at one
+ *            message each were caught on turn 2. That is the exact failure the
+ *            detector exists for, and a tool-using loop is the normal case; the
+ *            loop's own rules require a tool call every turn.
+ *   LOUD     one productive turn — edit a file, then three greps confirming
+ *            nothing references it — was reported stuck ("same grep result
+ *            repeated"), because `recentToolResults.slice(-3)` cannot tell that
+ *            three empty greps came from one turn. The same turn with the greps
+ *            FIRST was not, so the verdict depended on the order the model
+ *            happened to work in.
+ *
+ * So the windows are now filled once per turn, from here: one entry for the
+ * turn's final answer, and one aggregate signature for everything it called.
+ */
+let turnAssistantTexts: string[] = [];
+let turnToolCalls: ToolSnapshot[] = [];
+/**
+ * The CURRENT turn's ANSWERS — text blocks only, no thinking — in order.
+ *
+ * Forge fork: `turnAssistantTexts` above is the repetition memory's feed and is
+ * deliberately `text || thinking`; this is the other question, "what did the
+ * turn actually say", and it needs the other unit.
+ *
+ * It exists because `agent_end` was reading that question off
+ * `messageToText(lastAssistant)` — the LAST message of the turn, not the last
+ * message that answered. Identical for a one-message turn, which is every turn
+ * in the suite. Not identical when a turn ends on a message that is not the
+ * answer, and since 2026-08-17 a reasoning-only message is a shape that exists:
+ * `SpawnCoordinator.emitIndividualNudge` delivers a background subagent's result
+ * with `deliverAs: "steer", triggerTurn: true` while the parent is busy, and
+ * pi's loop (`while (hasMoreToolCalls || pendingMessages.length > 0)`) then runs
+ * another assistant message inside the SAME turn.
+ *
+ * Measured against this module: an `--until-done` loop whose turn said
+ * `LOOP_DONE:` and then thought out loud did not complete, and at >= 80% the same
+ * turn was read as starved and charged to the context-recovery ladder. See W1 in
+ * `context/design/subagents-loop-verifier-readers.md`.
+ */
+let turnAnswerTexts: string[] = [];
+/**
+ * The CURRENT turn's messages as REPETITION text — `text` and `thinking`
+ * together, per message, in order.
+ *
+ * Forge fork: the third question `agent_end` asks about a turn, and the third
+ * unit. `turnAssistantTexts` is `text || thinking` (the repetition WINDOW's
+ * feed, one entry per turn), `turnAnswerTexts` is text only (did the turn
+ * ANSWER), and this is everything the model emitted (did any ONE message of this
+ * turn degenerate, and did the turn think at all).
+ *
+ * It exists because `detectStuck`'s degenerate-repetition rule and the
+ * "reasoning-only" half of the starvation notice were both still reading
+ * `messageToRepetitionText(lastAssistant)` — the LAST MESSAGE — after W1 moved
+ * the completion markers off it. Measured against this module: an answer that
+ * repeated one sentence nine times was caught on the turn it arrived when it was
+ * the turn's only message, and NOT AT ALL when one reasoning-only message
+ * followed it in the same turn. See X2 in
+ * `context/design/subagents-loop-verifier-turns.md`.
+ */
+let turnRepetitionTexts: string[] = [];
+
+/**
+ * Drop everything that belongs to the current TURN. Safe to call from any
+ * lifecycle transition.
+ *
+ * Forge fork: `state.toolCallsThisTurn` is per-turn state too, and it used to be
+ * cleared in exactly one other place — `agent_end` — so every transition that
+ * ended a turn WITHOUT reaching `agent_end` left it holding the count.
+ * `/loop stop` sets `state.active = false`, which makes `agent_end` return at its
+ * first line, so an operator who stopped a loop mid-turn and resumed it started
+ * the next turn with the previous one's tool calls already counted. That is T2's
+ * defect, restored by the stop/resume path: `emptyResponse` requires the count to
+ * be zero and `isContextPressure`'s starvation rung requires `emptyResponse`, so
+ * the first turn after a resume could not be seen as starved. Measured: a starved
+ * turn at 90% context produced "context pressure detected (1/3)" on a fresh
+ * counter and NO NOTICE AT ALL after a stop/resume that left two calls behind —
+ * counting instead as a successful iteration, which also resets the whole
+ * recovery ladder. See X4 in
+ * `context/design/subagents-loop-verifier-turns.md`.
+ *
+ * `degenerateAbortPending` is deliberately NOT reset here: it is set mid-stream
+ * and consumed by a branch of `agent_end` that runs BELOW this call, so clearing
+ * it with the buffers would delete the flag before the handler that reads it.
+ * `agent_end` instead reads it into a local next to this call and clears the
+ * flag there — the same shape, applied where it can actually be applied. Every
+ * exit between the drain and the reader used to leave it set, so an abort on a
+ * turn that ended in a provider error made the operator's NEXT Esc read as a
+ * degenerate abort.
+ */
+function resetTurnBuffers(): void {
+  turnAssistantTexts = [];
+  turnToolCalls = [];
+  turnAnswerTexts = [];
+  turnRepetitionTexts = [];
+  state.toolCallsThisTurn = 0;
+}
 
 function clearPendingTimer(): void {
   if (pendingTimer) {
@@ -127,6 +339,10 @@ function resetContextRecovery(): void {
   emergencyCompactionPending = false;
   ownCompactionInFlight = false;
   contextRecoveryPending = undefined;
+  waitingForCompaction = false;
+  // AH6: a directive belongs to the run it was decided for. A start, a resume, a
+  // stop and a session swap all end that run.
+  deferredDirective = undefined;
 }
 
 /** Openings of recent responses; injected as banned phrases during hard-reset escalation. */
@@ -150,22 +366,108 @@ function hasStateChange(toolName: string, text: string, isError: boolean): boole
   return /\b(written|edited|changed|updated|created|deleted|renamed|committed|fixed|successfully|passed|installed)\b/i.test(text);
 }
 
+/** The label a signature carries when a turn used more than one distinct tool. */
+const MIXED_TOOLS = "mixed";
+
 function recordToolResult(toolName: string, text: string, isError: boolean): void {
-  pushLimited(
-    state.recentToolResults,
-    {
-      tool: toolName,
-      fingerprint: fingerprint(text),
-      snippet: snippet(text),
-      isError,
-      time: Date.now(),
-    },
-    10,
-  );
+  // Buffered for this turn; `commitTurnMemory` collapses the turn into one
+  // signature. The progress marker below stays per CALL — "did anything change"
+  // is a question about the call, not about the turn.
+  //
+  // The fingerprint is taken over the text with any context-layer shortening
+  // marker removed: `compaction-guard`'s cap names a spill file keyed by the
+  // tool-call id, so an unstripped fingerprint would be unique per call and
+  // rule 7 could never match. See stripShorteningMarkers.
+  const comparable = stripShorteningMarkers(text);
+  turnToolCalls.push({
+    tool: toolName,
+    fingerprint: fingerprint(comparable),
+    snippet: snippet(text),
+    isError,
+    time: Date.now(),
+  });
 
   if (hasStateChange(toolName, text, isError)) {
     state.lastStateChangeIteration = state.iterationCount + 1;
   }
+}
+
+/**
+ * One turn's tool activity as a single comparable entry.
+ *
+ * The fingerprint covers the ordered (tool, result) pairs, so two turns match
+ * only when the model made the same calls and got the same answers back — which
+ * is a much stronger "stuck" signal than three identical results in a row, and
+ * cannot be tripped by one turn that happened to run the same search three times.
+ */
+function turnToolSignature(calls: readonly ToolSnapshot[]): ToolSnapshot {
+  const names = [...new Set(calls.map((call) => call.tool))];
+  return {
+    tool: names.length === 1 ? names[0] : MIXED_TOOLS,
+    fingerprint: fingerprint(calls.map((call) => `${call.tool}:${call.fingerprint}`).join("|")),
+    snippet: snippet(calls[calls.length - 1].snippet),
+    isError: calls.every((call) => call.isError),
+    time: Date.now(),
+  };
+}
+
+/**
+ * Commit ONE turn to the repetition windows: its final answer, and one signature
+ * for everything it called.
+ *
+ * A turn with no tool calls contributes no tool entry — three narration-only
+ * turns are already `MAX_TOOLLESS_TURNS`' business, and pushing three identical
+ * empty signatures would report the same fact twice under a worse name.
+ *
+ * Returns the text it committed, or undefined when the turn had none. The caller
+ * compares THAT string rather than re-deriving one from the event: the window and
+ * the rules that read it have to be about the same thing, and they were not. See
+ * the note at the `detectStuck` call in `agent_end`.
+ *
+ * Forge fork: "the turn's final answer" is the turn's last ANSWER, and only the
+ * turn's reasoning when the turn did not answer at all.
+ *
+ * `texts` is filled per message with `messageToText(m) || messageToRepetitionText(m)`,
+ * so a turn that answered and then produced one reasoning-only message — pi runs
+ * another assistant message inside the same turn whenever a steer arrives
+ * mid-turn, and a background subagent's result is delivered exactly that way —
+ * put that trailing THOUGHT in the fingerprint, snippet and text windows as
+ * though it were the answer. Every rule in `detectStuck` then compared thoughts
+ * with thoughts, in both directions. Measured against this module, with a
+ * control at one message per turn:
+ *
+ *   MISSED   four byte-identical answers, each followed by a different
+ *            reasoning-only message: no intervention at all, where the same four
+ *            turns as single messages were caught on turn 2 and escalated to a
+ *            streak of 3.
+ *   INVENTED four genuinely different answers — a file edited every turn —
+ *            each followed by the SAME trailing thought: "assistant repeated the
+ *            same response" from turn 2 onward, charging sampling penalties, and
+ *            at streak 3 a rescue-model switch, against a model doing real work.
+ *
+ * `answers` is preferred and `texts` is the fallback, so V1/V2's case is
+ * untouched: a turn whose only output was reasoning still commits the reasoning
+ * and is still compared on it. See X1 in
+ * `context/design/subagents-loop-verifier-turns.md`.
+ */
+function commitTurnMemory(
+  texts: readonly string[],
+  calls: readonly ToolSnapshot[],
+  answers: readonly string[] = [],
+): string | undefined {
+  const lastNonEmpty = (items: readonly string[]) => [...items].reverse().find((text) => text.trim());
+  const finalText = lastNonEmpty(answers) ?? lastNonEmpty(texts);
+  if (finalText) {
+    // The bounds come from PERSISTED_WINDOW so the in-memory window and the one
+    // that survives a restart cannot drift apart.
+    pushLimited(state.lastAssistantFingerprints, fingerprint(finalText), PERSISTED_WINDOW.fingerprints);
+    pushLimited(state.lastAssistantSnippets, snippet(finalText), PERSISTED_WINDOW.snippets);
+    pushLimited(state.lastAssistantTexts, finalText.slice(0, PERSISTED_WINDOW.textChars), PERSISTED_WINDOW.texts);
+  }
+  if (calls.length > 0) {
+    pushLimited(state.recentToolResults, turnToolSignature(calls), PERSISTED_WINDOW.toolResults);
+  }
+  return finalText;
 }
 
 function restoreState(ctx: ExtensionContext): void {
@@ -223,15 +525,15 @@ function resolveModel(ctx: ExtensionContext, spec: string) {
 async function switchModel(pi: ExtensionAPI, ctx: ExtensionContext, spec: string): Promise<boolean> {
   const model = resolveModel(ctx, spec);
   if (!model) {
-    ctx.ui.notify(`Loop: model not found: ${spec} (try provider/id, e.g. anthropic/claude-sonnet-4-5)`, "error");
+    notify(ctx, `Loop: model not found: ${spec} (try provider/id, e.g. anthropic/claude-sonnet-4-5)`, "error");
     return false;
   }
   const ok = await pi.setModel(model);
   if (!ok) {
-    ctx.ui.notify(`Loop: no API key configured for ${model.provider}/${model.id}`, "error");
+    notify(ctx, `Loop: no API key configured for ${model.provider}/${model.id}`, "error");
     return false;
   }
-  ctx.ui.notify(`Loop: model set to ${model.provider}/${model.id}`, "info");
+  notify(ctx, `Loop: model set to ${model.provider}/${model.id}`, "info");
   return true;
 }
 
@@ -288,7 +590,12 @@ function kindDirective(kind: TurnKind): string {
     case "regression":
       return `Goal check regression: the score dropped to ${state.lastCheckScore} (best so far ${state.bestCheckScore} at iteration ${state.bestScoreIteration}). A recent change made things worse. Inspect recent changes (git diff / git log), find and fix the regression before doing anything else. Check output: ${state.lastCheckOutput}`;
     case "check_failed":
-      return `You reported LOOP_DONE, but the goal check command still fails (streak ${state.checkFailStreak}). Completion is decided by the check, not by your claim. Fix exactly what the check reports. Check output: ${state.lastCheckOutput}`;
+      // Two different facts, two different instructions. Telling a model to "fix
+      // exactly what the check reports" when the report is a spawn error is an
+      // unanswerable instruction, and it used to be the only one it got.
+      return state.checkErrorStreak > 0
+        ? `You reported LOOP_DONE, but the goal check could not be RUN (${state.checkErrorStreak} attempt${state.checkErrorStreak === 1 ? "" : "s"} in a row): ${state.lastCheckError}. Completion is decided by the check, so the check itself is the work: fix or replace \`${state.checkCommand}\` so it runs and exits 0 when the goal is met.`
+        : `You reported LOOP_DONE, but the goal check command still fails (streak ${state.checkFailStreak}). Completion is decided by the check, not by your claim. Fix exactly what the check reports. Check output: ${state.lastCheckOutput}`;
     case "rescue":
       return (
         `RESCUE TURN: you are a stronger model called in because the loop model was stuck ${state.consecutiveStuckCount}x in a row (${state.lastNotice}). ` +
@@ -309,13 +616,23 @@ function loopInstructions(kind: TurnKind): string {
       : '- If the completion criteria are fully met, start your final message with "LOOP_DONE:".'
     : '- Endless mode: if the core goal appears complete, say "LOOP_DONE: <one-line summary>" — the loop will then continue with improvement work (features, tests, bug fixes, refactoring, docs). Never stop on your own.';
 
+  // The model is told the truth about the check, including when it is the CHECK
+  // that is broken rather than the work: a directive to "fix exactly what the
+  // check reports" is unanswerable when the report is a spawn error, and the one
+  // thing the model can usefully do about a check that will not run is repair or
+  // replace it.
   const checkLine = state.checkCommand
     ? `Goal check: \`${state.checkCommand}\` → ${
-        state.lastCheckPassed === undefined
-          ? "not run yet"
-          : state.lastCheckPassed
-            ? "PASSING"
-            : `FAILING (streak ${state.checkFailStreak})`
+        state.checkErrorStreak > 0
+          ? `COULD NOT RUN ${state.checkErrorStreak}× in a row (${snippet(state.lastCheckError, 120)}). ` +
+            `Last known result: ${
+              state.lastCheckPassed === undefined ? "never ran" : state.lastCheckPassed ? "passing" : "failing"
+            }. Fix or replace the check script itself — the loop cannot judge completion without it`
+          : state.lastCheckPassed === undefined
+            ? "not run yet"
+            : state.lastCheckPassed
+              ? "PASSING"
+              : `FAILING (streak ${state.checkFailStreak})`
       }${state.lastCheckScore !== undefined ? ` · score ${state.lastCheckScore} (best ${state.bestCheckScore} @ iteration ${state.bestScoreIteration})` : ""}\n`
     : "";
 
@@ -337,37 +654,207 @@ function loopInstructions(kind: TurnKind): string {
   );
 }
 
-function sendLoopTurn(pi: ExtensionAPI, kind: TurnKind, ctx?: ExtensionContext): void {
+/**
+ * Send one loop turn.
+ *
+ * `queueOnly` is for the case where a turn is already going to happen without
+ * us — a message is pending — but the DIRECTIVE still has to reach the model.
+ * It rides on that turn rather than scheduling a second one, which would
+ * double-run the iteration.
+ *
+ * Forge fork: it used to ride on it as `deliverAs: "nextTurn"`, and in an
+ * unattended loop that never arrives.
+ *
+ * pi has exactly one drain for `_pendingNextTurnMessages` and it is inside
+ * `AgentSession.prompt()` (0.84.2, `agent-session.js:880`) — the OPERATOR-typed
+ * path, which builds a user message and injects the queue alongside it. Nothing
+ * else touches the array: not `sendCustomMessage`'s own `triggerTurn` branch
+ * (`:1089` → `_runAgentPrompt`), not `Agent.continue()`, not the agent loop's
+ * `getSteeringMessages()` / `getFollowUpMessages()`. So the one place the loop
+ * queues a directive is the one place nothing the loop does can deliver it: the
+ * whole ladder is charged — the streak, the intervention count, three turns of
+ * sampling penalties, `turnsWithoutTools` back to zero, and the operator's
+ * "injecting new strategy" notice — and the text sits in the queue, invisible to
+ * the operator too (it is not appended to the transcript until it is drained),
+ * until a human types something. That is V4's own failure, surviving V4's fix on
+ * the far side of the `pi.sendMessage` boundary the probe and the test both stop
+ * at. See Z4 in `context/design/subagents-loop-verifier-answers.md`.
+ *
+ * `steer` is what "queue it onto the turn that is already coming" actually
+ * means here. `agent_end` runs while `_isAgentRunActive` is still true (it is
+ * cleared in `_emitAgentSettled`, `:327`), so `sendCustomMessage` takes
+ * `agent.steer()`; `_handlePostAgentRun` then returns `hasQueuedMessages()`
+ * (`:781`) and `Agent.continue()`'s assistant-last branch (`agent.js:236`)
+ * drains the WHOLE steering queue and runs it as one prompt — so the pending
+ * message and this directive land on the same turn, which is the behaviour V4
+ * described. `triggerTurn: true` is the backstop for the case the premise is
+ * false: if nothing is going to run a turn after all, the loop runs its own
+ * rather than queueing text nobody will read.
+ */
+function sendLoopTurn(
+  pi: ExtensionAPI,
+  kind: TurnKind,
+  ctx?: ExtensionContext,
+  opts: { queueOnly?: boolean; noticeCtx?: ExtensionContext } = {},
+): void {
   if (!state.active || state.softStopRequested) return;
+
+  // Forge fork, sixteenth pass (AG2): not into a compaction that is already
+  // running.
+  //
+  // pi has one refusal for this and it is on the entry point the loop does not
+  // use. `AgentSession.prompt()` throws "Cannot submit a prompt while compaction
+  // is in progress" while `_compactionAbortController` is set (`:807`); every
+  // turn this package drives goes through `pi.sendMessage`, i.e.
+  // `sendCustomMessage`, whose `triggerTurn` branch is
+  // `await this._runAgentPrompt(appMessage)` (`:1090`) — and neither
+  // `sendCustomMessage` nor `_runAgentPrompt` makes that check.
+  //
+  // So a turn sent now starts a whole agent run inside somebody else's
+  // compaction: two model calls queued at a one-slot llama server, the turn
+  // built from the PRE-compaction context (the thing that was too big), and
+  // `compact()` finishing with `this.agent.state.messages =
+  // sessionContext.messages` — it REPLACES the array the run is streaming into.
+  //
+  // The flag is the one this package already half-owns. `requestEmergencyCompaction`
+  // and `interveneStuck`'s compaction rung both read `compactionInFlight()`
+  // before they act; these were the two call sites of four that did not. Its
+  // most reachable route is this package's own adoption branch:
+  // `requestEmergencyCompaction` sees a holder, calls `finishContextRecovery(…,
+  // resumeTurn = true)`, and that schedules a `recover` turn with delay 0 —
+  // straight into the compaction it has just decided not to duplicate.
+  //
+  // Deferred, never dropped: the iteration still happens, five seconds later.
+  // Measured in `context/testing/probes/t2-the-turn-that-does-not-have-to-ask.mjs`.
+  const holder = compactionInFlight();
+  if (holder) {
+    // AH6: remember the TEXT, not only the timer. `scheduleLoopTurn` below writes
+    // the loop's one `pendingTimer` slot, and `agent_end` clears it at its first
+    // line — which is right for a `continue` and destroys a directive the ladder
+    // has already been charged and announced. See DIRECTIVE_KINDS.
+    if (DIRECTIVE_KINDS.has(kind)) deferredDirective = kind;
+    if (!waitingForCompaction) {
+      waitingForCompaction = true;
+      logIteration("turn_deferred", { kind, holder: holder.owner });
+      // `opts.noticeCtx` is the timer path's handle: the DELIVERY deliberately
+      // gets no ctx there (see scheduleLoopTurn), but an unattended run still
+      // has to leave a trace, and `notify` already tolerates a stale one.
+      const reportTo = ctx ?? opts.noticeCtx;
+      if (reportTo) {
+        notify(
+          reportTo,
+          `Loop: ${holder.owner} is compacting — holding iteration ${state.iterationCount + 1} until it finishes.`,
+          "info",
+        );
+      }
+    }
+    // AH6: the re-ask is the SAME call, five seconds later, so it carries the
+    // same options. `queueOnly` is the caller saying "a turn is already coming,
+    // ride it"; `noticeCtx` is the timer path's only handle for a notice. Both
+    // were dropped here, and the deferral is the one path that reaches
+    // `scheduleLoopTurn` with either of them set.
+    scheduleLoopTurn(pi, kind, COMPACTION_WAIT_MS, ctx, opts);
+    return;
+  }
+  waitingForCompaction = false;
+
+  // AH6: a directive that was deferred and then had its timer cleared by an
+  // intervening `agent_end` rides the next turn the loop sends. A directive of
+  // this call's own supersedes it — that is a fresher reading of the same run —
+  // and either way exactly one turn is sent.
+  const effectiveKind = DIRECTIVE_KINDS.has(kind) ? kind : (deferredDirective ?? kind);
+  deferredDirective = undefined;
+
   const idle = ctx?.isIdle() ?? false;
-  const options = idle
-    ? { triggerTurn: true as const }
-    : { triggerTurn: true as const, deliverAs: "followUp" as const };
+  const options = opts.queueOnly
+    ? { triggerTurn: true as const, deliverAs: "steer" as const }
+    : idle
+      ? { triggerTurn: true as const }
+      : { triggerTurn: true as const, deliverAs: "followUp" as const };
 
   pi.sendMessage(
     {
       customType: MESSAGE_TYPE,
-      content: loopInstructions(kind),
+      content: loopInstructions(effectiveKind),
       display: true,
-      details: { kind, iteration: state.iterationCount + 1 },
+      details: { kind: effectiveKind, iteration: state.iterationCount + 1 },
     },
     options,
   );
 }
 
-function scheduleLoopTurn(pi: ExtensionAPI, kind: TurnKind, delayMs: number, ctx?: ExtensionContext): void {
+function scheduleLoopTurn(
+  pi: ExtensionAPI,
+  kind: TurnKind,
+  delayMs: number,
+  ctx?: ExtensionContext,
+  opts: { queueOnly?: boolean; noticeCtx?: ExtensionContext } = {},
+): void {
   clearPendingTimer();
   if (delayMs <= 0) {
-    sendLoopTurn(pi, kind, ctx);
+    sendLoopTurn(pi, kind, ctx, opts);
     return;
   }
   const token = runToken;
   pendingTimer = setTimeout(() => {
     pendingTimer = undefined;
     if (!state.active || token !== runToken) return;
-    // No ctx available in the timer; followUp + triggerTurn is safe both idle and busy.
-    sendLoopTurn(pi, kind);
+    // No ctx for the DELIVERY: a captured one may be stale by now, and
+    // followUp + triggerTurn is safe both idle and busy. It is still the best
+    // handle this timer has for a NOTICE, and AG2's deferral has to be able to
+    // say so on the `--delay N` path, which is the ordinary one.
+    sendLoopTurn(pi, kind, undefined, { ...opts, noticeCtx: opts.noticeCtx ?? ctx });
   }, delayMs);
+}
+
+/**
+ * Send a DIRECTIVE, whether or not a turn is already coming.
+ *
+ * Forge fork, fifteenth pass (AF3). `agent_end` had six exits shaped
+ *
+ *     if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, KIND, delay, ctx);
+ *     return;
+ *
+ * and V4 (sixth pass) fixed exactly one of them — `interveneStuck` — with this
+ * argument, which is right and is the reason the other five needed the same
+ * thing:
+ *
+ *   > The guard is right for every OTHER exit of agent_end, where the loop only
+ *   > needs *a* turn to happen and a pending message will cause one; here the
+ *   > loop needs THIS TEXT to reach the model.
+ *
+ * Five of those exits also need THIS TEXT. `improve` is the whole response to a
+ * LOOP_DONE in endless mode ("open IMPROVEMENTS.md … take the TOP open item");
+ * `unblock` is the whole response to LOOP_BLOCKED; `check_failed` is what tells
+ * the model the check disagrees with it; `regression` names the score that
+ * dropped; `audit` demands a tangible artefact. None of them is "keep going",
+ * and every one of them is charged BEFORE the guard — `doneSignalCount`,
+ * `blockedSignalCount`, `interventionCount`, the operator's notice, and for
+ * `audit` the reset of `lastStateChangeIteration`, which is what stops the same
+ * nudge firing again for another NO_PROGRESS_WINDOW iterations. Dropping the
+ * text charged the ladder for nothing, twice over.
+ *
+ * `continue` deliberately still drops: any turn advances an endless loop, and
+ * riding along would put 1,200 characters of loop rules onto a turn the operator
+ * typed for their own reasons.
+ *
+ * `hasPendingMessages()` is true only when a HUMAN typed into a streaming
+ * session (AA3: the two arrays it counts are written by `_queueSteer` /
+ * `_queueFollowUp`, which nothing an extension calls ever reaches). At
+ * `agent_end` that means they typed after the agent loop's last follow-up drain
+ * — which, on this stack, is most likely while this very handler was awaiting a
+ * goal check that may run for `checkTimeoutSeconds`.
+ */
+function deliverLoopTurn(pi: ExtensionAPI, ctx: ExtensionContext, kind: TurnKind, delayMs: number): void {
+  if (!ctx.hasPendingMessages()) {
+    scheduleLoopTurn(pi, kind, delayMs, ctx);
+    return;
+  }
+  // A turn is already coming. Queue the directive onto it rather than scheduling
+  // a second one, which would double-run the iteration. The delay is given up
+  // here for the reason `interveneStuck` gives it up: its job is to space out
+  // turns the loop itself schedules, and this one is not ours.
+  sendLoopTurn(pi, kind, ctx, { queueOnly: true });
 }
 
 /**
@@ -393,6 +880,7 @@ function finalizeSoftStop(pi: ExtensionAPI, ctx: ExtensionContext, noticeSuffix 
   runToken++;
   clearPendingTimer();
   degenerateAbortPending = false;
+  resetTurnBuffers();
   resetContextRecovery();
   state.softStopRequested = false;
   state.active = false;
@@ -400,13 +888,49 @@ function finalizeSoftStop(pi: ExtensionAPI, ctx: ExtensionContext, noticeSuffix 
   state.lastNotice = `Soft stop: iteration finished, loop stopped by operator.${noticeSuffix}`;
   persistState(pi);
   logIteration("soft_stop");
-  ctx.ui.notify("Loop stopped after finishing the current iteration. Use /loop resume to continue.", "info");
+  notify(ctx, "Loop stopped after finishing the current iteration. Use /loop resume to continue.", "info");
   ctx.ui.setStatus("loop", "Loop stopped (soft)");
 }
 
 function backoffSeconds(): number {
-  const exponent = Math.min(Math.max(state.consecutiveErrorCount - 1, 0), 6);
+  const exponent = Math.min(Math.max(state.providerErrorStreak - 1, 0), 6);
   return Math.min(MAX_BACKOFF_SECONDS, BASE_BACKOFF_SECONDS * 2 ** exponent);
+}
+
+/**
+ * Tell the operator, and make sure an unattended run leaves a trace either way.
+ *
+ * Forge fork: every notice used to go straight to `ctx.ui.notify`, and pi's
+ * `noOpUIContext.notify` is `() => {}` (`extensions/runner.js:92`). So outside a
+ * TUI — `pi -p`, a cron run, anything headless — the entire operator-facing
+ * narrative of an unattended loop was discarded silently: "Loop stuck (2x)",
+ * "goal check could not run (1/3)", "handing off to a fresh context", every
+ * pause. `ctx.hasUI` says so and nothing read it.
+ *
+ * `logIteration` already carries `state.lastNotice` into `.pi-loop-log.jsonl`,
+ * but only where a call site sets that field AND logs, and the two do not
+ * coincide everywhere. With no UI this writes the sentence itself, so the log is
+ * the complete account rather than most of one. With a UI it changes nothing.
+ */
+function notify(ctx: ExtensionContext, message: string, kind: "info" | "warning" | "error" = "info"): void {
+  try {
+    ctx.ui.notify(message, kind);
+  } catch {
+    // A missing or throwing UI is not a reason to lose the line below.
+  }
+  try {
+    if (ctx.hasUI === false) {
+      appendLogEntry(LOG_FILE, {
+        ts: new Date().toISOString(),
+        iteration: state.iterationCount,
+        event: "notice",
+        kind,
+        message,
+      });
+    }
+  } catch {
+    // Best-effort; `appendLogEntry` never throws, and neither does this.
+  }
 }
 
 /** Appends one JSONL entry per loop event; used by /loop stats. Never throws. */
@@ -437,8 +961,67 @@ function pauseForContextFailure(pi: ExtensionAPI, ctx: ExtensionContext, notice:
   state.lastNotice = notice;
   persistState(pi);
   logIteration("context_circuit_open", { notice });
-  ctx.ui.notify(`${notice} Use /compact, then /loop resume after reducing or repairing the context.`, "error");
+  notify(ctx, `${notice} Use /compact, then /loop resume after reducing or repairing the context.`, "error");
   ctx.ui.setStatus("loop", "Loop paused — context recovery required");
+}
+
+/**
+ * The goal check has not run for MAX_CHECK_ERRORS turns in a row.
+ *
+ * An unattended loop is designed never to stop on its own, and this is the one
+ * place where carrying on is worse than stopping: in `--until-done` the check IS
+ * the terminating condition, and a check that cannot run has removed it. The old
+ * behaviour — count it as a failure and keep going — turned a loop that could
+ * finish into one that could not, silently, while telling the model to fix a
+ * spawn error.
+ */
+function pauseForCheckFailure(pi: ExtensionAPI, ctx: ExtensionContext): void {
+  runToken++;
+  clearPendingTimer();
+  state.active = false;
+  state.status = "paused";
+  state.lastNotice = `Goal check could not run ${state.checkErrorStreak}× in a row: ${snippet(state.lastCheckError, 140)}`;
+  persistState(pi);
+  logIteration("check_unrunnable", { error: state.lastCheckError, streak: state.checkErrorStreak });
+  notify(ctx, 
+    `Loop paused: the goal check (${state.checkCommand}) could not run ${state.checkErrorStreak} times in a row — ` +
+      `${snippet(state.lastCheckError, 160)}. Fix or change the check, then /loop resume.`,
+    "error",
+  );
+  ctx.ui.setStatus("loop", "Loop paused — goal check cannot run");
+}
+
+/**
+ * The provider has failed every turn for long enough that the run is not a run.
+ *
+ * Forge fork: there was no terminal state here at all. The context ladder
+ * escalates to `pauseForContextFailure` after MAX_CONTEXT_COOLDOWNS and the goal
+ * check to `pauseForCheckFailure` after MAX_CHECK_ERRORS; a provider error
+ * retried forever, with the backoff pinned at MAX_BACKOFF_SECONDS, producing an
+ * unattended run that looks alive in `/loop status` and has made no progress
+ * since the outage began.
+ *
+ * The threshold is deliberately much higher than the other two. A provider error
+ * is usually transient — a restarted llama-server, a network blip — and an
+ * unattended run should ride those out rather than give up at three. Ten
+ * consecutive failures against the escalating backoff is roughly half an hour of
+ * solid failure (5+10+20+40+80+160+300×4 s), by which point "the provider is
+ * down" is a better description than "the loop is retrying".
+ */
+function pauseForProviderFailure(pi: ExtensionAPI, ctx: ExtensionContext, reason: string): void {
+  runToken++;
+  clearPendingTimer();
+  state.active = false;
+  state.status = "paused";
+  state.lastNotice = `Model/provider failed ${state.providerErrorStreak}× in a row: ${snippet(reason, 140)}`;
+  persistState(pi);
+  logIteration("provider_unavailable", { reason, streak: state.providerErrorStreak });
+  notify(ctx, 
+    `Loop paused: the model/provider failed ${state.providerErrorStreak} times in a row — ${snippet(reason, 160)}. ` +
+      `Check the server, then /loop resume.`,
+    "error",
+  );
+  ctx.ui.setStatus("loop", "Loop paused — provider unavailable");
 }
 
 /** Raises the compression level used for the next emergency summary, up to the tightest one. */
@@ -480,7 +1063,7 @@ function finishContextRecovery(
   state.lastNotice = `Context recovered: ${detail} (${reason}).`;
   persistState(pi);
   logIteration("context_recovered", { reason, detail, freedRoom, resumeTurn });
-  ctx.ui.notify(`Loop: context recovered — ${detail}. Continuing.`, "info");
+  notify(ctx, `Loop: context recovered — ${detail}. Continuing.`, "info");
   ctx.ui.setStatus("loop", statusBarText(ctx));
   if (resumeTurn) {
     scheduleLoopTurn(pi, "recover", 0, ctx);
@@ -518,7 +1101,7 @@ function enterContextCooldown(pi: ExtensionAPI, ctx: ExtensionContext, reason: s
   state.lastNotice = `Context cooldown ${state.contextCooldownCount}/${MAX_CONTEXT_COOLDOWNS} for ${delay}s (${reason}).`;
   persistState(pi);
   logIteration("context_cooldown", { reason, delay, cooldown: state.contextCooldownCount });
-  ctx.ui.notify(
+  notify(ctx, 
     `Loop: context recovery stalled (${reason}) — cooling down ${delay}s, then retrying with a tighter summary (${state.contextCooldownCount}/${MAX_CONTEXT_COOLDOWNS}).`,
     "warning",
   );
@@ -534,14 +1117,39 @@ function requestEmergencyCompaction(pi: ExtensionAPI, ctx: ExtensionContext, rea
     finishContextRecovery(pi, ctx, reason, "pi had already compacted this branch", false);
     return;
   }
+  // Forge fork, fifteenth pass (§11.12, closed): ANOTHER extension may already be
+  // compacting this session, and pi's `compact()` does not refuse a second call —
+  // it aborts, overwrites `_compactionAbortController` and proceeds. The nearest
+  // case is `vendor/prinny-channel` draining a Matrix `/compact` from the same
+  // `agent_settled` this was requested on, which runs second.
+  //
+  // Adopted rather than retried, exactly like the branch above: somebody else's
+  // compaction shrinks the same context, so this recovery has happened. `false`
+  // for `freedRoom` keeps the error streak, so a context that genuinely cannot
+  // shrink still escalates instead of reading another extension's work as its own
+  // success.
+  const holder = compactionInFlight();
+  if (holder) {
+    finishContextRecovery(pi, ctx, reason, `${holder.owner} was already compacting this session`, false);
+    return;
+  }
   const token = runToken;
   emergencyCompactionPending = true;
   ownCompactionInFlight = true;
+  beginCompaction(LOOP_OWNER);
+  // Both flags are cleared only inside the two callbacks below, so a
+  // ctx.compact() that throws synchronously would leave them set for the rest of
+  // the session: session_compact would stop adopting pi's own recoveries, and
+  // session_before_compact would treat the next compaction of ANY reason as an
+  // emergency one. Nothing has been observed throwing; the flags are sticky
+  // enough that it is not worth depending on that.
+  try {
   ctx.compact({
     customInstructions: "Emergency loop recovery: preserve the saved goal, durable project state, and next concrete step.",
     onComplete: () => {
       emergencyCompactionPending = false;
       ownCompactionInFlight = false;
+      endCompaction(LOOP_OWNER);
       if (!state.active || token !== runToken) return;
       if (state.softStopRequested) {
         finalizeSoftStop(pi, ctx, " (during emergency compaction)");
@@ -552,6 +1160,7 @@ function requestEmergencyCompaction(pi: ExtensionAPI, ctx: ExtensionContext, rea
     onError: (error) => {
       emergencyCompactionPending = false;
       ownCompactionInFlight = false;
+      endCompaction(LOOP_OWNER);
       if (!state.active || token !== runToken) return;
       if (state.softStopRequested) {
         finalizeSoftStop(pi, ctx, " (emergency compaction failed)");
@@ -567,12 +1176,107 @@ function requestEmergencyCompaction(pi: ExtensionAPI, ctx: ExtensionContext, rea
       enterContextCooldown(pi, ctx, `emergency compaction failed: ${snippet(message, 120)}`);
     },
   });
+  } catch (error) {
+    emergencyCompactionPending = false;
+    ownCompactionInFlight = false;
+    endCompaction(LOOP_OWNER);
+    if (!state.active || token !== runToken) return;
+    enterContextCooldown(pi, ctx, `compaction request threw: ${snippet(String(error), 120)}`);
+  }
 }
 
+/**
+ * Run the goal check once.
+ *
+ * Forge fork: `execFailed` is set from `result.killed`, not from a rejection.
+ *
+ * U3's repair — "a check that could not RUN is not a check that ran and FAILED"
+ * — was wired to the `catch` below, on the strength of `goal-check.ts`'s own
+ * sentence: *"`execFailed` is true when `pi.exec` rejects, i.e. a timeout
+ * against `checkTimeoutSeconds`, a missing interpreter, a spawn failure"*.
+ * `pi.exec` does none of that. `ExtensionAPI.exec` (`loader.js:287`) is
+ * `execCommand` (`core/exec.js`), whose body is a `new Promise((resolve) => …)`
+ * with **no `reject` in it at all**: a timeout kills the child and resolves, a
+ * spawn error is caught and resolves `code: 1`, a non-zero exit resolves. So the
+ * `catch` was unreachable, `checkErrorStreak` never advanced, and
+ * `MAX_CHECK_ERRORS` never fired.
+ *
+ * Worse than unreachable. A timeout sends SIGTERM, a signalled child exits with
+ * a signal and **no code**, `waitForChildProcess` resolves `null`, and
+ * `execCommand` does `code: code ?? 0`. So `result.code === 0` — and a check that
+ * hung until it was killed was recorded as a check that **PASSED**. In
+ * `--until-done` mode `lastCheckPassed === true` is the run's only terminating
+ * condition, so a check command that deadlocks completes the run on the very
+ * next `LOOP_DONE:` — with the guard that exists so "the check decides" cannot
+ * mean "the model decides when the check is broken" satisfied by the deadlock.
+ *
+ * `killed` is the one field pi does hand back that says what happened, and
+ * nothing in the tree read it. Measured: `context/testing/probes/n2-…`. See AA2
+ * in `context/design/subagents-loop-verifier-hosts.md`.
+ *
+ * The `catch` is kept: `pi.exec` still throws synchronously if the extension
+ * runtime has gone stale (`runtime.assertActive()` on the same line), and that
+ * is genuinely "the check could not run".
+ *
+ * Deliberately NOT treated as could-not-run: exit code 127. It is the shell
+ * saying "command not found", which usually IS a broken check — but a check
+ * script is free to exit 127 for its own reasons, and misreading a real failure
+ * as a broken harness would pause a run that should have kept working. `killed`
+ * is unambiguous; 127 is a guess. Recorded in §7 of the write-up.
+ *
+ * **AB1 (eleventh pass): `killed` is only pi's OWN kill.** `execCommand` sets it
+ * in `killProcess()`, whose two callers are the `options.timeout` timer and the
+ * `options.signal` listener — so it answers "did pi stop this", not "did this
+ * finish". A check reaped by the OOM killer, by an operator's `pkill`, or by its
+ * container going down resolves `{ code: 0, killed: false }`: the exact shape of
+ * a check that PASSED, and in `--until-done` the only condition that ends a run.
+ * Measured against pi 0.84.2's real `execCommand`; the table is in
+ * `src/goal-check.ts` above `CHECK_COMPLETION_MARKER`.
+ *
+ * pi cannot answer it — `waitForChildProcess` resolves the exit CODE and drops
+ * the signal, so there is no field — so the check now runs under a bash `EXIT`
+ * trap and the absence of its marker is the evidence. That branch sits BELOW the
+ * `killed` one on purpose: a SIGTERM'd bash does run its trap, so both are true
+ * on a timeout and the timeout has the better sentence.
+ */
 async function runGoalCheck(pi: ExtensionAPI): Promise<CheckOutcome> {
   try {
-    const result = await pi.exec("bash", ["-lc", state.checkCommand], { timeout: state.checkTimeoutSeconds * 1000 });
-    const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    const result = await pi.exec("bash", ["-lc", wrapCheckCommand(state.checkCommand)], {
+      timeout: state.checkTimeoutSeconds * 1000,
+    });
+    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    const { completed, text: output } = readCheckCompletion(combined);
+
+    // pi's own kill first: it is the one failure `ExecResult` names outright,
+    // and it has a number to quote. A SIGTERM'd bash still runs its EXIT trap,
+    // so `completed` is true here and the order decides which sentence is used.
+    if (result.killed) {
+      const partial = output ? ` Output before it was killed: ${snippet(output, 200)}` : "";
+      return {
+        passed: false,
+        score: undefined,
+        output: `the check did not finish within ${state.checkTimeoutSeconds}s and was killed.${partial}`,
+        execFailed: true,
+      };
+    }
+
+    // AB1: bash never reached its own exit. Nothing in `ExecResult` says so —
+    // a signalled child resolves `{ code: 0, killed: false }`, which is the
+    // shape of a check that PASSED — so the evidence has to come from the
+    // marker the wrapper's EXIT trap prints. See CHECK_COMPLETION_MARKER.
+    if (!completed) {
+      const partial = output ? ` Output before it died: ${snippet(output, 200)}` : "";
+      return {
+        passed: false,
+        score: undefined,
+        output:
+          "the check process died before it finished — killed by a signal rather than by its own exit " +
+          `(an out-of-memory kill looks like this). pi reported exit code ${result.code}, which for a ` +
+          `signalled child is not the check's answer.${partial}`,
+        execFailed: true,
+      };
+    }
+
     const scoreMatches = [...output.matchAll(/SCORE:\s*(-?\d+(?:\.\d+)?)/gi)];
     const score = scoreMatches.length > 0 ? Number.parseFloat(scoreMatches[scoreMatches.length - 1][1]) : undefined;
     return { passed: result.code === 0, score, output: snippet(output, 400), execFailed: false };
@@ -581,13 +1285,33 @@ async function runGoalCheck(pi: ExtensionAPI): Promise<CheckOutcome> {
   }
 }
 
-function detectStuck(lastAssistantText: string, repetitionText = lastAssistantText): string | undefined {
+/**
+ * `repetitionTexts` is the turn's messages, not one string.
+ *
+ * Forge fork: the degenerate-repetition rule below is about ONE response — its
+ * own helper counts a sentence repeated inside a single message — and it used to
+ * be handed `messageToRepetitionText(lastAssistant)`, the last MESSAGE of the
+ * turn. A turn that answered and then produced one more assistant message (a
+ * mid-turn steer; since 2026-08-17 that message can be reasoning-only) therefore
+ * had its ANSWER scanned by nobody. Measured: an answer repeating one sentence
+ * nine times was caught on arrival as a one-message turn and missed entirely with
+ * one thought appended. Scanning each message keeps the unit the rule is written
+ * in — a single response — while covering the whole turn; a caller passing one
+ * string still gets exactly the old behaviour. See X2 in
+ * `context/design/subagents-loop-verifier-turns.md`.
+ */
+function detectStuck(
+  lastAssistantText: string,
+  repetitionTexts: string | readonly string[] = lastAssistantText,
+): string | undefined {
   const prints = state.lastAssistantFingerprints;
 
   // Degenerate generation: one sentence, word, or short phrase repeated many times within a single response.
-  const degenerate = detectDegenerateRepetition(repetitionText, DEGENERATE_REPEATS);
-  if (degenerate) {
-    return `response degenerated: same ${degenerate.kind} repeated ${degenerate.repeats}× ("${snippet(degenerate.unit, 60)}")`;
+  for (const text of typeof repetitionTexts === "string" ? [repetitionTexts] : repetitionTexts) {
+    const degenerate = detectDegenerateRepetition(text, DEGENERATE_REPEATS);
+    if (degenerate) {
+      return `response degenerated: same ${degenerate.kind} repeated ${degenerate.repeats}× ("${snippet(degenerate.unit, 60)}")`;
+    }
   }
 
   // Narration-only loops: several turns without a single tool call.
@@ -609,26 +1333,58 @@ function detectStuck(lastAssistantText: string, repetitionText = lastAssistantTe
   const texts = state.lastAssistantTexts;
   const previousText = texts.length >= 2 ? texts[texts.length - 2] : undefined;
   if (previousText && normalizeText(lastAssistantText).length > 60) {
-    const similarity = textSimilarity(lastAssistantText, previousText);
+    // Forge fork: both sides cut to the window's own bound.
+    //
+    // `commitTurnMemory` stores `PERSISTED_WINDOW.textChars` of each answer, and
+    // this used to compare the CURRENT answer in full against that stored prefix.
+    // `textSimilarity` is Jaccard over word trigrams, so a prefix scores
+    // |shingles(prefix)| / |shingles(full)| — about textChars/length — and above
+    // roughly 1,875 characters the rule could not reach SIMILARITY_THRESHOLD even
+    // for a byte-identical repeat. What that lost is the case this rule is the
+    // ONLY rule for: a model that keeps saying almost the same LONG thing, which
+    // is also the model that is ignoring the 1,200-character output budget the
+    // loop asks for. See W2 in
+    // `context/design/subagents-loop-verifier-readers.md`.
+    const similarity = textSimilarity(lastAssistantText.slice(0, PERSISTED_WINDOW.textChars), previousText);
     if (similarity >= SIMILARITY_THRESHOLD) {
       return `assistant response ~${Math.round(similarity * 100)}% similar to previous`;
     }
   }
 
   // Alternating repetition (A-B-A-B…): same fingerprint several times in the recent window.
+  //
+  // Forge fork: gated on the CURRENT turn's text, like rules 3, 4, 5 and 8.
+  // `prints` is the window, and its last entry belongs to the previous turn on a
+  // turn that committed nothing — a pure tool-call turn, or one whose whole
+  // output was filtered away. So this rule could re-fire a verdict about a turn
+  // that had already been charged for it, and charge the ladder again: a fresh
+  // streak increment, three more turns of sampling penalties, `turnsWithoutTools`
+  // reset. The HARD RESET directive asks for "a tool call with zero preamble
+  // text", which is exactly the shape that produces it — so the escalation could
+  // punish the model for doing what it was just told to do.
+  //
+  // The other five rules already ask this question; this one is a fact about the
+  // window and needed to be made a fact about the turn as well.
   const currentPrint = prints[prints.length - 1];
-  if (currentPrint && prints.filter((p) => p === currentPrint).length >= REPEAT_WINDOW_COUNT) {
+  if (
+    currentPrint &&
+    normalizeText(lastAssistantText).length > 0 &&
+    prints.filter((p) => p === currentPrint).length >= REPEAT_WINDOW_COUNT
+  ) {
     return `same response repeated ${REPEAT_WINDOW_COUNT}+ times in recent turns`;
   }
 
-  const recentTools = state.recentToolResults.slice(-3);
+  // One entry per TURN (see commitTurnMemory): three identical entries mean the
+  // model made the same calls and got the same answers back three turns running.
+  const recentTools = state.recentToolResults.slice(-REPEAT_WINDOW_COUNT);
   if (
-    recentTools.length === 3 &&
+    recentTools.length === REPEAT_WINDOW_COUNT &&
     recentTools.every((result) => result.tool === recentTools[0].tool && result.fingerprint === recentTools[0].fingerprint)
   ) {
+    const label = recentTools[0].tool === MIXED_TOOLS ? "tool" : recentTools[0].tool;
     return recentTools.every((result) => result.isError)
-      ? `same ${recentTools[0].tool} error repeated`
-      : `same ${recentTools[0].tool} result repeated`;
+      ? `the same ${label} calls failed the same way ${REPEAT_WINDOW_COUNT} turns running`
+      : `the same ${label} calls returned the same thing ${REPEAT_WINDOW_COUNT} turns running`;
   }
 
   const asksQuestion = /\?\s*$/.test(lastAssistantText.trim());
@@ -690,7 +1446,11 @@ function statusText(ctx: ExtensionContext): string {
     `Check: ${state.checkCommand ? `${state.checkCommand} (timeout ${state.checkTimeoutSeconds}s)` : "-"}`,
     `Check status: ${
       state.lastCheckPassed === undefined ? "-" : state.lastCheckPassed ? "passing" : `failing (streak ${state.checkFailStreak})`
-    }${state.lastCheckScore !== undefined ? `, score ${state.lastCheckScore} (best ${state.bestCheckScore} @ iter ${state.bestScoreIteration})` : ""}`,
+    }${state.lastCheckScore !== undefined ? `, score ${state.lastCheckScore} (best ${state.bestCheckScore} @ iter ${state.bestScoreIteration})` : ""}${
+      state.checkErrorStreak > 0
+        ? ` — LAST KNOWN; the check has not run for ${state.checkErrorStreak}/${MAX_CHECK_ERRORS} turns: ${snippet(state.lastCheckError, 120)}`
+        : ""
+    }`,
     `Goal file: ${state.goalFile}${state.preparedAt > 0 ? " (prepared)" : " (not prepared)"}`,
     `Loop model: ${state.loopModel || "- (current model)"}`,
     `Rescue model: ${state.rescueModel || "-"}${state.rescueActive ? " (rescue turn in flight)" : ""}`,
@@ -709,7 +1469,23 @@ function statusText(ctx: ExtensionContext): string {
 
 function applyGoalConfig(parsed: StartArgs): void {
   // Re-issuing the same goal (e.g. to tweak flags after /loop prepare) keeps the prepared spec.
-  const preservedPreparedAt = state.description === parsed.description ? state.preparedAt : 0;
+  const sameGoal = state.description === parsed.description;
+  const preservedPreparedAt = sameGoal ? state.preparedAt : 0;
+  // Forge fork: `goalFile` is what `preparedAt` POINTS AT, and preserving the
+  // flag while resetting the target is worse than preserving neither.
+  //
+  // `--file` is a flag like any other, so a re-issue that omits it reset the path
+  // to "GOAL.md" — while `preparedAt` survived, which is exactly what makes
+  // `kindDirective("start")` say "First read GOAL.md to load the full
+  // specification" and `loopInstructions` add "Specification: GOAL.md — read it
+  // whenever you lose track of the plan." Both lines exist BECAUSE the spec is
+  // prepared, and both pointed at a file nobody wrote, on the first turn of an
+  // unattended run, with the spec a strong model was spent producing never
+  // mentioned. See V8 in context/design/subagents-loop-verifier-shapes.md.
+  //
+  // An explicit --file still wins; an unprepared re-issue still defaults to
+  // GOAL.md.
+  const preservedGoalFile = sameGoal && preservedPreparedAt > 0 ? state.goalFile : "";
   state = {
     ...defaultState(),
     description: parsed.description,
@@ -719,7 +1495,7 @@ function applyGoalConfig(parsed: StartArgs): void {
     delaySeconds: parsed.delaySeconds,
     checkCommand: parsed.checkCommand,
     checkTimeoutSeconds: parsed.checkTimeoutSeconds,
-    goalFile: parsed.goalFile || "GOAL.md",
+    goalFile: parsed.goalFile || preservedGoalFile || "GOAL.md",
     loopModel: parsed.model,
     rescueModel: parsed.rescueModel,
     preparedAt: preservedPreparedAt,
@@ -780,7 +1556,7 @@ async function interveneStuck(pi: ExtensionAPI, ctx: ExtensionContext, reason: s
       state.rescueActive = true;
       persistState(pi);
       logIteration("rescue_start", { reason });
-      ctx.ui.notify(`Loop: stuck ${state.consecutiveStuckCount}x — rescue turn with ${state.rescueModel}.`, "warning");
+      notify(ctx, `Loop: stuck ${state.consecutiveStuckCount}x — rescue turn with ${state.rescueModel}.`, "warning");
       ctx.ui.setStatus("loop", `Loop rescue turn (stuck ${state.consecutiveStuckCount}x)`);
       scheduleLoopTurn(pi, "rescue", 0, ctx);
       return;
@@ -803,53 +1579,131 @@ async function interveneStuck(pi: ExtensionAPI, ctx: ExtensionContext, reason: s
   ) {
     state.lastCompactIteration = state.iterationCount;
     persistState(pi);
+    // Forge fork, fifteenth pass (§11.12, closed): another extension may already
+    // be compacting this session, and a second `ctx.compact()` aborts the first.
+    // This rung wants the WINDOW cleared to break a fixation, and somebody else's
+    // compaction clears the same window — so the rung is spent and the turn is
+    // scheduled, rather than racing the thing that is already doing the job.
+    const holder = compactionInFlight();
+    if (holder) {
+      logIteration("compact_deferred", { reason, saturated, holder: holder.owner });
+      notify(ctx, `Loop: ${holder.owner} is already compacting — waiting for that instead of asking again.`, "warning");
+      ctx.ui.setStatus("loop", `Loop stuck ${state.consecutiveStuckCount}x — waiting on a compaction`);
+      scheduleLoopTurn(pi, "stuck", delayMs);
+      return;
+    }
     logIteration("compact", { reason, saturated });
-    ctx.ui.notify(
+    notify(ctx, 
       saturated
         ? `Loop: stuck on a saturated context (${reason}) — compacting instead of re-prompting.`
         : `Loop: stuck ${state.consecutiveStuckCount}x — compacting context to break the pattern.`,
       "warning",
     );
-    ctx.compact({
-      customInstructions:
-        "Summarize the work so far concisely. Explicitly EXCLUDE repetitive filler sentences and repeated failed attempts; keep the goal, the current project state, and concrete next steps.",
-      onComplete: () => {
-        if (!state.active || token !== runToken) return;
-        if (state.softStopRequested) {
-          finalizeSoftStop(pi, ctx, " (during compaction)");
-          return;
-        }
-        scheduleLoopTurn(pi, "stuck", 0);
-      },
-      onError: () => {
-        if (!state.active || token !== runToken) return;
-        if (state.softStopRequested) {
-          finalizeSoftStop(pi, ctx, " (during compaction)");
-          return;
-        }
-        scheduleLoopTurn(pi, "stuck", delayMs);
-      },
-    });
+    beginCompaction(LOOP_OWNER);
+    // Wrapped for the same reason `requestEmergencyCompaction`'s is: `agent_end`
+    // has already called `clearPendingTimer()` and the whole ladder has already
+    // been charged, so a synchronous throw out of `ctx.compact()` would leave the
+    // loop with `status: "stuck"`, no timer and nothing scheduled — stopped
+    // without saying so, which is the one outcome an unattended run must not
+    // have. `ctx.compact` itself is fire-and-forget (`agent-session.js:1911`
+    // wraps the whole thing in an async IIFE), so the only throw that can reach
+    // here is `runner.assertActive()` on a stale extension runtime — rare, and
+    // exactly the case where a silent stall would be hardest to diagnose.
+    try {
+      ctx.compact({
+        customInstructions:
+          "Summarize the work so far concisely. Explicitly EXCLUDE repetitive filler sentences and repeated failed attempts; keep the goal, the current project state, and concrete next steps.",
+        onComplete: () => {
+          endCompaction(LOOP_OWNER);
+          if (!state.active || token !== runToken) return;
+          if (state.softStopRequested) {
+            finalizeSoftStop(pi, ctx, " (during compaction)");
+            return;
+          }
+          scheduleLoopTurn(pi, "stuck", 0);
+        },
+        onError: () => {
+          endCompaction(LOOP_OWNER);
+          if (!state.active || token !== runToken) return;
+          if (state.softStopRequested) {
+            finalizeSoftStop(pi, ctx, " (during compaction)");
+            return;
+          }
+          scheduleLoopTurn(pi, "stuck", delayMs);
+        },
+      });
+    } catch (error) {
+      endCompaction(LOOP_OWNER);
+      if (!state.active || token !== runToken) return;
+      state.lastNotice = `Compaction request threw: ${snippet(String(error), 120)}; retrying the turn instead.`;
+      logIteration("compact_threw", { reason, error: snippet(String(error), 200) });
+      scheduleLoopTurn(pi, "stuck", delayMs);
+    }
     return;
   }
 
   persistState(pi);
   logIteration("stuck", { reason });
-  ctx.ui.notify(`Loop stuck (${state.consecutiveStuckCount}x): ${reason} — injecting new strategy.`, "warning");
+  notify(ctx, `Loop stuck (${state.consecutiveStuckCount}x): ${reason} — injecting new strategy.`, "warning");
   ctx.ui.setStatus("loop", `Loop stuck ${state.consecutiveStuckCount}x — redirecting`);
-  if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "stuck", delayMs, ctx);
+  // Forge fork: the directive is the intervention, and it has to arrive.
+  //
+  // Everything above this line is charged unconditionally — the streak, the
+  // intervention count, three turns of sampling penalties, `turnsWithoutTools`
+  // reset to zero, and the operator's "injecting new strategy" notice — and this
+  // used to be a bare `if (!ctx.hasPendingMessages())` with no else. The guard is
+  // right for every OTHER exit of agent_end, where the loop only needs *a* turn
+  // to happen and a pending message will cause one; here the loop needs THIS
+  // TEXT to reach the model, and dropping it charged the whole ladder for
+  // nothing.
+  //
+  // The two rungs above carry no such guard — the rescue-model switch at streak 3
+  // and the compaction at streak 5 both schedule unconditionally — so with a
+  // message pending the ladder escalated to a model swap having never once sent
+  // the cheap rung. Measured: four repeating turns produced three identical "Loop stuck
+  // (Nx)" notices and an identical Interventions count either way, and nothing at
+  // all was sent or scheduled in the pending case. See V4 in
+  // context/design/subagents-loop-verifier-shapes.md.
+  //
+  // AA3 (tenth pass) — read what `hasPendingMessages()` can actually see before
+  // reasoning about this branch. pi answers it from `pendingMessageCount`
+  // (`agent-session.js:1151`), which is `_steeringMessages.length +
+  // _followUpMessages.length`, and the only writers of those two arrays are
+  // `_queueSteer`/`_queueFollowUp` — reachable from `AgentSession.prompt()`
+  // while streaming, and from `AgentSession.steer()`/`.followUp()`. Every
+  // message an EXTENSION queues goes through `sendCustomMessage`, which calls
+  // `agent.steer()`/`agent.followUp()` directly (`:1083`/`:1086`) and never
+  // touches them. So a background subagent's result — which V4's note named as
+  // "the ordinary state" here — leaves this false, and the only thing that can
+  // make it true is a human typing into a session that is already streaming.
+  //
+  // Nothing below is wrong: with the answer false the loop schedules its own
+  // turn, which is what an unattended run needs. What is wrong is treating this
+  // branch as the common case. It is the attended one. See AA3 and probe
+  // `context/testing/probes/n3-the-pending-messages-nobody-can-see.mjs`.
+  if (!ctx.hasPendingMessages()) {
+    scheduleLoopTurn(pi, "stuck", delayMs, ctx);
+    return;
+  }
+  // A turn is already coming. Queue the directive onto it rather than scheduling
+  // a second one, which would double-run the iteration. The escalating delay is
+  // deliberately given up here: its whole job is to space out turns the loop
+  // itself schedules, and this one is not ours to space.
+  sendLoopTurn(pi, "stuck", ctx, { queueOnly: true });
 }
 
 function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   runToken++;
   clearPendingTimer();
   degenerateAbortPending = false;
+  resetTurnBuffers();
   resetContextRecovery();
   state.active = true;
   state.startTime = Date.now();
   state.iterationCount = 0;
   state.consecutiveStuckCount = 0;
   state.consecutiveErrorCount = 0;
+  state.providerErrorStreak = 0;
   state.totalErrorCount = 0;
   state.interventionCount = 0;
   state.doneSignalCount = 0;
@@ -865,13 +1719,27 @@ function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   state.rescueReturnModel = "";
   state.penaltyTurnsRemaining = 0;
   state.lastCompactIteration = 0;
+  // Forge fork: the WHOLE of the check's state, not the two fields that happened
+  // to be added last. `/loop run` means "start it again", and a verdict, a
+  // failure streak and a best score from a run that has already ended must not
+  // decide anything in this one — see resetCheckState for the two ways that went
+  // wrong, and V3 in context/design/subagents-loop-verifier-shapes.md.
+  resetCheckState(state);
+  // Same argument, for the context ladder's per-run counters.
+  // `contextCooldownCount` is not cosmetic: `enterContextCooldown` pauses the
+  // loop once it exceeds MAX_CONTEXT_COOLDOWNS, so a run that was paused BY
+  // context exhaustion left it at 3 and the next run got one recovery attempt
+  // where a fresh one gets three cooldowns.
+  state.contextCooldownCount = 0;
+  state.contextCompressionLevel = 0;
+  state.contextRecoveryCount = 0;
   state.softStopRequested = false;
   state.status = "running";
   state.lastNotice = "";
 
   persistState(pi);
   const mode = state.untilDone ? "until-done" : "endless (stop with /loop stop)";
-  ctx.ui.notify(`Loop active [${mode}]: ${state.description}`, "info");
+  notify(ctx, `Loop active [${mode}]: ${state.description}`, "info");
   ctx.ui.setStatus("loop", statusBarText(ctx));
   sendLoopTurn(pi, "start", ctx);
 }
@@ -947,8 +1815,16 @@ export default function (pi: ExtensionAPI) {
     // when it is needed most — build those locally instead.
     const unsafeToSummarizeWithModel =
       loopOwnsThisSession && (event.reason === "overflow" || Boolean(contextRecoveryPending));
+    // Forge fork: gated on `loopOwnsThisSession`, not on `state.description`
+    // alone. A description outlives the run that set it — `/loop stop`, `/loop
+    // end` and a completed run all leave it in place so `/loop status` and
+    // `/loop resume` still have something to show — so this branch fired on an
+    // OPERATOR's own `/compact` in a session where a loop had merely once been
+    // configured, replacing pi's model summary with a handoff built from an
+    // inactive LoopState ("No saved loop goal / Iteration: 0"). `state.active`
+    // is the question actually being asked: does the loop own this compaction.
     const saturatedManualCompaction =
-      event.reason === "manual" && Boolean(state.description) && percent >= CONTEXT_PRESSURE_PERCENT;
+      event.reason === "manual" && loopOwnsThisSession && percent >= CONTEXT_PRESSURE_PERCENT;
 
     // A context this tight cannot afford what pi's defaults do to it, whatever triggered the
     // compaction: pi keeps `keepRecentTokens` (20,000 — 61% of a 32k window) and merges a summary
@@ -980,7 +1856,7 @@ export default function (pi: ExtensionAPI) {
         tightened: handoff.firstKeptEntryId !== event.preparation.firstKeptEntryId,
         level: state.contextCompressionLevel,
       });
-      ctx.ui.notify(
+      notify(ctx, 
         `Loop: handing off to a fresh context (${Math.round(percent)}% used, ${handoff.summary.length}-char summary).`,
         "info",
       );
@@ -1016,6 +1892,30 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
+   * Start a loop from an already-parsed argument set.
+   *
+   * Forge fork: the `start` path had to become reachable without a `/loop`
+   * argument STRING. The tool used to build one — `"start " + goal + " --max N"`
+   * — and hand it back to `parseStartArgs`, which scans the whole line for
+   * flags. That made every flag the slash command accepts reachable from the
+   * tool's `goal` text field, including `--check`, whose value the loop runs
+   * through `bash -lc` once per iteration for the life of the run, and `--model`,
+   * which switches the operator's session model. Worse, `extractCheckCommand`
+   * takes the FIRST `--check` in the line and the goal is spliced in ahead of the
+   * flags the tool appends, so a goal's injected command beat the `check`
+   * parameter the schema documents — while `/loop status` showed a goal with the
+   * real check flag embedded in it as text.
+   *
+   * A goal is a text field. It is now carried as one: the tool builds a
+   * `StartArgs` literal and this is the shared entry point.
+   */
+  const startFromArgs = async (parsed: StartArgs, ctx: ExtensionContext): Promise<void> => {
+    applyGoalConfig(parsed);
+    if (state.loopModel && !(await switchModel(pi, ctx, state.loopModel))) return;
+    runLoop(pi, ctx);
+  };
+
+  /**
    * Forge fork: the command body, lifted out so a TOOL can drive it too.
    *
    * Upstream exposes loop control only as `/loop`, which means only a human can
@@ -1044,30 +1944,28 @@ export default function (pi: ExtensionAPI) {
 
       if (command === "start") {
         if (!remainder) {
-          ctx.ui.notify(
+          notify(ctx, 
             'Usage: /loop start <goal[. Done when: criteria]> [--max N] [--delay S] [--check "CMD"] [--check-timeout S] [--model M] [--rescue-model M] [--until-done]',
             "error",
           );
           return;
         }
-        applyGoalConfig(parseStartArgs(remainder));
-        if (state.loopModel && !(await switchModel(pi, ctx, state.loopModel))) return;
-        runLoop(pi, ctx);
+        await startFromArgs(parseStartArgs(remainder), ctx);
         return;
       }
 
       if (command === "goal") {
         if (!remainder) {
-          ctx.ui.notify(`Loop goal:\n${goalSummaryText()}`, "info");
+          notify(ctx, `Loop goal:\n${goalSummaryText()}`, "info");
           return;
         }
         if (state.active) {
-          ctx.ui.notify("Loop is running. Use /loop stop first, then set a new goal.", "error");
+          notify(ctx, "Loop is running. Use /loop stop first, then set a new goal.", "error");
           return;
         }
         applyGoalConfig(parseStartArgs(remainder));
         persistState(pi);
-        ctx.ui.notify(
+        notify(ctx, 
           `Goal set (not started):\n${goalSummaryText()}\n\nNext: /loop prepare [--model M] (optional), then /loop run [--model M].`,
           "info",
         );
@@ -1076,11 +1974,11 @@ export default function (pi: ExtensionAPI) {
 
       if (command === "prepare") {
         if (!state.description) {
-          ctx.ui.notify("No goal set. Use /loop goal <goal> first.", "error");
+          notify(ctx, "No goal set. Use /loop goal <goal> first.", "error");
           return;
         }
         if (state.active) {
-          ctx.ui.notify("Loop is running. Use /loop stop first.", "error");
+          notify(ctx, "Loop is running. Use /loop stop first.", "error");
           return;
         }
         const parsed = parseStartArgs(remainder);
@@ -1088,7 +1986,7 @@ export default function (pi: ExtensionAPI) {
         if (parsed.model && !(await switchModel(pi, ctx, parsed.model))) return;
         state.status = "preparing";
         persistState(pi);
-        ctx.ui.notify(`Preparing goal specification in ${state.goalFile}… Review it when done, then /loop run [--model M].`, "info");
+        notify(ctx, `Preparing goal specification in ${state.goalFile}… Review it when done, then /loop run [--model M].`, "info");
         pi.sendMessage(
           { customType: MESSAGE_TYPE, content: prepareInstructions(), display: true, details: { kind: "prepare" } },
           { triggerTurn: true },
@@ -1098,11 +1996,11 @@ export default function (pi: ExtensionAPI) {
 
       if (command === "run") {
         if (!state.description) {
-          ctx.ui.notify("No goal set. Use /loop goal <goal> first (or /loop start <goal> for one step).", "error");
+          notify(ctx, "No goal set. Use /loop goal <goal> first (or /loop start <goal> for one step).", "error");
           return;
         }
         if (state.active) {
-          ctx.ui.notify("Loop is already running. Use /loop status to inspect it.", "error");
+          notify(ctx, "Loop is already running. Use /loop status to inspect it.", "error");
           return;
         }
         const parsed = parseStartArgs(remainder);
@@ -1115,7 +2013,7 @@ export default function (pi: ExtensionAPI) {
 
       if (command === "resume") {
         if (!state.description) {
-          ctx.ui.notify("No loop to resume. Use /loop start <goal>.", "error");
+          notify(ctx, "No loop to resume. Use /loop start <goal>.", "error");
           return;
         }
         const parsed = parseStartArgs(remainder);
@@ -1134,7 +2032,7 @@ export default function (pi: ExtensionAPI) {
         if (parsed.rescueModel) state.rescueModel = parsed.rescueModel;
         if (state.maxIterations > 0 && state.iterationCount >= state.maxIterations) {
           state.maxIterations = 0;
-          ctx.ui.notify("Iteration cap was exhausted; resuming without a cap (endless).", "warning");
+          notify(ctx, "Iteration cap was exhausted; resuming without a cap (endless).", "warning");
         }
         runToken++;
         resetContextRecovery();
@@ -1142,11 +2040,36 @@ export default function (pi: ExtensionAPI) {
         state.status = "running";
         state.consecutiveStuckCount = 0;
         state.consecutiveErrorCount = 0;
+        // Resume clears the provider streak too, or a resume after
+        // `pauseForProviderFailure` re-pauses on the very first error — the
+        // operator's "I fixed the server, carry on" would be answered by the
+        // count that stopped it.
+        state.providerErrorStreak = 0;
+        // …and the sampling penalties, for the same reason one line up: this
+        // path zeroes `consecutiveStuckCount`, so leaving up to PENALTY_TURNS of
+        // altered sampling armed applies a punishment for a streak that no
+        // longer exists. `penaltyTurnsRemaining` is only decremented in
+        // `agent_end` below the `!state.active` return, so a run stopped with
+        // them armed kept them across the stop.
+        state.penaltyTurnsRemaining = 0;
+        // …and the CHECK's error streak, which is the same argument again and
+        // was the one counter left out of it (AC2, twelfth pass).
+        // `pauseForCheckFailure` is the check's `pauseForProviderFailure`: it
+        // stops the run at MAX_CHECK_ERRORS and its notice says "Fix or change
+        // the check, then /loop resume". An operator who does exactly that got
+        // the count that stopped them handed back — the next check that failed
+        // to run was the FOURTH in a row, so the run re-paused immediately,
+        // printing "could not run (4/3)": a counter past its own maximum, which
+        // is the tell. The verdict fields are deliberately NOT reset here (a
+        // resumed run is the same run, and "LAST KNOWN" is the honest reading);
+        // only the streak that decides whether to stop is.
+        state.checkErrorStreak = 0;
+        state.lastCheckError = "";
         state.rescueActive = false;
         state.softStopRequested = false;
         state.lastNotice = "Resumed by operator.";
         persistState(pi);
-        ctx.ui.notify(`Loop resumed: ${state.description}`, "info");
+        notify(ctx, `Loop resumed: ${state.description}`, "info");
         ctx.ui.setStatus("loop", statusBarText(ctx));
         sendLoopTurn(pi, "resume", ctx);
         return;
@@ -1154,25 +2077,33 @@ export default function (pi: ExtensionAPI) {
 
       if (command === "finish" || command === "soft-stop") {
         if (!state.active) {
-          ctx.ui.notify("No active loop to finish. Use /loop status to inspect state.", "error");
+          notify(ctx, "No active loop to finish. Use /loop status to inspect state.", "error");
           return;
         }
         if (ctx.isIdle()) {
           // Between iterations (delay timer pending): nothing to finish — stop right away.
           runToken++;
           clearPendingTimer();
+          // The tenth lifecycle transition, and the second one found missing from
+          // §2.8's table (the eighth pass found `/loop resume`). Not reachable as
+          // a defect today — idle means `agent_end` has already drained the
+          // buffers — but every other stop path does this, and the next person to
+          // add per-turn state will read the table, not this branch.
+          degenerateAbortPending = false;
+          resetTurnBuffers();
+          resetContextRecovery();
           state.softStopRequested = false;
           state.active = false;
           state.status = "stopped";
           state.lastNotice = "Soft stop while idle; state preserved.";
           persistState(pi);
-          ctx.ui.notify("Loop stopped (was idle between iterations). Use /loop resume to continue.", "info");
+          notify(ctx, "Loop stopped (was idle between iterations). Use /loop resume to continue.", "info");
           ctx.ui.setStatus("loop", "Loop stopped");
           return;
         }
         state.softStopRequested = true;
         persistState(pi);
-        ctx.ui.notify("Loop soft stop: finishing the current iteration, then stopping. (/loop resume to undo, /loop stop for hard stop.)", "info");
+        notify(ctx, "Loop soft stop: finishing the current iteration, then stopping. (/loop resume to undo, /loop stop for hard stop.)", "info");
         ctx.ui.setStatus("loop", "Loop finishing — soft stop after this iteration");
         return;
       }
@@ -1181,6 +2112,7 @@ export default function (pi: ExtensionAPI) {
         runToken++;
         clearPendingTimer();
         degenerateAbortPending = false;
+        resetTurnBuffers();
         resetContextRecovery();
         const wasActive = state.active;
         state.active = false;
@@ -1191,7 +2123,7 @@ export default function (pi: ExtensionAPI) {
         // Abort the in-flight turn and drop queued loop messages; otherwise the
         // current turn (and any already-queued loop follow-up) keeps the agent running.
         if (wasActive && !opts.suppressAbort && !ctx.isIdle()) ctx.abort();
-        ctx.ui.notify("Loop stopped. Use /loop resume to continue, /loop start to replace, or /loop end to clear.", "info");
+        notify(ctx, "Loop stopped. Use /loop resume to continue, /loop start to replace, or /loop end to clear.", "info");
         ctx.ui.setStatus("loop", "Loop stopped");
         return;
       }
@@ -1200,28 +2132,29 @@ export default function (pi: ExtensionAPI) {
         runToken++;
         clearPendingTimer();
         degenerateAbortPending = false;
+        resetTurnBuffers();
         resetContextRecovery();
         const wasActive = state.active;
         state = defaultState();
         persistState(pi);
         if (wasActive && !opts.suppressAbort && !ctx.isIdle()) ctx.abort();
-        ctx.ui.notify("Loop ended and state cleared.", "info");
+        notify(ctx, "Loop ended and state cleared.", "info");
         ctx.ui.setStatus("loop", "Loop ended");
         return;
       }
 
       if (command === "status") {
-        ctx.ui.notify(`Loop state:\n${statusText(ctx)}`, "info");
+        notify(ctx, `Loop state:\n${statusText(ctx)}`, "info");
         return;
       }
 
       if (command === "stats") {
-        ctx.ui.notify(statsText(), "info");
+        notify(ctx, statsText(), "info");
         return;
       }
 
       if (command === "help") {
-        ctx.ui.notify(
+        notify(ctx, 
           "Workflow: /loop goal <goal> → /loop prepare [--model M] → /loop run [--model M]\n" +
             '/loop goal <goal[. Done when: criteria]> [--max N] [--delay S] [--check "CMD"] [--check-timeout S] [--file GOAL.md] [--model M] [--rescue-model M] [--until-done] — set goal without starting\n' +
             "/loop prepare [--model M] [--file F] — have a (strong) model write the goal spec + check script\n" +
@@ -1239,9 +2172,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Convenience: /loop <goal> starts a loop immediately.
-      applyGoalConfig(parseStartArgs(trimmed));
-      if (state.loopModel && !(await switchModel(pi, ctx, state.loopModel))) return;
-      runLoop(pi, ctx);
+      await startFromArgs(parseStartArgs(trimmed), ctx);
   };
 
   pi.registerCommand("loop", {
@@ -1294,17 +2225,38 @@ export default function (pi: ExtensionAPI) {
    */
   const TOOL_ACTIONS = new Set(["start", "stop", "status", "finish", "resume", "end", "stats"]);
 
-  /** Build the `/loop` argument string this tool call stands for. */
-  const argsForLoopTool = (params: Record<string, unknown>): string => {
-    const action = String(params.action ?? "status").trim().toLowerCase();
-    if (action !== "start") return action;
-
-    const parts = ["start", String(params.goal ?? "").trim()];
-    if (typeof params.max === "number" && Number.isFinite(params.max)) parts.push(`--max ${Math.max(1, Math.floor(params.max))}`);
-    if (typeof params.check === "string" && params.check.trim()) parts.push(`--check ${JSON.stringify(params.check.trim())}`);
-    if (params.until_done === true) parts.push("--until-done");
-    return parts.join(" ");
+  /**
+   * The tool's `start` parameters as a StartArgs, with no text round-trip.
+   *
+   * Each field comes from the parameter that declares it, and the goal is split
+   * on "Done when:" and otherwise left alone — a `--check` inside it stays part
+   * of the goal the operator reads in `/loop status` instead of becoming a shell
+   * command the loop runs every iteration. See `startFromArgs` for the history.
+   *
+   * The fields with no matching parameter get the same defaults the slash
+   * command's parser produces for a line that omits them, so the two paths agree
+   * on everything the tool does not expose.
+   */
+  const startArgsFromToolParams = (params: Record<string, unknown>): StartArgs => {
+    const { description, criteria } = splitGoal(String(params.goal ?? "").trim());
+    const check = typeof params.check === "string" ? params.check.trim() : "";
+    return {
+      description,
+      criteria,
+      maxIterations:
+        typeof params.max === "number" && Number.isFinite(params.max) ? Math.max(1, Math.floor(params.max)) : 0,
+      untilDone: params.until_done === true,
+      delaySeconds: 0,
+      checkCommand: check,
+      checkTimeoutSeconds: 120,
+      model: "",
+      rescueModel: "",
+      goalFile: "",
+    };
   };
+
+  /** True when a goal contains flag-looking text, which is now kept as text. */
+  const goalLooksLikeFlags = (goal: string): boolean => /(?:^|\s)--[a-z]/i.test(goal);
 
   // Guarded: the host may not offer tool registration (an older pi, or a test
   // harness with a partial ExtensionAPI). The command above is the baseline
@@ -1368,10 +2320,55 @@ export default function (pi: ExtensionAPI) {
           isError: true,
         };
       }
+      // A running loop is not something a tool call may quietly replace.
+      //
+      // `startFromArgs` calls `applyGoalConfig`, which spreads `defaultState()`:
+      // the goal, the criteria, the iteration count, the error counters, the
+      // check command and the iteration CAP all go, and `startArgsFromToolParams`
+      // supplies `maxIterations: 0` for any call that omits `max` — which is
+      // endless, the mode whose own rule is "never stop on your own". `state.active`
+      // never goes false across the swap, so nothing watching for a stop sees one.
+      //
+      // For a HUMAN typing `/loop start` replacement IS the intent, and the stop
+      // notice advertises it ("/loop start to replace"), so the slash command is
+      // deliberately left alone. `/loop run` and `/loop goal` already refuse while
+      // a loop is running; this is the same refusal, for the caller that cannot be
+      // asked whether it meant to.
+      if (action === "start" && state.active) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `loop start refused: a loop is already running (${snippet(state.description, 120)}), ` +
+                `iteration ${state.iterationCount}${state.maxIterations > 0 ? `/${state.maxIterations}` : ""}. ` +
+                `Call loop with action "stop" first if it should be replaced, or "status" to see it.`,
+            },
+          ],
+          isError: true,
+        };
+      }
 
       const { ctx, lines } = withCapturedNotices(baseCtx);
       try {
-        await loopCommand(argsForLoopTool(params), ctx, { suppressAbort: true });
+        if (action === "start") {
+          const goal = String(params.goal ?? "").trim();
+          if (goalLooksLikeFlags(goal)) {
+            // Say it rather than silently keeping it. A goal built out of text
+            // the model did not write — a file it read, another agent's answer —
+            // is exactly where an injected `--check` would come from, and the
+            // operator should see that one arrived even though it did nothing.
+            notify(ctx, 
+              "Loop: the goal contains flag-like text; it is kept as part of the goal, not read as options. Use the tool's own parameters for max/check/until_done.",
+              "warning",
+            );
+          }
+          await startFromArgs(startArgsFromToolParams(params), ctx);
+        } else {
+          // Non-start actions carry no free text, so the closed action set above
+          // is the whole surface and the string path is safe.
+          await loopCommand(action, ctx, { suppressAbort: true });
+        }
       } catch (error) {
         return {
           content: [{ type: "text", text: `loop ${action} failed: ${error instanceof Error ? error.message : String(error)}` }],
@@ -1402,6 +2399,13 @@ export default function (pi: ExtensionAPI) {
     clearPendingTimer();
     resetContextRecovery();
     restoreState(ctx);
+    // AFTER the restore, not before it. `resetTurnBuffers` now also drops
+    // `state.toolCallsThisTurn`, which is part of the state `restoreLoopState`
+    // brings back — a persist taken mid-turn (`/loop stop` writes one) carries a
+    // non-zero count into the next session, and clearing before the restore
+    // would put it straight back. See X4 in
+    // `context/design/subagents-loop-verifier-turns.md`.
+    resetTurnBuffers();
     if (!state.active) return;
 
     ctx.ui.setStatus("loop", statusBarText(ctx));
@@ -1421,13 +2425,13 @@ export default function (pi: ExtensionAPI) {
         const model = resolveModel(ctx, modelToRestore);
         if (model) {
           const ok = await pi.setModel(model);
-          if (!ok) ctx.ui.notify(`Loop: could not restore model ${modelToRestore} (no API key); using current model.`, "warning");
+          if (!ok) notify(ctx, `Loop: could not restore model ${modelToRestore} (no API key); using current model.`, "warning");
         } else {
-          ctx.ui.notify(`Loop: stored model ${modelToRestore} not found; using current model.`, "warning");
+          notify(ctx, `Loop: stored model ${modelToRestore} not found; using current model.`, "warning");
         }
       }
       persistState(pi);
-      ctx.ui.notify(`Loop auto-resuming in ${AUTO_RESUME_DELAY_MS / 1000}s: ${snippet(state.description, 80)} (stop with /loop stop)`, "info");
+      notify(ctx, `Loop auto-resuming in ${AUTO_RESUME_DELAY_MS / 1000}s: ${snippet(state.description, 80)} (stop with /loop stop)`, "info");
       scheduleLoopTurn(pi, "resume", AUTO_RESUME_DELAY_MS);
     }
   });
@@ -1436,6 +2440,7 @@ export default function (pi: ExtensionAPI) {
     // Same reasoning as session_start: a child session ending is not a reason
     // to cancel the parent's pending iteration, and these are shared timers.
     clearPendingTimer();
+    resetTurnBuffers();
     resetContextRecovery();
   });
 
@@ -1451,23 +2456,63 @@ export default function (pi: ExtensionAPI) {
     contextRecoveryPending = undefined;
     // "Settled" means no retry, compaction, or queued continuation is left to run, so pi has had its
     // turn at recovering and declined. Now the loop can compact without racing anything.
-    ctx.ui.notify("Loop: pi did not recover the context itself — running emergency compaction.", "warning");
+    notify(ctx, "Loop: pi did not recover the context itself — running emergency compaction.", "warning");
     ctx.ui.setStatus("loop", "Loop compacting saturated context");
     logIteration("context_compact", { reason: pending.reason, level: state.contextCompressionLevel });
     requestEmergencyCompaction(pi, ctx, pending.reason);
   });
 
-  pi.on("before_agent_start", async (event) => {
+  /**
+   * Tell an OPERATOR-TYPED turn that a loop is running.
+   *
+   * Forge fork: this used to return `{ systemPrompt }`, and both halves of that
+   * were wrong against pi 0.84.2.
+   *
+   * **It never reached a loop turn.** pi emits `before_agent_start` from exactly
+   * one place — `AgentSession.prompt()`, `agent-session.js:885` — and the loop
+   * delivers every turn it drives through the other entry point:
+   * `pi.sendMessage(…, {triggerTurn:true})` → `sendCustomMessage` (`:1068`) →
+   * `_runAgentPrompt` (`:1090`/`:744`), which does not emit it. So in an
+   * unattended run — the mode this package exists for — the handler never ran at
+   * all, and the model's system prompt never mentioned the loop.
+   *
+   * **And what it returned outlived the run.** `prompt()` writes the returned
+   * text to BOTH `_systemPromptOverride` and `agent.state.systemPrompt`
+   * (`:902`/`:903`); `_runAgentPrompt`'s `finally` clears only the override
+   * (`:753`). Turn 1 of any later run reads `agent.state.systemPrompt`, while
+   * every turn after it is rebuilt by `_installAgentNextTurnRefresh` (`:274`)
+   * from `_systemPromptOverride ?? _baseSystemPrompt` (`:286`) — which is now the
+   * base. So after a single operator-typed turn, every subsequent loop iteration
+   * began with a stale copy of this block (a stale GOAL, if the loop had since
+   * been restarted) and dropped it again at its own second turn: a system-prompt
+   * change inside one iteration, at offset 0 of llama.cpp's cached prefix.
+   *
+   * `message` has neither problem. `emitBeforeAgentStart` collects it
+   * (`runner.js:863`) and `prompt()` appends it as one `role:"custom"` message
+   * for that turn only (`:889`) — nothing is written to `agent.state`, nothing
+   * survives the run, and it lands at the END of the message list, which is the
+   * cheapest place in the prefix.
+   *
+   * Nothing is lost by not being in the system prompt: every turn the loop itself
+   * drives already carries the goal, the criteria and the full rule list in
+   * `loopInstructions()`. This handler's only job is the turn that carries none
+   * of that — the one a human typed. See AA1 in
+   * `context/design/subagents-loop-verifier-hosts.md`.
+   */
+  pi.on("before_agent_start", async () => {
     if (!state.active) return;
     const doneHint = state.untilDone
       ? "use LOOP_DONE: when the completion criteria are fully met"
       : "endless mode: after LOOP_DONE the loop continues with improvements, never stop on your own";
     return {
-      systemPrompt:
-        `${event.systemPrompt}\n\n` +
-        `Loop mode is active. Goal: ${state.description}. Completion criteria: ${state.completionCriteria || "continuous improvement"}. ` +
-        `Keep every assistant response under 1,200 characters, do one progress batch per turn, ` +
-        `${doneHint}, never wait for a human (make documented assumptions instead), and never dump full logs/diffs/context.`,
+      message: {
+        customType: LOOP_RULES_MESSAGE_TYPE,
+        content:
+          `Loop mode is active. Goal: ${state.description}. Completion criteria: ${state.completionCriteria || "continuous improvement"}. ` +
+          `Keep every assistant response under 1,200 characters, do one progress batch per turn, ` +
+          `${doneHint}, never wait for a human (make documented assumptions instead), and never dump full logs/diffs/context.`,
+        display: false,
+      },
     };
   });
 
@@ -1535,7 +2580,7 @@ export default function (pi: ExtensionAPI) {
     const info = detectDegenerateRepetition(text, DEGENERATE_STREAM_REPEATS);
     if (info) {
       degenerateAbortPending = true;
-      ctx.ui.notify(`Loop: degenerate ${info.kind} repetition mid-stream (×${info.repeats}) — aborting turn.`, "warning");
+      notify(ctx, `Loop: degenerate ${info.kind} repetition mid-stream (×${info.repeats}) — aborting turn.`, "warning");
       ctx.abort();
     }
   });
@@ -1549,16 +2594,48 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event) => {
-    if (!state.active || event.message.role !== "assistant") return;
+    // Forge fork: the preparation turn buffers too.
+    //
+    // `/loop prepare` runs with `state.active` false, so this handler used to do
+    // nothing at all during it — which left `agent_end`'s GOAL_READY check
+    // reading the last MESSAGE of the turn, the one reader W1 could not move
+    // because there was no buffer to move it to. See X3 in
+    // `context/design/subagents-loop-verifier-turns.md`.
+    if ((!state.active && state.status !== "preparing") || event.message.role !== "assistant") return;
     const stopReason = (event.message as { stopReason?: string }).stopReason;
     if (stopReason === "error" || stopReason === "aborted") return;
     const sanitizedMessage = sanitizeDegenerateMessage(event.message as { content?: unknown });
     const trackedMessage = sanitizedMessage ?? event.message;
+    // The answer, or the reasoning when there is no answer. `commitTurnMemory`
+    // puts this in the repetition windows and `agent_end` compares THIS STRING —
+    // see the note there for why the comparison subject had to be moved.
     const tracked = messageToText(trackedMessage) || messageToRepetitionText(trackedMessage);
-    if (!tracked.trim()) return;
-    pushLimited(state.lastAssistantFingerprints, fingerprint(tracked), 8);
-    pushLimited(state.lastAssistantSnippets, snippet(tracked), 5);
-    pushLimited(state.lastAssistantTexts, tracked.slice(0, 1_500), 4);
+    // Buffered, not pushed. A turn contributes ONE entry to the repetition
+    // windows, committed in agent_end — see turnAssistantTexts for the two
+    // measured failures that produced.
+    if (tracked.trim()) turnAssistantTexts.push(tracked);
+    // The same message, under the other question: did it ANSWER? Text only, so a
+    // reasoning-only message contributes nothing here while still feeding the
+    // repetition windows above. See turnAnswerTexts.
+    const answered = messageToText(trackedMessage);
+    if (answered.trim()) turnAnswerTexts.push(answered);
+    // And the third question: everything this ONE message emitted, text and
+    // thinking together, for the rule that is about a single response —
+    // `detectStuck`'s degenerate check — and for "did this turn think at all".
+    //
+    // The ORIGINAL message, not the sanitized one, and that is the whole point:
+    // `sanitizeDegenerateText` cuts the repetition out and replaces it with a
+    // one-line marker, so a detector run over the sanitized text finds nothing
+    // and the turn that degenerated is never charged to the stuck ladder. The
+    // two buffers above want the sanitized text — it is what the model sees next
+    // turn — and this one wants what the model actually produced. See
+    // turnRepetitionTexts.
+    const emitted = messageToRepetitionText(event.message);
+    if (emitted.trim()) turnRepetitionTexts.push(emitted);
+    // Returned unconditionally. This used to sit below an early return keyed on
+    // `tracked`, so a message with no content the tracker could read never got
+    // its sanitized replacement applied — and since 2026-08-17 a reasoning-only
+    // message is a shape that exists, so a degenerate one kept its repetition.
     if (sanitizedMessage) return { message: sanitizedMessage as typeof event.message };
   });
 
@@ -1566,14 +2643,33 @@ export default function (pi: ExtensionAPI) {
     if (!state.active) {
       // Goal preparation turn: watch for the readiness marker.
       if (state.status === "preparing") {
+        // Forge fork: the turn's ANSWER, by the same argument and the same
+        // mechanism as `turnAnswerText` below — and this is the reader W1 left
+        // behind, because the buffer it needed was gated on `state.active`.
+        //
+        // The marker is the whole of what `/loop prepare` produces: `preparedAt`
+        // is what makes the first turn of the run say "First read <goalFile> to
+        // load the full specification" and what puts the "Specification: …" line
+        // in every turn's instructions. A prepare turn that said GOAL_READY and
+        // then produced one reasoning-only message — a settled background
+        // subagent, delivered mid-turn — left `preparedAt` at 0, the status stuck
+        // at "preparing" for the rest of the session, and the spec a strong model
+        // was spent producing never mentioned to the model that has to follow it.
+        // That is V8's failure arriving by a different route. The fallback keeps
+        // every path that never reached `message_end` behaving as before. See X3
+        // in `context/design/subagents-loop-verifier-turns.md`.
         const prepAssistant = [...event.messages].reverse().find((message) => message.role === "assistant");
-        const prepText = messageToText(prepAssistant);
+        const prepBuffered = [...turnAnswerTexts].reverse().find((text) => text.trim());
+        const prepText = prepBuffered ?? messageToText(prepAssistant);
+        // The prepare branch returns without reaching the drain below, so this is
+        // where its turn ends.
+        resetTurnBuffers();
         if (/\bGOAL_READY\s*:/i.test(prepText)) {
           state.preparedAt = Date.now();
           state.status = "stopped";
           state.lastNotice = "Goal prepared.";
           persistState(pi);
-          ctx.ui.notify(`Goal preparation complete. Review ${state.goalFile}, then start with /loop run [--model M].`, "info");
+          notify(ctx, `Goal preparation complete. Review ${state.goalFile}, then start with /loop run [--model M].`, "info");
         }
       }
       return;
@@ -1583,12 +2679,113 @@ export default function (pi: ExtensionAPI) {
     // (goal check, model switch …) invalidates the rest of the handler.
     const token = runToken;
 
+    // Forge fork: read the per-TURN tool counter once, and clear it here rather
+    // than on the happy path only.
+    //
+    // `tool_result` increments `state.toolCallsThisTurn`; the reset used to sit
+    // below the abort/error branches, so every early return in this handler —
+    // soft stop, context pressure, model error, degenerate abort, operator abort
+    // — left it holding the PREVIOUS turn's count. `emptyResponse` below requires
+    // it to be zero, and `isContextPressure`'s starvation rung requires
+    // `emptyResponse`, so a stale count switched off the 87%-cliff detection for
+    // exactly the turn most likely to be starved: the retry of a turn that had
+    // already failed.
+    //
+    // Reproduced against this module: with a 90%-full window, a starved turn on
+    // its own is routed to context recovery ("context pressure detected (1/3) —
+    // recovering"); the identical starved turn preceded by a two-tool turn that
+    // died on a provider error produced no notice at all, burned an iteration,
+    // and scheduled another turn into the same saturated context — which is the
+    // failure the starvation rung exists to prevent.
+    const toolCallsThisTurn = state.toolCallsThisTurn;
+    state.toolCallsThisTurn = 0;
+
+    // Same argument, same place: the turn's buffered assistant text and tool
+    // results are read once here and dropped, so no early return can leak this
+    // turn's material into the next one's comparison.
+    const turnTexts = turnAssistantTexts;
+    const turnCalls = turnToolCalls;
+    const turnAnswers = turnAnswerTexts;
+    const turnEmitted = turnRepetitionTexts;
+    resetTurnBuffers();
+
+    // Forge fork: age the sampling penalties here too, for the same reason and
+    // by the same argument.
+    //
+    // `interveneStuck()` sets `penaltyTurnsRemaining = PENALTY_TURNS` and
+    // `before_provider_request` rewrites the payload — frequency 0.5, presence
+    // 0.5, temperature +0.2 — while it is above zero. The only decrement used to
+    // be in the "Normal continue" block at the BOTTOM of this handler, below all
+    // thirteen earlier returns. Two of those are not exceptional at all:
+    // LOOP_DONE in endless mode ("continue with improvements") and LOOP_BLOCKED
+    // ("continue with assumptions") are the loop's own every-iteration outcomes,
+    // so an endless run that keeps reporting done kept the penalties on for the
+    // rest of the session — a deliberate, temporary anti-fixation measure applied
+    // as a permanent sampling change.
+    //
+    // Measured against this module: three normal turns retire them, exactly as
+    // PENALTY_TURNS says; six LOOP_DONE turns did not retire them at all.
+    //
+    // The turn that just ended is the turn that spent the penalty, so this is
+    // where it is counted. Doing it above interveneStuck() is deliberate and
+    // changes nothing for the arming path: that call re-sets the counter to
+    // PENALTY_TURNS afterwards, which is what the old bottom-of-handler position
+    // achieved by returning early.
+    if (state.penaltyTurnsRemaining > 0) state.penaltyTurnsRemaining--;
+
+    // Forge fork: read into a local and cleared HERE, with the buffers.
+    //
+    // The flag is set mid-stream by `message_update` and consumed by one branch
+    // near the bottom of this handler, so it could not go into
+    // `resetTurnBuffers()` — the drain runs above the reader. Every exit BETWEEN
+    // the two therefore left it set: an abort that landed on a turn whose final
+    // message reports `error`, or on a turn routed to context recovery, kept a
+    // stale flag, and the operator's next Esc was read as a degenerate abort and
+    // answered with `interveneStuck` instead of a pause.
+    //
+    // Reading it into a local at the drain and testing the LOCAL below is T2's
+    // and X4's repair, for the one piece of per-turn state that could not use
+    // their fix directly.
+    const degenerateAbortThisTurn = degenerateAbortPending;
+    degenerateAbortPending = false;
+
     const lastAssistant = [...event.messages].reverse().find((message) => message.role === "assistant") as
       | { role: string; content?: unknown; stopReason?: string; errorMessage?: string; usage?: { output?: number } }
       | undefined;
     const lastAssistantText = messageToText(lastAssistant);
     const lastAssistantRepetitionText = messageToRepetitionText(lastAssistant);
     const stopReason = lastAssistant?.stopReason;
+
+    // Forge fork: everything the TURN emitted, in message order, with the last
+    // message as the fallback for a turn whose messages never reached
+    // `message_end`. Two readers below take it, and both used to read the last
+    // message alone: `detectStuck`'s degenerate-repetition rule (which is about
+    // one response, so it scans each) and the "reasoning-only" half of the
+    // starvation notice (which asks whether the turn thought at all). See
+    // `turnRepetitionTexts` and X2 in
+    // `context/design/subagents-loop-verifier-turns.md`.
+    const turnEmittedTexts = turnEmitted.some((text) => text.trim())
+      ? turnEmitted
+      : [lastAssistantRepetitionText];
+    const turnThinkingChars = turnEmittedTexts.reduce((total, text) => total + text.trim().length, 0);
+
+    // Forge fork: the turn's ANSWER, which is not always the last message's text.
+    //
+    // Everything below that asks "what did the model say this turn" — the
+    // starvation rung, LOOP_DONE, LOOP_BLOCKED — used to read
+    // `messageToText(lastAssistant)`. That is the last MESSAGE, and a turn can
+    // end on a message that is not its answer: pi's loop runs another assistant
+    // message whenever a steer or follow-up arrives mid-turn, and a background
+    // subagent's result is delivered exactly that way. Since 2026-08-17 that
+    // extra message can also be reasoning-only, which has no text at all.
+    //
+    // The buffer is the turn's own material, so this cannot reach into an
+    // earlier turn the way a scan of `event.messages` could. `lastAssistantText`
+    // is the fallback, so a turn whose messages never reached `message_end` —
+    // the loop became active mid-turn, a handler was skipped — behaves exactly
+    // as it did before. See W1 in
+    // `context/design/subagents-loop-verifier-readers.md`.
+    const turnAnswerText = [...turnAnswers].reverse().find((text) => text.trim()) ?? lastAssistantText;
 
     // --- Soft stop: the just-finished iteration was the last one; do not schedule anything new. ---
     if (state.softStopRequested) {
@@ -1600,14 +2797,39 @@ export default function (pi: ExtensionAPI) {
     // --- Context pressure: compact without the saturated model, then retry at most twice. ---
     const usage = contextUsage(ctx);
     const contextPercent = usage?.percent ?? null;
-    // Nothing said, nothing thought, nothing called. On a saturated context that is starvation, not
+    // No answer and nothing called. On a saturated context that is starvation, not
     // fixation — routing it here keeps the stuck ladder from answering an out-of-room model with a
     // longer prompt.
-    const emptyResponse =
-      Boolean(lastAssistant) &&
-      !lastAssistantText.trim() &&
-      !lastAssistantRepetitionText.trim() &&
-      state.toolCallsThisTurn === 0;
+    //
+    // Forge fork: this used to require `!lastAssistantRepetitionText.trim()` as
+    // well, i.e. no THINKING either — which was the same test as "no content
+    // blocks at all" for as long as a reasoning-only turn arrived empty.
+    //
+    // `patches/forge_reasoning_passthrough.py` (2026-08-17) changed that. forge
+    // had been discarding `reasoning_content` whenever there was no accompanying
+    // text, so pi received `content: []`; the patch restored it, so the same turn
+    // now arrives as `content: [thinking]`. `vendor/prinny-channel` was changed in
+    // the same commit to keep noticing ("said nothing is not the same as has no
+    // blocks"); this was not, and the extra clause silently switched off the
+    // starvation rung for exactly the turn it was written for.
+    //
+    // Measured against this module: a 126-token reasoning-only turn at 90% of a
+    // 32k window routed to context recovery before the patch and produced NO
+    // NOTICE AT ALL after it — counted as a successful iteration, which also
+    // resets consecutiveErrorCount, contextCooldownCount and
+    // contextCompressionLevel, so the recovery ladder could never accumulate. The
+    // cliff those numbers exist for: below 87% of the window, 3 empty assistant
+    // turns out of 196; at or above it, 33 out of 63. See V1 in
+    // context/design/subagents-loop-verifier-shapes.md.
+    //
+    // The question this flag asks is "did the model produce an ANSWER", and an
+    // answer is text or a tool call. Thinking is neither.
+    const emptyResponse = Boolean(lastAssistant) && !turnAnswerText.trim() && toolCallsThisTurn === 0;
+    // Kept apart so the operator is told which of the two it was. A turn that
+    // burned 126 tokens on reasoning and produced no answer is not the same event
+    // as a turn that produced nothing at all, and the difference is the first
+    // thing worth knowing when the notice appears in a log.
+    const reasoningOnlyResponse = emptyResponse && turnThinkingChars > 0;
     if (
       lastAssistant &&
       isContextPressure({
@@ -1621,11 +2843,11 @@ export default function (pi: ExtensionAPI) {
       state.consecutiveErrorCount++;
       state.totalErrorCount++;
       const starved = emptyResponse && stopReason === "stop";
+      const starvedDetail = reasoningOnlyResponse
+        ? `reasoning-only response at ${Math.round(contextPercent ?? 0)}% context (${turnThinkingChars} chars of thinking, no answer, no tool call)`
+        : `empty response at ${Math.round(contextPercent ?? 0)}% context (no text, no thinking, no tool call)`;
       const reason = snippet(
-        lastAssistant.errorMessage ??
-          (starved
-            ? `empty response at ${Math.round(contextPercent ?? 0)}% context (no text, no thinking, no tool call)`
-            : `stop reason ${stopReason}`),
+        lastAssistant.errorMessage ?? (starved ? starvedDetail : `stop reason ${stopReason}`),
         140,
       );
       // Pressure that survived a recovery means the last summary did not free enough room; the next
@@ -1639,7 +2861,7 @@ export default function (pi: ExtensionAPI) {
       state.lastNotice = `Context pressure ${state.consecutiveErrorCount}/${CONTEXT_RECOVERY_ATTEMPTS}: ${reason}.`;
       persistState(pi);
       logIteration("context_pressure", { reason, contextPercent, level: state.contextCompressionLevel });
-      ctx.ui.notify(
+      notify(ctx, 
         `Loop: context pressure detected (${state.consecutiveErrorCount}/${CONTEXT_RECOVERY_ATTEMPTS}) — recovering.`,
         "warning",
       );
@@ -1651,52 +2873,101 @@ export default function (pi: ExtensionAPI) {
 
     // --- Model/provider errors: retry with exponential backoff. ---
     if (!lastAssistant || stopReason === "error") {
-      state.consecutiveErrorCount++;
+      // Its OWN streak: sharing `consecutiveErrorCount` with context pressure
+      // meant one context event lengthened the next provider backoff and one
+      // provider error advanced the context ladder toward its cooldown. Two
+      // mechanisms, two questions.
+      state.providerErrorStreak++;
       state.totalErrorCount++;
       state.status = "retrying";
       const delay = backoffSeconds();
       const reason = snippet(lastAssistant?.errorMessage ?? lastAssistantText ?? "no assistant message", 140);
-      state.lastNotice = `Model/provider error (${reason}); retry #${state.consecutiveErrorCount} in ${delay}s.`;
+      if (state.providerErrorStreak >= MAX_PROVIDER_ERRORS) {
+        pauseForProviderFailure(pi, ctx, reason);
+        return;
+      }
+      state.lastNotice = `Model/provider error (${reason}); retry #${state.providerErrorStreak} in ${delay}s.`;
       persistState(pi);
-      logIteration("error", { reason });
-      ctx.ui.notify(`Loop: model error, retrying in ${delay}s (attempt ${state.consecutiveErrorCount}): ${reason}`, "warning");
+      logIteration("error", { reason, streak: state.providerErrorStreak });
+      notify(ctx, 
+        `Loop: model error, retrying in ${delay}s (attempt ${state.providerErrorStreak}/${MAX_PROVIDER_ERRORS}): ${reason}`,
+        "warning",
+      );
       ctx.ui.setStatus("loop", `Loop retrying in ${delay}s (err #${state.totalErrorCount})`);
       scheduleLoopTurn(pi, "recover", delay * 1000);
       return;
     }
 
     // --- Degenerate-repetition abort (ours, not the operator's): treat as stuck, keep looping. ---
-    if (stopReason === "aborted" && degenerateAbortPending) {
-      degenerateAbortPending = false;
+    if (stopReason === "aborted" && degenerateAbortThisTurn) {
       await interveneStuck(pi, ctx, "response degenerated into repeating a sentence, word, or phrase; turn aborted mid-stream");
       return;
     }
 
     // --- Operator abort (Esc): respect it, but keep state for /loop resume. ---
+    //
+    // Forge fork, fourteenth pass (AE1): `state.active = false`, like every
+    // other pause in this file.
+    //
+    // This branch set `status = "paused"` and nothing else, and `state.active`
+    // is what every one of the thirteen handlers above tests at its first line.
+    // So the loop went on OWNING the session while claiming to be paused, and
+    // the claim was undone by the next `agent_end` from any source: the ladder
+    // ran, `iterationCount` advanced, and the fall-through scheduled the next
+    // iteration — silently, with no notice, on a run the operator had just
+    // stopped by hand.
+    //
+    // The turn that does it is not exotic. `/loop status` is a slash command and
+    // produces none, but a question typed into the terminal does; so does a
+    // Matrix message (`prinny-channel` → `sendUserMessage` → `prompt()`); so
+    // does a background subagent settling (`SpawnCoordinator.emitIndividualNudge`
+    // → `sendMessage({triggerTurn:true})`). The likeliest of the three is the
+    // operator answering the notice they were just shown.
+    //
+    // The other three pauses — `pauseForContextFailure`, `pauseForCheckFailure`,
+    // `pauseForProviderFailure` — and the iteration cap all clear `active`, and
+    // all four say the same sentence about `/loop resume`. This was the one that
+    // said it without meaning it. `runToken++` for the same reason they do it: a
+    // compaction callback or a recovery marker captured before the abort must
+    // not fire into a stopped run.
+    //
+    // Nothing is lost for the resume: `/loop resume` needs only
+    // `state.description`, which is untouched, and `session_start`'s auto-resume
+    // has always ignored `paused`. Measured:
+    // `context/testing/probes/r1-the-pause-that-keeps-running.mjs`.
     if (stopReason === "aborted") {
+      runToken++;
+      state.active = false;
       state.status = "paused";
       state.lastNotice = "Turn aborted by operator. Use /loop resume to continue.";
       persistState(pi);
       logIteration("operator_abort");
-      ctx.ui.notify("Loop paused (turn aborted). Use /loop resume to continue.", "warning");
+      notify(ctx, "Loop paused (turn aborted). Use /loop resume to continue.", "warning");
       ctx.ui.setStatus("loop", "Loop paused (aborted)");
       return;
     }
 
     state.consecutiveErrorCount = 0;
+    state.providerErrorStreak = 0;
     // A turn that completed proves the context fits again: retire the recovery ladder entirely.
     state.contextCooldownCount = 0;
     state.contextCompressionLevel = 0;
     contextRecoveryPending = undefined;
     state.iterationCount++;
 
-    // Track narration-only turns (no tool calls at all).
-    if (state.toolCallsThisTurn === 0) {
+    // Track narration-only turns (no tool calls at all). Read from the local
+    // captured at the top of the handler — the field was cleared there so an
+    // early return cannot carry this turn's count into the next one.
+    if (toolCallsThisTurn === 0) {
       state.turnsWithoutTools++;
     } else {
       state.turnsWithoutTools = 0;
     }
-    state.toolCallsThisTurn = 0;
+
+    // The turn is over and it completed: commit its ONE entry to the repetition
+    // windows before anything reads them, and keep what was committed — that is
+    // the string the comparison rules have to be about.
+    const committedText = commitTurnMemory(turnTexts, turnCalls, turnAnswers);
 
     // --- Rescue turn finished: hand control back to the regular loop model. ---
     if (state.rescueActive) {
@@ -1711,19 +2982,89 @@ export default function (pi: ExtensionAPI) {
       persistState(pi);
       logIteration("rescue_end");
       ctx.ui.setStatus("loop", statusBarText(ctx));
+      // `continue`, so the guard stands: any turn advances the loop, and the
+      // human's own is one. See deliverLoopTurn for where the line is drawn.
       if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "continue", state.delaySeconds * 1000, ctx);
       return;
     }
+
+    // Forge fork: the stuck verdict is computed HERE, above the branches that
+    // used to return past it.
+    //
+    // `detectStuck` owns every fixation check the loop has — degenerate
+    // repetition, the narration-only counter, both identical-response tests, the
+    // near-duplicate test, the repeated-tool-signature test, the repeated-question
+    // test — and it used to be the seventh guard on this path, below LOOP_DONE
+    // (third) and LOOP_BLOCKED (fourth). Both of those `return`, so a response
+    // carrying either marker could not be detected as stuck at all.
+    //
+    // That is not an edge case, it is the steady state. This is ENDLESS mode by
+    // default, and `loopInstructions()` asks the model for the marker by name —
+    // "if the core goal appears complete, say LOOP_DONE: <one-line summary>" —
+    // then answers each one with the `improve` directive, which invites another.
+    // Measured against this module: the same byte-identical, tool-free response
+    // eight times produced seven interventions plain and ZERO with the marker,
+    // and the turn after the marker came off reported "no tool usage for 9 turns"
+    // — `turnsWithoutTools` had been incremented above the markers and read only
+    // below them, so nine turns of evidence sat unread.
+    //
+    // Completion still wins: the untilDone paths above and below return before
+    // this is consulted, because a loop that is genuinely finished must be
+    // allowed to finish. What loses to a stuck verdict is CONTINUING with a
+    // marker — the improve directive, the unblock directive, and re-sending
+    // check_failed to a model that has already ignored it once.
+    //
+    // Forge fork: the comparison subject is what was COMMITTED, not what the
+    // event's last message happens to say.
+    //
+    // `commitTurnMemory` fills the fingerprint, snippet and text windows from
+    // `messageToText(m) || messageToRepetitionText(m)` — the answer, or the
+    // reasoning when there is no answer. `detectStuck` was then handed
+    // `messageToText(lastAssistant)`, and three of its comparisons are gated on
+    // that string's length while a fourth tests whether it ends in "?". For a
+    // message with a thinking block and no text those guards measure the empty
+    // string, so the window held a value the rules could not see.
+    //
+    // That was harmless while a reasoning-only turn arrived as `content: []` and
+    // contributed nothing. `patches/forge_reasoning_passthrough.py` (2026-08-17)
+    // made it `content: [thinking]`. Measured: four turns of the same paragraph
+    // rephrased at exactly SIMILARITY_THRESHOLD were caught on turn 2 as text and
+    // NEVER as thinking; byte-identical repeats were caught a turn late and under
+    // the wrong rule's name. See V2 in
+    // context/design/subagents-loop-verifier-shapes.md.
+    //
+    // Passing the committed string makes the window and the rules agree in both
+    // directions: a turn that committed nothing compares nothing (every gated
+    // rule is skipped by its own length test), and a turn whose only output was
+    // reasoning is compared on the reasoning — which is what is in the window and
+    // what the model is repeating.
+    const stuckReason = detectStuck(committedText ?? "", turnEmittedTexts);
+    // The streak is "in a row", and every rung of interveneStuck's ladder spends
+    // it — the rescue model at 3, the compaction at 5, the HARD RESET block at 3.
+    // It used to be cleared on two of this handler's eighteen exits (the
+    // fall-through and the rescue-turn end), so a healthy LOOP_DONE turn between
+    // two stuck ones left it standing and "3 in a row" could span a whole run.
+    if (!stuckReason) state.consecutiveStuckCount = 0;
 
     // --- Objective goal function (if configured). ---
     let scoreRegressed = false;
     if (state.checkCommand) {
       const outcome = await runGoalCheck(pi);
       if (!state.active || token !== runToken) return;
-      if (outcome.execFailed) {
-        ctx.ui.notify(`Loop: goal check could not run: ${outcome.output}`, "warning");
-      }
       scoreRegressed = applyCheckOutcome(state, outcome);
+      if (outcome.execFailed) {
+        // Not a failing check — an absent one. `applyCheckOutcome` leaves the
+        // check state at its last real value and counts this separately.
+        notify(ctx, 
+          `Loop: goal check could not run (${state.checkErrorStreak}/${MAX_CHECK_ERRORS}): ${outcome.output}`,
+          "warning",
+        );
+        logIteration("check_error", { error: outcome.output, streak: state.checkErrorStreak });
+        if (state.checkErrorStreak >= MAX_CHECK_ERRORS) {
+          pauseForCheckFailure(pi, ctx);
+          return;
+        }
+      }
 
       // Verified completion: in until-done mode the check decides, not the model.
       if (state.untilDone && outcome.passed && !outcome.execFailed) {
@@ -1732,24 +3073,61 @@ export default function (pi: ExtensionAPI) {
         state.lastNotice = `Goal check passed: ${state.checkCommand}`;
         persistState(pi);
         logIteration("completed", { by: "check" });
-        ctx.ui.notify(`Loop completed — goal check passed: ${state.description}`, "info");
+        notify(ctx, `Loop completed — goal check passed: ${state.description}`, "info");
         ctx.ui.setStatus("loop", "Loop completed (check passed)");
         return;
       }
     }
 
     // --- Completion marker. ---
-    if (/\bLOOP_DONE\s*:/i.test(lastAssistantText)) {
+    if (/\bLOOP_DONE\s*:/i.test(turnAnswerText)) {
       state.doneSignalCount++;
       if (state.untilDone) {
-        if (state.checkCommand && state.lastCheckPassed === false) {
+        // `!== true` rather than `=== false`: a check that could not RUN leaves
+        // `lastCheckPassed` at its last real value, which may be undefined, and
+        // "the check decides" cannot mean "the model decides when the check is
+        // broken" — that is exactly the mode's contract. The unrunnable case
+        // gets its own notice and its own directive; three in a row pauses the
+        // loop (pauseForCheckFailure), so this cannot spin forever.
+        //
+        // Forge fork, twelfth pass (AC2): `checkErrorStreak > 0` is the second
+        // half of the same sentence, and without it the guard had a hole shaped
+        // exactly like the thing it guards against. `applyCheckOutcome` leaves
+        // the verdict at its LAST REAL VALUE when a check could not run — which
+        // `/loop status` prints, honestly, as "passing — LAST KNOWN". A last
+        // known `true` is not a check that passed; it is a check that passed
+        // BEFORE, and the streak is the field that says so.
+        //
+        // Reachable, and measured: an `--until-done` run completes (leaving
+        // `lastCheckPassed = true`), `/loop resume` restarts it without
+        // resetting the check state — deliberately, a resumed run IS the same
+        // run — and the check is now killed by the OOM killer. Iteration 1
+        // reported "the check could not run (1/3)" and then completed the run on
+        // the model's first `LOOP_DONE:`, printing `Status: completed` beside
+        // `Check status: passing — LAST KNOWN; the check has not run`. That is
+        // AB1's damage one layer up, through the one guard written to stop it.
+        if (state.checkCommand && (state.lastCheckPassed !== true || state.checkErrorStreak > 0)) {
+          const unrunnable = state.checkErrorStreak > 0;
           state.status = "running";
-          state.lastNotice = `LOOP_DONE claimed but goal check fails (streak ${state.checkFailStreak}).`;
+          state.lastNotice = unrunnable
+            ? `LOOP_DONE claimed but the goal check could not run (${state.checkErrorStreak}/${MAX_CHECK_ERRORS}).`
+            : `LOOP_DONE claimed but goal check fails (streak ${state.checkFailStreak}).`;
           persistState(pi);
-          logIteration("check_failed");
-          ctx.ui.notify("Loop: LOOP_DONE claimed, but the goal check fails — continuing.", "warning");
+          logIteration("check_failed", { unrunnable, stuck: stuckReason });
+          notify(ctx, 
+            unrunnable
+              ? "Loop: LOOP_DONE claimed, but the goal check could not be run — continuing, and asking for the check to be fixed."
+              : "Loop: LOOP_DONE claimed, but the goal check fails — continuing.",
+            "warning",
+          );
           ctx.ui.setStatus("loop", statusBarText(ctx));
-          if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "check_failed", state.delaySeconds * 1000, ctx);
+          // Re-sending check_failed to a model that has already been sent it and
+          // repeated itself is the fixation this ladder exists for.
+          if (stuckReason) {
+            await interveneStuck(pi, ctx, stuckReason);
+            return;
+          }
+          deliverLoopTurn(pi, ctx, "check_failed", state.delaySeconds * 1000);
           return;
         }
         state.active = false;
@@ -1757,30 +3135,53 @@ export default function (pi: ExtensionAPI) {
         state.lastNotice = "Completion marker seen (until-done mode).";
         persistState(pi);
         logIteration("completed", { by: "marker" });
-        ctx.ui.notify(`Loop completed: ${state.description}`, "info");
+        notify(ctx, `Loop completed: ${state.description}`, "info");
         ctx.ui.setStatus("loop", "Loop completed");
+        return;
+      }
+      // Endless mode. A done signal here is a routine every-iteration outcome, so
+      // it must not also be a way past the fixation ladder: the signal is still
+      // counted and logged, and then a stuck turn is treated as a stuck turn.
+      if (stuckReason) {
+        logIteration("done", { stuck: stuckReason });
+        notify(ctx, 
+          `Loop: goal reported done (#${state.doneSignalCount}), but the turn repeated itself — intervening instead of continuing.`,
+          "warning",
+        );
+        await interveneStuck(pi, ctx, stuckReason);
         return;
       }
       state.status = "running";
       state.lastNotice = `Done signal #${state.doneSignalCount}; continuing with improvements.`;
       persistState(pi);
       logIteration("done");
-      ctx.ui.notify(`Loop: goal reported done (#${state.doneSignalCount}); continuing with improvement work.`, "info");
+      notify(ctx, `Loop: goal reported done (#${state.doneSignalCount}); continuing with improvement work.`, "info");
       ctx.ui.setStatus("loop", statusBarText(ctx));
-      if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "improve", state.delaySeconds * 1000, ctx);
+      deliverLoopTurn(pi, ctx, "improve", state.delaySeconds * 1000);
       return;
     }
 
     // --- Blocked marker: never wait for the operator; force assumptions. ---
-    if (/\bLOOP_BLOCKED\s*:/i.test(lastAssistantText)) {
+    if (/\bLOOP_BLOCKED\s*:/i.test(turnAnswerText)) {
       state.blockedSignalCount++;
+      // Same argument as LOOP_DONE: "continue with assumptions" is a routine
+      // outcome of this loop, not an exemption from the fixation ladder.
+      if (stuckReason) {
+        logIteration("blocked", { stuck: stuckReason });
+        notify(ctx, 
+          `Loop: blocked reported (#${state.blockedSignalCount}), but the turn repeated itself — intervening instead of continuing.`,
+          "warning",
+        );
+        await interveneStuck(pi, ctx, stuckReason);
+        return;
+      }
       state.status = "running";
       state.lastNotice = `Blocked signal #${state.blockedSignalCount}; instructed to assume and continue.`;
       persistState(pi);
       logIteration("blocked");
-      ctx.ui.notify(`Loop: blocked reported (${snippet(lastAssistantText, 120)}); continuing with assumptions.`, "warning");
+      notify(ctx, `Loop: blocked reported (${snippet(turnAnswerText, 120)}); continuing with assumptions.`, "warning");
       ctx.ui.setStatus("loop", statusBarText(ctx));
-      if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "unblock", state.delaySeconds * 1000, ctx);
+      deliverLoopTurn(pi, ctx, "unblock", state.delaySeconds * 1000);
       return;
     }
 
@@ -1791,7 +3192,7 @@ export default function (pi: ExtensionAPI) {
       state.lastNotice = `Paused after max iterations (${state.maxIterations}).`;
       persistState(pi);
       logIteration("max_reached");
-      ctx.ui.notify(`Loop paused after ${state.maxIterations} iterations. Use /loop resume [--max N] to continue.`, "warning");
+      notify(ctx, `Loop paused after ${state.maxIterations} iterations. Use /loop resume [--max N] to continue.`, "warning");
       ctx.ui.setStatus("loop", "Loop paused (max iterations)");
       return;
     }
@@ -1803,14 +3204,14 @@ export default function (pi: ExtensionAPI) {
       state.lastNotice = `Score regression: ${state.lastCheckScore} (best ${state.bestCheckScore}).`;
       persistState(pi);
       logIteration("regression");
-      ctx.ui.notify(`Loop: goal check score regressed to ${state.lastCheckScore} — requesting fix.`, "warning");
+      notify(ctx, `Loop: goal check score regressed to ${state.lastCheckScore} — requesting fix.`, "warning");
       ctx.ui.setStatus("loop", statusBarText(ctx));
-      if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "regression", state.delaySeconds * 1000, ctx);
+      deliverLoopTurn(pi, ctx, "regression", state.delaySeconds * 1000);
       return;
     }
 
     // --- Stuck detection: intervene with rotating strategies, never pause. ---
-    const stuckReason = detectStuck(lastAssistantText, lastAssistantRepetitionText);
+    // (computed above, so the marker branches can consult it too)
     if (stuckReason) {
       await interveneStuck(pi, ctx, stuckReason);
       return;
@@ -1824,21 +3225,26 @@ export default function (pi: ExtensionAPI) {
       state.lastNotice = `No concrete changes for ${NO_PROGRESS_WINDOW} iterations; audit nudge sent.`;
       persistState(pi);
       logIteration("audit");
-      ctx.ui.notify(`Loop: no concrete progress for ${NO_PROGRESS_WINDOW} iterations — requesting tangible output.`, "warning");
+      notify(ctx, `Loop: no concrete progress for ${NO_PROGRESS_WINDOW} iterations — requesting tangible output.`, "warning");
       ctx.ui.setStatus("loop", statusBarText(ctx));
-      if (!ctx.hasPendingMessages()) scheduleLoopTurn(pi, "audit", state.delaySeconds * 1000, ctx);
+      deliverLoopTurn(pi, ctx, "audit", state.delaySeconds * 1000);
       return;
     }
 
     // --- Normal continue. ---
-    state.consecutiveStuckCount = 0;
-    if (state.penaltyTurnsRemaining > 0) state.penaltyTurnsRemaining--;
+    // (penaltyTurnsRemaining is aged at the top of this handler, and
+    // consecutiveStuckCount is cleared with the stuck verdict above, so every
+    // exit path ages and clears them rather than only this one.)
     state.status = "running";
     state.lastNotice = "";
     persistState(pi);
     logIteration("continue");
     ctx.ui.setStatus("loop", statusBarText(ctx));
 
+    // The one exit that really does only need *a* turn to happen: with a message
+    // pending the loop drops its own "keep going" rather than putting 1,200
+    // characters of loop rules onto a turn the operator typed. The five exits
+    // that carry a DIRECTIVE go through `deliverLoopTurn` instead — see there.
     if (!ctx.hasPendingMessages()) {
       scheduleLoopTurn(pi, "continue", state.delaySeconds * 1000, ctx);
     }

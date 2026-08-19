@@ -15,7 +15,7 @@
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
-    "lint": "for file in extensions/index.ts src/*.ts tests/*.test.ts; do node --check \"$file\"; done",
+    "lint": "for file in extensions/index.ts src/*.ts tests/*.ts; do node --check \"$file\"; done",
     "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "files": [

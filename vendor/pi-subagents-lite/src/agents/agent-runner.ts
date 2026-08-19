@@ -25,7 +25,6 @@ import {
   resolveSessionAllowedTools,
   resolveVisibleTools,
 } from "./agent-types.js";
-import { extractText } from "../prompt/context.js";
 import type { AgentUsage } from "./usage.js";
 import { findModelInRegistry, GIT_EXEC_TIMEOUT_MS } from "../utils.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
@@ -37,7 +36,10 @@ import { getStore, enterSubagentSpawn, exitSubagentSpawn } from "../shell.js";
 import { DEFAULT_GRACE_TURNS, CUSTOM_PROMPT_PATH } from "../config/config-io.js";
 import { patchRetryClassifier } from "./stream-retry.js";
 import { subagentExtraExtensionPaths, withExtensionDenial, withSkillDenial } from "./subagent-denylist.js";
-import { declaredResources } from "./declared-resources.js";
+import { classifyGitFailure } from "../spawn/git-failure.ts";
+import { declaredPromptSources, declaredResources } from "./declared-resources.ts";
+import { collectResponseText } from "./run-answer.ts";
+import { wireTurnTracking } from "./turn-tracking.ts";
 
 // Cache: extension path → unscoped package name (lowercased), or undefined if not found
 const packageNameCache = new Map<string, string | undefined>();
@@ -99,35 +101,11 @@ export function resetPackageNameCache() {
   packageNameCache.clear();
 }
 
-/**
- * Normalize max turns. 0 = unlimited, absent = DEFAULT_MAX_TURNS, else min 1.
- *
- * Forge fork: a subagent always has a turn ceiling, even when nothing set one.
- *
- * Upstream leaves `maxTurns` undefined unless an agent file or the caller
- * supplies it, and undefined means unbounded. That is a defensible default when
- * a subagent is a short-lived search. It is not defensible here, because
- * `AgentSession.prompt()` defaults `expandPromptTemplates` to true and this
- * fork calls it bare — so a prompt beginning with `/loop …` starts a real loop
- * inside the child. An unbounded loop on a one-slot llama server is not a
- * runaway subagent, it is a stopped machine: the parent's next turn queues
- * behind it forever.
- *
- * 40 is chosen to be generous for the work people actually delegate — a search
- * that reads a dozen files, or a bounded loop with a clear goal — while still
- * being a number. `wireTurnTracking` steers "wrap up immediately" on reaching
- * it and hard-aborts DEFAULT_GRACE_TURNS later, so hitting the ceiling produces
- * a final answer rather than a severed run. An agent file can still raise it,
- * and `max_turns: 0` still means unbounded for anyone who deliberately wants
- * that.
- */
-export const DEFAULT_MAX_TURNS = 40;
-
-function normalizeMaxTurns(n: number | undefined): number | undefined {
-  if (n === 0) return undefined;
-  if (n == null) return DEFAULT_MAX_TURNS;
-  return Math.max(1, n);
-}
+// The turn ceiling and the soft-limit steer live in `turn-tracking.ts`, which
+// imports nothing and is therefore testable under the plain node the suite runs
+// on. An agent file can still raise the ceiling, and `max_turns: 0` still means
+// unbounded for anyone who deliberately wants that.
+export { DEFAULT_MAX_TURNS } from "./turn-tracking.ts";
 
 interface RunOptions extends RunTunables, RunCallbacks {
   /** ExtensionAPI instance — used for pi.exec() for git detection. */
@@ -171,46 +149,63 @@ export interface SessionPromptOptions extends RunCallbacks {
   signal?: AbortSignal;
 }
 
-function collectResponseText(session: AgentSession, onTextDelta?: (delta: string, fullText: string) => void) {
-  let text = "";
-  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-    if (event.type === "message_start") {
-      text = "";
-    }
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      text += event.assistantMessageEvent.delta;
-      onTextDelta?.(event.assistantMessageEvent.delta, text);
-    }
-  });
-  return { getText: () => text, unsubscribe };
-}
-
-function getLastAssistantText(session: AgentSession, fromIndex: number): string {
-  for (let i = session.messages.length - 1; i >= fromIndex; i--) {
-    const msg = session.messages[i];
-    if (msg.role !== "assistant") continue;
-    const text = extractText(msg.content).trim();
-    if (text) return text;
-  }
-  return "";
-}
-
 /**
  * The provider error message when the run ended in a model error: the final
  * assistant message has stopReason "error". Returns undefined when the final
  * assistant message ended normally (or was aborted), so a transient error
  * followed by a successful turn never fails the run.
  */
+/**
+ * The provider error the run ended on, or undefined when it did not end on one.
+ *
+ * Forge fork: a `stopReason: "error"` with an EMPTY `errorMessage` used to
+ * return undefined — which `classifyRun` reads as "no model error", so a run
+ * that died on the provider was classified `completed` and its (empty) text went
+ * to the parent and to the verifier as an answer. The structural gate exists to
+ * refuse exactly that run (`worthJudging: false`, `skip: "error"`) and could not
+ * see it.
+ *
+ * `errorMessage` is not guaranteed: pi sets `stopReason` from the stream and the
+ * message only when the provider supplied one. The stopReason is the fact; the
+ * text is decoration. So the fallback is a stated one rather than silence.
+ */
+const UNDESCRIBED_MODEL_ERROR = "the provider ended the turn with an error and no message";
+
+/**
+ * What a run says when it was stopped during its own setup, before there was a
+ * prompt to abort. Exported so the suite asserts on the sentence rather than on
+ * a substring of it. See AB4, and `runTurnLoop`.
+ */
+export const ABORTED_BEFORE_START = "the subagent was stopped before its run started";
+
 function getFinalModelError(session: AgentSession): string | undefined {
   for (let i = session.messages.length - 1; i >= 0; i--) {
     const msg = session.messages[i];
     if (msg.role !== "assistant") continue;
     if (msg.stopReason !== "error") return undefined;
-    return msg.errorMessage && msg.errorMessage.trim() ? msg.errorMessage : undefined;
+    return msg.errorMessage && msg.errorMessage.trim() ? msg.errorMessage : UNDESCRIBED_MODEL_ERROR;
   }
   return undefined;
 }
 
+/**
+ * Forward an abort into the child's session for the duration of a run.
+ *
+ * **This covers aborts that arrive from HERE ON.** `addEventListener("abort")`
+ * on a signal that has ALREADY aborted never fires — the event was dispatched
+ * once, at abort time — so a signal that fired before this line is silently
+ * unwatched. That is not a hypothetical: this function runs at the top of
+ * `runTurnLoop`, and everything before it in `runAgentImpl` — `reloadAndMap()`
+ * calling every extension factory, `createAgentSession()`, `bindExtensions()`,
+ * `setActiveToolsByName()` — is seconds of work on a 9p mount, with one factory
+ * (`vendor/rtk-pi`) shelling out to a subprocess inside it.
+ *
+ * Aborting the session here instead would be worse than doing nothing: the
+ * `abort()` would be consumed before `session.prompt()` was ever called, and the
+ * run would go ahead anyway with the operator's stop spent. `runTurnLoop` refuses
+ * to start the prompt instead. See AB4 in
+ * `context/design/subagents-loop-verifier-signals.md`.
+ */
 function forwardAbortSignal(session: AgentSession, signal?: AbortSignal): () => void {
   if (!signal) return () => {};
   // abort() returns a promise and this fires from an event listener, so a
@@ -249,7 +244,25 @@ export function subscribeToSessionEvents(
   if (!options.onToolActivity && !options.onAssistantUsage && !options.onCompaction) {
     return () => {};
   }
+  /**
+   * The agent loop of the run in flight has emitted `agent_end`.
+   *
+   * Forge fork: pi auto-compacts from `_handlePostAgentRun()` — after
+   * `agent.prompt()` resolves — and from `prompt()`, before the next run starts.
+   * A subscriber cannot otherwise tell those apart, and the difference decides
+   * whether a steer sent from `onCompaction` joins a turn that was already
+   * coming or manufactures one. `agent_start` resets it because each
+   * `agent.continue()` runs a whole new agent loop. See CompactionInfo.afterRun
+   * and Z2.
+   */
+  let afterRun = false;
   return session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "agent_start") {
+      afterRun = false;
+    }
+    if (event.type === "agent_end") {
+      afterRun = true;
+    }
     if (event.type === "tool_execution_start") {
       options.onToolActivity?.({ type: "start", toolName: event.toolName, toolCallId: event.toolCallId });
     }
@@ -264,7 +277,12 @@ export function subscribeToSessionEvents(
       }
     }
     if (event.type === "compaction_end" && !event.aborted && event.result) {
-      options.onCompaction?.({ reason: event.reason, tokensBefore: event.result.tokensBefore });
+      options.onCompaction?.({
+        reason: event.reason,
+        tokensBefore: event.result.tokensBefore,
+        afterRun,
+        willRetry: (event as unknown as { willRetry?: boolean }).willRetry === true,
+      });
     }
   });
 }
@@ -307,10 +325,28 @@ function extractExtensionName(extPath: string): string {
   return path.basename(path.dirname(extPath));
 }
 
+/**
+ * One git probe for the child's environment block.
+ *
+ * Forge fork, seventeenth pass (AH3): the verdict goes through
+ * `classifyGitFailure`, not through `result.code`.
+ *
+ * `pi.exec` is `execCommand` (pi `core/exec.js`), which never rejects and which
+ * resolves a child it killed on the timeout with `code: code ?? 0` — a signalled
+ * child exits with a signal and no code. So `result.code === 0` is TRUE for a
+ * wedged git, and this returned `""` rather than `null`: `detectEnv` below then
+ * told the child it was not in a git repository and gave it no branch, on a
+ * host where git is fine and merely slow. `GIT_EXEC_TIMEOUT_MS` against a 9p
+ * mount is not a hypothetical.
+ *
+ * `git-failure.ts` states the rule with the measured table behind it, and its
+ * header says it is "AA2 one package over". This was one of the three call sites
+ * in this package that the extraction did not reach.
+ */
 async function execGit(pi: ExtensionAPI, args: string[], cwd: string): Promise<string | null> {
   try {
     const result = await pi.exec("git", args, { cwd, timeout: GIT_EXEC_TIMEOUT_MS });
-    return result.code === 0 ? result.stdout.trim() : null;
+    return classifyGitFailure(result) ? null : result.stdout.trim();
   } catch {
     return null;
   }
@@ -331,22 +367,11 @@ async function detectEnv(pi: ExtensionAPI, cwd: string): Promise<EnvInfo> {
 
 // ── runAgent phases ────────────────────────────────────────────────
 
-/**
- * Effective system prompt mode for an agent: the global mode overridden by
- * the agent's include_system_prompt frontmatter field.
- *
- * - false → replace (never inherit or custom)
- * - true → inherit, except when the global mode is custom (custom wins)
- * - undefined → global mode
- */
-export function resolveEffectiveSystemPromptMode(
-  globalMode: SystemPromptMode,
-  includeSystemPrompt: boolean | undefined,
-): SystemPromptMode {
-  if (includeSystemPrompt === false) return "replace";
-  if (includeSystemPrompt === true && globalMode !== "custom") return "inherit";
-  return globalMode;
-}
+// The rule lives in declared-resources.ts, next to the identical one for
+// `extensions`/`skills`, because it is the same rule and because that module
+// imports nothing and can therefore be tested. Re-exported so callers and probes
+// keep the name they had.
+export { resolveEffectiveSystemPromptMode } from "./declared-resources.ts";
 
 function resolveSystemPromptSources(
   ctx: ExtensionContext,
@@ -355,12 +380,17 @@ function resolveSystemPromptSources(
   agentConfig: ReturnType<typeof getAgentConfig>,
 ): {
   mode: SystemPromptMode;
+  includeEnvironment: boolean;
   extras: Pick<PromptExtras, "parentSystemPrompt" | "customSystemPrompt" | "contextFiles">;
 } {
   const store = getStore();
   // Per-agent frontmatter overrides win; unset fields follow the global config.
-  const mode = resolveEffectiveSystemPromptMode(store.agent.systemPromptMode, agentConfig?.includeSystemPrompt);
-  const includeContextFiles = agentConfig?.includeContextFiles ?? store.agent.includeContextFiles;
+  // Same precedence as createResourceLoader's extensions/skills, and resolved by
+  // the same module — see declared-resources.ts for why the two belong together.
+  const { systemPromptMode: mode, includeContextFiles, includeEnvironment } = declaredPromptSources(agentConfig, {
+    includeContextFiles: store.agent.includeContextFiles,
+    systemPromptMode: store.agent.systemPromptMode,
+  });
   const extras: Pick<PromptExtras, "parentSystemPrompt" | "customSystemPrompt" | "contextFiles"> = {};
 
   if (mode === "inherit") {
@@ -396,7 +426,7 @@ function resolveSystemPromptSources(
     }
   }
 
-  return { mode, extras };
+  return { mode, includeEnvironment, extras };
 }
 
 function buildPrompt(
@@ -404,7 +434,7 @@ function buildPrompt(
   agentConfig: ReturnType<typeof getAgentConfig>,
   config: ReturnType<typeof getConfig>,
   cwd: string,
-  env: EnvInfo,
+  env: EnvInfo | undefined,
   systemPromptMode: SystemPromptMode = "replace",
   resolverExtras: Pick<PromptExtras, "parentSystemPrompt" | "customSystemPrompt" | "contextFiles"> = {},
 ): string {
@@ -471,7 +501,8 @@ function filterOverride(names: Set<string>, invert: boolean, notify?: (msg: stri
 
 export function buildExtOverride(
   extensions: true | string[] | false | undefined,
-  excludeExtensions?: string[],
+  /** `true` means "exclude every extension" — the `all`/`true` spelling of `exclude_extensions:`. */
+  excludeExtensions?: true | string[],
   notify?: (msg: string) => void,
 ) {
   if (Array.isArray(extensions)) {
@@ -486,6 +517,9 @@ export function buildExtOverride(
   }
 
   if (excludeExtensions) {
+    // `exclude_extensions: all` — the same thing `extensions: false` says. An
+    // empty allowlist is the shape that means "nothing"; see parseExcludeList.
+    if (excludeExtensions === true) return filterOverride(new Set<string>(), false, notify);
     const excludeSet = new Set(excludeExtensions.map((n) => n.toLowerCase()));
     return filterOverride(excludeSet, true, notify);
   }
@@ -617,6 +651,25 @@ async function createAndConfigureSession(
   notify: (msg: string) => void,
 ): Promise<AgentSession> {
   const session = await initSession(ctx, options, agentConfig, type, cwd, loader, extToolMap, settingsManager);
+  // Forge fork: handed over the moment it EXISTS, not once it is configured.
+  //
+  // This callback is the only handle anything outside gets on the session, and
+  // both of its users are teardown: the manager assigns `record.execution.session`
+  // (which `dispose()` / `removeRecord()` reach) and the verifier's judge captures
+  // it for the `finally` that disposes it — the judge goes around `spawn()`, so
+  // that `finally` is its whole cleanup.
+  //
+  // It used to be the LAST line of this function, below `bindExtensions` and the
+  // tool filtering. V7 moved the judge's capture here from `result?.session` on
+  // the strength of a claim that this fires "before bindExtensions returns"; it
+  // did not, so the exit that claim names was still uncovered, and V7's
+  // regression test is a source pin that asserts the capture is PRESENT and
+  // cannot see where it sits. Now the claim is true. See W6 in
+  // `context/design/subagents-loop-verifier-readers.md`.
+  //
+  // Nothing downstream of the callback reads the session's tools or name, and
+  // attaching the output log earlier only means it captures more.
+  options.onSessionCreated?.(session);
   const baseName = agentConfig?.name ?? type;
   session.setSessionName(options.agentId ? `${baseName}#${options.agentId.slice(0, SHORT_ID_LENGTH)}` : baseName);
   await session.bindExtensions({
@@ -635,38 +688,7 @@ async function createAndConfigureSession(
     notify,
   });
   if (filteredTools) session.setActiveToolsByName(filteredTools);
-  options.onSessionCreated?.(session);
   return session;
-}
-function wireTurnTracking(session: AgentSession, options: Pick<RunOptions, "maxTurns" | "graceTurns" | "onTurnEnd">) {
-  let turnCount = 0;
-  const maxTurns = normalizeMaxTurns(options.maxTurns);
-  let softLimitReached = false;
-  let aborted = false;
-  const graceTurns = options.graceTurns ?? DEFAULT_GRACE_TURNS;
-
-  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-    if (event.type !== "turn_end") return;
-    turnCount++;
-    options.onTurnEnd?.(turnCount);
-    if (maxTurns == null) return;
-    if (!softLimitReached && turnCount >= maxTurns) {
-      softLimitReached = true;
-      // steer() returns a promise and fires from a subscribe callback: a
-      // rejection would escape the run. It only costs the graceful wrap-up;
-      // the hard abort below still fires.
-      void session
-        .steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.")
-        .catch(() => {});
-    } else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
-      aborted = true;
-      // `aborted` is already set, so a rejected abort() cannot change the
-      // reported outcome — only swallow the rejection.
-      void session.abort().catch(() => {});
-    }
-  });
-
-  return { unsubscribe, getAborted: () => aborted, getTurnLimited: () => softLimitReached };
 }
 
 async function runTurnLoop(
@@ -678,11 +700,16 @@ async function runTurnLoop(
   const unsubEvents = subscribeToSessionEvents(session, options);
   const collector = collectResponseText(session, options.onTextDelta);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
-  // Messages already in the session before this prompt belong to earlier runs;
-  // the fallback must not surface their text when this run fails (model error
-  // or abort with no output) — that would resurrect a prior run's result.
-  const messageStart = session.messages.length;
   try {
+    // AB4. The forward above can only see aborts that have not happened yet, so
+    // this is the half of the same question it cannot answer: was the run
+    // already stopped before it got here? Throwing rather than aborting, because
+    // `session.abort()` before `prompt()` is consumed by nothing and the prompt
+    // would run regardless. The throw lands where a stop is already handled:
+    // `attachSettlementChain`'s `.catch` (which leaves a "stopped" status alone),
+    // and `verifyAnswer`'s catch, which is this layer's "the check did not
+    // happen" path and keeps the child's answer.
+    if (options.signal?.aborted) throw new Error(ABORTED_BEFORE_START);
     await session.prompt(prompt);
   } finally {
     unsubTurns();
@@ -690,7 +717,10 @@ async function runTurnLoop(
     collector.unsubscribe();
     cleanupAbort();
   }
-  return collector.getText().trim() || getLastAssistantText(session, messageStart);
+  // Both sides are scoped to THIS run by the collector's own buffers, so
+  // neither can surface an earlier run's text and neither depends on an index
+  // into an array pi replaces on every compaction. See collectResponseText.
+  return collector.getText().trim() || collector.getLastMessageText();
 }
 
 /**
@@ -704,7 +734,13 @@ async function runSessionPrompt(
   prompt: string,
   options: SessionPromptOptions,
 ): Promise<RunResult> {
-  const { unsubscribe: unsubTurns, getAborted, getTurnLimited } = wireTurnTracking(session, options);
+  const { unsubscribe: unsubTurns, getAborted, getTurnLimited } = wireTurnTracking(session, {
+    maxTurns: options.maxTurns,
+    // Resolved here rather than inside turn-tracking.ts: that module imports
+    // nothing, and the default lives in config-io.ts, which imports pi.
+    graceTurns: options.graceTurns ?? DEFAULT_GRACE_TURNS,
+    onTurnEnd: options.onTurnEnd,
+  });
   const responseText = await runTurnLoop(session, prompt, options, unsubTurns);
   return {
     responseText,
@@ -806,7 +842,6 @@ async function runAgentImpl(
   }
 
   const effectiveCwd = options.cwd ?? ctx.cwd;
-  const env = await detectEnv(options.pi, effectiveCwd);
 
   // One SettingsManager for the whole spawn: its trust state gates both the
   // resource loader (project extensions/skills/prompts/themes/system prompt
@@ -815,7 +850,18 @@ async function runAgentImpl(
     projectTrusted: options.projectTrusted !== false,
   });
 
-  const { mode, extras: promptExtras } = resolveSystemPromptSources(ctx, effectiveCwd, bufferNotify, agentConfig);
+  const { mode, includeEnvironment, extras: promptExtras } = resolveSystemPromptSources(
+    ctx,
+    effectiveCwd,
+    bufferNotify,
+    agentConfig,
+  );
+
+  // Two git subprocesses, ~100 ms on this box's 9p mount, per spawn — and the
+  // verifier's judge, which runs once per verified delegation on the slot the
+  // parent is blocked on, has no working tree to describe. Detected only when
+  // the prompt is actually going to say so.
+  const env = includeEnvironment ? await detectEnv(options.pi, effectiveCwd) : undefined;
 
   const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
   const { loader, reloadAndMap } = createResourceLoader(

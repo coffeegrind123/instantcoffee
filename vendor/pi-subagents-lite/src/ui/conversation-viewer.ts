@@ -34,6 +34,7 @@ import {
 import { summarizeToolArgs } from "../utils.js";
 import { verificationBadge } from "./verification-badge.js";
 import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./viewer-keys.js";
+import { isBusyRecord } from "../agents/record-activity.ts";
 
 /** Fixed chrome lines: top border + 2 header rows + 2 separators + footer + bottom border. */
 const CHROME_LINES_BASE = 7;
@@ -103,8 +104,14 @@ export class ConversationViewer implements Component {
     private onStop?: () => void,
     /** User keybindings from `ctx.ui.custom()`. Omitted -> hardcoded defaults. */
     keybindings?: ViewerKeybindings,
-    /** Send a steering message to the agent. Omitted -> no compose affordance. */
-    private onSteer?: (message: string) => void,
+    /**
+     * Send a steering message to the agent. Omitted -> no compose affordance.
+     *
+     * May be async: the caller is the one that reads `AgentManager.steer()`'s
+     * boolean and tells the operator when the agent refused it (AF2). This is
+     * called without being awaited, so the callback must not reject.
+     */
+    private onSteer?: (message: string) => void | Promise<void>,
   ) {
     this.thinkingVisible = !getHideThinkingBlock();
     this.keys = createViewerKeys(keybindings);
@@ -370,8 +377,20 @@ export class ConversationViewer implements Component {
     return lines;
   }
 
+  /**
+   * Is this record still doing work?
+   *
+   * Forge fork, fourteenth pass (AE5): `isBusyRecord`, not a status test. It
+   * gates `isStoppable()` below, and `AgentManager.stopAgent()` has been able to
+   * stop a VERIFYING record since T5 — a record whose `lifecycle.status` is
+   * already terminal because the child's run finished and the judge has not.
+   * The `/agents` menu could reach that stop, and after AD2 so could the
+   * `StopAgent` tool; this viewer, which is where an operator watching a
+   * delegation actually is, still hid the action. `record-activity.ts` exists so
+   * the question has one answer.
+   */
   private isActive(): boolean {
-    return this.record.lifecycle.status === "running" || this.record.lifecycle.status === "queued";
+    return isBusyRecord(this.record);
   }
 
   private isStoppable(): boolean {

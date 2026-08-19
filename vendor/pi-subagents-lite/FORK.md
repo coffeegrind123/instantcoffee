@@ -492,6 +492,94 @@ corrections to §10 and §2 are above; these are the rest.
   intercepts error status and returns `errorResult(record.error)` without ever
   reading `record.result`. Now skipped.
 
+### Third pass (2026-08-17) — the turn ceiling, and two things about failing safely
+
+Full account in `context/design/subagents-loop-verifier-mechanics.md`.
+
+- **A one-turn budget took two model calls and returned the wrong one.** The
+  soft-limit steer fired on the first turn of a `maxTurns: 1` run, and pi's agent
+  loop drains the steering queue immediately after `turn_end`
+  (`pi-agent-core/dist/agent-loop.js:160`, inside `while (hasMoreToolCalls ||
+  pendingMessages.length > 0)`) — subscribers are notified synchronously
+  (`agent-session.js:298`) and pi never sets `shouldStopAfterTurn`. So the run
+  took a second turn, and `collectResponseText` resets on the injected message,
+  so the text returned was the reply to "wrap up immediately". The verifier's
+  judge and its repair are the two callers. **Every verification cost double and
+  read the wrong turn**, which means no live verification result predating this
+  fix is evidence of anything. The ceiling now lives in `agents/turn-tracking.ts`,
+  which imports nothing and is therefore testable at all, and skips the steer for
+  a one-turn budget.
+- **`verifyAnswer`'s "never throws" covered only its own try.** The structural
+  gate, the brief check and `clampRounds` ran above it, and `runVerification`
+  had no `catch` — so a throw in the *check* reached the settlement chain's
+  `.catch`, which sets `record.result = undefined` and the status to `error`.
+  A finished child's answer would have been discarded because the check broke.
+  Guarded in both places.
+- **`errored` borrowed `unparsed`'s note**, telling the parent model a timed-out
+  check "could not be read". It has its own now.
+
+**A coupling to pi worth knowing:** the `model`/`thinking`/`_modelOverride`
+injection in `toolCallListener` is legal under the `Agent` schema's
+`additionalProperties: false` only because `validateToolArguments` runs **before**
+`beforeToolCall` and the hook mutates the same object `execute` receives
+(`agent-loop.js:404-409`). A pi that validated after the hook, or cloned the
+args, would break subagent model routing with a validation error naming a
+property this fork put there.
+
+## An abort that arrived before its listener (AB4)
+
+Eleventh pass, and it is the tenth pass's own T5 fix losing a race one layer
+below itself.
+
+`AbortSignal` dispatches `abort` exactly once, at abort time. A listener added
+afterwards never runs; `signal.aborted` is the only evidence left. So every
+consumer has two cases, and only one of them looks like work:
+
+```js
+   if (signal.aborted) …                    // the abort that has already happened
+   signal.addEventListener("abort", …)      // the abort that has not
+```
+
+`forwardAbortSignal` had only the second — and it is called at the **top of
+`runTurnLoop`**, i.e. after everything in `runAgentImpl` that builds the child:
+`reloadAndMap()` running every extension factory (one of which, `vendor/rtk-pi`,
+shells out to `rtk --version` with a 2 s timeout), `createAgentSession()`,
+`bindExtensions()`, `setActiveToolsByName()`. Seconds, on a 9p mount where
+discovery stats thousands of small files.
+
+Two things ride on that signal and both lost the same race:
+
+- **`stopAgent()` on a running record does nothing else.** Its entire effect on a
+  started run is `record.execution.abortController?.abort()`. So stopping a
+  subagent during its build did not stop it: the child ran its whole prompt on the
+  single llama slot and `attachSettlementChain` handed the answer to the parent
+  through the completion gate — while `lifecycle.status` read `stopped`, because
+  the `.then` correctly declines to overwrite it.
+- **T5 lost it too.** `startDeadline` composes `verifyAbort` with its timer and
+  gets the already-aborted case right (`if (stopSignal.aborted)
+  controller.abort()`), then hands the composed signal to `runAgent`. Esc during
+  the judge's build bought one full model call before `assertNotExpired()` threw —
+  the exact cost T5 was closed to remove.
+
+**The fix is a refusal, not an abort**, and the probe runs the wrong version to
+show why: `session.abort()` before `session.prompt()` is consumed by nothing. pi's
+abort tears down what is running *now*; the prompt issued afterwards is a new run,
+so the operator's stop would be spent and the run would go ahead **looking
+handled**. `runTurnLoop` therefore throws `ABORTED_BEFORE_START`, and the throw
+lands where a stop is already handled: `attachSettlementChain`'s `.catch` leaves a
+`"stopped"` status alone, and `verifyAnswer`'s catch is this layer's "the check did
+not happen" path, which preserves the child's answer.
+
+`tests/abort-before-start.test.ts` ends with the invariant rather than the
+instance: it enumerates every `addEventListener("abort")` in `src/` and requires
+each to be paired with an `.aborted` test, so a fourth cannot be added without
+saying which of the two cases it covers. The other two — `startDeadline` and
+`spawn`'s parent binding — were already right, and checking them is what made this
+finding narrow.
+
+Full account in `context/design/subagents-loop-verifier-signals.md` (AB4) and
+`context/testing/probes/o4-…`.
+
 ## The prefix cache — measured, and not what was assumed
 
 The assumption going in, inherited from the handoff, was that a subagent's own
@@ -569,3 +657,1566 @@ bounded in their own windows, not just on the way back.
   and its answer **stays local** — the Matrix user who asked never sees it. The
   failure mode is silence, not a leak, which is the safe direction, but a long
   background job started from Matrix currently answers into the void.
+
+---
+
+# Fourth pass, 2026-08-17 — the declarations
+
+Six defects, all in the same place: **between something this package declares and
+what it actually does**. Full account, with the probes and the failing counts, in
+`context/design/subagents-loop-verifier-surfaces.md` (S2, S3, S6, S7, S8, S9,
+S10, plus the `graceTurns: 0` note in its §10).
+
+## The judge's verdict parser inverted on its own instruction line (S2)
+
+`buildJudgePrompt` ends by telling the model to reply
+
+```
+VERDICT: ADDRESSED or NOT_ADDRESSED
+```
+
+and `parseJudgeVerdict`'s loose second alternative, `/\bNOT[_\s-]ADDRESSED\b/i`,
+matched that echo anywhere in the reply — and was tested first, correctly, since
+one token contains the other. A 27B echoing its own instructions is one of the
+most common reply shapes there is, so a *good* answer was routinely sent back for
+repair. Measured against the real parser: a reply that echoed the menu and then
+gave an explicit `VERDICT: ADDRESSED` **on its own line** came back as
+NOT_ADDRESSED, costing three model calls on the slot the parent is blocked on and
+delivering the original answer with a red `✗ off-task` badge and *"Treat it as
+unreliable."*
+
+Now two passes. A `VERDICT:` line outranks a bare token anywhere else, scanned
+newest-first; a line carrying the MENU rather than a choice is not a decision and
+is skipped; only if no line decided does the bare-token pass run, with the menu
+stripped first. The loose forms are kept rather than deleted — they are what
+catches `NOT-ADDRESSED — it answered a different question` and
+`**VERDICT:** ADDRESSED`. A reply whose only verdict line is the menu lands on
+`unparsed`, which fails open: the judge did not choose.
+
+## The judge inherited the project's instructions, and paid for a git probe (S3, S7)
+
+`__verifier` declared `tools`, `extensions`, `skills`, `preloadSkills` and
+`maxTurns`, and left the two switches that decide what goes into a system PROMPT
+undeclared. Both resolved from global config, and `includeContextFiles` defaults
+to **true** — so every `AGENTS.md` / `CLAUDE.md` from the cwd up to `/`, plus the
+agent dir's, went into `<project_context>` in the prompt of the one agent whose
+entire design argument is that it is harder to fool *because it knows less*.
+Measured with the real builder: 571 → 6,543 chars. A project context file is
+where house rules live ("never simplify what was asked for"), and house rules are
+instructions for the worker; given to the judge they silently become extra
+criteria for what ADDRESSED means. `systemPromptMode` was the same shape and
+worse — an operator turning on `inherit` for their subagents would have handed
+the judge the operator's whole system prompt.
+
+`include_environment` is new and joins them. Building the `# Environment` block
+costs a `git rev-parse` and a `git branch` per spawn — ~100 ms on this box's 9p
+mount, on the one llama slot the parent is blocked on — and the judge has no
+working tree. The judge's whole system prompt is now **463 characters**.
+
+The precedence moved to `declared-resources.ts` as `declaredPromptSources()`,
+next to the identical rule for `extensions`/`skills`. Being in `agent-runner.ts`
+is *why* it had no test: that file imports pi and the suite cannot load it.
+
+## A concurrency change lost the running subagent (S6)
+
+`getSlot()` caches an auto-created slot under a model key, and `setConcurrency()`
+has to delete the slots the new config no longer names — a stale auto-created
+per-model slot would otherwise shadow a per-provider limit just added. It threw
+the running counts away with them: the in-flight agent kept a reference to the
+dropped object and decremented it where nothing reads it, while a fresh slot
+reported `running: 0` and let a second subagent start against `PARALLEL_SLOTS=1`.
+The old comment called it "a brief undercount window"; on this stack it lasts as
+long as a background subagent. It did not need an actual change to fire either —
+the deletion keys on presence in `config.models`, not on any difference, so
+re-confirming the limit the operator already had was enough, and every
+concurrency write in `/agents` comes through it.
+
+The table moved to a new `agents/concurrency-slots.ts` (pure bookkeeping in a
+file that imported pi, so it had no test). `setLimits()` now rebuilds the counts
+from the records holding a slot, `release()` looks the slot up rather than using
+one captured at reservation time, and `AgentExecutionState.holdsSlot` is the
+authority rather than `status === "running"` — the slot is held right through the
+verification window, where the status has already gone terminal. Two pre-existing
+slot leaks went with it: a `startAgent` that threw after reserving, in both
+`spawn()` and `drainQueue()`.
+
+**Measured, and it killed the first fix.** S7's obvious repair was collapsing the
+two git invocations into one (`git rev-parse --is-inside-work-tree --abbrev-ref
+HEAD` returns both). A/B'd interleaved, 30 runs each: the combined call is not
+faster and is sometimes slower. The cost is process startup on the 9p mount, not
+the count.
+
+## Three smaller ones
+
+- **The prinny denial was keyed on `/vendor/prinny-channel/`** (S8) — this
+  checkout's install path. `npm i` puts the package at
+  `node_modules/pi-prinny-channel/` (that is its real name, checked in its
+  package.json, which a bare `prinny-channel/` fragment would also miss), and
+  `~/.pi/agent/extensions/prinny-channel/` is a *discovery* directory a child
+  picks up on its own. Now a path-segment match with an optional package prefix.
+- **`registeredTools: []` meant "the default four"** (S9) — the test was
+  `?.length`, and `[].length` is 0. `__verifier` declares exactly that and was
+  saved only by `tools: false`. Now `Array.isArray`, in
+  `declaredRegisteredTools()`; a boolean (which `agent-discovery` can put there,
+  since it assigns `registeredTools: md.tools`) still reads as absent.
+- **A provider error wore `⊘ unchecked (cut off)`** (S10). `structuralVerdict`
+  now returns `skip: "cutoff" | "error"`, so the cost decision stays grouped and
+  the report does not. New verdict `skipped-error`, badge `⊘ unchecked (failed)`.
+  T4 one layer up.
+- **`graceTurns: 0` did not remove the grace turn**, it relabelled the outcome:
+  the wrap-up steer bought a turn anyway and the abort landed at the end of it,
+  so a complete final answer was reported as `aborted`. The menu accepts 0. A
+  zero budget now aborts on the ceiling turn and sends no steer.
+
+## Tests
+
+```
+cd vendor/pi-subagents-lite && npm run lint && npm test
+```
+
+**154 tests, up from 117**, and `lint: 69/69 files`. New file
+`tests/concurrency-slots.test.ts` (15). Every guard was control-run with its fix
+disabled and the failing count recorded in the write-up's §11; where a case passes
+either way it is called a control rather than counted as evidence.
+
+---
+
+# Fifth pass (2026-08-18) — the units
+
+Five changes, against `context/design/subagents-loop-verifier-units.md` U4, U6–U9.
+
+- **The judge's reason was read by the opposite rule to its verdict** (U4).
+  `parseJudgeVerdict` scanned the VERDICT newest-first, line-anchored and
+  menu-guarded (S2's fix) and took the WHY from `text.match(/WHY:\s*(.+)/i)` — the
+  first match anywhere, guarded by nothing. `buildJudgePrompt` ends with the two
+  lines a small model is most likely to echo, and both get echoed; S2 was the
+  first being read as a verdict, this was the second being read as a reason. It is
+  not decoration: it is the whole of `buildRepairPrompt`'s "Reason:" line, so a
+  repair round — a model call in the child's own session, on the slot the parent
+  is blocked on — was spent telling the child its answer was wrong because "one
+  sentence, and if NOT_ADDRESSED say what the task asked for…". New `readWhy()`:
+  line-anchored, taken relative to the line that decided the verdict, never the
+  prompt's own instruction (checked against the exported `WHY_INSTRUCTION`, which
+  `buildJudgePrompt` interpolates, so a reword cannot reopen it), last-usable-wins
+  when nothing decided, and leading markdown emphasis stripped because `**WHY:**`
+  closes after the colon.
+- **`tools: true` in an agent .md gave the agent no tools** (U6). The frontmatter
+  parser reads scalars as strings, and `tools` went through `parseStringArray`,
+  which treats any non-empty scalar as a comma list — so `tools: true` became the
+  one-element allowlist `["true"]`, gating the session registry to a tool that
+  does not exist and showing the model nothing. `extensions:` and `skills:` on the
+  next line of the same block go through `parseExtensions` and accept exactly
+  those words. `tools` now does too, and a boolean no longer leaks into
+  `registeredTools`, which is a list of names. `false`/`none` were accidentally
+  correct before (an allowlist of one nonexistent tool is also no tools) and now
+  take the `tools === false` branch, which is the same outcome for the stated
+  reason. S9 one field over.
+- **`.pi/extensions/` is the route a child actually takes** (U7). A child inherits
+  no `-e` flags but DISCOVERS `<cwd>/.pi/extensions/**`, and `subagent-denylist.ts`
+  reasons entirely about `vendor/` — pricing `pi-loop-mode`'s `loop` tool at ~177
+  tokens/turn of a child's window and removing it, while `stack.ts` was arriving
+  by discovery with `stack_status` at ~173 tokens/turn, measured, uncounted.
+  `stack.ts` now guards its own factory with the same
+  `__PI_SUBAGENT_SPAWN_DEPTH__` check this package's factory uses; the denylist's
+  header documents both routes; and `tests/subagent-denylist.test.ts` carries a
+  standing check for the class — anything under `.pi/extensions/` that registers a
+  model-visible tool must guard itself, with a paired control that fails if
+  nothing there registers a tool any more.
+- **The verifier's repair counted turns triangularly** (U8).
+  `runTrackingCallbacks`' contract is "the first run records the absolute count, a
+  continuation adds to the previous total", and the repair re-read the field it
+  was writing while `onTurnEnd` fires with the RUNNING total — so a five-turn
+  repair took a record from 5 to 20 instead of 10. A one-turn repair was correct,
+  which is why it stayed invisible; a repair runs longer whenever the child uses a
+  tool first, because `maxTurns: 1` sends no wrap-up steer (T1) and pi's loop
+  keeps going while there are tool results. `previousTurns` is now captured once,
+  before the run.
+- **`Explore` promised read-only and shipped a shell** (U9). Its prompt opened
+  "# CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS" with ten prohibitions, of
+  which one was enforced — `edit` and `write` really were absent — and it had
+  `bash`, which is a superset of both. This repo has already measured what a
+  prompt-level prohibition on tool use is worth against this model
+  (`.pi/extensions/compaction-guard/src/output-cap.ts`: "a soft instruction does
+  not bind"). `registeredTools` is now `["read", "grep", "find", "ls"]` and the
+  prompt describes the tool set instead of prohibiting. **A product decision, not
+  just a repair:** `Explore` can no longer run `git log` or `git diff`, which its
+  old prompt recommended by name. The reasoning is that this agent is spawned by
+  the model on its own initiative with a prompt the operator never sees, and it is
+  the type a model reaches for when it wants a *safe* look around. Reverting is
+  one line.
+
+# Sixth pass — 2026-08-18 (V5–V7)
+
+Full account in `context/design/subagents-loop-verifier-shapes.md`; probes
+`context/testing/probes/j5`–`j7`.
+
+## A repair is a run, and the gate has to see how it ended (V5)
+
+`runSessionPrompt` returns the same five-field object for every run in this
+package — the child's first run, an operator steer, the judge, and the repair.
+`attachSettlementChain` read four of them to decide a status. The repair read
+one:
+
+```js
+const result = await continueAgentSession(session, prompt, { maxTurns: 1, … });
+deadline.assertNotExpired();
+return result.responseText;      // aborted, turnLimited, modelError dropped
+```
+
+So the structural gate — whose entire job is *"a run that ended at the turn
+ceiling / by watchdog / by a stop is objectively suspect and needs no
+judgement"* — was applied to the child's first run and to nothing else. A repair
+is not a small run: it goes into the child's own session with the child's own
+tools at `maxTurns: 1`, T1 means no wrap-up steer is sent, and the hard abort
+lands at `maxTurns + graceTurns` with whatever had streamed. That fragment was
+judged as an answer and, if the judge read it as addressing the task, went back
+to the parent under *"this is the corrected one, and it was re-checked"* with a
+`✎ repaired` badge — cut mid-token, with nothing anywhere recording it.
+
+`repair` now returns `{ text, status }`; `classifyRun(result)` was extracted from
+`attachSettlementChain` so both callers use one classification, and the round loop
+puts the repair through `structuralVerdict` before judging it. One gate covers
+both cheap rejections (empty → `ok: false`, cut off → `worthJudging: false`); the
+stall check stays after it, because "the agent repeated itself when asked again"
+is a different sentence from "the corrections were no better".
+
+`graceTurns: DEFAULT_GRACE_TURNS` became `getStore().agent.graceTurns ??
+DEFAULT_GRACE_TURNS` in the same edit — the repair was the one run in this file
+that ignored the operator's setting.
+
+## A one-turn budget reaches its ceiling by finishing (V6)
+
+T1 established that `maxTurns: 1` is a different shape: `shouldSteerAtSoftLimit(1)`
+is false because "there is no wrap-up to ask for, and asking manufactures a turn".
+The flag on the line above was left agreeing with the long case, so every one-turn
+run reported `turnLimited` — and that status means two things downstream:
+
+```
+  status-note.ts   " (wrapped up at the turn limit — output may be partial)"
+                   appended to the text the PARENT MODEL reads
+  verify.ts        worthJudging: false, skip: "cutoff"
+                   -> the answer is NEVER CHECKED, badge "⊘ unchecked (cut off)"
+```
+
+So a deliberately one-turn agent — a classifier, a summariser, which is what a
+one-turn budget is *for* — had every answer labelled possibly-partial to its
+parent and verification silently switched off. Reachable through `max_turns:` in
+an agent `.md`, the `/agents` spawn wizard's "Max turns" field, and
+`defaultMaxTurns` in the model-family config.
+
+`wireTurnTracking` now keeps `ceilingReached` (arms the grace-turn abort) apart
+from `turnLimited` (the run was cut short), and sets the second exactly where the
+wrap-up steer is sent. A one-turn run that keeps calling tools is still severed at
+`maxTurns + graceTurns` and still reports `aborted`, which the gate refuses to
+judge for the right reason.
+
+## The judge's session is disposed on both exits (V7)
+
+The judge calls `runAgent` directly, not `this.spawn()`, so there is no record and
+nothing in `dispose()` or `clear()` can reach its session — the `finally` in
+`buildVerifyDeps.judge` IS the whole teardown, and its own comment says so. It
+read `result?.session?.dispose()`, and `result` is only assigned when the await
+**resolves**: `runAgentImpl` creates the session, binds its extensions, and only
+then prompts, so every rejection after that point dropped the only reference to a
+live session with its message history and its bound extensions, for the life of
+the process. A timeout never leaked — the deadline aborts the signal, `prompt()`
+resolves, and `assertNotExpired()` throws afterwards.
+
+The session is now captured in `onSessionCreated` — which, since W6 below, really
+does fire before `bindExtensions` returns. It did not when V7 was written, and
+that sentence was the fix's whole justification.
+
+## Steering a running subagent grows its brief too (W3)
+
+`record.execution.brief` is what this layer checks work against, and it has three
+readers: the judge (`verifyAnswer(record, brief, …)`), `buildRepairPrompt(brief,
+why)` — what the child is told to answer instead — and `buildAnchorMessage(brief)`,
+what is restated into a context that was just compacted.
+
+The fork already fixed `continueSettledAgent`, and its comment is the whole
+argument: an answer to a steer judged against the original prompt comes back
+NOT_ADDRESSED, correctly, and the repair then tells the child "This is the task,
+in full, as it was given to you: <the original>. Answer it now" — undoing the
+operator's instruction and labelling the result `✎ repaired`.
+
+`AgentManager.steer()` reaches `continueSettledAgent` only when the record is
+**not** running. Its two other branches — `session.steer(message)`, and the
+queue-until-the-session-exists branch above it — never touched the field. That is
+not the obscure path: `conversation-viewer.ts` picks its verb with
+`this.isActive() ? "steer" : "continue"`, so "steer" IS the running case, and the
+/agents running-agents menu offers the same action.
+
+One `growBrief()` helper is now called from every branch that reaches the model,
+including the settled one, so there is a single call site to find. On the
+live-session branch it is called **after** `await session.steer(message)`
+resolves: a steer that threw never reached the model, and a brief that records an
+instruction the model never saw is the same defect pointing the other way — the
+judge would then fail an answer for not addressing something nobody asked.
+
+## A one-turn ceiling is reached by finishing, with or without grace turns (W4)
+
+V6 split `turnLimited` off the ceiling because "reaching a one-turn ceiling IS
+finishing, and the two readers of the flag both take it to mean the opposite". The
+branch one line above it was left agreeing with the long case:
+
+```js
+  if (!ceilingReached && turnCount >= maxTurns) {
+    ceilingReached = true;
+    if (graceTurns <= 0) { aborted = true; session.abort(); return; }   // ← here
+    if (shouldSteerAtSoftLimit(maxTurns)) { turnLimited = true; session.steer(…); }
+  }
+```
+
+`aborted` is the stronger of the two labels: it outranks `turnLimited` in
+`classifyRun`, its status note is "hit the turn limit before completion; output
+may be incomplete" rather than "may be partial", and `structuralVerdict` refuses
+to judge it for the same reason. `graceTurns: 0` is a supported setting —
+`menu-spawn-options.ts` builds its input with `min: 0` — and it is global, so one
+operator change put every deliberately one-turn agent back in exactly the bucket
+V6 took it out of.
+
+```
+  grace  turns  wrap-up asked?  status      verified?
+  6      1      no              completed   yes
+  0      1      no              aborted     NO (cutoff)     ← BEFORE
+  0      1      no              completed   yes             ← NOW
+```
+
+The sever is now gated on `shouldSteerAtSoftLimit(maxTurns)`. **Nothing loses its
+ceiling:** `ceilingReached` is still set on that turn, so the `else if
+(ceilingReached && turnCount >= maxTurns + graceTurns)` below fires on the very
+next `turn_end` — at `maxTurns + 0` — and reports `aborted`, which is then true.
+
+## The notes the parent reads count in English (W5)
+
+`verificationNote` is the verifier's only channel to the parent model, and
+`describeAttempts` in the same file says why the wording matters: "the parent
+model reads this text, and '1 attempts' is the kind of thing it copies into its
+own answer." Three of the five notes built their own counts:
+
+- `repaired` interpolated `${attempts}th`, correct from four upwards while
+  `MAX_VERIFY_ROUNDS` is 3 — so every value it could be handed read "the 2th
+  attempt" or "the 3th attempt";
+- `stalled` hardcoded "so it was not asked a third time". It counts ASKS: the
+  task is the first and each repair is one more, so the ask not made is
+  `attempts + 2`. At the default budget of one round that is the third, which is
+  why the constant was invisible;
+- `unparsed` returns the CANDIDATE, which from the second round on is a repaired
+  answer — under a note mentioning only the unreadable check, with no record that
+  the original failed.
+
+One `describeOrdinal` helper is used by both counting notes; `unparsed` takes
+`attempts` and names the failed first answer when there was one; and the parameter
+now defaults to `0` — no repair — rather than to asserting one that may not have
+happened.
+
+## Hand the session over before configuring it (W6)
+
+V7 moved the judge's session capture off `result?.session` — correct, because
+`result` is only assigned when the await resolves — and into `onSessionCreated`,
+on the strength of a claim its own comment makes:
+
+> every rejection after `createAgentSession()` had returned (**bindExtensions
+> throwing**, session.prompt() rejecting on a provider fault) dropped the only
+> reference to a live session.
+
+`onSessionCreated` was the LAST line of `createAndConfigureSession`:
+
+```
+   agent-runner.ts:590   initSession(...)   — the session now EXISTS
+   agent-runner.ts:592   session.setSessionName(...)
+   agent-runner.ts:593   await session.bindExtensions({ … })
+   agent-runner.ts:601   resolveVisibleTools(...)
+   agent-runner.ts:608   session.setActiveToolsByName(...)
+   agent-runner.ts:609   options.onSessionCreated?.(session)      <- the capture
+```
+
+So the `session.prompt()` half of the claim was real — and it is the common case,
+which is why V7 was worth doing — and the `bindExtensions` half was not. It is
+also not only the judge: on the spawn path the same callback assigns
+`record.execution.session`, so a throw in that window left the record without a
+session, and `dispose()` and `removeRecord()` dispose a field that was still
+`undefined`.
+
+The hand-over is now the line after `initSession`. Nothing downstream of the
+callback reads the session's tools or name; the manager's callback assigns the
+record's session, flushes `pendingSteers` (which queue, and are drained by the run
+that follows), and attaches the output log — attaching it earlier only means it
+captures more.
+
+The leak was narrow: pi's `ExtensionRunner.emit()` catches a handler throw
+(`runner.js:596`), so `bindExtensions` rejects only through
+`extendResourcesFromExtensions`, `_applyExtensionBindings`, or the
+`_rebuildSystemPrompt` inside `setActiveToolsByName`. The **claim** is the
+finding, because V7's regression test is a source pin asserting the capture is
+present, and a pin on the existence of a line cannot see where the line is.
+
+---
+
+# Eighth pass (2026-08-18) — one predicate, three readers
+
+One change, against `context/design/subagents-loop-verifier-turns.md` Y1.
+
+## A record the verifier still holds is not finished (Y1)
+
+`attachSettlementChain` sets `record.lifecycle.status` from `classifyRun` and
+*then* awaits `runVerification`. So for the whole of a judge and up to three
+repairs — model calls, on the one llama slot the parent is blocked behind — the
+record reads `completed`, `lifecycle.completedAt` is unset, and `verifyPhase` is
+the only field that says anything is happening.
+
+`agent-widget.ts` knew, and has said so in a comment since the phase field
+existed: a verifying record "is active work the user is waiting on: it stays
+running". `menu-running-agents.ts` had its own copy of the question —
+
+```js
+  function isActive(record) {
+    return record.lifecycle.status === "running" || record.lifecycle.status === "queued";
+  }
+```
+
+— so one record was drawn as **running** by the widget and listed as **finished,
+with a ✓** by `/agents`, where the same predicate decides the actions:
+
+```js
+  if (isRunning) { steer; stop } else { clear }     // ← the only action offered
+```
+
+and where `finished`/`completed` feed "Clear all" and "Clear done".
+`AgentManager.clear()` accepted it too, because `isTerminalStatus` cannot see a
+phase either.
+
+Clearing it runs `removeRecord`, which disposes `execution.session` — **the
+session a repair runs in** — opens the completion gate with `""`, so a foreground
+`Agent` call blocked on that gate resumes with an empty answer while the real one
+is still being checked, and deletes the record the verifier is about to write its
+verdict to. Driven through the real manager (`context/testing/probes/l6`):
+
+```
+   BEFORE   clear accepted true · repair's session disposed true
+            completion gate opened true, with ""
+   NOW      clear accepted false · nothing disposed · gate still shut
+   control  the same record with the phase cleared: unchanged
+```
+
+The predicate now lives in `src/agents/record-activity.ts`, which imports nothing
+and is therefore testable, and all three readers import it: `isActiveRecord`,
+`isVerifyingRecord`, `isBusyRecord`. `clear()` refuses while verifying; the menu
+offers no Clear and neither bulk clear reaches it; the row reads
+`▶ … completed · checking` so the two views agree.
+
+Steer and Stop are still **not** offered on a verifying record, deliberately: both
+key off `status === "running"` and would silently return false. That verification
+cannot be interrupted at all is T5, open by decision — showing it as "no action
+available" is reporting it, and a button that fails quietly is not.
+
+## The notes list, emptied (tenth pass)
+
+Ten passes of "we looked at this and left it" is a backlog, and a backlog of
+deliberate non-decisions is the shape a defect hides in. This package's share of
+it, cleared. Full account in
+`context/design/subagents-loop-verifier-hosts.md` §9.
+
+- **`pi.exec` never rejects here either.** `worktree-validator`'s
+  `GIT_NOT_FOUND` and `GIT_TIMEOUT` were produced by sniffing a REJECTION's
+  message, so both were dead constants and all three failures — git absent, git
+  wedged, a target genuinely outside a repo — came back as `NOT_IN_GIT_REPO`,
+  which is a claim about the operator's path when two of the three are claims
+  about the host. The shapes were MEASURED against the real `execCommand`:
+
+  ```
+    git missing   { code: 1,   stdout: "", stderr: "",                killed: false }
+    not a repo    { code: 128, stdout: "", stderr: "fatal: not a git repository…" }
+    timed out     { code: 0,   stdout: "", stderr: "",                killed: TRUE  }
+  ```
+
+  `killed` is tested FIRST, because a signalled child exits with no code and
+  `execCommand` does `code: code ?? 0` — a wedged git checked code-first reads as
+  a success returning "". Now `src/spawn/git-failure.ts`, a module that imports
+  nothing. This is AA2 one package over.
+
+- **`hidden` kept `__verifier` out of the tool's description and not out of the
+  tool.** The `agent` parameter is a plain `Type.String()`, not an enum, so a
+  parent model could spawn the verifier by name — one wasted call on the single
+  llama slot, and a record labelled "verify" in `/agents` doing something that is
+  not a verification. `executeAgentTool` refuses a hidden type now;
+  `resolveType` stays open, because the judge reaches `__verifier` through
+  `getAgentConfig` and closing that would break the verifier itself.
+
+- **`params.max_turns` and `params.model` were read**, and the schema declares
+  neither, with `additionalProperties: false`. Removed rather than declared:
+  `max_turns` is the ceiling that stops an unbounded child stalling the one-slot
+  machine, and it belongs to the agent's `.md` or the operator's config, not to
+  the caller about to be blocked on it.
+
+- **`exclude_tools` / `exclude_extensions` are U6 one field over.** They went
+  through `parseStringArray`, so `exclude_tools: none` became the one-element
+  exclusion `["none"]` and `exclude_tools: all` became `["all"]`, which excludes
+  nothing. `parseExcludeList` reads the same four words the three whitelist keys
+  accept, and `true` is representable end to end.
+
+- **`SlotTable` limits could stop being limits.** `setLimits` read
+  `config.default` with no guard; a partial config made it `undefined`, `slotFor`
+  did `Math.max(1, undefined)` = NaN, and `running >= NaN` is false for every
+  count — so an unreadable limit does not become large, it stops existing, and
+  every spawn starts immediately on a one-slot server. And the deletion loop
+  tested truthiness, so a per-model limit of `0` — which `applyEntry` clamps to 1
+  deliberately — was applied and then deleted, dropping back to the default.
+
+- **`AgentStatus` listed every agent ever spawned**, unbounded, into the parent's
+  context; the manager never evicts a settled record. Bounded to "everything
+  unfinished, plus the most recent six settled", with the elided count stated. A
+  `running` or `queued` agent is never dropped, however many there are —
+  `src/agents/status-listing.ts`, another module that imports nothing.
+
+- **`record.stats.turnCount` started at 1**, and `onTurnEnd` writes the running
+  total, so the initial value is only read before the first `turn_end`, where "1"
+  claims a turn finished when none has.
+
+- **`getFinalModelError()` returned undefined for a `stopReason: "error"` with an
+  empty `errorMessage`**, which `classifyRun` reads as "no model error" — so a run
+  that died on the provider was classified `completed` and its empty text went to
+  the parent and past the structural gate that exists to refuse it.
+
+- **`SUBAGENT_VERIFY` was read at spawn time** while its two siblings were read at
+  settlement. All three read in `runVerification` now.
+
+## A verification can be stopped (T5, closed)
+
+Open by decision since the third pass. Verification runs inside the settlement
+chain, after `lifecycle.status` has gone terminal, and every stop path keys off
+`status === "running"` — so while a judge or a repair held the one llama slot the
+record was unstoppable: Esc reached `stopAgent()`, which returned false;
+`StopAgent` the same; and the parent's `Agent` call sat on the completion gate,
+which does not open until verification returns. A 300 s per-call deadline was the
+only exit.
+
+The fix is small once the shape is named. `runVerification` arms
+`record.execution.verifyAbort`; `stopAgent()` recognises a verifying record and
+aborts it, BEFORE the `status === "running"` test that would return false; and
+`startDeadline` composes that signal with its timer so the call ends on whichever
+comes first, with a different sentence for each. Aborting routes through
+`verifyAnswer`'s catch — already this layer's "the check did not happen" path — so
+the child's answer is preserved and annotated rather than lost.
+
+`/agents` offers **"Stop the answer check"** on a verifying record, labelled that
+way because the child's own run has already finished and a bare "Stop" would be a
+claim about the wrong run. Clear is still refused: `removeRecord` disposes the
+session a repair runs in and opens the completion gate with `""` under a parent
+waiting for the real answer. That is Y1 and it stands.
+
+The deadline stays. Nobody presses Esc in a cron job, and an unattended run is
+what it was written for.
+
+## The background result's delivery mode was never a choice (AA4)
+
+Tenth pass. `SpawnCoordinator.emitIndividualNudge` picked the mode like this:
+
+```js
+  // - steer: queues while running, delivers before next LLM call
+  // - followUp: waits for agent to finish, then delivers
+  const parentIdle = ctx?.isIdle?.() ?? true;
+  const deliverAs  = parentIdle ? "followUp" : "steer";
+  pi.sendMessage({…}, { deliverAs, triggerTurn: true });
+```
+
+pi reads `deliverAs` on exactly one branch of `sendCustomMessage`, and `isIdle`
+and `isStreaming` are the same bit (`agent-session.js:588`/`:592`, both
+`_isAgentRunActive`):
+
+```
+  parent     deliverAs chosen   where it lands                          read?
+  ----------------------------------------------------------------------------
+  idle       followUp           _runAgentPrompt  (a whole new run)  :1089  NO
+  busy       steer              agent.steeringQueue (INSIDE the turn) :1086 yes
+```
+
+`parentIdle === true` is precisely the case that falls to `:1089`, where the value
+is discarded. The `followUp` arm existed only for the state in which pi does not
+look at it, so the mode is always `steer` — the delivery that lands the result
+inside the parent's running turn, which is the two-message turn W1, X1, X2 and X3
+were each written to repair and the pending message Z4 is about.
+
+**Left as `steer`, stated rather than computed.** A mid-turn steer puts the result
+in front of the parent one LLM call sooner, which is what running an agent in the
+background is for; its price is that turn shape. Choosing `followUp` for the busy
+case would retire the whole family and cost latency. That is a decision and it has
+not been taken — what was a defect is a comment describing a choice the code could
+not make, so the code now states the mode it has, with the routing and the
+trade-off next to it. Same treatment as `prinny-channel`'s W1: fixed where it is a
+fault, left where it is a judgement, labelled either way.
+
+`tests/background-delivery.test.ts` pins it: one source pin on the coordinator
+(which imports `../shell.js`, so the suite cannot load it) and two pins on the pi
+facts the source pin rests on — that `isIdle` and `isStreaming` are still the same
+bit, and that `sendCustomMessage` still reads `deliverAs` only while streaming. If
+a future pi separates them, the dead arm becomes live and those two are where it
+surfaces. Full account in `context/design/subagents-loop-verifier-hosts.md` (AA4),
+probe `context/testing/probes/n4-…`.
+
+## A run's answer is not its last message (Z1)
+
+`runTurnLoop` ends `collector.getText().trim() || getLastAssistantText(session,
+messageStart)`, and `collectResponseText` kept ONE string, reset on every
+`message_start`. pi emits `message_start` for every message it drains out of the
+steering or follow-up queue as well as for every assistant reply
+(pi-agent-core `agent-loop.js`, inside `while (hasMoreToolCalls ||
+pendingMessages.length > 0)`), and this package injects two of them: the
+turn-limit steer, whose reply IS the answer, and the task ANCHOR, whose reply is
+an acknowledgement. Nothing in the reader can tell them apart.
+
+The fallback could not save it either. `messageStart` is `session.messages.length`
+taken before the prompt, and pi does not splice that array on a compaction — it
+REPLACES it:
+
+```js
+  // AgentSession.compact() :1435, _runAutoCompaction() :1673
+  this.agent.state.messages = sessionContext.messages;
+```
+
+`sessionContext` is rebuilt from the compacted branch, so it is a new and shorter
+array; the loop `for (i = messages.length - 1; i >= messageStart; i--)` does not
+execute once and returns `""`. An empty answer is not small on the way out:
+`structuralVerdict("")` REPLACES it with "The agent returned no answer at all…",
+which is what the parent reads about a child that finished successfully.
+
+Measured against the shipped `continueAgentSession`:
+
+```
+  control  the child answers and stops                        the ANSWER
+  BEFORE   compaction + a reasoning-only final message        NOTHING  ""
+  NOW      the same                                           the ANSWER
+  control  the same turn without the compaction               the ANSWER
+  control  a first run (messageStart = 0)                     the ANSWER
+```
+
+The fix keeps one entry per message and takes the last non-empty — the same
+repair `turnAnswerTexts` is in `vendor/pi-loop-mode` — and the fallback holds the
+run's own assistant messages by reference instead of an index. Scoping by identity
+rather than by arithmetic is what makes the original comment ("must not surface an
+earlier run's text") true again.
+
+It moved to `src/agents/run-answer.ts` so it can be tested at all: `agent-runner.ts`
+imports pi, which does not resolve under the suite's plain node. Same move as
+`turn-tracking.ts`, `record-activity.ts` and `verify.ts`. See Z1 in
+`context/design/subagents-loop-verifier-answers.md`.
+
+## The task anchor manufactured a turn (Z2)
+
+`session.steer()` does not add context to a session; it asks a question, and when
+the agent loop has already finished it restarts it to get an answer:
+
+```
+  AgentSession._handlePostAgentRun  agent-session.js:781
+      // The agent loop drains both queues before emitting agent_end. Any messages
+      // here were queued by agent_end extension handlers and need a continuation.
+      return this.agent.hasQueuedMessages();
+  AgentSession._runAgentPrompt             :744
+      while (await this._handlePostAgentRun()) await this.agent.continue();
+  Agent.continue                      agent.js:236
+      last message is assistant → drain the steering queue → runPromptMessages
+```
+
+And pi never compacts mid-run. `_checkCompaction()` has exactly two call sites:
+`_handlePostAgentRun()` (`:776`, after `agent_end`) and `prompt()` (`:865`, before
+the next run). `prepareNextTurnWithContext` only refreshes the system prompt,
+tools and model. So the anchor — fired from `compaction_end` — could never land in
+the middle of a child's work, which is what the layer's own header describes.
+
+From `prompt()` it rides on the prompt about to run: correct, and that is the
+continuation case. From `_handlePostAgentRun()` it bought a whole extra agent run
+— one more model call on the single llama slot the parent is blocked behind — and
+its reply became the child's answer, by Z1.
+
+This is T1's and V6's rule, already written into `turn-tracking.ts` with a
+measurement — *"there is no wrap-up to ask for, and asking manufactures a turn"* —
+never applied to the package's other `session.steer()` call site.
+
+The runner now reports which call site a compaction came from, observed rather
+than inferred (`agent_start` → `afterRun = false`, `agent_end` → `true`), and
+`src/agents/compaction-anchor.ts` decides:
+
+```js
+  export function anchorReachesATurn(info) {
+    return info.afterRun !== true || info.willRetry === true;
+  }
+```
+
+`willRetry` is the exception and the same rule: pi has already decided to re-run
+the interrupted turn, so the continuation is not the anchor's doing. The
+compaction is still counted on the record either way. After the fix a single-run
+child never receives an anchor — because there was never a moment in its life when
+one could help; the layer keeps working where it always worked, on continuations.
+`verify.ts`'s header carries that correction inline. See Z2.
+
+## The answer that was produced and never left the building (AC1)
+
+Twelfth pass. `SpawnCoordinator.emitIndividualNudge` is the only route by which a
+BACKGROUND subagent's answer — or any continuation's — reaches the parent model.
+AA4 (above) replaced its `parentIdle ? "followUp" : "steer"` ternary with a
+constant. Correct, and the behaviour it chose ships. It also deleted the
+`const ctx = getSessionCtx()` that fed the ternary, while three lines below still
+read `ctx`: the result cap's argument and both `notify` calls.
+
+```
+   ReferenceError: ctx is not defined
+```
+
+thrown three lines before `pi.sendMessage`, inside a `try` whose `catch` was
+written for a stale runtime and reports "Result available" — through
+`ctx.ui.notify`, which is `() => {}` outside a TUI.
+
+Nothing said so. `npm run lint` is `node --check` (syntax only), pi loads `.ts`
+through jiti (types stripped, not checked), and the test that pinned AA4 reads the
+file as **text** and asserts a regex — both of its assertions are true of the
+broken tree.
+
+Blast radius: every background delegation's first settlement and every
+continuation's settlement for any agent. The verifier's judge and repair rounds
+were spent on answers nobody read; `capBackgroundResult` never ran; headless there
+was nothing at all. The FOREGROUND path was never affected, which is why it
+survived two passes — it uses the completion gate, a different mechanism.
+
+Fixed, and the `catch` now names the failure it caught and reports through
+`console.warn`, which exists headless. Measured:
+`context/testing/probes/p1-the-background-result-that-never-arrived.mjs`.
+
+## The model override nobody applied (AD1)
+
+Thirteenth pass, and the twelfth pass's own test is why it shipped.
+
+This package resolves a subagent's model through six layers —
+`ConfigStore.modelFor()` → `resolveModel()`: session per-type, session default,
+config per-type, config default, the agent `.md`'s frontmatter `model:`, and only
+then the parent's model. Four components read the answer:
+
+```
+   toolCallListener        writes it onto the tool call's args as `input.model`
+                           (and a display copy as `input._modelOverride`)
+   renderAgentToolCall     prints `▸ Explore (qwen3-4b)` from the copy
+   menu-spawn-wizard       resolves it and passes model + modelKey into spawn()
+   menu-model-settings     lists it, per type, as the "effective model"
+```
+
+The fifth reads it and threw it away. The twelfth pass changed the line to
+`findModelInRegistry(undefined, ctx.modelRegistry, ctx.model)` under a comment
+saying the tool's schema is `additionalProperties: false`, so "the model cannot
+send either key and these reads were always undefined".
+
+True of the MODEL, and beside the point: nothing here came from the model.
+`toolCallListener` is a `tool_call` handler, it runs after validation, and pi
+passes ONE object —
+
+```
+   pi-agent-core/dist/agent-loop.js
+     :403  const validatedArgs = validateToolArguments(tool, preparedToolCall);
+     :406  await config.beforeToolCall({ …, args: validatedArgs, … });
+     :452  await prepared.tool.execute(prepared.toolCall.id, prepared.args, …);
+```
+
+— so the handler's write IS `params.model`. The proof was already in the file:
+three lines below, `parseThinkingLevel(params.thinking as string | undefined)`
+reads a value the same handler wrote onto the same object, and it works. This is
+the same mechanism `vendor/rtk-pi` rewrites a bash command on.
+
+Blast radius: every spawn the model starts. Including the agent `.md` frontmatter,
+because `agent-runner.ts`'s own fallback is
+`options.model ?? findModelInRegistry(agentConfig?.model, …)` and the tool always
+supplied the left side. And the concurrency key with it — `modelKey` is derived
+from the resolved model, so every child was keyed on the parent's slot.
+
+Measured: `context/testing/probes/q1-the-model-override-nobody-applies.mjs`,
+through pi's own bundled jiti.
+
+**The test that protected it.** `tests/tool-surface.test.ts` asserted
+`assert.doesNotMatch(execution, /params\.model\b/)`. An assertion about an ABSENCE
+cannot be wrong about whether the text is there — only about why it should not be
+— and it carries the reason nowhere. So the defect was the protected state: the
+first thing that happened when the read was restored was that the suite went red.
+It is replaced by two assertions and a control: the tool DOES read `params.model`
+and `params.thinking`, and the listener that writes both is pinned in the same
+suite. See AD1 in `context/design/subagents-loop-verifier-controls.md`.
+
+## The stop the StopAgent tool could not reach (AD2)
+
+Thirteenth pass, and the caller half of T5.
+
+T5 made a verifying record stoppable in `AgentManager.stopAgent()`, which tests
+`isVerifyingRecord` before it tests `status === "running"`. `executeStopAgentTool`
+has its own precondition one layer up:
+
+```js
+   if (record.lifecycle.status !== "running" && record.lifecycle.status !== "queued") {
+     return successResult(`Agent ${agentId} is already ${record.lifecycle.status}. …`);
+   }
+```
+
+and `attachSettlementChain` sets the status from `classifyRun` *before* it awaits
+`runVerification`, so the record reads `completed` for the whole of a judge and up
+to three repairs. The tool returned on its first line; the manager was never
+asked. What the model saw:
+
+```
+   Agent agent-0123456789ab is already completed. Running agents: none
+```
+
+Both halves wrong at once — a judge was holding the one llama slot the model's own
+next call was queued behind, and `formatRunningAgents()` filtered on the same two
+statuses, so the hint omitted the agent that was running.
+
+Both call sites now ask `isBusyRecord`, the predicate `record-activity.ts` exists
+to be the single answer to and which the widget and the `/agents` menu were
+already using. The sentence names which run was stopped, because the child's own
+run really had finished. `clear()` still refuses a verifying record — that is Y1,
+and a stop and a clear are different questions. Measured:
+`context/testing/probes/q2-the-stop-the-tool-cannot-reach.mjs`.
+
+## The name the model override is keyed on (AE6)
+
+Fourteenth pass, and the caller half of AD1 in exactly the way AD2 was the caller
+half of T5.
+
+AD1 made `executeAgentTool` read the model `toolCallListener` injects, closing a
+six-level precedence that had been resolved and discarded. That fix is correct.
+It is also a **new mechanism**: the listener's answer became the one the spawn
+obeys, so the KEY the listener resolved it against became the key the whole
+precedence hangs on — and the two ends were keyed differently.
+
+```
+   toolCallListener   getAgentConfig(input.agent)   the string the MODEL wrote,
+                      modelFor(input.agent, …)      against the registry as it
+                                                    stands right now
+
+   executeAgentTool   resolveTypeWithDiscovery()    the CANONICAL registered name,
+                                                    after a filesystem RE-SCAN
+```
+
+**Case.** `resolveType` is deliberately case-insensitive — it exists so a spawn by
+a slightly-wrong name still works — and `getAgentConfig` folds case too.
+`resolveModel` does not: it reads `sessionOverrides[type]` and
+`config.agent[type]`, and `/agents` → models writes those keys from
+`getAllTypes()`, i.e. under the canonical name. So an operator's pin on `Explore`
+was silently skipped for `agent: "explore"`, and `renderAgentToolCall` printed the
+*unpinned* model beside the call — the display agreed with the miss, which is why
+nobody would have caught it by looking.
+
+**Time.** An agent that only becomes resolvable on the **discovery retry** — one
+added to the filesystem after startup, or living in a worktree's `.pi/agents/`,
+which is the case that retry exists for — has no config at listener time.
+`resolveModel` falls past its frontmatter rung to `parentModelId` (which is always
+a valid string, so rungs 1–5 can be skipped with no signal at all), the tool
+honours that, and `agent-runner`'s own
+`options.model ?? findModelInRegistry(agentConfig?.model, …)` cannot rescue it
+because the tool always supplies the left side. **That is AD1's damage exactly** —
+the child on the parent's model, holding the parent's concurrency slot, because
+`modelKey` follows the resolved model — restored for one class of agent.
+
+**The fix** is one resolver called from both ends:
+
+```js
+   canonicalAgentType(requested)          resolveType → the registered key, or
+                                          undefined when it resolves to nothing
+   resolveSpawnModel(canonical, ctx)      the six-level precedence
+   resolveSpawnThinking(canonical)        frontmatter, then the operator's default
+```
+
+The listener canonicalises the name *before* it resolves anything, injects
+nothing at all when the name resolves to nothing, and **stamps** the key it used
+as `input._resolvedAgent`. The tool trusts the injected values exactly while the
+stamp names the type it is about to spawn, and re-derives them otherwise:
+
+```js
+   const listenerResolvedThisType = params._resolvedAgent === resolvedType;
+   const modelSpec = listenerResolvedThisType
+     ? (params.model as string | undefined)
+     : resolveSpawnModel(resolvedType, ctx);
+```
+
+AD1's read survives and is now conditioned rather than unconditional, which is
+what makes the difference between the two ends askable at all. Measured:
+`context/testing/probes/r2-the-name-the-override-is-keyed-on.mjs`.
+
+## Three readers of a status that describes a different run (AE5)
+
+Fourteenth pass, and the third time this predicate has had to be moved.
+
+`attachSettlementChain` writes `lifecycle.status` from `classifyRun` and *then*
+awaits `runVerification`, so throughout a judge and up to three repairs the record
+reads `completed` while a model call is in flight on the one llama slot the parent
+is queued behind. `record-activity.ts` exists to be the single answer to "is this
+record busy". Y1 moved two readers onto it, T5 a third, AD2 a fourth and fifth —
+and three still had their own copy.
+
+**`AgentStatus`, and this is the one that matters**, because it is the tool the
+parent model reaches for to ask *what is still happening*:
+
+```js
+   // BEFORE
+   export function isUnfinished(record) {
+     return record.lifecycle.status === "running" || record.lifecycle.status === "queued";
+   }
+```
+
+A verifying record therefore fell into the **settled** bucket — so it was not
+merely mislabelled `completed`, it became eligible for `MAX_SETTLED_LISTED`, whose
+own comment says *"A running or queued agent is actionable and is never dropped,
+however many there are"*. With seven or more finished agents behind it, the one
+agent holding the slot was elided from a reply whose closing sentence is
+`Don't poll — you'll receive notifications when agents complete.`
+
+**The conversation viewer's Stop.** `isActive()` gates `isStoppable()`. T5 made a
+verifying record stoppable in the manager, `/agents` could reach it, AD2 gave the
+`StopAgent` tool the same reach — and the viewer, which is where an operator
+watching a delegation actually is, still hid the action.
+
+**The reload warning.** `session_shutdown` counts "N agent(s) killed by reload"
+with the same status pair, two lines above `mgr.dispose()`, which disposes the
+session a repair is running IN. The one agent the reload was about to cut off was
+the one the count left out.
+
+All three ask `isBusyRecord` now, and `AgentStatus` prints
+`completed (answer being checked)` — the child's own verdict kept, because it is
+also true and it is about a different run, with the fact that decides whether to
+wait added to it.
+
+`checkWatchdogs` is a fourth reader of the same status and was deliberately left
+alone: skipping a verifying record there is right, and §11.3 of
+`…-claims.md` says why.
+
+## Three refusals nobody read (AF2, AF4, AF5)
+
+Fifteenth pass. Three findings, one shape: a decision NOT to act, and the thing
+it was about with nowhere to go.
+
+### The operator's action, and the answer nobody read (AF2)
+
+`abort()`, `clear()` and `steer()` each answer with a boolean, and each `false`
+is a refusal somebody installed on purpose:
+
+```
+   abort(id)   false  — not running, not queued, not verifying
+   clear(id)   false  — still running, or the answer is still being checked (Y1:
+                        removeRecord disposes the session a repair runs IN, and
+                        opens the completion gate with "" under a waiting parent)
+   steer(id)   false  — still settling · no session · streaming · SLOT FULL
+```
+
+Five of the six call sites discarded it and told the operator the action had
+happened:
+
+```js
+   } else if (item.value === "clear") {
+     getManager()?.clear(record.id);
+     ctx.ui.notify(`Cleared ${shortId}`, "info");   // …about a record still there
+   }
+```
+
+and the three bulk actions had a second defect on top of the first: they iterated
+`running` / `finished` / `completed`, snapshotted in `showRunningAgentsMenu`
+BEFORE `ctx.ui.custom` opened the overlay, and reported `array.length` as the
+number of agents acted on. `/agents` is open exactly while agents are settling.
+
+The sixth call site — the menu's own single-agent Steer — has always read the
+boolean. That is what makes this a W-shaped finding rather than an oversight: the
+rule existed, one branch away.
+
+The steer half is worse on this fork than it would be upstream:
+`continueSettledAgent` REFUSES rather than queues when the model's concurrency
+slot is full, and the default limit is 1 — so any attempt to continue a settled
+agent while another one runs is refused, and in the conversation viewer the
+operator's typed follow-up vanished with no line anywhere.
+
+**The fix** is `src/ui/action-report.ts`, a module that imports nothing (the same
+move as `record-activity.ts`, `status-listing.ts` and `concurrency-slots.ts`,
+because `menu-running-agents.ts` and `conversation-viewer.ts` both import
+`@earendil-works/pi-tui` and the suite cannot load them). Every call site reads
+the boolean, the bulk actions re-derive their targets when the action is chosen,
+and both viewer callbacks are async and catch their own errors — the viewer calls
+`this.onSteer?.(msg)` without awaiting it, and node treats an unhandled rejection
+as fatal.
+
+### The six oldest agents (AF4)
+
+`AgentStatus` keeps "the most recent few" settled records with
+
+```js
+   const keptSettled = limit > 0 ? settled.slice(-limit) : [];
+```
+
+under a comment saying *"order within each group is the manager's own (spawn
+order), so the newest settled agents come last, next to the nudge"*. The caller
+is
+
+```js
+   listAgents() {
+     return [...this.agents.values()].sort((a, b) => b.lifecycle.startedAt - a.lifecycle.startedAt);
+   }
+```
+
+— newest FIRST. So the bound kept the six OLDEST agents of the session and
+reported the batch the model had just launched as `(+N older, see /agents)`, in a
+reply whose own closing line is "Don't poll".
+
+```
+   ten settled agents, a0 (oldest) … a9 (newest), through the real manager:
+     BEFORE  a5, a4, a3, a2, a1, a0  (+4 older)
+     NOW     a4, a5, a6, a7, a8, a9  (+4 older)
+```
+
+The unit test could not see it: it built its array oldest-first, which is the one
+order the caller never uses. That is the eighth pass's lesson at an INTERNAL
+boundary — the host here is another method of the same package.
+
+**The fix** stops trusting an order and reads the field the rule is about:
+`ListableAgent` carries `startedAt` / `completedAt`, and the bound sorts by
+`completedAt ?? startedAt` ascending before taking the tail. `completedAt`
+because the question the tool answers is "what came back", and a long delegation
+started first can settle last.
+
+### The brief, cut at the end it grows from (AF5)
+
+`brief` is the only thing the verifier checks an answer against. `appendFollowUp`
+grows it at the TAIL on every steer, up to `MAX_BRIEF_CHARS` (6,000); its two
+model-facing readers cut it at the HEAD, at `JUDGE_BRIEF_CHARS` (1,500):
+
+```js
+   buildJudgePrompt:   truncate(brief, JUDGE_BRIEF_CHARS)
+   buildAnchorMessage: truncate(brief, JUDGE_BRIEF_CHARS)
+```
+
+So on an original brief of 1,500 characters or more, every follow-up ever given
+to the child was the first thing dropped — from the check that decides whether
+the answer addresses the task, and from the reminder injected after a compaction.
+
+What it costs is a full round trip on the one llama slot: the judge says
+NOT_ADDRESSED, correctly, about the question it was given; `buildRepairPrompt`
+restates the brief in FULL so the child answers the same thing again;
+`verifyAnswer` sees an identical repair and returns `stalled`; and the parent is
+handed the answer it already had with "Treat it as unreliable" attached.
+
+W3 (seventh pass) is the other end of this. It made `growBrief` run on every
+branch of `steer()` *so that the judge would check against the accumulated task*.
+The accumulation reached the field; the field's readers cut it off.
+
+**The fix** is `briefForCheck(brief, max)`, which applies `appendFollowUp`'s own
+rule from the other side: newest follow-ups first, up to half the budget, the
+newest never dropped (only truncated), and the original keeps the rest. A brief
+with no follow-ups is cut exactly as before, which is the control.
+
+Measured: `context/testing/probes/s2-the-six-oldest-agents.mjs` (AF4, and AF2's
+two refusals through the real manager). See AF2, AF4 and AF5 in
+`context/design/subagents-loop-verifier-omissions.md`.
+
+## The judge's raw reply, kept (§10.7)
+
+Fifteenth pass, and it had been #1 on the *still unwatched* list since the fourth
+— twelve passes. It is not a defect and it never produced a symptom. It is the
+reason four findings in this series needed a probe before anyone could believe
+them, and every one of the four is a statement about a string that lived for a few
+milliseconds inside `verifyAnswer` and was then dropped:
+
+```
+   S2  a judge that echoed the prompt's own `VERDICT: ADDRESSED or NOT_ADDRESSED`
+       menu was read as having CHOSEN NOT_ADDRESSED
+   U4  a judge that echoed the `WHY:` instruction had that instruction quoted
+       back to the child as the reason its answer was wrong
+   V5  a repair hard-aborted mid-token reached the judge as an ordinary answer
+   W5  the note the parent reads said "the 2th attempt"
+```
+
+`parseJudgeVerdict` is careful and heavily tested — against replies somebody
+*imagined* a 27B writing. `src/agents/verify-log.ts` writes one JSONL line per
+model call the verifier makes, carrying the prompt, the raw reply, and **the parse
+the stack acted on**. The parse is the point: a reply and a verdict side by side
+are the only thing that can show the parser was wrong, and neither alone can.
+
+```
+   ~/.pi/agent/subagent-verify.jsonl     (SUBAGENT_VERIFY_LOG_FILE overrides)
+     { ts, phase: "judge"|"repair", agentId, agentType, attempt,
+       prompt, reply, parsed: {addressed, unparsed, why}, runStatus, ms }
+
+   bounded   4,000 chars a field · 2,000 lines, newest kept — an unattended loop
+             verifies every delegation and nothing else would ever remove a line,
+             which is the argument MAX_SPILL_FILES exists for
+   off       SUBAGENT_VERIFY_LOG=0
+   injected  as `deps.log`, so `verify-runner.ts` still imports nothing, and a
+             logger that throws costs a log line rather than a verdict — that
+             function's whole contract is "never throw"
+```
+
+Under the agent directory rather than the working directory, because a
+verification is a fact about this INSTALL and not about whatever repository the
+parent happened to be looping on. A structural skip writes nothing: there was no
+model call, so there is no reply to keep.
+
+## A background result that was dropped in silence (§11.1, closed in part)
+
+`SpawnCoordinator.emitIndividualNudge` is the only route a BACKGROUND subagent's
+answer has to the parent model, and it opened with three guards — `this.disposed`,
+`!pi`, `!record`. Each is correct: there is genuinely nothing to send through, or
+nothing to send. Each also dropped a finished delegation's answer with nothing said
+to anybody, which is the one thing AC1 established this class of failure must never
+be:
+
+> A delivery that did not happen is the loudest thing this class can report; it
+> must not be the quietest.
+
+AC1 built exactly that — a `console.warn` that runs whether or not there is a UI,
+plus a notice through the spawning session's own context — for the `catch` around
+the send. All three guards return before that `try`.
+
+All three now report, naming the agent, the cause and the one recovery that always
+works (`AgentStatus` — the answer is still on the record). The record is looked up
+BEFORE the guards so the notice can say which agent it was, and the sentences live
+in `src/spawn/nudge-drop.ts`, which imports nothing, because
+`spawn-coordinator.ts` imports `../shell.js` and the suite cannot load it.
+
+What is still open is the thing that would make the delivery HAPPEN rather than be
+reported: a queue that survives a session swap. That is a design decision and it
+is recorded as such — but it is no longer invisible.
+
+## Three things that named something and were never checked against it (AG1, AG5, AG6)
+
+Sixteenth pass, and all three have a shape the earlier findings do not: **the
+thing pointed at already existed and already worked.** The cost of checking, in
+each case, was one file open — and the reason none of them was opened is that the
+sentence sounded true.
+
+### AG1 — a reserve applied as a cap
+
+`briefForCheck` is AF5's own fix, and its docstring says it applies the split
+`appendFollowUp` owns, *"so the two cannot drift"*. They had:
+
+```
+   appendFollowUp   budget = MAX_BRIEF_CHARS - original.length
+                    — EVERYTHING the original does not use
+   briefForCheck    budget = floor(max * FOLLOW_UP_CHECK_SHARE)
+                    — a flat half, and the remainder returned unspent
+```
+
+On a LONG original the two agree, and every AF5 assertion uses a long original.
+On a SHORT one they do not — and short is the ordinary shape, because a brief is
+usually one sentence and the steers are what accumulate:
+
+```
+   a 71-char brief steered four times at ~400 chars each   (probe t3)
+                                 BEFORE      NOW
+     chars of a 1,500 budget     481       1,301
+     follow-ups the judge sees   1 of 4      3 of 4
+   the AF5 shape (a 1,400-char original) is unchanged in every column
+```
+
+A judge shown a quarter of the task says `NOT_ADDRESSED` — correctly, about the
+question it was given — which spends a repair round and a re-judge on the one
+llama slot the parent is queued behind; `buildRepairPrompt` restates the brief in
+FULL, so the child answers the same thing again, and `verifyAnswer` ends at
+`stalled`. That whole chain is AF5's own docstring, for the shape AF5 did not
+cover.
+
+The share is now a **floor** — the least the follow-ups may have — expressed as
+`appendFollowUp`'s own subtraction rather than restated as a fraction.
+
+### AG5 — "still busy" is the one thing a refused stop cannot mean
+
+`bulkReport`'s partial line was shared by both verbs. It is right for a refused
+CLEAR — `clear()` refuses exactly a running or a verifying record (Y1) — and it
+is the one thing a refused STOP cannot mean. `stopAgent()` has a single reachable
+`return false`:
+
+```ts
+  } else if (record.lifecycle.status !== "running") {
+    return false;
+  }
+```
+
+reached only when the record is not queued, not running and not verifying — the
+verifying case is intercepted above it and returns `true` (T5). So a refused stop
+always means the record had already FINISHED, and an operator told *"1 was still
+busy and was left alone"* goes looking for a busy agent that does not exist.
+
+The module's own `stopReport(false, …)` has said *"was already finished — nothing
+to stop"* since AF2 landed. This was the one call site whose two verbs have
+opposite refusal causes, and it had one sentence for both. It now has two, and a
+pluralised count, because "1 were still busy" is text an operator reads.
+
+### AG6 — the recovery that named the surface that cannot do it
+
+All four notices about a background result that was not delivered ended *"Read it
+with AgentStatus"*, and `executeAgentStatusTool` prints one line per agent:
+
+```ts
+  return `${shortId} (${record.display.type}) ${listedStatus(record)}`;
+```
+
+— the id, the type and the status. The whole module never touches
+`record.result`. The surface that CAN show it is `/agents` → the agent →
+**"View result"**.
+
+`nudge-drop.ts`'s own header already knew — it said *"`AgentStatus` (or
+`/agents`) will show it"* — and the sentence it shipped carried the half that does
+not work. For `record-gone` the sentence was self-refuting: the record was
+removed from `this.agents`, and `AgentStatus` lists exactly that map, so neither
+surface can show it and the notice recommended one anyway.
+
+`RECOVERY_ADVICE` and `NO_RECOVERY_ADVICE` are exported so `spawn-coordinator`'s
+own `catch` — the reachable drop, the one AC1 shipped a `ReferenceError` through
+for two passes — uses the sentence rather than a fourth copy of it.
+
+## Five rules that were right and applied to fewer places than needed them (AH1–AH5)
+
+Seventeenth pass. Its axis: **a rule that is right is applied where it was found
+— name every other place it belongs, from the code that COULD need it rather than
+from the code that already asks.** All five findings in this package are that,
+and §10.5 of `context/design/subagents-loop-verifier-instances.md` is the graph.
+
+### AH1 — the third sender, and the only one with no second attempt
+
+`SpawnCoordinator.emitIndividualNudge` is the only route a BACKGROUND subagent's
+answer has to the parent model:
+
+```ts
+  pi.sendMessage({ customType: "subagent-result", … }, { deliverAs, triggerTurn: true });
+```
+
+which is `AgentSession.sendCustomMessage`, whose `triggerTurn` branch is
+`await this._runAgentPrompt(appMessage)` (`:1090`) and checks nothing. pi's one
+compaction refusal is on `prompt()` (`:807`), which this path does not touch.
+
+The sixteenth pass closed the other two senders — `pi-loop-mode`'s `sendLoopTurn`
+(AG2) and `prinny-channel`'s empty-turn continuation (AG3) — and wrote its
+residue down in its own handoff:
+
+> `compactionInFlight()` now has four readers, and there is no test that a fifth
+> would be noticed … it will produce another one **the next time a sender is
+> added**.
+
+No sender was added. This one had been here through AA4 (which rewrote its
+`deliverAs`), AC1 (which fixed its `catch`) and AG6 (which fixed its drop
+sentence) — three passes that each read that exact function for something else.
+
+**What it costs**, out of pi's source rather than assumed:
+
+```
+   compact() begins `await this.abort()`, which ends in waitForIdle() — so the
+     session is IDLE for the whole compaction and the _runAgentPrompt branch is
+     not merely reachable, it is the ONLY branch a nudge can take.
+   Agent.prompt() → createContextSnapshot() = { messages: _state.messages.slice() }
+     so the whole run is built from a COPY taken at its first instant: the
+     PRE-compaction context, i.e. the oversized one the compaction exists to
+     shrink, and the compaction finishing does not change it.
+   compact() ends `this.agent.state.messages = sessionContext.messages`.
+   two model calls in flight on a one-slot server, one of them the summariser.
+   a whole agent_start … agent_end … agent_settled cycle INSIDE the compaction
+     window, re-entering every handler in the stack.
+```
+
+**And why it defers rather than reporting.** The other two senders have somewhere
+to put what they are holding: the loop reschedules the same iteration, prinny
+tells the sender to ask again. This one runs ONCE per record, from a 200 ms batch
+timer (so it is not ordered against anything on the event bus), on a record whose
+slot is already released and whose completion gate is already open.
+`record.result` is the only copy of the answer and there is nobody to ask.
+
+`src/spawn/compaction-lock.ts` is the third implementation of the protocol and is
+**read-only** — nothing in this package calls `ctx.compact()`, and shipping
+`begin`/`end` would invite a caller to take a lock it has no compaction to
+release. The read sits after the three drop guards and **above the cap**, because
+`capBackgroundResult` sizes the result against `ctx.getContextUsage()`, which
+during a compaction still reports the pre-compaction window.
+
+`describeNudgeHold` is a fifth sentence in `nudge-drop.ts` rather than a reuse of
+the four drop sentences, and the difference is the point: a held result is
+**intact**, so the notice says *"result held — <owner> is compacting; it will be
+delivered when that finishes"* at `info`, and deliberately does not contain the
+string "NOT delivered" or point at `/agents` → View result.
+
+### AH2 — the verdict that was read as its own opposite
+
+`parseJudgeVerdict("VERDICT: UNADDRESSED")` returned `{addressed: true,
+unparsed: false}`. `readVerdictValue` tested `/NOT[_\s-]?ADDRESSED/i` and then
+`/ADDRESSED/i`: the first misses `UNADDRESSED` because it has no "NOT", and the
+second matches it as a substring.
+
+**`unparsed: false` is the finding.** A reply nobody can read fails open *and
+says so* — `verificationNote("unparsed")` tells the parent the answer went out
+unchecked. This one was read, confidently, as its own opposite:
+`record.verification` becomes `passed` and the answer goes back with no
+annotation at all. The module's own comment is the sentence it violates — *"the
+wrong order turns every failure into a silent pass, forever."*
+
+Recorded as open in the twelfth, thirteenth and fourteenth passes, on this:
+
+> Left alone: the prompt asks for one of two exact tokens, adding a `\b` risks
+> the tolerant forms the parser was widened to accept (S2, U4), and the
+> fail-open policy already makes an unreadable verdict a pass.
+
+The middle clause is **right**, and it is why the fix is not a `\b`: the
+VERDICT-line value arrives with its markdown attached, and `_` is a word
+character, so `\bADDRESSED\b` would stop matching `VERDICT: _ADDRESSED_`. The
+last clause names a policy that does not reach a verdict that WAS parsed. What
+was missing was the next question — *is the fix I just rejected the only one?*
+Widening the NEGATIVE alternation costs nothing on the positive side:
+
+```ts
+  const NEGATIVE_VERDICT       = /(?:NOT[_\s-]?|UN)ADDRESSED/i;       // VERDICT: line
+  const NEGATIVE_VERDICT_PROSE = /\b(?:NOT[_\s-]|UN)ADDRESSED\b/i;    // prose pass
+```
+
+Both are named constants now, so the parser's two passes are visibly different by
+design (one anchored, one not) rather than accidentally different.
+
+### AH3 — `killed` before `code`, at the sites `git-failure.ts` did not reach
+
+`git-failure.ts` exists because `worktree-validator.ts` read `result.code` first,
+and its header carries the measured table and the sentence *"This is AA2 one
+package over."* It fixed the two call sites it was lifted out of. Three more in
+this package tested `code` first:
+
+```
+   agents/agent-runner.ts    execGit        a wedged git returned "" not null, so
+                                            detectEnv told the CHILD it was not in
+                                            a git repository and gave it no branch
+   ui/menu/menu-spawn-wizard listWorktrees  a wedged git parsed as an EMPTY LIST —
+                                            under a docstring saying it returns
+                                            null "if git is unavailable"
+   ui/menu/menu-spawn-wizard isInGitRepo    under a docstring naming "the same
+                                            strategy as the worktree validator",
+                                            which IS classifyGitFailure
+```
+
+All three go through `classifyGitFailure` now. **The durable half of the fix is
+`tests/exec-verdicts.test.ts`** — a standing scan that greps every `.exec(` under
+`src/` (comments stripped, for the reason `t5` learned) and fails on any whose
+verdict is read from `code` alone. It carries a control assertion that the scan
+matched anything at all, because a scan that finds nothing passes.
+
+### AH4 — the second spill directory
+
+`src/spawn/result-cap.ts` imports `compaction-guard`'s output-cap constants on
+purpose, under its own heading *"Why it imports the guard rather than carrying
+its own numbers"*:
+
+> A second copy of those constants here would drift away from the test that
+> justifies them, so this imports them instead.
+
+It had copied the guard's spill **writer** without its `pruneSpills` call and
+`MAX_SPILL_FILES` bound — so of the two spill directories in one process, the one
+whose docstring names the unattended `/loop` was bounded and the one an
+unattended run's background delegations fill was not. Every file is by
+construction a payload that did not fit a 32k window, keyed by a record id that
+is unique per delegation, and nothing removed one.
+
+The writer, the bound and the reasoning for the bound being a COUNT rather than a
+teardown sweep now live in `.pi/extensions/compaction-guard/src/spill.ts`. Both
+caps import it; each keeps its own directory, so the counts stay independent and
+the guard's parent/child sharing argument is untouched.
+
+### AH5 — the note that named corrections nobody made
+
+`verificationNote("failed", 0)` said *"no attempt was made to correct it"* and
+*"kept because the corrections were no better"* in one sentence. W5 made
+`describeAttempts` count-aware — that is why it spells small counts out in words
+at all, because the PARENT MODEL reads this and copies it — and the clause after
+it was not. `SUBAGENT_VERIFY_ROUNDS=0` is a value `clampRounds` accepts and
+`resolveVerifyRounds` documents; on a one-slot server "judge, do not repair" is a
+defensible setting.
+
+## Tests
+
+```
+cd vendor/pi-subagents-lite && npm run lint && npm test
+```
+
+### Seventeenth pass (AH1–AH5)
+
+**365 tests, up from 346**, and `lint: 95/95 files` (up from 91 — four new
+files). Three new test files and two blocks:
+
+```
+   tests/compaction-lock.test.ts     13   AH1. The three-way protocol agreement —
+                                          it imports the OTHER two packages'
+                                          copies, which the shipped code must not
+                                          — plus the wiring assertions that the
+                                          lock is read before the send AND before
+                                          the cap. 3 fail with the read removed.
+   tests/exec-verdicts.test.ts        2   AH3. The standing scan, and its own
+                                          control that the scan matched anything.
+                                          1 fails when any of the three sites is
+                                          reverted, naming the file and line.
+   tests/result-cap-spill.test.ts     1   AH4. Drives the shipped cap 62 times and
+                                          reads the directory. Fails with
+                                          "62 capped results left 62 files … the
+                                          bound is 50" when the prune is removed.
+                                          Also asserts the prune drops the OLDEST.
+   tests/verify.test.ts              +3   AH2 (two blocks: four negative shapes,
+                                          and three tolerant positives as the
+                                          CONTROL — that block passes either way,
+                                          which is what makes it a control) and
+                                          AH5 (one). 2 fail when the two fixes are
+                                          reverted.
+```
+
+### Sixteenth pass (AG1, AG5, AG6)
+
+**346 tests, up from 329**, lint still 91/91. Three blocks, no new files —
+each fix belongs beside the assertions it narrows.
+
+`tests/verify.test.ts`, the AG1 block (6, of which **4 fail** with the `Math.max`
+reverted): the short-original shape, the judge prompt and the anchor that read the
+same field, and two controls — the AF5 shape, where the reserve is still what
+binds, and a 500-follow-up brief, which must still fit. All seven AF5 assertions
+pass either way, which is the other half of the check: the new rule cannot have
+moved the old one.
+
+`tests/action-report.test.ts`, the AG5 block (5, **2 fail**). One of the five
+reads `agent-manager.ts` and asserts `stopAgent` still has exactly one reachable
+`return false`, and that the verifying case is intercepted above it — because
+*that* is the claim the sentence rests on, and it is the thing that would silently
+stop being true.
+
+`tests/nudge-drop.test.ts`, the AG6 block (6, **6 fail**), of which three read
+source rather than output: that `AgentStatus` still never touches
+`record.result`, that `/agents` still has its `View result` action, and that the
+coordinator uses the shared constant. One existing assertion was rewritten rather
+than deleted — "every reason ends in the same instruction" is no longer true, and
+the honest replacement is that each ends in one of the two sentences this module
+owns.
+
+### Fifteenth pass (AF2, AF4, AF5, and §10.7 · §11.1)
+
+**329 tests, up from 289**, and `lint: 91/91 files`. New files
+`tests/verify-log.test.ts` (15) for §10.7 — the file half (bounds, the switch, a
+filesystem that cannot be written, the agent-directory default) and the wiring
+half, which asserts the judge's reply is logged BYTE FOR BYTE beside the parse,
+that a repair carries the run's status (V5's field), that a structural skip logs
+nothing, and that a throwing logger costs no verdict — and `tests/nudge-drop.test.ts`
+(7) for §11.1, whose wiring pins assert the absence of the three bare returns
+alongside the presence of the three reports, because an absence assertion alone is
+a test of a premise (the thirteenth pass's rule).
+
+New file
+`tests/action-report.test.ts` (9: five over the sentences, four over the wiring,
+including that both viewer callbacks catch their own rejections). Three cases
+added to `tests/status-listing.test.ts` for AF4 — one of which hands the records
+over in the manager's REAL order, which is the case the file's existing test
+could not express — and its helper now carries the timestamps the rule depends
+on. Seven cases added to `tests/verify.test.ts` for AF5, of which two fail with
+the fix reverted, plus two controls: a brief that fits is handed over untouched,
+and a long brief with no follow-up is cut exactly as it was before.
+
+### Fourteenth pass (AE5, AE6)
+
+**289 tests, up from 283**, and `lint: 85/85 files`. `tests/status-listing.test.ts`
+gains a four-case AE5 suite (all four fail with the fix reverted), whose control is
+the identical record without a `verifyPhase` — buried under the same twenty
+finished agents, so the first assertion is demonstrably about the phase and not
+about position. `tests/tool-surface.test.ts` gains two AE6 cases and has AD1's pin
+WIDENED rather than replaced: the tool must still read `params.model`, and must
+now also ask whether the stamp names the type it is spawning, and the listener
+must canonicalise the name before resolving anything. The execution is `r2`.
+
+A note on the AD1 pin, because it is the second pass running in which that one
+assertion has needed attention. It was
+`assert.match(execution, /findModelInRegistry\(\s*params\.model as string \| undefined/)`
+— a text pin over one expression — and AE6 conditioned that expression while
+leaving AD1's fact exactly true. **A text pin over one expression cannot tell a
+change in the expression from a change in the behaviour.** The executed evidence
+is `r2`, which is where it belongs; the pin is kept, widened, and paired with a
+pin on the resolver both ends now call.
+
+### Thirteenth pass (AD1, AD2)
+
+**283 tests, up from 277**, and `lint: 85/85 files`. `tests/tool-surface.test.ts`
+gains a four-case `AD2` suite (pins on the tool's precondition, its sentence, and
+the busy list, plus a control that `record-activity.ts` still has one definition)
+and has its AD1 pin REPLACED rather than added to — see the section above for why
+that is the interesting part. The executions are `q1` and `q2`, which drive the
+real, pi-importing modules through pi's own bundled jiti.
+
+### Twelfth pass (AC1)
+
+**277 tests, up from 273**. New file `tests/background-delivery.test.ts` extended
+for AC1: the delivery-mode pins stay, and the new cases pin the binding AA4's edit
+removed and the `catch` that must name its failure. The execution is `p1`.
+
+### Tenth/eleventh passes
+
+**266 tests, up from 226**, and `lint: 84/84 files`. New files
+`tests/background-delivery.test.ts` (3, of which 1 fails with AA4 reverted — the
+other two are controls in the strongest sense available: they pin the pi facts the
+source pin rests on, so the test fails if the HOST changes rather than only if the
+module does), `tests/git-failures.test.ts` (7, driving `classifyGitFailure` on the
+three shapes measured out of pi's real `execCommand`),
+`tests/status-listing.test.ts` (7, of which the load-bearing one is that no
+running or queued agent is ever elided, however many there are),
+`tests/exclude-lists.test.ts` (8) and `tests/tool-surface.test.ts` (10 — five
+source pins on the `Agent` tool's declared surface against its implementation, and
+five on T5). Five cases added to `tests/concurrency-slots.test.ts`, and
+`tests/record-activity.test.ts`'s menu pin updated for T5's new Stop branch —
+still asserting that Clear is reached only on the not-verifying path.
+
+### Ninth pass
+
+**226 tests, up from 215**, and `lint: 77/77 files`. New files
+`tests/run-answer.test.ts` (7, of which 3 fail with the Z1 fix reverted; the
+controls are the turn-limit steer, where the reply to the injected message IS the
+answer and must still win, a run that said nothing at all, and the live view's
+per-message `onTextDelta`) and `tests/compaction-anchor.test.ts` (4, of which 1
+fails; the controls are the two call sites that must keep the anchor and a caller
+supplying neither flag, which must read as reachable so the layer cannot be
+switched off by an omission).
+
+Both fixes are testable at all only because the code moved into a module that
+imports nothing — the third and fourth time this fork has made that move, after
+`turn-tracking.ts` (T1) and `record-activity.ts` (Y1).
+
+### Eighth pass
+
+**215 tests, up from 207**, and `lint: 73/73 files`. New file
+`tests/record-activity.test.ts` (8, of which 3 fail when any one of the three
+readers is reverted): four behavioural cases driving the real predicates, and four
+source pins — on `agent-manager.ts` and the two UI files, none of which the suite
+can load. The last pin is the one aimed at the next pass: it asserts that **no**
+reader keeps a private copy of the question.
+
+### Seventh pass
+
+## Tests
+
+```
+cd vendor/pi-subagents-lite && npm run lint && npm test
+```
+
+**207 tests, up from 193**, and `lint: 71/71 files`. New file
+`tests/steer-brief.test.ts` (6, of which 3 fail with the fix reverted): four
+source pins on `agent-manager.ts`, which imports pi and cannot be loaded by the
+suite, and two behavioural cases driving the real `appendFollowUp`,
+`buildRepairPrompt` and `buildAnchorMessage`. Four cases added to
+`tests/verify.test.ts` (all four fail) and four to `tests/turn-tracking.test.ts` —
+three for W4 (2 fail; the longer no-grace budget is the control) and one for W6,
+which pins the **order** of the calls in `agent-runner.ts` rather than the
+presence of one of them, because that is the assertion V7's own pin could not
+make. `verify-runner.test.ts`'s "counts the attempts it actually spent" case moved
+from `/2th attempt/` to `/second attempt/` plus a `doesNotMatch(/\dth attempt/)`.
+
+### Sixth pass
+
+**193 tests, up from 182**, and `lint: 70/70 files`. Eight cases added to
+`tests/verify-runner.test.ts` (4 fail with the gate reverted; the `completed` case
+is the control that a repair which finished is still accepted), and three to
+`tests/turn-tracking.test.ts` — two for V6 (2 fail; the longer-budget case is the
+control) and one source pin for V7, next to U8's and by the same argument. Every
+`repair` dep in the suite now returns `{ text, status }`.
+
+### Fifth pass
+
+**182 tests, up from 154**, and `lint: 70/70 files`. New file
+`tests/agent-frontmatter.test.ts` (8, of which 4 fail with the fix reverted; it
+registers a `.js`→`.ts` resolve hook inline, which is how a test in this suite
+reaches `agent-discovery.ts` and `agent-types.ts` at all). Blocks added to
+`verify.test.ts` (7, of which 6 fail), `turn-tracking.test.ts` (7, of which the
+source-invariant case fails), `declared-resources.test.ts` (4, of which 2 fail)
+and `subagent-denylist.test.ts` (2, of which 1 fails). Two of the fixes are pinned
+at the SOURCE rather than behaviourally, because `agent-manager.ts` and `stack.ts`
+both import pi and the suite cannot load them; both strip comments before matching,
+since the fix's own comment quotes the defective form.

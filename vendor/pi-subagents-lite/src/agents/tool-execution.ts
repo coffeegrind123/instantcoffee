@@ -16,6 +16,7 @@ import { getSessionContextPercent } from "./usage.js";
 import { validateWorktreePath } from "../spawn/worktree-validator.js";
 import { resolveSubagentTrust, createSubagentTrustDeps, untrustedProjectWarning } from "../spawn/project-trust.js";
 
+import { isBusyRecord, isVerifyingRecord } from "./record-activity.ts";
 import { parseModelKey, findModelInRegistry, parseThinkingLevel } from "../utils.js";
 import { getPiInstance, getSessionCtx, getStore, getCoordinator, getManager } from "../shell.js";
 
@@ -178,6 +179,59 @@ async function resolveTypeWithDiscovery(type: string, worktreeAgentsDir: string 
   return resolution;
 }
 
+/**
+ * Forge fork, fourteenth pass (AE6): one resolver, called from both ends.
+ *
+ * `toolCallListener` and `executeAgentTool` both have to answer "what model does
+ * this spawn run on", and after AD1 made the listener's answer the one the spawn
+ * obeys, the two were resolving it against different keys:
+ *
+ *   the listener  `input.agent` verbatim — the name the MODEL typed — against
+ *                 the registry as it stands when the tool call is announced.
+ *   the tool      `resolveTypeWithDiscovery(...)` — the CANONICAL registered
+ *                 name, after a filesystem re-scan that can register agents the
+ *                 listener could not see.
+ *
+ * Both differences are reachable and both were measured (see
+ * `context/testing/probes/r2-the-name-the-override-is-keyed-on.mjs`):
+ *
+ *   · `resolveType` is deliberately case-insensitive, so `agent: "explore"`
+ *     spawns the registered `Explore` — but `resolveModel` looks its per-type
+ *     override up as `config.agent["explore"]` and `sessionOverrides["explore"]`,
+ *     and `/agents` → models writes those keys from `getAllTypes()`, i.e. under
+ *     `Explore`. So an operator's pin was silently skipped for a spawn that
+ *     differed from the menu only in case — and `renderAgentToolCall` printed the
+ *     unpinned model beside the call, so the display agreed with the miss.
+ *   · An agent that only becomes resolvable on the discovery retry — one added to
+ *     the filesystem after startup, or living in a worktree's `.pi/agents/`,
+ *     which is the case that retry exists for — has no config at listener time.
+ *     `resolveModel` then falls past its frontmatter rung to `parentModelId`,
+ *     the tool honours that, and `agent-runner`'s own
+ *     `options.model ?? findModelInRegistry(agentConfig?.model, …)` fallback
+ *     cannot rescue it because the tool always supplies the left side. That is
+ *     AD1's damage exactly — the child on the parent's model, holding the
+ *     parent's concurrency slot — restored for one class of agent.
+ *
+ * So the question has one implementation, it takes the type it is asked about,
+ * and the caller is responsible for asking about the right one. The listener
+ * canonicalises what it can; the tool asks again with what discovery found.
+ */
+function canonicalAgentType(requested: string): string | undefined {
+  const resolution = resolveType(requested);
+  return resolution.kind === "resolved" ? resolution.key : undefined;
+}
+
+/** The six-level precedence, for one canonical type. See canonicalAgentType. */
+function resolveSpawnModel(canonicalType: string, ctx: ExtensionContext): string {
+  const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+  return getStore().modelFor(canonicalType, parentModelId, getAgentConfig(canonicalType));
+}
+
+/** Thinking level for one canonical type: the agent's frontmatter, else the operator's default. */
+function resolveSpawnThinking(canonicalType: string) {
+  return getAgentConfig(canonicalType)?.thinkingLevel ?? getStore().agent.defaultThinking;
+}
+
 export async function executeAgentTool(
   _toolCallId: string,
   params: Record<string, unknown>,
@@ -209,27 +263,99 @@ export async function executeAgentTool(
   }
   const resolvedType = resolution.key;
 
+  // Forge fork: `hidden` means not offered AND not callable here.
+  //
+  // `hidden: true` keeps a type out of `getAvailableTypes()`, which is what
+  // builds the `agent` parameter's description — so the model is never told
+  // `__verifier` exists. The parameter is a plain `Type.String()`, though, not an
+  // enum, so nothing stopped the model naming it anyway, and `resolveType` was
+  // deliberately open to hidden names ("they can still be called by name").
+  //
+  // Both intents are kept by gating the MODEL-FACING surface only: the judge
+  // reaches `__verifier` through `runAgent`/`getAgentConfig`, and the /agents
+  // wizard through the coordinator, neither of which comes through here. What is
+  // closed is a parent model spawning the verifier with an arbitrary prompt — one
+  // wasted call on the single llama slot, and a record labelled "verify" in
+  // /agents doing something that is not a verification.
+  if (getAgentConfig(resolvedType)?.hidden === true) {
+    return errorResult(`Unknown agent type: ${type}`);
+  }
+
   const prompt = params.prompt as string;
   const description =
     (params.description as string | undefined) || prompt.split("\n")[0].slice(0, 80) || prompt.slice(0, 80);
   const runInBackground = params.run_in_background as boolean | undefined;
-  const maxTurns =
-    (params.max_turns as number | undefined) ??
-    getAgentConfig(resolvedType)?.maxTurns ??
-    getStore().agent.defaultMaxTurns;
+  // Forge fork: `max_turns` is not read off `params`.
+  //
+  // The tool declares five parameters — prompt, description, agent,
+  // run_in_background, worktree_path — with `additionalProperties: false`
+  // (registration.ts), so the model cannot send it and the read was always
+  // undefined. It is an upstream vestige from a schema that had it. Keeping a
+  // read that the declaration forbids is S1's shape: the artefact a reader
+  // checks is not what runs. The precedence below is the real one.
+  //
+  // Adding it back to the schema was considered and rejected: `max_turns` is
+  // the ceiling that stops an unbounded child stalling the one-slot machine
+  // (turn-tracking.ts), and it belongs to the agent's own .md or the operator's
+  // config, not to the caller that is about to be blocked on it.
+  const maxTurns = getAgentConfig(resolvedType)?.maxTurns ?? getStore().agent.defaultMaxTurns;
 
-  const modelStr = params.model as string | undefined;
-  const model = findModelInRegistry(modelStr, ctx.modelRegistry, ctx.model);
+  // Forge fork, thirteenth pass (AD1): `params.model` IS read, and the twelfth
+  // pass's reasoning for dropping it applied to the wrong sender.
+  //
+  // `model` was removed alongside `max_turns` under one argument — "the schema
+  // is `additionalProperties: false`, so the model cannot send either key and
+  // these reads were always undefined". True of the MODEL, and beside the point:
+  // nothing here came from the model. `toolCallListener` below is a `tool_call`
+  // handler, it runs after validation, and pi hands the SAME object to the
+  // handler and to this function — `prepareToolCall` builds `validatedArgs`,
+  // passes it as `args` to `beforeToolCall`, then calls
+  // `tool.execute(id, prepared.args, …)` with that reference
+  // (pi-agent-core/dist/agent-loop.js:404-443). The listener writes
+  // `input.model = getStore().modelFor(...)` onto it, and `input.thinking` too —
+  // which is why `parseThinkingLevel(params.thinking)` three lines below works.
+  //
+  // With the read gone, `findModelInRegistry(undefined, …)` returned `ctx.model`
+  // unconditionally, so EVERY layer of the documented precedence above the
+  // parent — session per-type, session default, config per-type, config default,
+  // and the agent .md's own `model:` — was resolved, injected, rendered next to
+  // the call by `renderAgentToolCall`, listed as the "effective model" in
+  // `/agents` → models, and then discarded. `agent-runner.ts`'s own fallback
+  // (`options.model ?? findModelInRegistry(agentConfig?.model, …)`) could not
+  // rescue it either, because this always passed a model. The menu wizard was
+  // never changed and still resolves it, so the same delegation ran on a
+  // different model depending on who started it.
+  //
+  // Measured: `context/testing/probes/q1-the-model-override-nobody-applies.mjs`.
+  //
+  // Forge fork, fourteenth pass (AE6): the injected values are used exactly when
+  // the listener resolved the SAME agent this function is about to spawn.
+  //
+  // `_resolvedAgent` is the canonical name `toolCallListener` keyed its
+  // resolution on, and it is absent when the listener could not resolve the name
+  // at all — which is the discovery case. When it matches, the injected values
+  // are the answer and are read here, which is AD1 and stays. When it does not,
+  // they were resolved against a different key or against a registry that did
+  // not yet contain the agent, and the answer is re-derived from the type that is
+  // actually being spawned. See canonicalAgentType above for both cases.
+  const listenerResolvedThisType = params._resolvedAgent === resolvedType;
+  const modelSpec = listenerResolvedThisType
+    ? (params.model as string | undefined)
+    : resolveSpawnModel(resolvedType, ctx);
+  const model = findModelInRegistry(modelSpec, ctx.modelRegistry, ctx.model);
   const modelKey = model ? `${model.provider}/${model.id}` : undefined;
 
   // Determine modelName for invocation (always capture for display)
   const modelName = model?.id;
 
-  // Resolve thinking: explicit param > agent config (frontmatter) > spawn options default > undefined (inherit)
-  const thinkingLevel =
-    parseThinkingLevel(params.thinking as string | undefined) ??
-    getAgentConfig(resolvedType)?.thinkingLevel ??
-    getStore().agent.defaultThinking;
+  // Resolve thinking: the listener's injected value when it is about this type,
+  // then the agent's own frontmatter, then the operator's default. Same rule as
+  // the model above and for the same reason — a `thinking` injected against a
+  // type the listener could not see is the store's DEFAULT, and it would shadow
+  // the frontmatter the discovery retry has just made readable.
+  const thinkingLevel = listenerResolvedThisType
+    ? (parseThinkingLevel(params.thinking as string | undefined) ?? resolveSpawnThinking(resolvedType))
+    : resolveSpawnThinking(resolvedType);
 
   const coordinator = getCoordinator()!;
   // Background spawns (explicit or forceBackground) never bind to the parent
@@ -281,13 +407,18 @@ export async function executeAgentTool(
 // --- Running agents list helper (used by executeStopAgentTool) ---
 
 /**
- * Build a compact list of running (or queued) agents.
+ * Build a compact list of agents that are still busy.
  * Format: "short_id (type), short_id (type)" — one line, easy for LLM to parse.
+ *
+ * Forge fork, thirteenth pass (AD2): `isBusyRecord`, not a status test. A record
+ * whose VERIFIER is still running has a terminal `lifecycle.status` — the
+ * settlement chain classifies the child's run and only then awaits
+ * `runVerification` — so a status filter drops the one agent that is holding the
+ * llama slot. `record-activity.ts` exists so this question has one answer; this
+ * was its fourth reader and the one that still had its own.
  */
 function formatRunningAgents(): string {
-  const agents = getManager()!
-    .listAgents()
-    .filter((a) => a.lifecycle.status === "running" || a.lifecycle.status === "queued");
+  const agents = getManager()!.listAgents().filter(isBusyRecord);
 
   if (agents.length === 0) return "none";
 
@@ -315,14 +446,38 @@ export async function executeStopAgentTool(
     return errorResult(`Agent ${agentId} not found. Running agents: ${formatRunningAgents()}`);
   }
 
-  if (record.lifecycle.status !== "running" && record.lifecycle.status !== "queued") {
+  // Forge fork, thirteenth pass (AD2): a record whose ANSWER is still being
+  // checked is stoppable, and this precondition was what made it unreachable.
+  //
+  // T5 was closed in `AgentManager.stopAgent()`, which tests `isVerifyingRecord`
+  // before it tests `status === "running"`, and its comment says the fix is for
+  // "the operator's Esc, for `StopAgent`, and for anything else that asked". It
+  // was not for `StopAgent`: this function has its own status guard one layer up
+  // and returns on it, so the manager was never asked. Meanwhile the model was
+  // told the agent was "already completed" while a judge and up to three repairs
+  // held the single llama slot its own next call was queued behind — and the
+  // answer it was waiting for had not been decided yet.
+  //
+  // `isBusyRecord` is the same predicate the widget and the `/agents` menu use
+  // (`record-activity.ts`), and the sentence names which run is being stopped,
+  // for the same reason the menu's label does: the child's own run really has
+  // finished, and "Stopped agent X" alone would be a claim about that one.
+  //
+  // Measured: `context/testing/probes/q2-the-stop-the-tool-cannot-reach.mjs`.
+  if (!isBusyRecord(record)) {
     return successResult(
       `Agent ${agentId} is already ${record.lifecycle.status}. Running agents: ${formatRunningAgents()}`,
     );
   }
 
+  const verifying = isVerifyingRecord(record);
+
   if (getManager()!.abort(agentId, "agent")) {
-    return successResult(`Stopped agent ${agentId.slice(0, SHORT_ID_LENGTH)}`);
+    return successResult(
+      verifying
+        ? `Stopped the answer check on agent ${agentId.slice(0, SHORT_ID_LENGTH)}. Its own run had already finished; the answer goes back unchecked.`
+        : `Stopped agent ${agentId.slice(0, SHORT_ID_LENGTH)}`,
+    );
   }
 
   return errorResult(`Failed to stop agent ${agentId}`);
@@ -334,12 +489,30 @@ export async function toolCallListener(event: ToolCallEvent, ctx: ExtensionConte
   if (event.toolName !== "Agent") return;
 
   const input = event.input;
-  const subagentType = input.agent as string | undefined;
-  const agentConfig = subagentType ? getAgentConfig(subagentType) : undefined;
+  const requestedType = (input.agent as string | undefined) ?? "general-purpose";
 
-  const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+  // Forge fork, fourteenth pass (AE6): the CANONICAL registered name, not the
+  // one the model typed.
+  //
+  // `resolveModel` looks a per-type override up as `config.agent[type]` and
+  // `sessionOverrides[type]`, and `/agents` → models writes both from
+  // `getAllTypes()` — the canonical names. `resolveType` is deliberately
+  // case-insensitive, so `agent: "explore"` is a perfectly good spawn of
+  // `Explore` whose operator pin this used to miss, silently, while
+  // `renderAgentToolCall` printed the unpinned model beside the call.
+  //
+  // `undefined` when the name resolves to nothing — a worktree-local agent, or
+  // one added to the filesystem since startup. Nothing is injected then, and the
+  // stamp below says so, because `executeAgentTool` retries the resolution after
+  // a discovery scan and is the only one of the two that can answer.
+  const canonicalType = canonicalAgentType(requestedType);
+  if (!canonicalType) return;
 
-  const effectiveModel = getStore().modelFor(subagentType ?? "general-purpose", parentModelId, agentConfig);
+  // The key everything below was resolved against. `executeAgentTool` reads the
+  // injected values only while this still names the type it is spawning.
+  input._resolvedAgent = canonicalType;
+
+  const effectiveModel = resolveSpawnModel(canonicalType, ctx);
 
   if (effectiveModel) {
     input.model = effectiveModel;
@@ -352,6 +525,6 @@ export async function toolCallListener(event: ToolCallEvent, ctx: ExtensionConte
 
   // Inject thinking if not explicitly passed: agent frontmatter > spawn options default
   if (input.thinking === undefined) {
-    input.thinking = agentConfig?.thinkingLevel ?? getStore().agent.defaultThinking;
+    input.thinking = resolveSpawnThinking(canonicalType);
   }
 }

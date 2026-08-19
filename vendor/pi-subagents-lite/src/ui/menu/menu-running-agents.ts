@@ -32,11 +32,23 @@ import { verificationBadgeText } from "../verification-badge.js";
 import { SEPARATOR_ID, buildSelectListTheme, createDelegatingComponent, installSeparatorSkip } from "./helpers.js";
 import { getManager, getStore } from "../../shell.js";
 import type { Theme } from "../types.js";
+import { isActiveRecord, isBusyRecord, isVerifyingRecord } from "../../agents/record-activity.ts";
+// Forge fork, fifteenth pass (AF2): the sentences the manager's booleans turn
+// into. In a module that imports nothing, so they can be tested — this file
+// imports pi-tui and the suite cannot load it.
+import { bulkReport, clearReport, steerReport, stopReport } from "../action-report.ts";
 
-/** Running or queued — the only non-terminal statuses (ADR-0006: active work is never cleared). */
-function isActive(record: AgentRecord): boolean {
-  return record.lifecycle.status === "running" || record.lifecycle.status === "queued";
-}
+/**
+ * Running or queued — the only non-terminal statuses (ADR-0006: active work is
+ * never cleared) — and the two questions next to it.
+ *
+ * Forge fork: these used to be one local `isActive` here and a different rule
+ * inside the widget's `categorizeAgents`, and the difference was a record whose
+ * VERIFIER was still running. See `record-activity.ts` for what that cost.
+ */
+const isActive = (record: AgentRecord): boolean => isActiveRecord(record);
+const isVerifying = (record: AgentRecord): boolean => isVerifyingRecord(record);
+const isBusy = (record: AgentRecord): boolean => isBusyRecord(record);
 
 async function showConversationViewer(ctx: ExtensionCommandContext, record: AgentRecord): Promise<void> {
   if (!record.execution?.session) return;
@@ -52,7 +64,22 @@ async function showConversationViewer(ctx: ExtensionCommandContext, record: Agen
         done,
         () => manager?.abort(record.id, "user"),
         kb,
-        (msg: string) => manager?.steer(record.id, msg),
+        // AF2: the viewer discarded this boolean, so an operator's typed
+        // follow-up to a settled agent — refused whenever the model's
+        // concurrency slot is held, which at this fork's default of 1 is any
+        // other agent running — vanished with no line anywhere.
+        async (msg: string) => {
+          // Never rejects — the viewer does not await it, and an unhandled
+          // rejection from a UI callback takes the process with it.
+          try {
+            const sent = (await manager?.steer(record.id, msg)) === true;
+            if (sent) return;
+            const report = steerReport(false, record.id.slice(0, SHORT_ID_LENGTH), isActive(record) ? "steer" : "continue");
+            ctx.ui.notify(report.text, report.level);
+          } catch (err) {
+            ctx.ui.notify(`Steer failed for ${record.id.slice(0, SHORT_ID_LENGTH)}: ${String(err)}`, "error");
+          }
+        },
       );
       viewer.setModelDisplayStyle(getStore().agent.modelDisplayStyle);
       return viewer;
@@ -195,6 +222,18 @@ export function buildAgentActionsList(
   if (isRunning) {
     items.push({ value: "steer", label: "Steer" });
     items.push({ value: "stop", label: "Stop" });
+  } else if (isVerifying(record)) {
+    // Still no Clear — `removeRecord` disposes the session a repair is running
+    // in, and opens the completion gate with "" under a parent that is waiting
+    // for the real answer. That is Y1 and it stands.
+    //
+    // Stop, though, now does something. T5 is closed: `stopAgent` recognises a
+    // verifying record and aborts `execution.verifyAbort`, which routes through
+    // `verifyAnswer`'s catch — the child's answer goes out annotated as
+    // unchecked, the phase clears, and the gate opens. The label says which run
+    // is being stopped, because the child's own run has already finished and
+    // "Stop" alone would read as a claim about that.
+    items.push({ value: "stop", label: "Stop the answer check" });
   } else {
     items.push({ value: "clear", label: "Clear" });
   }
@@ -221,19 +260,32 @@ export function buildAgentActionsList(
         const trimmed = value.trim();
         if (trimmed) {
           const sent = await getManager()!.steer(record.id, trimmed);
-          ctx.ui.notify(sent ? `Steer sent to ${shortId}…` : `Steer failed for ${shortId}`, sent ? "info" : "error");
+          // The one call site that has always read the boolean; it now says WHY,
+          // because on this fork the likeliest reason is a full concurrency slot
+          // and the operator can simply wait. See action-report.ts.
+          const report = steerReport(sent, shortId, isActive(record) ? "steer" : "continue");
+          ctx.ui.notify(report.text, report.level);
         }
         setActive(list);
       };
       input.onEscape = () => setActive(list);
       setActive(input);
     } else if (item.value === "stop") {
-      getManager()?.abort(record.id, "user");
-      ctx.ui.notify(`Stopped ${shortId}`, "info");
+      // AF2: the record can settle between the menu being built and this being
+      // chosen — which is the normal case, since `/agents` is open exactly while
+      // agents are finishing — and `abort()` says so by returning false.
+      const verifying = isVerifying(record);
+      const stopped = getManager()?.abort(record.id, "user") === true;
+      const report = stopReport(stopped, shortId, verifying);
+      ctx.ui.notify(report.text, report.level);
       onClose();
     } else if (item.value === "clear") {
-      getManager()?.clear(record.id);
-      ctx.ui.notify(`Cleared ${shortId}`, "info");
+      // AF2, and Y1 is why the refusal exists: `clear()` returns false for a
+      // record whose answer is still being checked, because `removeRecord`
+      // disposes the session a repair is running in.
+      const cleared = getManager()?.clear(record.id) === true;
+      const report = clearReport(cleared, shortId, isVerifying(record));
+      ctx.ui.notify(report.text, report.level);
       onClose();
     }
   };
@@ -248,15 +300,21 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
     return;
   }
   const running = agents.filter(isActive);
-  const finished = agents.filter((r) => !isActive(r));
-  const completed = agents.filter((r) => r.lifecycle.status === "completed");
+  // `isBusy`, not `isActive`: a record whose verifier is still running is not
+  // finished, and both bulk clears used to reach it. See isVerifying.
+  const finished = agents.filter((r) => !isBusy(r));
+  const completed = agents.filter((r) => r.lifecycle.status === "completed" && !isVerifying(r));
 
   await ctx.ui.custom((_tui, theme, _kb, done) => {
     const buildAgentItems = (): SelectItem[] => {
       const items: SelectItem[] = agents.map((record) => {
         const elapsed = Math.round((Date.now() - record.lifecycle.startedAt) / 1000);
-        const statusIcon =
-          record.lifecycle.status === "running"
+        // A verifying record wears the running glyph, because that is what it is
+        // doing \u2014 the status underneath already says `completed` and the row
+        // would otherwise claim the wait is over. See isVerifying.
+        const statusIcon = isVerifying(record)
+          ? "\u25B6"
+          : record.lifecycle.status === "running"
             ? "\u25B6"
             : record.lifecycle.status === "completed"
               ? "\u2713"
@@ -265,6 +323,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
                 : record.lifecycle.status === "error"
                   ? "\u2717"
                   : "\u2022";
+        const statusText = isVerifying(record) ? `${record.lifecycle.status} \u00B7 checking` : record.lifecycle.status;
         const headline = record.display.description ? record.display.description : "";
         const suffix = headline ? ` \u2014 ${headline}` : "";
         // Uncoloured on purpose: this is a SelectList label, which is measured
@@ -274,7 +333,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
         const verdictPart = verdict ? `  ${verdict}` : "";
         return {
           value: record.id,
-          label: `${statusIcon} ${record.id.slice(0, SHORT_ID_LENGTH)}  ${record.display.type}  ${record.lifecycle.status}${verdictPart}  ${elapsed}s${suffix}`,
+          label: `${statusIcon} ${record.id.slice(0, SHORT_ID_LENGTH)}  ${record.display.type}  ${statusText}${verdictPart}  ${elapsed}s${suffix}`,
         };
       });
       if (running.length > 0) {
@@ -301,28 +360,45 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
 
     const delegator = createDelegatingComponent(agentList);
 
+    /**
+     * Apply a bulk action and report what actually happened.
+     *
+     * Forge fork, fifteenth pass (AF2). The three bulk actions looped over
+     * `running` / `finished` / `completed` — arrays snapshotted before
+     * `ctx.ui.custom` opened — discarded every boolean, and reported the
+     * SNAPSHOT's length as the number of agents acted on. `/agents` is open
+     * exactly while agents are settling, so "Cleared 7 finished agent(s)" could
+     * describe six clears and one record that is now having its answer checked
+     * and refused (Y1) — which the operator then never looks for again.
+     *
+     * The target list is re-derived here, at the moment the action is chosen,
+     * from the manager rather than from the snapshot.
+     */
+    const applyBulk = (verb: "Stopped" | "Cleared", select: (record: AgentRecord) => boolean) => {
+      const manager = getManager();
+      const targets = (manager?.listAgents() ?? []).filter(select);
+      let applied = 0;
+      for (const record of targets) {
+        const ok = verb === "Stopped" ? manager?.abort(record.id, "user") : manager?.clear(record.id);
+        if (ok === true) applied++;
+      }
+      const report = bulkReport(verb, applied, targets.length);
+      ctx.ui.notify(report.text, report.level);
+    };
+
     agentList.onSelect = async (item) => {
       if (item.value === "__stop-all") {
-        for (const r of running) {
-          getManager()?.abort(r.id, "user");
-        }
-        ctx.ui.notify(`Stopped ${running.length} agent(s)`, "info");
+        applyBulk("Stopped", isActive);
         done(undefined);
         return;
       }
       if (item.value === "__clear-all") {
-        for (const r of finished) {
-          getManager()?.clear(r.id);
-        }
-        ctx.ui.notify(`Cleared ${finished.length} finished agent(s)`, "info");
+        applyBulk("Cleared", (record) => !isBusy(record));
         done(undefined);
         return;
       }
       if (item.value === "__clear-done") {
-        for (const r of completed) {
-          getManager()?.clear(r.id);
-        }
-        ctx.ui.notify(`Cleared ${completed.length} completed agent(s)`, "info");
+        applyBulk("Cleared", (record) => record.lifecycle.status === "completed" && !isVerifying(record));
         done(undefined);
         return;
       }

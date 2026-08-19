@@ -12,6 +12,7 @@ import { Watchdog } from "./watchdog.js";
 import { getPiInstance, getStore } from "../shell.js";
 import { appendFollowUp, buildAnchorMessage } from "./verify.ts";
 import { resolveVerifyRounds, resolveVerifyTimeoutMs, verifyAnswer, type VerifyDeps } from "./verify-runner.ts";
+import { appendVerifyLog } from "./verify-log.ts";
 import { VERIFIER_AGENT_TYPE } from "./default-agents.js";
 import {
   type AgentRecord,
@@ -26,6 +27,11 @@ import { getAgentConfig } from "./agent-types.js";
 import { addUsage, emptyUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
 import { errorMessage, toSingleLine } from "../utils.js";
 import { DEFAULT_CONCURRENCY, DEFAULT_GRACE_TURNS } from "../config/config-io.js";
+import { SlotTable, type ConcurrencyConfig, type ConcurrencySlot } from "./concurrency-slots.ts";
+import { anchorReachesATurn } from "./compaction-anchor.ts";
+import { isVerifyingRecord } from "./record-activity.ts";
+
+export type { ConcurrencyConfig } from "./concurrency-slots.ts";
 
 export const WATCHDOG_TICK_MS = 5_000;
 
@@ -83,12 +89,21 @@ interface Deadline {
  *
  * Verification runs inside the settlement chain, after the record's status has
  * gone terminal — and every stop path in this file keys off `status ===
- * "running"`. So while a judge or a repair is in flight the record is
- * unstoppable: `stopAgent()` returns false for the operator's Esc and for the
- * `StopAgent` tool alike, and `checkWatchdogs()` does not merely skip the
- * record, `Watchdog.check()` deletes its state. Meanwhile the parent's `Agent`
- * tool call is blocked on the completion gate, which does not open until
- * verification returns. Nothing else can end that wait, so this does.
+ * "running"`. So while a judge or a repair was in flight the record was
+ * unstoppable: `stopAgent()` returned false for the operator's Esc and for the
+ * `StopAgent` tool alike. Meanwhile the parent's `Agent` tool call is blocked on
+ * the completion gate, which does not open until verification returns.
+ *
+ * That is T5, and it is now closed: `runVerification` creates
+ * `record.execution.verifyAbort`, `stopAgent()` recognises a verifying record
+ * and aborts it, and `startDeadline` composes that signal with the timer so the
+ * call ends on whichever comes first. This deadline stays, and is still the only
+ * bound on an UNATTENDED run — nobody presses Esc in a cron job.
+ *
+ * `checkWatchdogs()` still skips a verifying record, and `Watchdog.check()`
+ * deletes its state rather than merely skipping it. That is harmless and stays:
+ * the per-call deadline is minutes where the watchdog is 45 of them, and
+ * `continueSettledAgent` calls `watchdog.start()` again for any later run.
  *
  * `assertNotExpired()` is separate from the signal on purpose: `runAgent` does
  * not reject when aborted, it returns with `aborted: true` and whatever text
@@ -98,7 +113,7 @@ interface Deadline {
  * failed" path: the answer goes out annotated as unchecked, and the operator is
  * told why.
  */
-function startDeadline(label: string, timeoutMs: number): Deadline {
+function startDeadline(label: string, timeoutMs: number, stopSignal?: AbortSignal): Deadline {
   const controller = new AbortController();
   let expired = false;
   const timer = setTimeout(() => {
@@ -107,14 +122,51 @@ function startDeadline(label: string, timeoutMs: number): Deadline {
   }, timeoutMs);
   // Never hold the process open for a deadline that has outlived its session.
   timer.unref?.();
-  const fail = () => new Error(`the ${label} did not answer within ${Math.round(timeoutMs / 1000)}s`);
+  // Forge fork (T5): the operator's stop composes with the timer, so the same
+  // call is bounded by whichever comes first. Composed here rather than passed
+  // through as a second signal because `runAgent`/`continueAgentSession` take
+  // one, and because the two outcomes need different sentences below.
+  const onStop = () => controller.abort();
+  if (stopSignal) {
+    if (stopSignal.aborted) controller.abort();
+    else stopSignal.addEventListener("abort", onStop, { once: true });
+  }
   return {
     signal: controller.signal,
     assertNotExpired: () => {
-      if (expired) throw fail();
+      if (stopSignal?.aborted) throw new Error(`the ${label} was stopped`);
+      if (expired) throw new Error(`the ${label} did not answer within ${Math.round(timeoutMs / 1000)}s`);
     },
-    cancel: () => clearTimeout(timer),
+    cancel: () => {
+      clearTimeout(timer);
+      stopSignal?.removeEventListener("abort", onStop);
+    },
   };
+}
+
+/**
+ * The status a settled run has, from its own result.
+ *
+ * Extracted because there were two callers and only one of them read the whole
+ * object. `attachSettlementChain` classified with this expression inline;
+ * `buildVerifyDeps.repair` returned `result.responseText` and dropped `aborted`,
+ * `turnLimited` and `modelError` on the floor — so the verifier's structural
+ * gate, whose whole job is to refuse to judge a run that was cut off, was applied
+ * to the child's first run and to nothing else. A repair hard-aborted at
+ * `maxTurns + graceTurns` went to the judge as an answer and could go back to the
+ * parent labelled "corrected … re-checked", truncated mid-token.
+ *
+ * One function, so a caller taking a subset has to say so. See V5 in
+ * `context/design/subagents-loop-verifier-shapes.md`.
+ *
+ * Precedence: an abort during a model error wins; a model error outranks a turn
+ * limit.
+ */
+function classifyRun(result: Pick<RunResult, "aborted" | "turnLimited" | "modelError">): AgentStatus {
+  if (result.aborted) return "aborted";
+  if (result.modelError) return "error";
+  if (result.turnLimited) return "turn_limited";
+  return "completed";
 }
 
 function formatModelError(
@@ -126,22 +178,8 @@ function formatModelError(
   return model ? `${type} (${model.provider}/${model.id}): ${sanitizedError}` : `${type}: ${sanitizedError}`;
 }
 
-export interface ConcurrencyConfig {
-  /** Default concurrency limit for models not in the models or providers map. */
-  default: number;
-  /** Per-provider concurrency limits keyed by provider name (e.g. "llamacpp"). */
-  providers?: Record<string, number>;
-  /** Per-model concurrency limits keyed by "provider/modelId". */
-  models?: Record<string, number>;
-}
-
 type OnAgentComplete = (record: AgentRecord) => void;
 type OnAgentStart = (record: AgentRecord) => void;
-
-interface ConcurrencySlot {
-  limit: number;
-  running: number;
-}
 
 interface SpawnArgs {
   pi: ExtensionAPI;
@@ -179,94 +217,40 @@ export class AgentManager {
   /** Session-level completed agent count. Survives record removal (Clear/dispose). */
   private totalAgentCount = 0;
 
-  /** Per-model concurrency slots keyed by "provider/modelId". */
-  private concurrencySlots = new Map<string, ConcurrencySlot>();
-
-  /** Per-provider concurrency slots — shared pool for all models from a provider. */
-  private providerSlots = new Map<string, ConcurrencySlot>();
-
-  private defaultConcurrency: number;
+  /**
+   * Limits, precedence and running counts. Extracted to `concurrency-slots.ts`
+   * so the arithmetic can be tested — this file imports pi and the suite cannot
+   * load it. See that module's header for the defect that prompted the move.
+   */
+  private slots: SlotTable;
 
   private queue: { id: string; modelKey: string; args: SpawnArgs }[] = [];
 
   constructor(onComplete?: OnAgentComplete, concurrency?: ConcurrencyConfig, onStart?: OnAgentStart) {
     this.onComplete = onComplete;
     this.onStart = onStart;
-    this.defaultConcurrency = concurrency?.default ?? DEFAULT_CONCURRENCY_LIMIT;
-
-    for (const [provider, limit] of Object.entries(concurrency?.providers ?? {})) {
-      this.applyConcurrencyEntry(this.providerSlots, provider, limit);
-    }
-
-    for (const [modelKey, limit] of Object.entries(concurrency?.models ?? {})) {
-      this.applyConcurrencyEntry(this.concurrencySlots, modelKey, limit);
-    }
+    this.slots = new SlotTable(concurrency, DEFAULT_CONCURRENCY_LIMIT);
 
     this.watchdogInterval = setInterval(() => this.checkWatchdogs(), WATCHDOG_TICK_MS);
     this.watchdogInterval.unref();
   }
 
   /**
-   * Update the concurrency configuration.
-   * Existing slots are updated; new slots are created; slots whose keys are
-   * absent from the new config are deleted so the new limit takes effect.
-   * In-flight agents that held a reference to a deleted slot still decrement
-   * that orphaned object in their .finally — a brief undercount window where
-   * the running total is not reflected in any live slot. This is acceptable:
-   * the agent completes shortly, and new spawns use the reconciled slots.
-   * The queue is drained after update so newly expanded limits take effect.
+   * Update the concurrency configuration, then rebuild the running counts.
+   *
+   * The rebuild is the fix, and `concurrency-slots.ts` carries the reasoning:
+   * the slot map has to be re-derived on a config change, and it used to take
+   * the in-flight agents' counts down with it. The queue is drained afterwards
+   * so a newly expanded limit starts something.
    */
   setConcurrency(config: ConcurrencyConfig): void {
-    this.defaultConcurrency = config.default;
-
-    for (const [provider, limit] of Object.entries(config.providers ?? {})) {
-      this.applyConcurrencyEntry(this.providerSlots, provider, limit);
-    }
-
-    for (const key of this.providerSlots.keys()) {
-      if (!(config.providers ?? {})[key]) {
-        this.providerSlots.delete(key);
-      }
-    }
-
-    for (const [modelKey, limit] of Object.entries(config.models ?? {})) {
-      this.applyConcurrencyEntry(this.concurrencySlots, modelKey, limit);
-    }
-
-    for (const key of this.concurrencySlots.keys()) {
-      if (!(config.models ?? {})[key]) {
-        this.concurrencySlots.delete(key);
-      }
-    }
-
+    this.slots.setLimits(config, this.agents.values());
     this.drainQueue();
   }
 
-  private applyConcurrencyEntry(map: Map<string, ConcurrencySlot>, key: string, limit: number): void {
-    const safeLimit = Math.max(1, limit);
-    const existing = map.get(key);
-    if (existing) {
-      existing.limit = safeLimit;
-    } else {
-      map.set(key, { limit: safeLimit, running: 0 });
-    }
-  }
-
-  /**
-   * Get or create a concurrency slot for a model key.
-   * Precedence: per-model slot > per-provider shared slot > default (per-model).
-   */
+  /** The slot serving a model key. Kept as a method because the probes drive it. */
   private getSlot(modelKey: string): ConcurrencySlot {
-    let slot = this.concurrencySlots.get(modelKey);
-    if (slot) return slot;
-
-    const provider = modelKey.split("/")[0];
-    const providerSlot = this.providerSlots.get(provider);
-    if (providerSlot) return providerSlot;
-
-    slot = { limit: Math.max(1, this.defaultConcurrency), running: 0 };
-    this.concurrencySlots.set(modelKey, slot);
-    return slot;
+    return this.slots.slotFor(modelKey);
   }
 
   /** Spawn an agent, returning its ID immediately; queued when the concurrency limit is reached. */
@@ -313,7 +297,14 @@ export class AgentManager {
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
-        turnCount: 1,
+        // Forge fork: 0, not 1. `onTurnEnd` writes the RUNNING total, so this is
+        // only ever read before the first `turn_end` — and there, "1" is a claim
+        // that a turn has finished when none has. A record that fails during
+        // setup (bindExtensions rejecting, a model with no auth) settles with
+        // this value, and reported one completed turn it never took. Every
+        // reader treats it as a count of finished turns: the widget, `/agents`,
+        // and `buildAgentDetails`, which the parent model reads.
+        turnCount: 0,
         compactionCount: 0,
         maxTurns: options.maxTurns,
       },
@@ -351,6 +342,9 @@ export class AgentManager {
     try {
       this.startAgent(id, record, args, concurrencySlot);
     } catch (err) {
+      // A start that threw after reserving used to leak the slot for the life of
+      // the process; releaseSlot is a no-op when nothing was reserved.
+      this.slots.release(record);
       this.detachParentBinding(record);
       this.openGate(id, "");
       this.agents.delete(id);
@@ -373,15 +367,22 @@ export class AgentManager {
    * - **repair** goes the other way and continues the CHILD's session, which is
    *   the only place with the context to actually fix the answer.
    *
-   * Returns undefined when SUBAGENT_VERIFY=0, and for the verifier's own runs —
-   * a judge that spawns a judge does not terminate.
+   * Returns undefined for the verifier's own runs — a judge that spawns a judge
+   * does not terminate. That is a structural fact about the record and is
+   * decided here.
+   *
+   * Forge fork: `SUBAGENT_VERIFY` is NOT read here. This runs when the child
+   * STARTS, while `SUBAGENT_VERIFY_ROUNDS` and `SUBAGENT_VERIFY_TIMEOUT_MS` are
+   * read when it SETTLES — so of three switches over one feature, one was
+   * captured minutes earlier than the other two, and an operator turning
+   * verification off during a long delegation still got a verification. All
+   * three are now read at the same moment, in `runVerification`.
    */
   private buildVerifyDeps(
     pi: ExtensionAPI,
     ctx: ExtensionContext,
     record: AgentRecord,
   ): VerifyDeps | undefined {
-    if (process.env.SUBAGENT_VERIFY === "0") return undefined;
     if (record.display.type === VERIFIER_AGENT_TYPE) return undefined;
 
     return {
@@ -398,13 +399,36 @@ export class AgentManager {
         // without it every judged answer leaks one AgentSession, its message
         // history and its bound extensions, for the life of the process. The
         // dispose is in the `finally` so a deadline that fires still tears down.
-        const deadline = startDeadline("verifier", resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS));
-        let result: RunResult | undefined;
+        //
+        // The session is captured at CREATION, not read off the result. It used
+        // to be `result?.session?.dispose()`, and `result` is only assigned when
+        // the await RESOLVES — so every rejection after `createAgentSession()`
+        // had returned (bindExtensions throwing, session.prompt() rejecting on a
+        // provider fault) dropped the only reference to a live session. That is
+        // exactly the leak the paragraph above is about, on the one exit it did
+        // not cover. A timeout was never the problem: the deadline aborts the
+        // signal, prompt() resolves, and assertNotExpired() throws afterwards.
+        // See V7 in context/design/subagents-loop-verifier-shapes.md.
+        //
+        // `onSessionCreated` now really does fire before `bindExtensions`, which
+        // is what V7 claimed and W6 found was not true: it was the last line of
+        // `createAndConfigureSession`, below the bind and the tool filtering, so
+        // the bindExtensions exit named above stayed uncovered for another pass.
+        // See W6 in context/design/subagents-loop-verifier-readers.md.
+        const deadline = startDeadline(
+          "verifier",
+          resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS),
+          record.execution.verifyAbort?.signal,
+        );
+        let judgeSession: { dispose(): void } | undefined;
         try {
-          result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, {
+          const result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, {
             pi,
             maxTurns: 1,
             signal: deadline.signal,
+            onSessionCreated: (session) => {
+              judgeSession = session;
+            },
             // Without this the judge's cost landed nowhere at all — not on the
             // record, not in the session total — so a verified delegation
             // under-reported itself by a whole model call.
@@ -425,7 +449,7 @@ export class AgentManager {
         } finally {
           deadline.cancel();
           try {
-            result?.session?.dispose();
+            judgeSession?.dispose();
           } catch {
             // A judge that answered is worth more than a tidy teardown.
           }
@@ -434,11 +458,29 @@ export class AgentManager {
       repair: async (prompt: string) => {
         const session = record.execution.session;
         if (!session) throw new Error("the subagent's session is gone");
-        const deadline = startDeadline("repair", resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS));
+        const deadline = startDeadline(
+          "repair",
+          resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS),
+          record.execution.verifyAbort?.signal,
+        );
+        // Captured ONCE, before the run, exactly as continueSettledAgent does.
+        // `onTurnEnd` fires per turn with the RUNNING total (1, then 2, then 3),
+        // so the previous form — `record.stats.turnCount = (record.stats.turnCount
+        // ?? 0) + turnCount` — re-read the field it was writing and accumulated
+        // 1+2+3+…: a five-turn repair took a record from 5 to 20 instead of 10.
+        // A one-turn repair was correct, which is why it stayed invisible; a
+        // repair runs more than one turn whenever the child uses a tool before
+        // answering, because `maxTurns: 1` sends no wrap-up steer (T1) and pi's
+        // loop keeps going while there are tool results.
+        const previousTurns = record.stats.turnCount ?? 0;
         try {
           const result = await continueAgentSession(session, prompt, {
             maxTurns: 1,
-            graceTurns: DEFAULT_GRACE_TURNS,
+            // The operator's setting, like every other run in this file. This was
+            // the one place that hardcoded the default, so an operator who set
+            // grace turns to 0 in /agents got 0 for the child's run and for a
+            // steer, and 6 inside the verifier.
+            graceTurns: getStore().agent.graceTurns ?? DEFAULT_GRACE_TURNS,
             signal: deadline.signal,
             // A repair is a real turn in the child's own session: it uses tools,
             // it counts against the child's window, and it can compact. Running
@@ -450,11 +492,17 @@ export class AgentManager {
             // rather than `verifyUsage` because it is the child spending the
             // child's window; see the judge above for the split.
             ...this.runTrackingCallbacks(record, record.execution.liveViewCallbacks, (turnCount) => {
-              record.stats.turnCount = (record.stats.turnCount ?? 0) + turnCount;
+              record.stats.turnCount = previousTurns + turnCount;
             }),
           });
           deadline.assertNotExpired();
-          return result.responseText;
+          // The whole result, classified the same way the settlement chain
+          // classifies the child's own run. It used to be `result.responseText`
+          // alone, so a repair that was hard-aborted at maxTurns + graceTurns,
+          // or that died on the provider, reached the judge as an ordinary answer
+          // — and the structural gate, which exists to refuse to judge exactly
+          // that, had no way to see it. See classifyRun and V5.
+          return { text: result.responseText, status: classifyRun(result) };
         } finally {
           deadline.cancel();
         }
@@ -470,6 +518,18 @@ export class AgentManager {
       onPhase: (phase) => {
         record.verifyPhase = phase;
       },
+      // Forge fork, fifteenth pass: the judge's raw reply, kept. It has been the
+      // #1 item on the "still unwatched" list since the fourth pass, and it is
+      // what four earlier findings (S2, U4, V5, W5) each needed a probe to
+      // establish — every one of them a claim about a string that existed for a
+      // few milliseconds inside `verifyAnswer` and was then dropped.
+      //
+      // The record's own identity is added here rather than in `verifyAnswer`,
+      // which has no idea what it is checking; the module is what owns the file,
+      // the bounds and the switch. It never throws.
+      log: (entry) => {
+        appendVerifyLog({ ...entry, agentId: record.id, agentType: record.display.type });
+      },
     };
   }
 
@@ -483,7 +543,15 @@ export class AgentManager {
    */
   private async runVerification(record: AgentRecord, deps: VerifyDeps | undefined): Promise<void> {
     if (!deps) return;
+    // All three switches read here, at the same moment. This one used to be read
+    // in `buildVerifyDeps`, which runs when the child STARTS — see there.
+    if (process.env.SUBAGENT_VERIFY === "0") return;
     const brief = record.execution.brief ?? "";
+    // T5, closed. The record's status is already terminal, so `stopAgent()`'s
+    // `status === "running"` test cannot see this work; this controller is what
+    // it aborts instead. Created before the first model call and cleared in the
+    // `finally`, so it exists exactly while `isVerifyingRecord` is true.
+    record.execution.verifyAbort = new AbortController();
     try {
       // Read per call, not cached at construction: an operator who changes the
       // budget between sessions should not have to reason about when it was
@@ -492,10 +560,30 @@ export class AgentManager {
       const outcome = await verifyAnswer(record, brief, deps, { rounds });
       record.verification = outcome.status;
       record.result = outcome.answer;
+    } catch (error) {
+      // `verifyAnswer` is documented as never throwing, and it is careful about
+      // it — but only inside its own try, which starts AFTER the structural
+      // gate, the brief check and clampRounds. A throw from that prologue, or
+      // from anything added here later, does not stay local: this runs inside
+      // `attachSettlementChain`'s `.then`, so it lands in the `.catch` below,
+      // which sets `record.result = undefined` and `status = "error"`. A
+      // finished subagent's answer would be discarded and its run reported to
+      // the parent as a failure, because the CHECK broke.
+      //
+      // The whole failure policy of this layer is that an unverified answer
+      // beats no answer, so the answer is left exactly as the run produced it
+      // and the verdict says the check did not happen.
+      record.verification = "errored";
+      try {
+        deps.notify?.(`Subagent answer went out unchecked — the verifier failed: ${errorMessage(error)}`);
+      } catch {
+        // Headless is fine; the answer is still intact.
+      }
     } finally {
       // verifyAnswer clears the phase itself on every path it owns; this is the
       // backstop for the one it does not — a throw from outside its own try.
       record.verifyPhase = undefined;
+      record.execution.verifyAbort = undefined;
     }
   }
 
@@ -506,7 +594,7 @@ export class AgentManager {
     { pi, ctx, type, prompt, options }: SpawnArgs,
     concurrencySlot?: ConcurrencySlot,
   ) {
-    if (concurrencySlot) concurrencySlot.running++;
+    if (concurrencySlot) this.slots.reserve(record);
 
     record.lifecycle.status = "running";
     record.lifecycle.startedAt = Date.now();
@@ -559,7 +647,7 @@ export class AgentManager {
         options.onSessionCreated?.(session);
       },
     });
-    this.attachSettlementChain(record, promise, concurrencySlot, this.buildVerifyDeps(pi, ctx, record));
+    this.attachSettlementChain(record, promise, this.buildVerifyDeps(pi, ctx, record));
   }
 
   /**
@@ -572,21 +660,13 @@ export class AgentManager {
   private attachSettlementChain(
     record: AgentRecord,
     runPromise: Promise<RunResult>,
-    concurrencySlot?: ConcurrencySlot,
     verifyDeps?: VerifyDeps,
   ) {
     runPromise
       .then(async ({ responseText, session, aborted, turnLimited, modelError }) => {
         // Don't overwrite status if externally stopped via abort()
         if (record.lifecycle.status !== "stopped") {
-          // Precedence: an abort during a model error wins; a model error outranks a turn limit.
-          record.lifecycle.status = aborted
-            ? "aborted"
-            : modelError
-              ? "error"
-              : turnLimited
-                ? "turn_limited"
-                : "completed";
+          record.lifecycle.status = classifyRun({ aborted, turnLimited, modelError });
         }
         record.result = responseText;
         // Forge fork: check the answer against the task before anyone reads it.
@@ -630,7 +710,7 @@ export class AgentManager {
           record.execution.outputLog = undefined;
         }
 
-        if (concurrencySlot) concurrencySlot.running--;
+        this.slots.release(record);
 
         this.tallyCompletion(record);
         this.drainQueue();
@@ -741,7 +821,30 @@ export class AgentManager {
         // drifted. Prevention; the verifier at settle is only the backstop.
         const brief = record.execution.brief;
         const session = record.execution.session;
-        if (brief && session) {
+        // Forge fork: …but only into a run that is still going.
+        //
+        // `session.steer()` is not a way to put text in a context, it is a way
+        // to put text in a context AND get an answer to it: pi drains the
+        // steering queue at the top of its agent loop, and when the loop has
+        // already finished `_handlePostAgentRun()` restarts it precisely because
+        // the queue is not empty (`agent-session.js:776` → `agent.continue()` →
+        // `Agent.continue()`'s assistant-last branch, which drains steering and
+        // runs it as a prompt). pi's only two auto-compaction call sites are
+        // both outside the loop, and the one that fires at the END of a run —
+        // any child that finishes above pi's compaction threshold — therefore
+        // bought an extra model call on the one llama slot the parent is blocked
+        // on, AND the reply to it became the child's answer. Measured against
+        // the shipped `runSessionPrompt`: a child that had answered handed its
+        // parent "Understood — nothing further to add."
+        //
+        // This is T1 and V6's argument for the other steer in this package —
+        // "there is no wrap-up to ask for, and asking manufactures a turn" —
+        // applied to the one nobody had asked it about. `willRetry` is the
+        // exception and it is the same rule: pi is going to re-run the
+        // interrupted turn itself, so the anchor rides on a turn that was
+        // already coming, which is exactly what it is for. See Z2 in
+        // `context/design/subagents-loop-verifier-answers.md`.
+        if (brief && session && anchorReachesATurn(info)) {
           // Advisory, like every other steer here: a session that is already
           // tearing down is not a reason to fail the run.
           void session.steer(buildAnchorMessage(brief)).catch(() => {});
@@ -771,6 +874,7 @@ export class AgentManager {
         started.add(entry.id);
       } catch (err) {
         // Late failure — surface on the record so the user can see it
+        this.slots.release(record);
         record.lifecycle.status = "error";
         record.error = errorMessage(err);
         record.lifecycle.completedAt = Date.now();
@@ -798,11 +902,16 @@ export class AgentManager {
       if (!record.execution.session) {
         if (!record.execution.pendingSteers) record.execution.pendingSteers = [];
         record.execution.pendingSteers.push(message);
+        // Queued, so it WILL reach the model — onSessionCreated flushes it.
+        this.growBrief(record, message);
         return true;
       }
 
       try {
         await record.execution.session.steer(message);
+        // Only after it went. A steer that threw never reached the model, and a
+        // brief that claims otherwise is the same defect one direction over.
+        this.growBrief(record, message);
         return true;
       } catch {
         // steer failures are surfaced to the caller via the boolean return value
@@ -810,6 +919,32 @@ export class AgentManager {
       }
     }
     return this.continueSettledAgent(record, message);
+  }
+
+  /**
+   * Forge fork: the brief grows with the task, on EVERY branch of `steer()`.
+   *
+   * `continueSettledAgent` has done this since the fork landed, and its comment
+   * says why: an answer to the steer judged against the original prompt comes
+   * back NOT_ADDRESSED, and the repair then tells the child "This is the task, in
+   * full, as it was given to you: <the original>. Answer it now" — the operator's
+   * instruction undone by the layer that exists to catch drift, and labelled
+   * `✎ repaired`, which reads as an improvement.
+   *
+   * The branch above never called it, so all of that was true for a RUNNING
+   * agent — which is not the obscure case. `conversation-viewer.ts` picks its
+   * verb with `this.isActive() ? "steer" : "continue"`, so "steer" IS the running
+   * one, and the /agents running-agents menu offers the same action.
+   *
+   * Three readers take this field and all three were given the wrong text: the
+   * judge (what the answer is checked against), `buildRepairPrompt` (what the
+   * child is told to answer instead), and `buildAnchorMessage` (what is restated
+   * into a context that was just compacted — the one place a drifting child's
+   * task has most likely gone missing). See W3 in
+   * `context/design/subagents-loop-verifier-readers.md`.
+   */
+  private growBrief(record: AgentRecord, message: string): void {
+    record.execution.brief = appendFollowUp(record.execution.brief, message);
   }
 
   /**
@@ -835,8 +970,8 @@ export class AgentManager {
       const slot = this.getSlot(modelKey);
       if (slot.running >= slot.limit) return false;
       concurrencySlot = slot;
-      concurrencySlot.running++;
     }
+    if (concurrencySlot) this.slots.reserve(record);
 
     // Forge fork: the brief the verifier and the anchor check against has to
     // grow with the task, or the continuation is checked against a question it
@@ -854,7 +989,10 @@ export class AgentManager {
     // original task ("now also list the callers"), so replacing would lose the
     // half the answer still has to satisfy. The anchor reads the same field, and
     // wants the same thing after a compaction.
-    record.execution.brief = appendFollowUp(record.execution.brief, message);
+    //
+    // `steer()`'s running branches do the same thing through `growBrief` — this
+    // used to be the only path that did, which was W3.
+    this.growBrief(record, message);
 
     // Forge fork: a verdict describes one answer. The new answer has not been
     // checked yet, and may never be — verification is skipped when the pi
@@ -900,7 +1038,6 @@ export class AgentManager {
     this.attachSettlementChain(
       record,
       promise,
-      concurrencySlot,
       verifyPi && verifyCtx ? this.buildVerifyDeps(verifyPi, verifyCtx, record) : undefined,
     );
     // The run proceeds asynchronously; the caller only learns the wiring
@@ -921,10 +1058,28 @@ export class AgentManager {
    * Remove a terminal record: dispose its session and detach any parent
    * interrupt binding (ADR-0006). Running/queued records are rejected — Stop is
    * the action there. Clear is the only per-record removal besides dispose().
+   *
+   * Forge fork: a record whose VERIFIER is still running is rejected too, and
+   * `isTerminalStatus` cannot see that. The child's status goes terminal in the
+   * settlement chain's `.then`, *before* `runVerification` is awaited, so
+   * throughout a judge and up to three repairs the record reads `completed` and
+   * `isTerminalStatus` says yes. Clearing it there does three things at once:
+   * `removeRecord` disposes `execution.session`, which is the session the repair
+   * is running IN; it opens the completion gate with `""`, so a foreground
+   * `Agent` call blocked on it resumes with an empty answer while the real one is
+   * still being checked; and it deletes the record the verifier is about to write
+   * its verdict to.
+   *
+   * The widget already draws this distinction — `categorizeAgents` puts a record
+   * with a `verifyPhase` in the RUNNING column, with a comment saying it "is
+   * active work the user is waiting on" — and this is the second reader of that
+   * same fact. See Y1 in
+   * `context/design/subagents-loop-verifier-turns.md`.
    */
   clear(id: string): boolean {
     const record = this.agents.get(id);
     if (!record || !isTerminalStatus(record.lifecycle.status)) return false;
+    if (isVerifyingRecord(record)) return false;
     this.removeRecord(id, record);
     return true;
   }
@@ -938,6 +1093,28 @@ export class AgentManager {
 
   /** Abort the session or remove the agent from the queue. Returns false if not running/queued. */
   private stopAgent(record: AgentRecord, stoppedBy?: StopInitiator, stopDetail?: WatchdogStopDetail): boolean {
+    // T5, closed: a record whose VERIFIER is still running is stoppable.
+    //
+    // The status is already terminal by then — `attachSettlementChain` sets it
+    // from `classifyRun` and only afterwards awaits `runVerification` — so the
+    // `status === "running"` test below returned false for the operator's Esc,
+    // for `StopAgent`, and for anything else that asked, while a judge or a
+    // repair held the one llama slot and the parent's `Agent` call sat on the
+    // completion gate. A 300 s per-call deadline was the only exit.
+    //
+    // Aborting `verifyAbort` routes through `verifyAnswer`'s catch, which is
+    // already this layer's "the check did not happen" path: the child's answer
+    // is preserved and annotated, the phase clears, the gate opens, and Y1's
+    // refusal to Clear a verifying record stops being a dead end. The run's own
+    // status is NOT overwritten — the child really did complete, and saying
+    // "stopped" would be a claim about the wrong run.
+    if (isVerifyingRecord(record) && record.execution.verifyAbort) {
+      record.execution.verifyAbort.abort();
+      record.lifecycle.stoppedBy = stoppedBy;
+      record.lifecycle.stopDetail = stopDetail;
+      return true;
+    }
+
     const wasQueued = record.lifecycle.status === "queued";
     if (wasQueued) {
       this.queue = this.queue.filter((q) => q.id !== record.id);

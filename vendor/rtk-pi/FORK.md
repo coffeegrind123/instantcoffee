@@ -135,6 +135,56 @@ runs of spaces and tabs **for the decision only**; the original string is what
 gets sent to rtk, so nothing about what actually runs changes. Tested both ways,
 including that collapsing does not resurrect `uv   run pytest` or a piped form.
 
+### 5. The version probe can tell a hang from an answer (AB3, eleventh pass)
+
+The load-time probe answers one question — is there a usable rtk on PATH? — and
+asked it with `ver.code !== 0`. pi's `execCommand` resolves a child it killed on
+the timeout with `code: code ?? 0`, because a signalled child exits with no code.
+So a **wedged** rtk arrives looking exactly like a healthy one that printed
+nothing:
+
+```
+  state                    code  killed  stdout          BEFORE       NOW
+  ----------------------------------------------------------------------------
+  rtk is healthy           0     false   "rtk 0.45.0"    FILTERING    FILTERING
+  rtk is not installed     127   false   ""              not on PATH  not on PATH
+  rtk is WEDGED (hangs)    0     true    ""              FILTERING    wedged
+  rtk is old               0     false   "rtk 0.19.3"    too old      too old
+```
+
+Both states the probe was *written* for are answered correctly in both columns.
+Only the state nobody thought about read as healthy — and the consequences
+compound: the "not on PATH" warning does not fire, `parseSemver("")` returns null
+so the `>= 0.23.0` guard is skipped entirely, the handler registers, and every
+allow-listed command then spends the full 2,000 ms waiting for the same wedged
+binary before `rewriteCommand`'s own `killed` check fails it open. Silently.
+
+Forty lines below the probe, `rewriteCommand` tests `result.killed` first and is
+right. That is what makes this a finding rather than an oversight in general: the
+file knows the rule and applied it at one of its two `pi.exec` call sites.
+
+`if (ver.killed) { warn; return }` now runs before the `code` test.
+`tests/version-probe.test.ts` pins the ORDER at both call sites, and its first
+case drives pi's real `execCommand` to establish the premise. Full account in
+`context/design/subagents-loop-verifier-signals.md` (AB3) and
+`context/testing/probes/o3-…`.
+
+**Two things this sweep confirmed rather than changed**, both worth having
+written down:
+
+- **Mutating `event.input.command` in place is the sanctioned mechanism**, not a
+  trick. pi's own `ToolCallEventResult` says *"Block tool execution. To modify
+  arguments, mutate `event.input` in place instead."*, and the reference chain
+  holds: `beforeToolCall({args: validatedArgs})` → `emitToolCall` passes the event
+  with no clone → `prepareToolCall` returns `{kind:"prepared", args:
+  validatedArgs}`, the same object. Arguments are validated *before* the hook, so
+  a rewrite is never re-validated.
+- **`emitToolCall` has no try/catch around handlers** (unlike `emitUserBash`), and
+  agent-session rethrows as "Extension failed, blocking execution", which
+  `prepareToolCall` turns into an error result. So a throwing `tool_call` handler
+  BLOCKS the tool. This file's blanket `try`/`catch` and its "fail open, always" is
+  not defensiveness — it is the only correct shape for this hook.
+
 ## What `--check` pins, and why each one is there
 
 `./scripts/rtk.sh --check` is the half of the contract this repo cannot express
@@ -185,7 +235,14 @@ src/gate.ts             the allow-list, the refusals, extractRewrite. No pi
 extensions/index.ts     the pi coupling: version probe, tool_call handler.
 tests/gate.test.ts      the decisions, in isolation
 tests/binary.test.ts    the decisions and the real binary, composed
+tests/version-probe.test.ts
+                        the load-time probe against pi's REAL execCommand, and
+                        the `killed`-before-`code` order at both call sites (AB3)
 ```
+
+Twenty tests. `binary.test.ts` skips itself when rtk is not installed, so a clone
+without the binary still runs a green suite — the stack is designed to work
+without it.
 
 ## Upstream
 
@@ -206,3 +263,30 @@ turned out not to exist:
 does, are the two findings here with no upstream issue behind them. Both are
 coverage-table drift rather than misbehaviour, and `--check` catches them
 locally, which is the thing that actually matters for this repo.
+
+## Seventeenth pass — no findings, and this package is the control
+
+**No AH finding is here**, and 20 tests are unchanged. It is worth one paragraph
+because AH3 is a rule this package gets right in both of its `pi.exec` call
+sites, and it is the only one that does.
+
+The rule is `killed` before `code`: pi's `execCommand` never rejects and resolves
+a child it killed on its own timeout with `code: code ?? 0` — a signalled child
+exits with a signal and no code — so a wedged command arrives looking exactly
+like a healthy one that printed nothing. `rewriteCommand` reads
+`if (result.killed) return null` before it looks at the code, and the factory's
+version probe does the same, under the comment that names the shape:
+
+> Same shape as AA2, one call site over; see AB3 …
+
+**That sentence is what AH3 is the enumeration of.** Two packages had written the
+rule down; a third had it in a module header (`git-failure.ts`, "this is AA2 one
+package over"); and three call sites in that third package, plus two in
+`.pi/extensions/stack.ts`, still tested `code` first. The rule was never far
+away — see §10.5 of `context/design/subagents-loop-verifier-instances.md`, whose
+R3 row has all ten instances laid out by distance.
+
+The scan that now keeps it true lives in the package that needed it
+(`vendor/pi-subagents-lite/tests/exec-verdicts.test.ts`). This package does not
+have one, and does not need one: it has two call sites, both in one file, both
+correct, and both with the reasoning in a comment beside them.

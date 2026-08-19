@@ -61,7 +61,10 @@ function deps(judgeReply: string | string[], repairReply: string | string[] = "r
       },
       repair: async () => {
         calls.phaseDuringRepair = phase;
-        return next(repairReply, calls.repair++);
+        // A repair reports how its RUN ended as well as what it said — see V5 and
+        // `RepairResult`. "completed" is the ordinary case; the cut-off cases have
+        // their own describe below.
+        return { text: next(repairReply, calls.repair++), status: "completed" as const };
       },
       notify: (m: string) => calls.notices.push(m),
       onPhase: (p: string | undefined) => {
@@ -96,6 +99,19 @@ describe("verifyAnswer — the free checks come first", () => {
       assert.equal(out.answer, "partial", `${status} keeps its partial output untouched`);
       assert.equal(d.calls.judge, 0, `${status} already explains itself`);
     }
+  });
+
+  it("spends nothing on a run that died on the provider, and does not call it a cutoff", async () => {
+    // Same cost decision as the three above — for a foreground spawn
+    // `executeAgentTool` returns errorResult() without reading record.result, so
+    // a judge would be paid for text nobody sees — but a different fact, and the
+    // operator reads the difference in the widget and in /agents. This is T4 one
+    // layer up: the note there was split from `unparsed`'s for the same reason.
+    const d = deps("VERDICT: NOT_ADDRESSED");
+    const out = await verifyAnswer({ result: "half an answer", lifecycle: { status: "error" } } as any, BRIEF, d.deps);
+    assert.equal(out.status, "skipped-error");
+    assert.equal(out.answer, "half an answer", "the partial text survives untouched");
+    assert.equal(d.calls.judge, 0, "no model call may be spent on it");
   });
 
   it("spends nothing when there is no brief to check against, and says which skip it was", async () => {
@@ -232,7 +248,12 @@ describe("verifyAnswer — the round budget", () => {
   it("counts the attempts it actually spent, not the budget it was given", async () => {
     const d = deps([NO, NO, YES], ["retry one", "retry two"]);
     const out = await verifyAnswer({ result: "an answer", ...clean }, BRIEF, d.deps, { rounds: 3 });
-    assert.match(out.answer, /2th attempt/);
+    // "second", not "2th". The note used to interpolate `${attempts}th`, which is
+    // correct from four upwards and MAX_VERIFY_ROUNDS is three — so every value
+    // this branch could be handed read wrong, in text the parent model quotes.
+    // See W5 in context/design/subagents-loop-verifier-readers.md.
+    assert.match(out.answer, /second attempt/);
+    assert.doesNotMatch(out.answer, /\dth attempt/);
   });
 
   it("defaults to one round when no budget is passed", async () => {
@@ -364,7 +385,7 @@ describe("verifyAnswer — the phase hook", () => {
       judge: async () => {
         throw new Error("no slot");
       },
-      repair: async () => "unused",
+      repair: async () => ({ text: "unused", status: "completed" as const }),
       onPhase: (p) => phases.push(p),
     });
     assert.equal(out.status, "errored");
@@ -386,7 +407,7 @@ describe("verifyAnswer — the phase hook", () => {
   it("does not let a throwing phase hook change the verdict", async () => {
     const out = await verifyAnswer({ result: "an answer", ...clean }, BRIEF, {
       judge: async () => "VERDICT: ADDRESSED",
-      repair: async () => "unused",
+      repair: async () => ({ text: "unused", status: "completed" as const }),
       onPhase: () => {
         throw new Error("the widget is gone");
       },
@@ -404,7 +425,7 @@ describe("verifyAnswer — it never takes the answer down with it", () => {
       judge: async () => {
         throw new Error("no slot");
       },
-      repair: async () => "unused",
+      repair: async () => ({ text: "unused", status: "completed" as const }),
     });
     assert.equal(out.status, "errored");
     assert.match(out.answer, /^an answer/);
@@ -425,8 +446,220 @@ describe("verifyAnswer — it never takes the answer down with it", () => {
   it("survives a record with no result field at all", async () => {
     const out = await verifyAnswer({ lifecycle: { status: "completed" } } as any, BRIEF, {
       judge: async () => "VERDICT: ADDRESSED",
-      repair: async () => "",
+      repair: async () => ({ text: "", status: "completed" as const }),
     });
     assert.equal(out.status, "skipped-empty");
+  });
+});
+
+/**
+ * "Never throws" has to hold for the whole function, not for the part that
+ * happens to be inside a try.
+ *
+ * The structural gate, the brief check and clampRounds used to run ABOVE the
+ * try. `verifyAnswer` is called from inside `attachSettlementChain`'s `.then`
+ * (agent-manager.ts), so a throw from that prologue landed in the chain's
+ * `.catch`, which sets `record.result = undefined` and the status to `error`.
+ * A finished subagent's answer would have been discarded and its run reported
+ * to the parent as a failure — because the CHECK broke. That is the exact
+ * inversion this layer exists to prevent, and it is worth pinning even though
+ * nothing in the prologue throws today: the guarantee should not depend on
+ * that staying true as the gate grows.
+ */
+describe("verifyAnswer — the prologue is inside the guarantee too", () => {
+  /** Stands in for any future throw in the structural gate. */
+  const hostileLifecycle = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === "status") throw new Error("the gate threw");
+        return undefined;
+      },
+    },
+  ) as never;
+
+  it("contains a throw from the structural gate and keeps the answer", async () => {
+    const out = await verifyAnswer({ result: "the child's answer", lifecycle: hostileLifecycle }, BRIEF, {
+      judge: async () => "VERDICT: ADDRESSED",
+      repair: async () => ({ text: "unused", status: "completed" as const }),
+    });
+
+    assert.equal(out.status, "errored", "a broken check is a failed check, never a failed run");
+    assert.match(out.answer, /^the child's answer/, "the answer the child produced must survive it");
+  });
+
+  it("leaves no phase behind when the prologue throws", async () => {
+    const phases: (string | undefined)[] = [];
+    await verifyAnswer({ result: "an answer", lifecycle: hostileLifecycle }, BRIEF, {
+      judge: async () => "VERDICT: ADDRESSED",
+      repair: async () => ({ text: "unused", status: "completed" as const }),
+      onPhase: (p) => phases.push(p),
+    });
+
+    // Nothing at all, not even a clear: the throw happened before any model call
+    // announced a phase, so there is no row spinning and nothing to un-spin.
+    assert.deepEqual(phases, []);
+  });
+
+  it("does not let a throwing notifier lose the answer either", async () => {
+    const out = await verifyAnswer({ result: "an answer", ...clean }, BRIEF, {
+      judge: async () => {
+        throw new Error("no slot");
+      },
+      repair: async () => ({ text: "unused", status: "completed" as const }),
+      notify: () => {
+        throw new Error("the UI is gone");
+      },
+    });
+
+    assert.equal(out.status, "errored");
+    assert.match(out.answer, /^an answer/);
+  });
+
+  it("tolerates a brief that is not a string", async () => {
+    const out = await verifyAnswer({ result: "an answer", ...clean }, undefined as never, {
+      judge: async () => {
+        throw new Error("must not be reached");
+      },
+      repair: async () => ({ text: "unused", status: "completed" as const }),
+    });
+
+    assert.equal(out.status, "skipped-nobrief", "no task to check against is a skip, not a crash");
+  });
+});
+
+/**
+ * `errored` and `unparsed` are different facts, and the note is text the PARENT
+ * MODEL reads. `errored` used to borrow `unparsed`'s wording, so a check that
+ * timed out against the 300s deadline told the parent the judge's reply "could
+ * not be read" — describing a judgement that was never made.
+ */
+describe("the errored note says the check did not complete", () => {
+  it("does not claim an unreadable reply for a check that never answered", async () => {
+    const out = await verifyAnswer({ result: "an answer", ...clean }, BRIEF, {
+      judge: async () => {
+        throw new Error("the verifier did not answer within 300s");
+      },
+      repair: async () => ({ text: "unused", status: "completed" as const }),
+    });
+
+    assert.equal(out.status, "errored");
+    assert.match(out.answer, /did not complete/);
+    assert.doesNotMatch(out.answer, /could not be read/);
+    assert.match(out.answer, /unchecked/, "the parent still has to be told it is unchecked");
+  });
+
+  it("still says 'could not be read' when that is what happened", async () => {
+    const out = await verifyAnswer({ result: "an answer", ...clean }, BRIEF, {
+      judge: async () => "I think it's fine, honestly",
+      repair: async () => ({ text: "unused", status: "completed" as const }),
+    });
+
+    assert.equal(out.status, "unparsed");
+    assert.match(out.answer, /could not be read/);
+  });
+});
+
+describe("verifyAnswer — a repair is a RUN, and the gate has to see how it ended (V5)", () => {
+  const OFF_TASK = "VERDICT: NOT_ADDRESSED\nWHY: it described the function instead.";
+  // Reads as an answer to a judge that only sees text. That is the point: the
+  // fragment is plausible, which is why the text alone could not decide it.
+  const TRUNCATED = "src/parser.ts:14 — tokenize(input)\nsrc/repl.ts:88 — tokenize(line)\nsrc/lint";
+
+  /** A judge that accepts anything mentioning a call site. */
+  const acceptsCallSites = async (prompt: string) =>
+    (prompt.split("ANSWER:")[1] ?? "").includes("src/parser.ts") ? "VERDICT: ADDRESSED\nWHY: lists them." : OFF_TASK;
+
+  it("refuses a repair that was hard-aborted, and keeps the child's original", async () => {
+    // `maxTurns: 1, graceTurns: N` means a repair that used tools before
+    // answering is severed at turn 1 + N with whatever had streamed. Before V5
+    // only `responseText` crossed back, so this fragment was judged as an answer
+    // and — the judge accepting it — went to the parent as "the corrected one,
+    // and it was re-checked".
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: acceptsCallSites,
+      repair: async () => ({ text: TRUNCATED, status: "aborted" as const }),
+    });
+
+    assert.equal(out.status, "failed", "a severed run is not a corrected answer");
+    assert.ok(out.answer.startsWith("the original answer"), "the child's own answer is what goes back");
+    assert.doesNotMatch(out.answer, /corrected one/);
+  });
+
+  it("refuses a repair that ran out of turns", async () => {
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: acceptsCallSites,
+      repair: async () => ({ text: TRUNCATED, status: "turn_limited" as const }),
+    });
+    assert.equal(out.status, "failed");
+    assert.ok(out.answer.startsWith("the original answer"));
+  });
+
+  it("refuses a repair that died on the provider", async () => {
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: acceptsCallSites,
+      repair: async () => ({ text: TRUNCATED, status: "error" as const }),
+    });
+    assert.equal(out.status, "failed");
+    assert.ok(out.answer.startsWith("the original answer"));
+  });
+
+  it("does not spend a second judge call on a repair it has refused", async () => {
+    let judged = 0;
+    await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: async (prompt) => {
+        judged++;
+        return acceptsCallSites(prompt);
+      },
+      repair: async () => ({ text: TRUNCATED, status: "aborted" as const }),
+    });
+    // One judge call, on the original. The re-judge is the expensive half of a
+    // round and there is nothing worth re-judging.
+    assert.equal(judged, 1);
+  });
+
+  it("accepts a repair that COMPLETED — the control", async () => {
+    // Byte-identical text, one field different. This case passes with or without
+    // the gate, which is what makes it the control: the fix must not make the
+    // verifier refuse repairs that were fine.
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: acceptsCallSites,
+      repair: async () => ({ text: TRUNCATED, status: "completed" as const }),
+    });
+
+    assert.equal(out.status, "repaired");
+    assert.ok(out.answer.startsWith(TRUNCATED));
+    assert.match(out.answer, /corrected one/);
+  });
+
+  it("treats a repair that reports no status at all as completed", async () => {
+    // Permissive on purpose: a caller that has not been updated must not turn a
+    // good repair into a failure. The manager always reports one.
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: acceptsCallSites,
+      repair: async () => ({ text: TRUNCATED }) as never,
+    });
+    assert.equal(out.status, "repaired");
+  });
+
+  it("still stops on an empty repair, by the same gate", async () => {
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: async () => OFF_TASK,
+      repair: async () => ({ text: "   ", status: "completed" as const }),
+    });
+    assert.equal(out.status, "failed");
+    assert.ok(out.answer.startsWith("the original answer"));
+  });
+
+  it("still stops on a stalled repair, which the gate must not swallow", async () => {
+    // The stall check runs AFTER the gate, and its note is a different sentence —
+    // "the agent repeated itself when asked again" rather than "the corrections
+    // were no better". Ordering the two wrongly would lose that distinction.
+    const out = await verifyAnswer({ result: "the original answer", ...clean }, BRIEF, {
+      judge: async () => OFF_TASK,
+      repair: async () => ({ text: "the original answer", status: "completed" as const }),
+    });
+    assert.equal(out.status, "failed");
+    assert.match(out.answer, /repeated itself when asked again/);
   });
 });

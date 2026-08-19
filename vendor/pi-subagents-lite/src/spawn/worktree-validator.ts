@@ -15,14 +15,13 @@
 import * as path from "node:path";
 import { existsSync, statSync, realpathSync } from "node:fs";
 import { GIT_EXEC_TIMEOUT_MS } from "../utils.js";
-/** Specific error messages returned to the LLM for self-correction. */
-export const WORKTREE_VALIDATION_ERRORS = {
-  PATH_DOES_NOT_EXIST: "worktree_path does not exist: the specified path was not found on disk",
-  NOT_A_DIRECTORY: "worktree_path is not a directory: the specified path exists but is not a directory",
-  NOT_IN_GIT_REPO: "worktree_path is not inside a git repository",
-  GIT_NOT_FOUND: "worktree_path validation failed: git executable not found on this host",
-  GIT_TIMEOUT: "worktree_path validation failed: git command timed out",
-} as const;
+
+// The error strings and the failure classifier live in `git-failure.ts`, which
+// imports nothing and can therefore be tested — this file cannot be loaded by the
+// suite because it uses a `.js` specifier for `../utils.ts`. Re-exported so every
+// existing importer keeps the name it had.
+import { classifyGitFailure, WORKTREE_VALIDATION_ERRORS } from "./git-failure.js";
+export { classifyGitFailure, WORKTREE_VALIDATION_ERRORS } from "./git-failure.js";
 
 export interface WorktreeValidationSuccess {
   ok: true;
@@ -57,7 +56,7 @@ interface PiExec {
     cmd: string,
     args: string[],
     opts?: { cwd?: string; timeout?: number },
-  ): Promise<{ code: number; stdout: string; stderr: string }>;
+  ): Promise<{ code: number; stdout: string; stderr: string; killed?: boolean }>;
 }
 
 /**
@@ -72,20 +71,24 @@ async function getGitCommonDir(
 ): Promise<{ ok: true; commonDir: string } | { ok: false; error: string }> {
   try {
     const result = await pi.exec("git", ["rev-parse", "--git-common-dir"], { cwd, timeout: GIT_EXEC_TIMEOUT_MS });
-    if (result.code !== 0) return { ok: false, error: WORKTREE_VALIDATION_ERRORS.NOT_IN_GIT_REPO };
+    const failure = classifyGitFailure(result);
+    if (failure) {
+      if (failure !== WORKTREE_VALIDATION_ERRORS.NOT_IN_GIT_REPO) {
+        onWarning?.(`git rev-parse --git-common-dir in ${cwd}: ${failure}`);
+      }
+      return { ok: false, error: failure };
+    }
     const commonDir = result.stdout.trim();
     if (!commonDir) return { ok: false, error: WORKTREE_VALIDATION_ERRORS.NOT_IN_GIT_REPO };
     return { ok: true, commonDir };
   } catch (err: unknown) {
+    // pi.exec itself throwing means the extension runtime went stale
+    // (`runtime.assertActive()` is the first line of `loader.js:287`); the
+    // command never ran at all. See classifyGitFailure for why this is the ONLY
+    // thing that reaches here.
     const msg = String(err instanceof Error ? err.message : err);
-    if (msg.includes("ENOENT") || msg.includes("not found")) {
-      return { ok: false, error: WORKTREE_VALIDATION_ERRORS.GIT_NOT_FOUND };
-    }
-    if (msg.includes("timed out") || msg.includes("timeout")) {
-      return { ok: false, error: WORKTREE_VALIDATION_ERRORS.GIT_TIMEOUT };
-    }
-    onWarning?.(`git rev-parse --git-common-dir failed in ${cwd}: ${msg}`);
-    return { ok: false, error: `worktree_path validation failed: git rev-parse failed: ${msg}` };
+    onWarning?.(`git rev-parse --git-common-dir could not be started in ${cwd}: ${msg}`);
+    return { ok: false, error: `worktree_path validation failed: git could not be run: ${msg}` };
   }
 }
 
@@ -158,7 +161,11 @@ export async function validateWorktreePath(
       cwd: realPath,
       timeout: GIT_EXEC_TIMEOUT_MS,
     });
-    if (result.code !== 0) {
+    // `code !== 0` is not the test: a killed git reports code 0 with no output
+    // (a signalled child exits with no code and execCommand does `code ?? 0`),
+    // so a timed-out probe would read as a success returning "". Fall back to
+    // the real path on any failure; the root is a display detail, not a gate.
+    if (classifyGitFailure(result)) {
       worktreeRoot = realPath;
     } else {
       const raw = result.stdout.trim();

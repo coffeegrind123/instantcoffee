@@ -255,11 +255,19 @@ describe("a subagent session cannot clobber the operator's loop", () => {
 
     // Control: the operator's own turn still gets the loop instructions, so this
     // is testing the guard and not a broken before_agent_start.
+    //
+    // AA1: they arrive as a per-turn `message`, not as a `systemPrompt`. The
+    // system-prompt form never reached a loop-driven turn at all (pi emits this
+    // event only from `AgentSession.prompt()`) and what it returned outlived the
+    // run on `agent.state.systemPrompt`. See the handler.
     const own = (await operator.fire("before_agent_start", { systemPrompt: "<<OPERATOR>>" })) as Array<{
       systemPrompt?: string;
+      message?: { customType?: string; content?: string };
     }>;
-    assert.match(String(own[0]?.systemPrompt), /Loop mode is active/);
-    assert.match(String(own[0]?.systemPrompt), /hold the line/);
+    assert.equal(own[0]?.systemPrompt, undefined, "the loop must not write the session's system prompt");
+    assert.equal(own[0]?.message?.customType, "loop-rules");
+    assert.match(String(own[0]?.message?.content), /Loop mode is active/);
+    assert.match(String(own[0]?.message?.content), /hold the line/);
 
     await operator.run("end");
   });

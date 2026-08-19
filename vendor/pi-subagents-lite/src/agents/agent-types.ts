@@ -7,6 +7,7 @@
  */
 
 import { scanAgentFilesInDir, mergeAgents } from "./agent-discovery.js";
+import { declaredRegisteredTools } from "./declared-resources.ts";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import type { AgentConfig } from "./types.js";
 
@@ -118,7 +119,11 @@ export async function discoverNewAgents(
  *
  * Registered names are the only resolution surface: displayName is display-only
  * (no synonym matching, per the case-folding-only constraint). Hidden agents
- * participate like any registered type (they can still be called by name).
+ * participate like any registered type here, because the internal callers that
+ * need them — the verifier's judge via `getAgentConfig("__verifier")`, the
+ * /agents wizard — go through this function. The MODEL-facing surface is
+ * separately closed: `executeAgentTool` refuses a resolved type whose config is
+ * `hidden`, so "not offered" and "not callable by the model" are the same thing.
  */
 export type TypeResolution =
   { kind: "resolved"; key: string } | { kind: "ambiguous"; candidates: string[] } | { kind: "not-found" };
@@ -206,7 +211,8 @@ function resolveToolEntries(
 export function resolveVisibleTools(opts: {
   activeTools: string[];
   tools?: true | string[] | false;
-  excludeTools?: string[];
+  /** `true` means "exclude every tool" — the `all`/`true` spelling of `exclude_tools:`. */
+  excludeTools?: true | string[];
   extToolMap?: Map<string, string[]>;
   notify?: (msg: string) => void;
 }): string[] | null {
@@ -214,6 +220,10 @@ export function resolveVisibleTools(opts: {
 
   // Blacklist mode: excludeTools set and tools not set as whitelist
   if (excludeTools && !Array.isArray(tools)) {
+    // `exclude_tools: all` — the same thing `tools: false` says, spelled the
+    // other way round. Representable so the four words mean the same on every
+    // resource key; see parseExcludeList.
+    if (excludeTools === true) return [];
     const excludeSet = resolveToolEntries(excludeTools, extToolMap, notify);
     const filtered = activeTools.filter((t) => !EXCLUDED_TOOL_NAMES.includes(t) && !excludeSet.has(t));
     return filtered.length !== activeTools.length ? filtered : null;
@@ -307,12 +317,25 @@ export function resolveSessionAllowedTools(opts: {
 
 /**
  * Registered-tool list for a type: the config's registeredTools, or the
- * default active set when the config has none. Type resolution is
+ * default active set when the config declares none. Type resolution is
  * case-insensitive.
+ *
+ * Forge fork: the test was `config?.registeredTools?.length ? … : defaults`, and
+ * `[].length` is 0, so an agent that explicitly declared an EMPTY allowlist got
+ * `["read", "bash", "edit", "write"]` — the opposite of what the line says.
+ * `__verifier` declares `registeredTools: []` and was saved only by `tools:
+ * false`, which `resolveSessionAllowedTools` and `resolveVisibleTools` both
+ * honour first; the declaration everyone reads as load-bearing was inert, and
+ * loosening `tools` for any reason would have handed it four tools back with no
+ * warning.
+ *
+ * The rule itself lives in `declared-resources.ts` with the other two
+ * "which declaration governs a spawn" rules, because that module imports nothing
+ * and can therefore be tested — this one cannot, since it pulls in
+ * `agent-discovery.js` through a specifier plain node will not resolve.
  */
 export function getToolNamesForType(type: string): string[] {
-  const config = getAgentConfig(type);
-  return config?.registeredTools?.length ? config.registeredTools : [...DEFAULT_ACTIVE_TOOL_NAMES];
+  return declaredRegisteredTools(getAgentConfig(type)) ?? [...DEFAULT_ACTIVE_TOOL_NAMES];
 }
 
 export interface ResolvedAgentConfig {

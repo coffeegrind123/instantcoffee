@@ -45,27 +45,71 @@ import {
   structuralVerdict,
   verificationNote,
 } from "./verify.ts";
-import type { AgentRecord, AgentVerification, VerifyPhase } from "../types.js";
+import type { AgentRecord, AgentStatus, AgentVerification, VerifyPhase } from "../types.js";
 
 // `./verify.ts`, not `./verify.js`: upstream's internal specifiers are `.js`
 // (fine under pi's loader and a bundler), but `tests/` runs under plain node,
 // where `./verify.js` resolves to a file that does not exist. The extension
 // loads either way — the wire measurement in FORK.md was taken with this.
 
+/**
+ * What one repair run produced, and how it ended.
+ *
+ * The status is not decoration. A repair is a RUN — it goes into the child's own
+ * session with the child's own tools, at `maxTurns: 1` and the configured grace
+ * turns, so pi's loop keeps going while there are tool results and the hard abort
+ * lands several turns later with whatever had streamed. The structural gate below
+ * refuses to judge a child run that ended that way; until this field existed it
+ * could not refuse a REPAIR that ended that way, because the repair reported only
+ * its text.
+ *
+ * See V5 in `context/design/subagents-loop-verifier-shapes.md`.
+ */
+export interface RepairResult {
+  /** The new answer, as the run produced it. */
+  text: string;
+  /** How the run ended: the same classification the manager gives the child's own run. */
+  status: AgentStatus;
+}
+
 export interface VerifyDeps {
   /** Run the judge on its own, with no history. Returns its raw reply. */
   judge: (prompt: string) => Promise<string>;
-  /** Continue the child's own session with one repair prompt. Returns the new answer. */
-  repair: (prompt: string) => Promise<string>;
+  /** Continue the child's own session with one repair prompt. Returns the new answer and how the run ended. */
+  repair: (prompt: string) => Promise<RepairResult>;
   /** Operator-facing line; never shown to either model. */
   notify?: (message: string) => void;
   /**
    * Called with the phase about to run, and with undefined when the verifier is
    * done. Only the two paths that make a model call report a phase — the free
-   * structural checks return before any of them, so a skip never flashes a
-   * "verifying" row for the microsecond it takes to decide.
+   * structural checks announce nothing, so a skip never flashes a "verifying"
+   * row for the microsecond it takes to decide, and never reports a clear for a
+   * phase it never set.
    */
   onPhase?: (phase: VerifyPhase | undefined) => void;
+  /**
+   * One record per model call this function makes: what was asked, what came
+   * back, and what was made of it.
+   *
+   * Injected rather than imported for the reason everything else here is — this
+   * module must stay loadable without a filesystem — and OPTIONAL because the
+   * verdict does not depend on it. See `verify-log.ts` for why it exists at all:
+   * four findings in this series are statements about a judge's reply that
+   * nothing kept, and a reply without the parse beside it cannot show that the
+   * parser was wrong.
+   */
+  log?: (entry: VerifyLogRecord) => void;
+}
+
+/** What {@link VerifyDeps.log} is handed. Mirrors `verify-log.ts`'s entry. */
+export interface VerifyLogRecord {
+  phase: "judge" | "repair";
+  attempt: number;
+  prompt: string;
+  reply: string;
+  parsed?: { addressed: boolean; unparsed: boolean; why: string };
+  runStatus?: string;
+  ms?: number;
 }
 
 export interface VerifyOutcome {
@@ -170,6 +214,16 @@ export function resolveVerifyTimeoutMs(raw: string | undefined): number {
  * Never throws. A verifier that fails takes the answer with it otherwise, and
  * an unverified answer is worth more than no answer — the caller is told which
  * it got.
+ *
+ * "Never throws" is why the structural gate, the brief check and `clampRounds`
+ * are INSIDE the try rather than above it. They were above it, which made the
+ * promise true only for the code anyone was looking at: this runs inside
+ * `attachSettlementChain`'s `.then`, so a throw from the prologue reached that
+ * chain's `.catch`, which sets `record.result = undefined` and the status to
+ * `error`. A finished subagent's answer would have been discarded and its run
+ * reported to the parent as a failure because the CHECK broke — the exact
+ * inversion this layer exists to prevent. Nothing in the prologue throws today;
+ * the point is that the guarantee should not depend on that staying true.
  */
 export async function verifyAnswer(
   record: Pick<AgentRecord, "result" | "lifecycle">,
@@ -177,29 +231,38 @@ export async function verifyAnswer(
   deps: VerifyDeps,
   options: VerifyOptions = {},
 ): Promise<VerifyOutcome> {
-  const answer = record.result ?? "";
-
-  const structural = structuralVerdict(answer, record.lifecycle);
-  if (!structural.ok) {
-    // An empty answer is replaced by the note, not appended to: there is
-    // nothing to append to, and an empty string reads to the parent as a
-    // successful lookup that found nothing.
-    return { answer: structural.note ?? answer, status: "skipped-empty" };
-  }
-  if (!structural.worthJudging) {
-    return { answer, status: "skipped-cutoff" };
-  }
-  if (!brief.trim()) {
-    // No brief recorded means nothing to check against. Say nothing and pass it
-    // through rather than inventing a comparison. Reported separately from a
-    // cut-off run: that one explains itself in the status note, this one is a
-    // fault in the spawn path that would otherwise never surface.
-    return { answer, status: "skipped-nobrief" };
-  }
-
-  const rounds = clampRounds(options.rounds);
+  const answer = typeof record?.result === "string" ? record.result : "";
+  // Only a run that announced a phase has one to clear. Moving the structural
+  // gate inside the try (see the doc comment) put the skips through the same
+  // `finally`, and clearing unconditionally there would report a phase change on
+  // a path that never made a model call — the one thing the skips were written
+  // to avoid.
+  let phaseReported = false;
 
   try {
+    const structural = structuralVerdict(answer, record.lifecycle);
+    if (!structural.ok) {
+      // An empty answer is replaced by the note, not appended to: there is
+      // nothing to append to, and an empty string reads to the parent as a
+      // successful lookup that found nothing.
+      return { answer: structural.note ?? answer, status: "skipped-empty" };
+    }
+    if (!structural.worthJudging) {
+      // Two different facts, two different badges. A run that died on the
+      // provider is not a run that was cut off, and the operator reads the
+      // difference in the widget and in /agents.
+      return { answer, status: structural.skip === "error" ? "skipped-error" : "skipped-cutoff" };
+    }
+    if (typeof brief !== "string" || !brief.trim()) {
+      // No brief recorded means nothing to check against. Say nothing and pass it
+      // through rather than inventing a comparison. Reported separately from a
+      // cut-off run: that one explains itself in the status note, this one is a
+      // fault in the spawn path that would otherwise never surface.
+      return { answer, status: "skipped-nobrief" };
+    }
+
+    const rounds = clampRounds(options.rounds);
+
     // `candidate` is what is being judged this time round; `answer` stays the
     // child's original throughout, because that is what gets handed back if
     // every attempt fails.
@@ -207,12 +270,34 @@ export async function verifyAnswer(
     let attempts = 0;
 
     for (;;) {
+      phaseReported = true;
       phase(deps, "judging");
-      const verdict = parseJudgeVerdict(await deps.judge(buildJudgePrompt(brief, candidate)));
+      const judgePrompt = buildJudgePrompt(brief, candidate);
+      const judgeStartedAt = Date.now();
+      const reply = await deps.judge(judgePrompt);
+      const verdict = parseJudgeVerdict(reply);
+      // The reply and the parse together, because neither alone can show that
+      // the parse was wrong — which is what S2, U4, V5 and W5 each needed and
+      // none of them had. Guarded: a logger that throws must not cost a verdict.
+      try {
+        deps.log?.({
+          phase: "judge",
+          attempt: attempts,
+          prompt: judgePrompt,
+          reply,
+          parsed: { addressed: verdict.addressed, unparsed: verdict.unparsed, why: verdict.why },
+          ms: Date.now() - judgeStartedAt,
+        });
+      } catch {
+        // A verdict is worth more than a log line.
+      }
 
       if (verdict.unparsed) {
         deps.notify?.("Subagent answer went out unchecked — the verifier's reply could not be read.");
-        return { answer: candidate + verificationNote("unparsed"), status: "unparsed" };
+        // `attempts` matters here from the second round on: `candidate` is then a
+        // REPAIRED answer, and a note that mentions only the unreadable check
+        // drops the fact that the original did not address the task.
+        return { answer: candidate + verificationNote("unparsed", attempts), status: "unparsed" };
       }
       if (verdict.addressed) {
         // attempts === 0 is the common case: the child was right first time and
@@ -229,13 +314,48 @@ export async function verifyAnswer(
       deps.notify?.(
         `Subagent answer did not address the task (${verdict.why}) — asking again (attempt ${attempts} of ${rounds}).`,
       );
+      phaseReported = true;
       phase(deps, "repairing");
-      const repaired = (await deps.repair(buildRepairPrompt(brief, verdict.why))).trim();
+      const repairPrompt = buildRepairPrompt(brief, verdict.why);
+      const repairStartedAt = Date.now();
+      const outcome = await deps.repair(repairPrompt);
+      const repaired = typeof outcome?.text === "string" ? outcome.text.trim() : "";
+      try {
+        deps.log?.({
+          phase: "repair",
+          attempt: attempts,
+          prompt: repairPrompt,
+          reply: typeof outcome?.text === "string" ? outcome.text : "",
+          // How the run ENDED, which is what the structural gate below reads —
+          // V5 is the finding that a repair's status was dropped on the floor.
+          runStatus: outcome?.status,
+          ms: Date.now() - repairStartedAt,
+        });
+      } catch {
+        // Same as the judge's: a verdict is worth more than a log line.
+      }
 
-      // A repair that comes back empty is worse than the original: at least the
-      // original said something. Stop here rather than judging an empty string
-      // the structural gate would already have rejected.
-      if (repaired === "") {
+      // The repair is a run, so it goes through the same gate the child's run
+      // did. That covers both of the cheap rejections at once:
+      //
+      //   - an EMPTY repair is worse than the original, which at least said
+      //     something (`ok: false`, skipped-empty);
+      //   - a repair that was cut off — hard-aborted at maxTurns + graceTurns,
+      //     stopped, or dead on the provider — is a run whose text is not an
+      //     answer, whatever it happens to contain (`worthJudging: false`).
+      //
+      // The second case is why this exists. Before it, only the text crossed
+      // back, so a repair truncated mid-token was judged as though it had
+      // finished — and if the judge read the fragment as addressing the task, the
+      // parent was handed it under "this is the corrected one, and it was
+      // re-checked". The identical text, labelled as the run it actually was, is
+      // something this same function declines to judge four lines up.
+      //
+      // `?? "completed"` keeps a caller that reports no status working, and is
+      // deliberately the permissive default: a missing status must not turn a
+      // good repair into a failure.
+      const repairGate = structuralVerdict(repaired, { status: outcome?.status ?? "completed" });
+      if (!repairGate.ok || !repairGate.worthJudging) {
         return { answer: answer + verificationNote("failed", attempts), status: "failed" };
       }
 
@@ -249,13 +369,19 @@ export async function verifyAnswer(
       candidate = repaired;
     }
   } catch (error) {
-    deps.notify?.(`Subagent answer went out unchecked — the verifier failed: ${errorText(error)}`);
-    return { answer: answer + verificationNote("unparsed"), status: "errored" };
+    try {
+      deps.notify?.(`Subagent answer went out unchecked — the verifier failed: ${errorText(error)}`);
+    } catch {
+      // The operator's notice is the least important thing on this path; a
+      // throwing notifier must not be the reason the answer is lost.
+    }
+    return { answer: answer + verificationNote("errored"), status: "errored" };
   } finally {
-    // Every judged path leaves through here, including the two throwing ones.
-    // A phase left set would show a row spinning "checking the answer" forever
-    // on an agent that finished, which is a worse lie than showing nothing.
-    phase(deps, undefined);
+    // Every path leaves through here, including the structural skips and the two
+    // throwing ones. A phase left set would show a row spinning "checking the
+    // answer" forever on an agent that finished, which is a worse lie than
+    // showing nothing — but a skip never set one, and must not report a change.
+    if (phaseReported) phase(deps, undefined);
   }
 }
 

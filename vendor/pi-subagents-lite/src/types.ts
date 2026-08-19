@@ -15,7 +15,7 @@ export interface ToolActivity {
 
 /** Widget live-view state: per-agent transient display data, fed by tool/stream callbacks. */
 export interface LiveView {
-  activeTools: Map<string, string>; // keyed by toolName_timestamp
+  activeTools: Map<string, string>; // keyed by toolCallId (see createLiveViewCallbacks)
   responseText: string;
 }
 
@@ -45,6 +45,14 @@ export interface RunTunables {
 export type AgentVerification =
   | "skipped-empty"
   | "skipped-cutoff"
+  // A run that ended in a provider error. Grouped with the cutoffs by
+  // `structuralVerdict` — judging it would spend a model call on text that
+  // `executeAgentTool` discards anyway — but it is not the same fact, and it
+  // used to wear the cutoff's "⊘ unchecked (cut off)" label. "Cut off" describes
+  // a run that was stopped or ran out of turns. This is T4 one layer up: the
+  // note there was split from `unparsed`'s for exactly the same reason, that the
+  // two facts are different and a human reads the difference.
+  | "skipped-error"
   | "skipped-nobrief"
   | "passed"
   | "unparsed"
@@ -129,6 +137,23 @@ export type CompactionReason = "manual" | "threshold" | "overflow";
 export interface CompactionInfo {
   reason: CompactionReason;
   tokensBefore: number;
+  /**
+   * The run's agent loop had already emitted `agent_end` when this compaction
+   * happened.
+   *
+   * Forge fork: pi only ever auto-compacts from two places, and both are
+   * OUTSIDE the loop — `AgentSession._handlePostAgentRun()`
+   * (`agent-session.js:776`), which runs after `agent.prompt()` has resolved,
+   * and `AgentSession.prompt()` (`:865`), which runs before the next one
+   * starts. The difference decides whether a steer sent from here rides on a
+   * turn that was going to happen anyway or MANUFACTURES one — which is T1 and
+   * V6's argument about the turn-limit steer, for the other steer in this
+   * package. See Z2 in
+   * `context/design/subagents-loop-verifier-answers.md`.
+   */
+  afterRun: boolean;
+  /** pi is going to re-run the interrupted turn itself, so a steer still has a turn to ride on. */
+  willRetry: boolean;
 }
 
 // --- Sub-object interfaces for decomposed AgentRecord ---
@@ -197,6 +222,24 @@ export interface AgentExecutionState {
   brief?: string;
   abortController?: AbortController;
   /**
+   * Aborts the VERIFICATION, which is a different run from the one above.
+   *
+   * Forge fork (T5, closed): verification happens inside the settlement chain,
+   * after `lifecycle.status` has gone terminal, and every stop path keys off
+   * `status === "running"` — so while a judge or a repair was in flight the
+   * record was unstoppable. Esc reached `stopAgent()`, which returned false;
+   * `StopAgent` the same; and the parent's `Agent` call was blocked on the
+   * completion gate, which does not open until verification returns. A 300 s
+   * per-call deadline was the only thing that could end that wait.
+   *
+   * Set for the duration of `runVerification` and cleared in its `finally`, so
+   * `stopAgent` has something to abort exactly while `isVerifyingRecord` is
+   * true. Aborting it routes through `verifyAnswer`'s catch, which is already the
+   * "the verifier failed" path: the child's answer goes out annotated as
+   * unchecked rather than being lost.
+   */
+  verifyAbort?: AbortController;
+  /**
    * Completion gate, created at spawn, opened exactly once at the terminal
    * transition; never the run's own promise.
    */
@@ -211,6 +254,18 @@ export interface AgentExecutionState {
    * the spawn had no model key (re-reservation is skipped entirely).
    */
   modelKey?: string;
+  /**
+   * Forge fork: whether this record is currently occupying a concurrency slot.
+   *
+   * Set when a run reserves one and cleared when it releases one, which is a
+   * wider interval than `status === "running"`: the slot is held right through
+   * the verification window, where the status has already gone terminal. It is
+   * the only exact answer to "who is in flight", and `setConcurrency()` needs
+   * one — it rebuilds the slot map, and used to leave the running agents behind
+   * in the objects it dropped, so an in-flight subagent went invisible to the
+   * limit and a second one started against PARALLEL_SLOTS=1.
+   */
+  holdsSlot?: boolean;
   /**
    * Whether the run promise chain has fully settled (its .finally ran).
    * False at spawn and while a continuation is running; true after every

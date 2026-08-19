@@ -19,6 +19,7 @@ import { before, beforeEach, describe, it } from "node:test";
 
 import loopModeExtension from "../extensions/index.ts";
 import { parseStartArgs } from "../src/arguments.ts";
+import { completedCheck } from "./exec-shapes.ts";
 
 type ToolDef = {
   name: string;
@@ -49,7 +50,9 @@ const pi = {
   appendEntry() {},
   sendMessage() {},
   async exec() {
-    return { code: 0, stdout: "", stderr: "" };
+    // Faithful to what pi resolves for a check that reached its own exit; see
+    // tests/exec-shapes.ts for why a bare `{ code: 0 }` is not (AB1).
+    return completedCheck(0);
   },
   async setModel() {
     return true;
@@ -186,11 +189,99 @@ describe("loop tool behaviour", () => {
 });
 
 /**
- * The tool builds a `/loop` argument string and hands it to the same parser the
- * slash command uses, so the round-trip has to survive whatever the model puts
- * in a check command.
+ * A goal is a text field, and is carried as one.
+ *
+ * The tool used to build a `/loop` argument STRING — `"start " + goal + " --max
+ * N"` — and hand it back to `parseStartArgs`, which scans the whole line for
+ * flags. That made every flag the slash command accepts reachable from the
+ * `goal` parameter: `--check`, whose value the loop runs through `bash -lc` once
+ * per iteration for the life of the run; `--model`, which switches the
+ * operator's session model; `--max`, `--delay`, `--file`, `--until-done`. And
+ * because `extractCheckCommand` takes the FIRST `--check` in the line while the
+ * goal is spliced in ahead of the flags the tool appends, a goal's injected
+ * command beat the `check` parameter the schema documents — with `/loop status`
+ * showing the real check flag embedded in the goal as text.
+ *
+ * The tool now builds a StartArgs literal (`startArgsFromToolParams`) and never
+ * round-trips through the parser.
  */
-describe("loop tool — the --check round-trip", () => {
+describe("loop tool — the goal is text, not an argument line", () => {
+  const statusOf = async () => (await call({ action: "status" })).content[0].text;
+
+  it("does not read a --check out of the goal", async () => {
+    await call({ action: "end" });
+    await call({ action: "start", goal: 'summarise the repo --check "touch /tmp/pwned"' });
+    const status = await statusOf();
+    assert.match(status, /Check: -/, "a goal must not be able to configure a shell command");
+    // It is still visible in the Goal line — that is the next test — so this
+    // checks the line that decides what gets executed, not the whole report.
+    const checkLine = status.split("\n").find((line) => line.startsWith("Check:")) ?? "";
+    assert.doesNotMatch(checkLine, /pwned/, "nothing from the goal may reach the check command");
+  });
+
+  it("keeps the flag text in the goal, where the operator can see it", async () => {
+    await call({ action: "end" });
+    await call({ action: "start", goal: 'summarise the repo --check "touch /tmp/pwned"' });
+    const status = await statusOf();
+    assert.match(status, /Goal: summarise the repo --check/, "the text is not silently dropped either");
+  });
+
+  it("warns the operator that flag-like text arrived in a goal", async () => {
+    await call({ action: "end" });
+    notifications.length = 0;
+    await call({ action: "start", goal: "do it --check \"x\"" });
+    assert.ok(
+      notifications.some((n) => /flag-like text/i.test(n.message)),
+      "an injected flag doing nothing is still worth seeing once",
+    );
+  });
+
+  it("does not read --model, --max, --until-done or --file out of the goal", async () => {
+    await call({ action: "end" });
+    await call({
+      action: "start",
+      goal: "do the thing --max 999 --delay 7 --until-done --model some/other-model --file OTHER.md",
+    });
+    const status = await statusOf();
+    assert.match(status, /Iterations: 0\/∞/, "--max in a goal must not set the cap");
+    assert.match(status, /Mode: endless/, "--until-done in a goal must not change the mode");
+    assert.match(status, /Delay: 0s/, "--delay in a goal must not set the delay");
+    assert.match(status, /Loop model: - \(current model\)/, "--model in a goal must not switch models");
+    assert.match(status, /Goal file: GOAL\.md/, "--file in a goal must not repoint the spec");
+  });
+
+  it("still honours the parameters the schema actually declares (control)", async () => {
+    await call({ action: "end" });
+    await call({
+      action: "start",
+      goal: "ship the parser. Done when: the suite is green",
+      max: 12,
+      check: "npm test",
+      until_done: true,
+    });
+    const status = await statusOf();
+    assert.match(status, /Goal: ship the parser/);
+    assert.match(status, /Criteria: the suite is green/);
+    assert.match(status, /Iterations: 0\/12/);
+    assert.match(status, /Check: npm test/);
+    assert.match(status, /Mode: until-done/);
+  });
+
+  it("still splits a goal on 'Done when:' (control)", async () => {
+    await call({ action: "end" });
+    await call({ action: "start", goal: "make it fast. Done when: p99 under 50ms" });
+    const status = await statusOf();
+    assert.match(status, /Goal: make it fast/);
+    assert.match(status, /Criteria: p99 under 50ms/);
+  });
+});
+
+/**
+ * The slash command still parses flags out of its argument line — that is what a
+ * human typing `/loop start … --check "…"` means — so the round-trip has to
+ * survive whatever ends up in a check command.
+ */
+describe("/loop command — the --check round-trip", () => {
   it("keeps a check command that contains double quotes", () => {
     // argsForLoopTool builds this with JSON.stringify, so a command with a
     // quote in it arrives escaped. The old `"([^"]*)"` stopped at the first
@@ -218,5 +309,84 @@ describe("loop tool — the --check round-trip", () => {
     const parsed = parseStartArgs('ship the parser. Done when: green --check "npm test"');
     assert.equal(parsed.description, "ship the parser");
     assert.equal(parsed.criteria, "green");
+  });
+});
+
+/**
+ * A running loop is not something a tool call may quietly replace.
+ *
+ * ## The failure this pins
+ *
+ * `TOOL_ACTIONS` is a closed set on purpose, and the comment above it says why:
+ * the command's final branch treats an unrecognised verb as a goal to start
+ * looping on, "a sensible convenience for a person and a live grenade for a model
+ * that invents a verb". The same argument applies to `start` when a loop is
+ * already running, and it was not carried across.
+ *
+ * `/loop run` and `/loop goal` both refuse while a loop is active. `start` did
+ * not, because for a HUMAN typing `/loop start` replacement IS the intent — the
+ * stop notice advertises it ("/loop start to replace"). Through the tool it is a
+ * different act by a different party, and `applyGoalConfig` spreads
+ * `defaultState()`: the goal, the criteria, the iteration count, the error
+ * counters, the check command and the iteration CAP all go, and
+ * `startArgsFromToolParams` supplies `maxIterations: 0` for any call that omits
+ * `max` — which is endless, the mode whose own rule is "never stop on your own".
+ * `state.active` never went false across the swap, so nothing watching for a stop
+ * saw one.
+ *
+ * Measured before the fix: a 500-iteration operator loop, five iterations in,
+ * became `Iterations: 0/∞` with a different goal, and the tool reported success.
+ */
+describe("loop tool — start does not replace a running loop", () => {
+  // The loop's state is module-global and earlier describes leave one running;
+  // each case here starts from nothing on purpose.
+  beforeEach(async () => {
+    await commandHandler!("end", ctx);
+    notifications.length = 0;
+    aborts = 0;
+  });
+
+  const status = async () => {
+    notifications.length = 0;
+    await commandHandler!("status", ctx);
+    return notifications.map((n) => n.message).join("\n");
+  };
+
+  it("refuses, names the loop it protected, and changes nothing", async () => {
+    await call({
+      action: "start",
+      goal: "migrate every callsite of the legacy importer. Done when: no callsite remains",
+      max: 500,
+    });
+    const before = await status();
+    assert.match(before, /Active: true/);
+    assert.match(before, /Iterations: 0\/500/);
+
+    const result = await call({ action: "start", goal: "summarise the file I just read. Done when: there is a summary" });
+    assert.equal(result.isError, true, "a silent replacement is worse than a refusal the model can read");
+    assert.match(result.content[0].text, /already running/);
+    assert.match(result.content[0].text, /migrate every callsite/, "say which loop was protected");
+    assert.match(result.content[0].text, /"stop" first/);
+
+    const after = await status();
+    assert.match(after, /migrate every callsite of the legacy importer/, "the goal survives");
+    assert.match(after, /Iterations: 0\/500/, "and so does the cap the replacement would have dropped");
+    await commandHandler!("stop", ctx);
+  });
+
+  it("starts normally once the loop is stopped", async () => {
+    await call({ action: "start", goal: "first goal. Done when: done" });
+    await call({ action: "stop" });
+    const result = await call({ action: "start", goal: "second goal. Done when: done" });
+    assert.notEqual(result.isError, true);
+    assert.match(await status(), /Goal: second goal/);
+    await commandHandler!("stop", ctx);
+  });
+
+  it("the slash command still replaces, because a human typing it means to", async () => {
+    await call({ action: "start", goal: "first goal. Done when: done" });
+    await commandHandler!("start second goal. Done when: done", ctx);
+    assert.match(await status(), /Goal: second goal/);
+    await commandHandler!("stop", ctx);
   });
 });

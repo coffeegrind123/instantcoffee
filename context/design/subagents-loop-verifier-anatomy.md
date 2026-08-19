@@ -17,10 +17,17 @@ six fixed here, two left alone deliberately with the reasoning attached.
 > the reproductions, and this document was not rewritten around them because the
 > design account here is still accurate and the disagreement is worth seeing.
 
+> **Corrected again 2026-08-17 by a third pass.** Two more claims below were
+> wrong: the verifier's cost in §6 (it was double what it says) and the
+> "cosmetic" turn-limit note in §10. Both are the same defect — see T1 in
+> `context/design/subagents-loop-verifier-mechanics.md`, which also carries the
+> full mechanical account this document only sketches.
+
 Companion documents, not repeated here:
 
 | For | Read |
 | --- | --- |
+| The full mechanics, the third pass, and findings T1–T9 | `context/design/subagents-loop-verifier-mechanics.md` |
 | The second audit, its eleven findings, and the corrections to this document | `context/design/subagents-loop-verifier-evaluation.md` |
 | Why this package out of 341, and the wire measurements | `vendor/pi-subagents-lite/FORK.md` |
 | Why the loop was forked, and the three failures it fixes | `vendor/pi-loop-mode/FORK.md` |
@@ -383,6 +390,15 @@ text.
 **Cost:** `1 + 2 × attempts` model calls, all on the slot the parent is blocked
 on. Default `SUBAGENT_VERIFY_ROUNDS=1`, clamped to `[0, 3]`. A passing answer
 costs exactly one call.
+
+> **Correction (mechanics T1).** This was wrong by a factor of two for the whole
+> life of the verifier, and is only true again as of the third pass. Every
+> `maxTurns: 1` run — the judge and the repair alike — took **two** provider
+> calls, because the soft-limit steer fired on the first turn and pi's agent loop
+> drains the steering queue right after `turn_end`. So a passing answer cost 2, a
+> repair round cost 6, and the answer read back was the reply to "wrap up
+> immediately" rather than the verdict or the repair. Fixed in
+> `agents/turn-tracking.ts`.
 
 **Why the judge is not the child.** Asking the child to review its own work is
 the weakest check available: every step that led it astray is in its context with
@@ -750,9 +766,12 @@ the semantics.
   so the keyboard hop cannot reach an agent that finished a few minutes ago.
   `/agents` still can, all session.
 - **The judge always reports `turnLimited` internally.** `maxTurns: 1` means
-  `wireTurnTracking` fires its soft-limit steer on the judge's only turn. The
-  field is never read on that path, so it is cosmetic — but a future reader
+  `wireTurnTracking` reaches its soft limit on the judge's only turn. The field
+  is never read on that path, so *the field* is cosmetic — but a future reader
   should not conclude the judge ran out of room.
+  **Correction (mechanics T1):** the *steer* that used to accompany it was not
+  cosmetic at all. It bought a second provider call whose reply replaced the
+  verdict. The steer is now skipped for a one-turn budget; only the flag remains.
 - **The anchor is advisory.** It is a `session.steer()` with a `.catch(() => {})`:
   a session already tearing down is not a reason to fail the run.
 - **`aborted` means the turn ceiling, not the user.** A parent interrupt produces

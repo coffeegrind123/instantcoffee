@@ -10,7 +10,10 @@ import { AgentWidget, type UICtx } from "./ui/agent-widget.js";
 import { ConversationViewer } from "./ui/conversation-viewer.js";
 import { SpawnCoordinator } from "./spawn/spawn-coordinator.js";
 import { toolCallListener } from "./agents/tool-execution.js";
+import { isBusyRecord } from "./agents/record-activity.ts";
+import { steerReport } from "./ui/action-report.ts";
 import { registerAgentTool } from "./registration.js";
+import { SHORT_ID_LENGTH } from "./types.js";
 import {
   getManager,
   getWidget,
@@ -108,7 +111,30 @@ async function openViewer(ctx: ExtensionContext, record: AgentRecord | null): Pr
         done,
         () => manager?.abort(record.id, "user"),
         kb,
-        (msg: string) => manager?.steer(record.id, msg),
+        // Forge fork, fifteenth pass (AF2): `steer()` answers with a boolean and
+        // this discarded it. `continueSettledAgent` refuses when the record is
+        // still settling, has no session, is streaming, or the model's
+        // concurrency slot is full — and at this fork's default of 1 that last
+        // one is every continuation attempted while any other agent runs. The
+        // operator typed a follow-up into the composer, the composer closed, and
+        // nothing happened, anywhere, in silence. The `/agents` menu's own steer
+        // has always reported it; see src/ui/action-report.ts.
+        async (msg: string) => {
+          // Never rejects: the viewer calls this without awaiting, and node
+          // turns an unhandled rejection from a UI callback into a dead process.
+          try {
+            const sent = (await manager?.steer(record.id, msg)) === true;
+            if (sent) return;
+            const report = steerReport(
+              false,
+              record.id.slice(0, SHORT_ID_LENGTH),
+              isBusyRecord(record) ? "steer" : "continue",
+            );
+            ctx.ui.notify(report.text, report.level);
+          } catch (err) {
+            ctx.ui.notify(`Steer failed for ${record.id.slice(0, SHORT_ID_LENGTH)}: ${String(err)}`, "error");
+          }
+        },
       );
       viewer.setModelDisplayStyle(getStore().agent.modelDisplayStyle);
       return viewer;
@@ -227,7 +253,11 @@ export function setupEventListeners(pi: ExtensionAPI): void {
     const currentManager = getManager();
     if (currentManager) {
       const records = currentManager.listAgents();
-      const active = records.filter((r) => r.lifecycle.status === "running" || r.lifecycle.status === "queued");
+      // Forge fork, fourteenth pass (AE5): `isBusyRecord`. A record whose answer
+      // is still being checked reads `completed`, and `mgr.dispose()` two lines
+      // down disposes the session a repair is running IN — so the one agent the
+      // reload is about to cut off was the one the count left out.
+      const active = records.filter(isBusyRecord);
       if (active.length > 0 && ctx.hasUI) {
         ctx.ui.notify(`${active.length} agent(s) killed by reload`, "warning");
       }

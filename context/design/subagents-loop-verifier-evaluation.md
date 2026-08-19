@@ -19,6 +19,13 @@ that deliberately did not.** The finding text below is left in the tense it was
 written in, because the reproduction is the evidence — rewriting it into "was
 fixed" would leave nothing to check the fix against.
 
+> **A third pass followed** — `context/design/subagents-loop-verifier-mechanics.md`.
+> It re-ran F2 and F3's probes (both still hold, quoted in its §12) and
+> control-ran F1's isolation suite (8 of 10 assertions fail with the guard
+> disabled). Nothing here was overturned. It found four further defects, T1–T4,
+> none of them in a seam: they are inside the modules, and two of the three
+> proven ones sat under a comment that described the correct behaviour.
+
 | Evidence class | Meaning |
 | --- | --- |
 | **PROVEN** | A script was run against the real modules and its output is quoted. |

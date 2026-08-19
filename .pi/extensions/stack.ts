@@ -391,7 +391,22 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 	}
 
 	const containers: StackStatus["containers"] = [];
-	if (psR.status === "fulfilled" && psR.value.code === 0) {
+	// `!killed` before `code`, and it is not defensive: `pi.exec` is pi's
+	// `execCommand`, which resolves a child it killed on its own timeout with
+	// `code: code ?? 0` — a signalled child exits with a signal and NO code — and
+	// an empty stdout. So a docker daemon that did not answer within ten seconds
+	// arrived here looking exactly like a healthy `docker ps` that listed nothing,
+	// and every container in the compose file was reported "not running". On this
+	// box the documented way docker wedges is memory pressure, which is also
+	// exactly when an operator runs `/stack status`, and the obvious next action
+	// on that report is to recreate containers that are fine.
+	//
+	// Leaving `containers` empty is the honest answer: the formatter prints
+	// nothing for a service it was never told about, rather than a false "not
+	// running". Seventeenth pass (AH3); the same property of the same function is
+	// AA2 (the loop's goal check), AB3 (rtk's version probe) and the reason
+	// `vendor/pi-subagents-lite/src/spawn/git-failure.ts` exists.
+	if (psR.status === "fulfilled" && !psR.value.killed && psR.value.code === 0) {
 		const running = new Map<string, { state: string; uptime: string }>();
 		for (const line of psR.value.stdout.split("\n")) {
 			const [name, state, status] = line.split("\t");
@@ -430,8 +445,11 @@ async function dockerVram(pi: ExtensionAPI, compose: ComposeInfo): Promise<strin
 			["exec", name, "nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"],
 			{ timeout: 15_000 },
 		);
-		if (r.code !== 0) return null;
-		return r.stdout.trim().split("\n")[0] ?? null;
+		// `killed` first, for the reason spelled out at the `docker ps` call site:
+		// a wedged daemon resolves `code: 0` with nothing on stdout, and `""` is
+		// not a VRAM reading.
+		if (r.killed || r.code !== 0) return null;
+		return r.stdout.trim().split("\n")[0] || null;
 	} catch {
 		return null;
 	}
@@ -551,7 +569,33 @@ const SUBCOMMANDS = [
 	"help",
 ];
 
+/**
+ * Is this factory being run for a SUBAGENT's session?
+ *
+ * A subagent does not inherit the parent's `-e` flags, but it does DISCOVER
+ * `<cwd>/.pi/extensions/**` — so everything in this directory reaches a child for
+ * free, measured: `vendor/pi-subagents-lite/src/agents/subagent-denylist.ts`
+ * records compaction-guard capping a CHILD's own `read` result inside the child
+ * session. `stack_status` arrived by the same route and nobody asked for it: it
+ * costs a child ~173 tokens of schema on every turn of a window whose whole value
+ * is coming back with a small answer, against the ~177 that justified removing
+ * the `loop` tool from children, and a subagent has no business inspecting the
+ * inference stack it is running on.
+ *
+ * `vendor/pi-subagents-lite` publishes its spawn depth on this global for exactly
+ * this check; see that package's `src/shell.ts`. Absent (a plain pi session, or
+ * this file used anywhere else) reads as false, so nothing changes.
+ */
+function bornInsideSubagentSpawn(): boolean {
+	const depth = (globalThis as unknown as Record<string, unknown>)["__PI_SUBAGENT_SPAWN_DEPTH__"];
+	return typeof depth === "number" && depth > 0;
+}
+
 export default function stackExtension(pi: ExtensionAPI) {
+	// A subagent's instance registers nothing: not `stack_status`, not `/stack`,
+	// not the entry renderer. Observation is for the operator's session.
+	if (bornInsideSubagentSpawn()) return;
+
 	const root = findRepoRoot();
 
 	pi.registerEntryRenderer<StatusEntry>("stack-report", (entry, { expanded }, theme) => {

@@ -392,6 +392,18 @@ fi
 # It filters an allow-list, not everything, because some of rtk's filters return
 # output that is wrong rather than short. vendor/rtk-pi/FORK.md has the
 # measurements; ./scripts/rtk.sh --check re-runs them.
+#
+# Loaded AFTER vendor/prinny-channel, and that order is load-bearing rather than
+# incidental. Both register a `tool_call` handler, pi runs them in registration
+# order, and prinny's is the Matrix permission relay: it shows the approver
+# `describeCall(toolName, event.input)` and blocks by returning `{block:true}`,
+# which makes pi return from `emitToolCall` immediately. So with prinny first,
+# the command a person is asked to approve is the command the model wrote, and a
+# blocked command is never handed to rtk at all. The other way round the relay
+# would quote `rtk git status` for a model that asked for `git status`, which is
+# an approval for a command nobody typed. (`permissionMode` is `off` by default,
+# so this only bites a session that has turned the relay on — which is exactly
+# the session that cares.)
 RTK_DIR="$REPO_ROOT/vendor/rtk-pi"
 RTK_NOTE=""
 if [[ "$(env_get RTK_ENABLED)" == "1" ]]; then

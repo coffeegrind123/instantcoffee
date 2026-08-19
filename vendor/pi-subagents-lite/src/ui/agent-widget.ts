@@ -21,6 +21,7 @@ import {
 } from "./format.js";
 import type { LiveView } from "../types.js";
 import { verificationBadge, verifyPhaseActivity } from "./verification-badge.js";
+import { isBusyRecord } from "../agents/record-activity.ts";
 
 // Backward-compat re-export for consumers importing Theme from this module.
 export type { Theme } from "./types.js";
@@ -495,16 +496,20 @@ export class AgentWidget {
     const cutoff = Date.now() - this.finishedRetentionMinutes * MINUTE_MS;
 
     for (const a of allAgents) {
-      if (a.lifecycle.status === "running") running.push(a);
-      else if (a.lifecycle.status === "queued") queued.push(a);
       // Forge fork: the verifier runs after the child's run has settled — its
       // status is already terminal and completedAt is not stamped until the
-      // check returns — so a verifying record matches none of the tests here
+      // check returns — so a verifying record matches none of the status tests
       // and its row would vanish for the length of a model call, on a stack
       // where an unexplained pause is the one thing the widget exists to
       // prevent. It is active work the user is waiting on: it stays running.
-      else if (a.verifyPhase) running.push(a);
-      else if (a.lifecycle.completedAt !== undefined && a.lifecycle.completedAt >= cutoff) finished.push(a);
+      //
+      // `isBusyRecord` rather than the test inline: `/agents` had its own copy of
+      // this question, without the verifying half, and answered it differently
+      // for the same record. See record-activity.ts and Y1.
+      if (isBusyRecord(a)) {
+        if (a.lifecycle.status === "queued") queued.push(a);
+        else running.push(a);
+      } else if (a.lifecycle.completedAt !== undefined && a.lifecycle.completedAt >= cutoff) finished.push(a);
     }
     return { running, queued, finished };
   }
