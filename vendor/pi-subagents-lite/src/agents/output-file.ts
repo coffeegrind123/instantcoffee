@@ -9,8 +9,8 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
-import { formatTokens } from "./usage.js";
-import { summarizeToolArgs } from "../utils.js";
+import { formatTokens } from "./usage.ts";
+import { summarizeToolArgs } from "../utils.ts";
 
 /** Punctuation treated as a flush boundary when streaming thinking deltas. */
 const SENTENCE_BOUNDARY_CHARS = ".!?,\n";
@@ -77,10 +77,18 @@ class ThinkingStreamer {
   private streamedBlocks = 0;
   private blockInProgress = false;
 
-  constructor(
-    private readonly path: string,
-    private readonly bufferSize: number,
-  ) {}
+  private readonly sink: OutputSink;
+  private readonly bufferSize: number;
+
+  // Explicit fields rather than parameter properties: this module is now
+  // imported by `transcript-entry.ts`, which the suite loads under
+  // `node --experimental-strip-types`, and strip-only mode cannot desugar a
+  // parameter property. pi's jiti can; the test runner is the tighter
+  // constraint and the one that has to be met.
+  constructor(sink: OutputSink, bufferSize: number) {
+    this.sink = sink;
+    this.bufferSize = bufferSize;
+  }
 
   onStart(): void {
     this.streamedChars = 0;
@@ -143,7 +151,7 @@ class ThinkingStreamer {
   }
 
   private append(content: string): void {
-    safeAppend(this.path, content);
+    this.sink(content);
   }
 }
 
@@ -222,17 +230,63 @@ function formatMessageLine(
   return "";
 }
 /**
- * Stream session messages to the file on each turn_end. The returned cleanup
- * writes the DONE line and unsubscribes.
+ * Where formatted lines go.
+ *
+ * Forge fork, twentieth pass. This used to be a path, and everything below
+ * called `safeAppend(path, …)`. There are now two sinks for the same lines —
+ * the `/tmp` log this file has always written, and the session transcript in
+ * `transcript-entry.ts` — and the operator's request was for the SECOND SINK,
+ * not a second formatter:
+ *
+ *   > The existing `AgentOutputLog` already owns the per-message formatting and
+ *   > the thinking-buffer flush — the work is a second SINK, not a second
+ *   > formatter.
+ *
+ * So the formatting, the `writtenCount` anchor, the compaction re-anchor and
+ * the thinking-buffer sentence boundaries all stay here, exactly once, and a
+ * caller says where the lines land.
  */
-export function streamToOutputFile(
+export type OutputSink = (content: string) => void;
+
+/**
+ * Stream session messages to `sink` on each turn_end. The returned cleanup
+ * writes the DONE line and unsubscribes.
+ *
+ * `onTurnFlush` fires after each turn's lines have been handed over, which is
+ * what lets the transcript sink group a turn into ONE session entry instead of
+ * one per line — three background delegations settle interleaved, and a
+ * transcript that cannot tell them apart is worse than the files it replaces.
+ *
+ * `startIndex` is where in `session.messages` this subscription begins, and it
+ * is a parameter because there are now two kinds of attach.
+ *
+ * Forge fork, twenty-first pass (AL1). The default of 1 is the FIRST attach —
+ * `onSessionCreated`, where index 0 is the prompt the caller has already
+ * written as its opening line. `AgentOutputLog` only ever attaches there, so
+ * for the life of this file the constant was right.
+ *
+ * The transcript added a SECOND attach: `continueSettledAgent` builds a fresh
+ * `AgentTranscript` for a follow-up and subscribes it to the child's EXISTING
+ * session, which by then holds every message of the settled run. A new
+ * subscription anchored at 1 replays all of them on its first flush — so the
+ * entry labelled *turn 1* of the follow-up held the beginning of the previous
+ * run, and `MAX_LINES` then dropped the answer that follow-up was actually
+ * about. The bound made the replay look like a truncated answer rather than
+ * like a replay, which is why it reads as a transcript problem and is not one.
+ *
+ * The compaction re-anchor below still resets to 1, and correctly: pi rebuilds
+ * the array, so index 0 is the new summary and everything after it is new.
+ */
+export function streamAgentOutput(
   session: AgentSession,
-  path: string,
+  sink: OutputSink,
   stats?: OutputFinalStats,
   bufferSize: number = 0,
+  onTurnFlush?: () => void,
+  startIndex: number = 1,
 ): () => void {
-  let writtenCount = 1; // initial user prompt already written
-  const thinking = new ThinkingStreamer(path, bufferSize);
+  let writtenCount = Math.max(0, startIndex);
+  const thinking = new ThinkingStreamer(sink, bufferSize);
 
   const flush = () => {
     const messages = session.messages;
@@ -240,11 +294,11 @@ export function streamToOutputFile(
       const msg = messages[writtenCount];
       if (msg.role === "assistant") {
         const lines = formatMessageLine(msg.content as any, thinking.blocksStreamed);
-        if (lines) safeAppend(path, lines);
+        if (lines) sink(lines);
       } else if (msg.role === "user") {
         const text = extractUserText(msg.content as any);
         if (text.trim()) {
-          safeAppend(path, `${timestamp()} [USER] ${text}\n`);
+          sink(`${timestamp()} [USER] ${text}\n`);
         }
       } else if (msg.role === "toolResult") {
         const msgAny = msg as unknown as Record<string, unknown>;
@@ -252,7 +306,7 @@ export function streamToOutputFile(
           (msgAny.toolName ?? "unknown") as string,
           msgAny.content as ReadonlyArray<Record<string, unknown>> | undefined,
         );
-        if (lines) safeAppend(path, lines);
+        if (lines) sink(lines);
       }
       writtenCount++;
     }
@@ -262,6 +316,7 @@ export function streamToOutputFile(
     if (event.type === "turn_end") {
       thinking.endTurn();
       flush();
+      onTurnFlush?.();
     }
 
     // Flush before compaction runs so any not-yet-flushed tail still reaches the file
@@ -294,12 +349,23 @@ export function streamToOutputFile(
   return () => {
     thinking.flushTail();
     flush();
+    onTurnFlush?.();
 
     const doneStats = stats ?? { turnCount: 0, toolUseCount: 0, totalTokens: 0 };
-    safeAppend(path, formatDoneLine(doneStats));
+    sink(formatDoneLine(doneStats));
 
     unsubscribe();
   };
+}
+
+/** The `/tmp` log, which is `streamAgentOutput` with a file for a sink. */
+export function streamToOutputFile(
+  session: AgentSession,
+  path: string,
+  stats?: OutputFinalStats,
+  bufferSize: number = 0,
+): () => void {
+  return streamAgentOutput(session, (content) => safeAppend(path, content), stats, bufferSize);
 }
 
 // ---------------------------------------------------------------------------

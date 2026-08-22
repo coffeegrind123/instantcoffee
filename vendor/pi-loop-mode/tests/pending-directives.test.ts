@@ -250,3 +250,130 @@ describe("AF3 — a directive survives a pending message", () => {
     );
   });
 });
+
+/**
+ * AK5 — what counts as a change, and what only says one happened.
+ *
+ * `hasStateChange` is named for a change to the project and used to test the
+ * WORDS in a tool's output, for every tool. Two consequences, both measured
+ * against the shipped predicate:
+ *
+ *   - a passing test suite reads as progress. `cargo test` prints
+ *     "42 passed", jest prints "42 passed, 42 total", pytest prints
+ *     "42 passed in 1.83s" — and a `--until-done --check` run re-runs the suite
+ *     every iteration, so `lastStateChangeIteration` was pinned to the current
+ *     iteration and the audit rung could never fire on the runs it was written
+ *     for;
+ *   - so does a READER. A `read` of a CHANGELOG, a `grep` that matches
+ *     `updated`, an `ls` of a directory holding `created.txt`.
+ *
+ * The loop's own module state is global, so each case is its own `describe`
+ * with its own `start`, exactly as the suite above does it.
+ */
+describe("what counts as a change (AK5)", () => {
+  /**
+   * Eight analysis turns whose only tool call is `call(i)`; the notice on the
+   * last.
+   *
+   * The tool output has to differ per turn — three identical results in a row
+   * are the stuck ladder's rule 7, which fires first and would make every case
+   * below pass for the wrong reason. Varying it is also the honest shape: a
+   * test suite prints a different duration every run.
+   */
+  async function eightTurnsOf(call: (i: number) => { tool: string; text: string }): Promise<string> {
+    const host = makeHost({ pendingMessages: true });
+    await host.start("investigate the flaky test");
+    let notice = "";
+    for (let i = 0; i < 8; i++) {
+      notice = await host.turn(`Looked at hypothesis ${i}; the timing is not it.`, [call(i)]);
+    }
+    await host.stop();
+    return notice;
+  }
+
+  it("a passing test suite is not progress — cargo", async () => {
+    assert.match(
+      await eightTurnsOf((i) => ({ tool: "bash", text: `test result: ok. 42 passed; 0 failed; finished in 1.${i}s` })),
+      /no concrete progress/i,
+    );
+  });
+
+  it("…nor jest, nor pytest", async () => {
+    assert.match(
+      await eightTurnsOf((i) => ({ tool: "bash", text: `Tests: 42 passed, 42 total\nTime: 1.${i}s` })),
+      /no concrete progress/i,
+    );
+  });
+
+  it("…nor pytest", async () => {
+    assert.match(
+      await eightTurnsOf((i) => ({ tool: "bash", text: `===== 42 passed in 1.8${i}s =====` })),
+      /no concrete progress/i,
+    );
+  });
+
+  it("a git log full of the word `fixed` is not progress either", async () => {
+    assert.match(
+      await eightTurnsOf((i) => ({
+        tool: "bash",
+        text: `commit 9f2a\n    fixed the parser\n\ncommit 1b3${i}\n    fixed the lexer`,
+      })),
+      /no concrete progress/i,
+    );
+  });
+
+  it("a READER cannot have changed anything, whatever its output says", async () => {
+    assert.match(
+      await eightTurnsOf((i) => ({
+        tool: "read",
+        text: `CHANGELOG.md\n## 1.2.${i}\n- fixed the parser, updated the docs`,
+      })),
+      /no concrete progress/i,
+    );
+  });
+
+  it("…and neither can a grep that happens to match", async () => {
+    assert.match(
+      await eightTurnsOf((i) => ({ tool: "grep", text: `src/a.ts:1${i}: // updated by the migration` })),
+      /no concrete progress/i,
+    );
+  });
+
+  it("the control: an edit still resets the window", async () => {
+    const host = makeHost({ pendingMessages: true });
+    await host.start("keep the docs in step with the code");
+    let notice = "";
+    for (let i = 0; i < 8; i++) {
+      notice = await host.turn(`Rewrote section ${i}.`, [{ tool: "edit", text: "written" }]);
+    }
+    await host.stop();
+    assert.doesNotMatch(notice, /no concrete progress/i);
+    assert.equal(directives(host.sent, "audit").length, 0);
+  });
+
+  it("the control: a bash result that NAMES a change still counts", async () => {
+    const host = makeHost({ pendingMessages: true });
+    await host.start("land the migration");
+    let notice = "";
+    for (let i = 0; i < 8; i++) {
+      notice = await host.turn(`Batch ${i}.`, [
+        { tool: "bash", text: `create mode 100644 src/step-${i}.ts\n 1 file changed, 3 insertions(+)` },
+      ]);
+    }
+    await host.stop();
+    assert.doesNotMatch(notice, /no concrete progress/i);
+  });
+
+  it("the control: a delegation that says it wrote something still counts", async () => {
+    const host = makeHost({ pendingMessages: true });
+    await host.start("port the tests");
+    let notice = "";
+    for (let i = 0; i < 8; i++) {
+      notice = await host.turn(`Delegated batch ${i}.`, [
+        { tool: "Agent", text: `Created tests/step-${i}.test.ts and updated the index.` },
+      ]);
+    }
+    await host.stop();
+    assert.doesNotMatch(notice, /no concrete progress/i);
+  });
+});

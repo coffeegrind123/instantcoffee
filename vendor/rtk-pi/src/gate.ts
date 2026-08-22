@@ -144,3 +144,44 @@ export function parseSemver(raw: string): [number, number, number] | null {
   if (!m) return null
   return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)]
 }
+
+// The key `vendor/prinny-channel` stamps on a tool call a person has approved.
+//
+// Nineteenth pass (AJ3). `tool_call` handlers run in load order over ONE mutable
+// `event.input`, and `scripts/pi-local.sh` loads prinny before this package. So
+// the permission relay shows a Matrix approver `describeCall(...)` — the command
+// exactly as the model wrote it — waits for a yes, and THEN this handler rewrites
+// `event.input.command` to `rtk <something>`. The string that was approved and
+// the string pi executed were two different commands, and the audit line in the
+// channel log records the first one.
+//
+// The rewrite set is measured-faithful, so the damage is small; the promise is
+// not. `permission-gate.ts`'s own docstring is explicit about what that prompt is
+// for: "short enough to read on a phone and specific enough to decide on — an
+// approval prompt that only names the tool is a prompt that gets approved without
+// being read." Deciding on a string that is then edited is the same defect one
+// step further in.
+//
+// So: an approved call is left exactly as approved. This is a stand-down, not a
+// refusal — the command still runs, unfiltered, which is the direction every
+// other decision in this file already fails in.
+//
+// The literal is duplicated rather than imported for the reason the compaction
+// lock is a `globalThis` key with three copies of its protocol: vendor packages
+// must not import each other, and this one is a fork of an upstream hook that
+// knows nothing about Matrix. `tests/approved-command.test.ts` reads prinny's
+// source and asserts the two agree.
+export const APPROVED_COMMAND_KEY = "_prinnyApprovedCommand"
+
+// True when a person has approved this call as written, so nothing may edit it.
+//
+// The PRESENCE of the stamp is the whole signal; the value (what the approver
+// actually read) is kept for a human reading a transcript, not compared here.
+// Anything can write a key onto a tool input, so a shape this function does not
+// recognise reads as "not approved" — the direction that leaves rtk doing what it
+// always did rather than silently switching itself off.
+export function approvedAsWritten(input: unknown): boolean {
+  if (!input || typeof input !== "object") return false
+  const value = (input as Record<string, unknown>)[APPROVED_COMMAND_KEY]
+  return typeof value === "string" && value.length > 0
+}

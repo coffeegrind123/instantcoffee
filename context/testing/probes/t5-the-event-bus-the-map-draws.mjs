@@ -18,7 +18,7 @@
 import { readFileSync } from "node:fs";
 
 const REPO = "/home/claudeuser/qwen3.8-forge";
-const DOC = process.argv[2] ?? `${REPO}/context/design/subagents-loop-verifier-references.md`;
+const DOC = process.argv[2] ?? `${REPO}/context/design/subagents-loop-verifier-proxies.md`;
 
 let failures = 0;
 const check = (label, ok) => {
@@ -26,8 +26,25 @@ const check = (label, ok) => {
   if (!ok) failures++;
 };
 
-/** The five packages, in scripts/pi-local.sh's load order, and where their handlers live. */
+/**
+ * Every package `scripts/pi-local.sh` loads, in that order, and where its
+ * handlers live.
+ *
+ * Nineteenth pass (AJ5): there are SEVEN, not five. `.pi/extensions/stack.ts`
+ * and `.pi/extensions/browser-guard.ts` occupy `-e` positions and were in
+ * neither the table nor this list — so a handler registered by either was
+ * invisible to the artefact AND to the check written to keep the artefact
+ * honest. `browser-guard` registers one, on `tool_result`, in the FIRST position
+ * of the process; the table's own §3.1 says "loop FIRST" about that event.
+ *
+ * The two additions are what makes the third check below (`every event some
+ * package handles has a row`) able to see anything the map's own list left out.
+ * A probe given the same list as the document it is checking can only ever
+ * confirm the document's arithmetic.
+ */
 const PACKAGES = [
+  { column: "stack", files: [`${REPO}/.pi/extensions/stack.ts`] },
+  { column: "browser", files: [`${REPO}/.pi/extensions/browser-guard.ts`] },
   { column: "loop", files: [`${REPO}/vendor/pi-loop-mode/extensions/index.ts`] },
   { column: "guard", files: [`${REPO}/.pi/extensions/compaction-guard/index.ts`] },
   {
@@ -89,12 +106,26 @@ for (const [column, events] of actual) {
 
 // ── the same thing, read out of the document ────────────────────────────────
 const doc = readFileSync(DOC, "utf8").split("\n");
-const headerIndex = doc.findIndex((line) => /event\s+loop\s+guard\s+subag\s+prinny\s+rtk/.test(line));
+// AJ5: the header may name any subset of the seven columns, in any order — an
+// older document has five and this pass's has seven, and both are checkable.
+// What is NOT optional is that a column exists for every package that registers
+// something, which is the third check below.
+const headerIndex = doc.findIndex((line) => /\bevent\b/.test(line) && /\bloop\b/.test(line) && /\bprinny\b/.test(line) && /\brtk\b/.test(line));
 check(`the document has an event-bus table (${DOC.split("/").pop()})`, headerIndex >= 0);
 if (headerIndex < 0) process.exit(1);
 
 const header = doc[headerIndex];
-const columns = Object.fromEntries(["loop", "guard", "subag", "prinny", "rtk"].map((c) => [c, header.indexOf(c)]));
+const columns = Object.fromEntries(
+  PACKAGES.map((p) => p.column).filter((c) => header.indexOf(c) >= 0).map((c) => [c, header.indexOf(c)]),
+);
+for (const { column } of PACKAGES) {
+  const registers = actual.get(column).size > 0;
+  if (registers && !(column in columns)) {
+    console.log(`   FAIL  the table has no \`${column}\` column, and it registers ${
+      [...actual.get(column)].sort().join(", ")}`);
+    failures++;
+  }
+}
 const claimed = new Map(Object.keys(columns).map((c) => [c, new Set()]));
 const rows = [];
 for (let i = headerIndex + 1; i < doc.length; i++) {

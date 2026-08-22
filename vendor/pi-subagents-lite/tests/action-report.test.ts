@@ -36,7 +36,13 @@ import { describe, it } from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { bulkReport, clearReport, steerReport, stopReport } from "../src/ui/action-report.ts";
+import {
+  bulkReport,
+  clearReport,
+  steerReport,
+  stopReport,
+  undeliveredSteersReport,
+} from "../src/ui/action-report.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -186,5 +192,69 @@ describe("AF2 — the wiring", () => {
       assert.match(body, /try \{/);
       assert.match(body, /\} catch \(err\) \{/);
     }
+  });
+});
+
+/**
+ * AI3 — the steer that was accepted for a session that never opened.
+ *
+ * `AgentManager.steer()` returns `true` for a steer it parks in
+ * `record.execution.pendingSteers`, so `steerReport(true, …)` says "Steer sent
+ * to X…". The comment beside the push is the promise it rests on:
+ *
+ * ```ts
+ *   // Queued, so it WILL reach the model — onSessionCreated flushes it.
+ * ```
+ *
+ * `onSessionCreated` fires from `createAndConfigureSession`, and everything
+ * `runAgentImpl` does before that — the settings manager, the system-prompt
+ * sources, `detectEnv`'s two git subprocesses, and `reloadAndMap()`, which runs
+ * every extension factory — is a window in which the record is already `running`
+ * and there is no session. A run that dies in it never flushes, and until now
+ * said nothing: the operator had been told it was sent, and `growBrief` had
+ * already put it in the brief the judge checks the answer against.
+ */
+describe("AI3 — a queued steer that never reached a session", () => {
+  const src = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
+  const manager = readFileSync(join(src, "agents", "agent-manager.ts"), "utf8");
+
+  it("says the steer was not delivered, and what to do instead", () => {
+    const report = undeliveredSteersReport(1, "1a2b3c4d");
+    assert.match(report.text, /1a2b3c4d/);
+    assert.match(report.text, /never delivered/);
+    assert.match(report.text, /Re-send/);
+    assert.equal(report.level, "warning");
+  });
+
+  it("counts, because the queue is a queue", () => {
+    assert.match(undeliveredSteersReport(1, "x").text, /the steer queued for it was/);
+    assert.match(undeliveredSteersReport(3, "x").text, /the 3 steers queued for it were/);
+  });
+
+  it("says the answer was not written with them — that is the part the parent acts on", () => {
+    assert.match(undeliveredSteersReport(2, "x").text, /answer was not written with them/);
+  });
+
+  it("the wiring: the settlement chain reports and clears the queue", () => {
+    const at = manager.indexOf("private reportUndeliveredSteers");
+    assert.ok(at > 0, "the report has to exist somewhere the settlement can reach");
+    const body = manager.slice(at, manager.indexOf("\n  }", at));
+    assert.match(body, /record\.execution\.pendingSteers = undefined/, "or a continuation reports it twice");
+    assert.match(body, /console\.warn\(/, "noOpUIContext.notify is () => {} headless");
+    assert.match(body, /spawnCtx\?\.ui\?\.notify/);
+    // Called from the one place every settlement passes through — the same
+    // `.finally` that releases the slot and opens the gate.
+    const settle = manager.slice(manager.indexOf("private attachSettlementChain"));
+    assert.match(settle.slice(0, settle.indexOf("\n  private")), /this\.reportUndeliveredSteers\(record\)/);
+  });
+
+  it("the premise: steer() still answers true for a queued one", () => {
+    // The finding is not that queueing is wrong — it is that the promise had no
+    // backstop. If this branch ever stops returning true the sentence above is
+    // describing something that no longer happens.
+    const at = manager.indexOf("async steer(id: string, message: string)");
+    const body = manager.slice(at, at + 900);
+    assert.match(body, /record\.execution\.pendingSteers\.push\(message\)/);
+    assert.match(body, /this\.growBrief\(record, message\)/, "which is why the brief can outrun the child");
   });
 });

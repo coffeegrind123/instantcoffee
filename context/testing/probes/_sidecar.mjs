@@ -18,6 +18,13 @@
  *   PROBE_OUTBOX  a JSONL file this appends every `tools/call` to, so the probe
  *                 can read what the extension said to Matrix and in what order.
  *
+ * Nineteenth pass (AJ3): it also answers the PERMISSION relay. A
+ * `notifications/claude/channel/permission_request` is recorded to the outbox
+ * (so a probe can read the exact description a person would have been shown) and
+ * answered with `PROBE_PERMISSION` — `allow` by default, `deny` to refuse,
+ * `ignore` to let the request time out. Additive: nothing that did not send one
+ * behaves differently.
+ *
  * Everything else is `fake-sidecar.mjs`'s behaviour, unchanged: the handshake,
  * the tool list, and an `isError` result for the tool named `refuse`.
  */
@@ -97,6 +104,18 @@ function handle(message) {
           { name: 'typing' },
         ],
       },
+    });
+    return;
+  }
+
+  if (method === 'notifications/claude/channel/permission_request') {
+    record({ kind: 'permission_request', request_id: params?.request_id, tool_name: params?.tool_name, description: params?.description, input_preview: params?.input_preview });
+    const behavior = process.env.PROBE_PERMISSION ?? 'allow';
+    if (behavior === 'ignore') return;
+    send({
+      jsonrpc: '2.0',
+      method: 'notifications/claude/channel/permission',
+      params: { request_id: params?.request_id, behavior },
     });
     return;
   }

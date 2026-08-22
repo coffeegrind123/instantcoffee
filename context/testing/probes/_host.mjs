@@ -108,8 +108,16 @@ export function makeHost(opts = {}) {
      * has printed everything it came for.
      */
     quit: async () => { notices.length = 0; await cmd("stop", ctx); },
-    /** One whole turn: N assistant messages, M tool results, then agent_end. */
-    turn: async ({ messages, tools = [] }) => {
+    /**
+     * One whole turn: N assistant messages, M tool results, then agent_end.
+     *
+     * `stopReason` is a parameter as of the twenty-first pass (AL2's probe).
+     * `agent_end`'s ladder has a rung for an ABORTED turn — rung 5, the
+     * operator pressing Esc — and a helper that can only build `"stop"` cannot
+     * reach it. A probe whose label names a rung it silently never climbed is
+     * the twentieth pass's own finding, one layer out.
+     */
+    turn: async ({ messages, tools = [], stopReason = "stop" }) => {
       notices.length = 0;
       sent.length = 0;
       // ONE object per message, emitted to `message_end` and then handed to
@@ -117,7 +125,7 @@ export function makeHost(opts = {}) {
       // used to build a fresh `assistant(m)` for each event, so a sanitized
       // replacement never reached `agent_end` and the probes could not see the
       // one thing `_replaceMessageInPlace` exists to do.
-      const built = messages.map((m) => assistant(m));
+      const built = messages.map((m) => assistant(m, stopReason));
       for (const m of built) await ctx0(pi, handlers, ctx, "message_end", { message: m });
       for (const t of tools) await ctx0(pi, handlers, ctx, "tool_result", t);
       await ctx0(pi, handlers, ctx, "agent_end", { messages: built });

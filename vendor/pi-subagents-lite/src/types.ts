@@ -1,6 +1,7 @@
 import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentOutputLog } from "./agents/output-file.js";
+import type { AgentTranscript } from "./agents/transcript-entry.js";
 import type { LifetimeUsage, AgentUsage } from "./agents/usage.js";
 import type { SubagentType, AgentInvocation } from "./agents/types.js";
 
@@ -248,6 +249,17 @@ export interface AgentExecutionState {
   pendingSteers?: string[];
   /** Lifecycle wrapper for the output file stream. */
   outputLog?: AgentOutputLog;
+  /**
+   * This delegation's turns, as entries in the PARENT's session transcript.
+   *
+   * Forge fork, twentieth pass. Unlike `outputLog` this is not optional
+   * behaviour an operator turns on: the operator asked for a subagent's turns
+   * to be in the transcript the rest of the session goes into, and a record of
+   * what a delegation did should not depend on somebody having predicted they
+   * would want it. `SUBAGENT_TRANSCRIPT=0` turns it off, the way
+   * `SUBAGENT_VERIFY_LOG=0` turns off the judge's log.
+   */
+  transcript?: AgentTranscript;
   /**
    * Model key the spawn reserved a concurrency slot for. Set at spawn; used
    * to re-reserve the slot when a settled agent is continued. Undefined when

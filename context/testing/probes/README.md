@@ -531,3 +531,206 @@ instance rather than on the last one, which is the only kind of test that covers
 a rule instead of a bug. Both carry a control assertion that the scan matched
 anything at all — **a scan that finds nothing passes**, and that is the one way
 this kind of test rots silently.
+
+## The eighteenth pass (AI1–AI5) — `v1`–`v5`
+
+All five defects these were written for are **fixed**. Each probe prints BEFORE
+and NOW side by side, so it is its own control: run it and the left column is the
+defect, the right column is the tree as it stands.
+
+This pass asked what the stack has already SAID: **quote the sentence — to a
+person, to a model, or to the next reader — and then find the path on which it is
+not true.** Four of the five findings are a one-slot queue whose promise is
+per-person and whose slot is per-session.
+`context/design/subagents-loop-verifier-promises.md` is the write-up; **§10.5 is
+the promise ledger**, which is what this pass exists to leave behind, and §11 has
+the fix and the control-run failing count for each finding.
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `v1-the-answer-that-was-still-queued.mjs` | **AI1** — `SpawnCoordinator.dispose()` cleared `pendingNudges` and cancelled the one timer that drains it, so a finished background subagent's answer queued at `session_shutdown` was discarded in silence — while the `session-replaced` drop report, whose own docstring names `session_shutdown`, could only fire for a record that settles AFTER the dispose | `node v1-…` | The real `SpawnCoordinator` through pi's jiti, with `pi-loop-mode` holding the compaction lock so the nudge is HELD (AH1) and still sitting in the batch set. Then the session ends. BEFORE: the id is cleared and nothing is said to the model, the operator or the log. NOW: one notice and one `console.warn` naming the agent. Controls: the sentence does NOT name `/agents` — AG6's rule applied to the one reason it did not exist for, because `events.ts` disposes the manager two statements later — it DOES name the transcript when `outputTranscript` gave the record one, a second dispose reports nothing, and a dispose with an empty queue says nothing at all. The premise is read out of the source first, including that `events.ts` disposes the coordinator BEFORE the manager, which is why the notice can still name the agent. |
+| `v2-the-compaction-two-people-asked-for.mjs` | **AI2** — a deferred Matrix `/compact` was parked in one slot, last-write-wins, so every sender but the last was told "I will compact as soon as it finishes" and never heard again; and `stopChannel` dropped the whole request four lines below a loop that denies every pending permission with a stated reason | `for m in two-rooms stopping control; do node v2-… $m; done` | The whole `prinny-channel` extension over the real MCP sidecar protocol. `two-rooms`: two `/compact`s during one turn, both told it will happen — BEFORE one compaction and one room told, NOW one compaction and two rooms told, which was always the right shape. `stopping`: the channel stops with a request waiting; BEFORE nothing at all, NOW one message saying it will not run and to ask again. `control`: one person, one compaction, one reply, unchanged. One process per mode, for the reason `r3` established: `pendingCompaction` and `awaitingReply` are module state and this probe is about what is in them. |
+| `v3-the-steer-that-never-reached-a-session.mjs` | **AI3** — `AgentManager.steer()` answers `true` for a steer it queues in `pendingSteers`, under "Queued, so it WILL reach the model — onSessionCreated flushes it", and a run that dies during setup never reaches `onSessionCreated` | `node v3-…` | Two blocks. The first spawns a REAL subagent and samples it one second later: `running`, no session — the window, measured, and the same spawn reached settlement at ~16.5 s. The second drives the real `steer()` (which returns `true`, queues, and grows the brief the JUDGE checks against) and then the real settlement chain on a run that rejects. BEFORE: the queue survives and nothing is said, with "Steer sent to…" standing. NOW: one notice and one log line saying the answer was not written with them. Controls: the count is pluralised, the queue is cleared so a continuation cannot report it twice, and a record whose session DID open reports nothing — which is every ordinary spawn. |
+| `v4-the-room-the-tool-guessed.mjs` | **AI4** — `forwardToMatrix` refuses to send with two rooms live because "guessing would send one person's conversation to another"; the `prinny` TOOL is the second route into the same `reply` and filled `room_id` from `lastInbound`, a one-slot last-write-wins variable | `for m in two-rooms one-room explicit; do node v4-… $m; done` | The real extension AND the real registered tool. `two-rooms`: the two `[matrix]` blocks the model is handed carry no room id at all — `renderInboundMessage` drops it deliberately — so the model cannot correct the guess. The call is refused, and then, once the run settles and both rooms retire, the same call falls through to `lastInbound` and the probe PRINTS which room that is: Bob's, for an answer about Alice's question. `one-room` and `explicit` are the two controls the refusal must not break. |
+| `v5-the-verdict-the-residue-note-allowed.mjs` | **AI5** — the seventeenth pass fixed two of `stack.ts`'s nine `pi.exec` sites and wrote the other seven down as "script runners whose output is reported verbatim"; five of them choose a verdict from `r.code`, two of those on a 600-second timeout over an operation the same file calls "roughly 20 minutes" | `node v5-…` | pi's `execCommand` **measured** four ways at probe time rather than pinned — timeout, external SIGKILL, real failure, success — then the SHIPPED `execVerdict` driven against a wedged result for each of the six sites, with what each one used to say. Then the standing scan's own output over both roots: fourteen call sites, all classified. Loads `stack.ts` through pi's jiti with a `typebox` alias. |
+
+`v1`, `v3` and `v5` load pi-importing modules through pi's own bundled `jiti`, as
+`s2`, `s3`, `s5`, `t1`, `t2` and `u5` do; `v2` and `v4` use `_sidecar.mjs` and run
+one process per mode. All five exit non-zero if an expectation fails, and none of
+them sleeps for more than about a second and a half.
+
+**Eighteenth-pass addendum, and it is about the scans rather than the probes.**
+The seventeenth pass's closing note was *a scan that finds nothing passes*, and
+both standing scans carry a control that they matched something. This pass found
+the other half by measuring it: **a scan that is no longer ASKED also passes.**
+Deleting the second root from `exec-verdicts.test.ts`'s `ROOTS` list took the
+suite from 377 tests to 375 with nothing failing at all — no assertion covers a
+row that is gone. The roots are now asserted BY NAME as well as by content, which
+is the same discipline one level up.
+
+And one about writing a probe, learned twice while writing these five: **guard
+every index you read out of a filtered array, or the probe crashes on the first
+failure instead of reporting all of them.** `v1` and `v3` both did
+`drops[0].includes(…)`, which throws when the control run makes `drops` empty —
+so the control reported ONE failure where the fix actually breaks six and seven
+respectively. A probe is a measuring instrument, and an instrument that stops at
+the first fault under-reports the fault.
+
+## The nineteenth pass (AJ1–AJ5) — `w1`–`w5`
+
+All five defects these were written for are **fixed**. Each probe prints BEFORE
+and NOW side by side, so it is its own control.
+
+This pass asked **who is allowed to ask**: name every actor that can reach a
+decision, not just the one the guard was written against. There are five — the
+OPERATOR at the terminal, the parent MODEL, an allow-listed Matrix SENDER, a
+CHILD session in this process, and the MACHINERY itself — and every finding is a
+guard that is correct about the actor it names and silent about a different one
+that arrives at the same place.
+`context/design/subagents-loop-verifier-authority.md` is the write-up; **§10.5 is
+the authority ledger**, §10.5.1 draws the five findings by the actor each guard
+names, and §11 has the fix and the control-run failing count for each.
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `w1-the-order-the-map-draws.mjs` | **AJ5** — §3.1 of three documents said `tool_call` runs "prinny FIRST, then rtk, then subagents"; it runs subagents, prinny, rtk, so the safety property beside it is false. And `browser-guard.ts` registers the FIRST `tool_result` handler in the process and had no column in any table | `node w1-…`, and `node w1-… <any document>` | **A standing scan, not a reproduction**, and the second one whose artefact is prose. It reads the `-e` order out of `scripts/pi-local.sh`, pi's two ordering rules out of pi 0.84.2's own source (`mergePaths(cliEnabled, enabled)` and the sequential awaited `loadExtension` loop, which is why rtk's ASYNC factory keeps position 7), derives the real per-event handler order, and diffs it against a document's ordering section — the fenced block ONLY, because the event-bus table a few lines above has rows that start the same way. This document passes; `…-promises.md` reports `tool_call` backwards, `tool_result` missing `browser`, and five orderings it does not state at all. |
+| `w2-the-command-that-was-advertised-read-only.mjs` | **AJ1** — `/stack` is advertised to a Matrix client as "Show local model stack status" and `MATRIX_ALLOWED` had `stack: null`, i.e. the whole command; its own help says "every mutation above is a user-only command on purpose" | `node --experimental-strip-types w2-… matrix` then `… exec` | `matrix`: every subcommand through the real classifier, BEFORE (`run`) beside NOW, with what each one reaches and whether anything gated it — four had no confirmation at all, five had `ctx.ui.confirm`, which is a modal in the OPERATOR's terminal that does not say who asked and answers `false` headless. `exec`: the nine `pi.exec` sites read out of `stack.ts`, the assertion that nothing there emits a `tool_call`, and the two sentences still in the source. Controls: the advertised form still runs, and `/loop` is untouched. |
+| `w3-the-shell-command-the-relay-never-sees.mjs` | **AJ2** — the `loop` tool's `check` parameter is run as `pi.exec("bash", ["-lc", …])` once per iteration for the life of the run, and §11.4 of `…-controls.md` left it open because "the caller is already inside the trust boundary" — which names the terminal and silently includes the model | `for m in asked declined headless env terminal; do node --experimental-strip-types w3-… $m; done` | The REAL loop extension and its REAL registered tool. `asked`: the operator is told the model asked, then asked, and a yes arms it. `declined`: not armed, the command never reaches `LoopState`, the loop still starts, until-done survives on the marker, and the MODEL is told in the tool result. `headless`: nobody was asked because there was nobody to ask, and the way to allow it anyway is named. `env`: `LOOP_TOOL_CHECK=1` is the standing yes and skips the question. `terminal`: `/loop start --check` is untouched — the operator is not asked to confirm their own command. One process per mode; the loop's state is module-global. |
+| `w4-the-command-that-was-approved-and-the-one-that-ran.mjs` | **AJ3** — the permission relay shows a person the command "as the model wrote it", and `rtk-pi`'s handler runs one position later on the same mutable `event.input` and rewrites it | `for m in approved denied ungated; do node w4-… $m; done` | Both REAL `tool_call` handlers, registered in load order, driven over ONE input object, with a real sidecar stand-in answering the permission request. `approved`: BEFORE the approver read `git status` and pi ran `rtk git status`; NOW what runs is what was approved, and rtk never spent a subprocess on it. `denied`: the call is blocked, with a reason naming the relay, and a blocked call never reaches rtk — which is the half of the launcher's reasoning that was always right. `ungated`: the relay off, nobody asked, nothing stamped, and rtk rewrites exactly as before. It **waits for the sidecar's Matrix login** rather than sleeping on it — see the addendum. |
+| `w5-the-fence-the-answer-could-close.mjs` | **AJ4** — `buildJudgePrompt` quotes the child's ANSWER inside a triple-backtick fence and asks its question underneath, so an answer containing a fence continued in INSTRUCTION position above the two lines the judge is meant to obey | `for m in inject code brief; do node --experimental-strip-types w5-… $m; done` | The REAL builder against a reconstruction of the old one. `inject`: BEFORE the ANSWER block holds one line and the prompt carries FOUR bare `VERDICT:`/`WHY:` lines where the builder wrote two; NOW everything the child wrote is still inside the block and exactly two instruction lines remain, both the builder's own. Both prompts are printed in full from `ANSWER:` down. `code` is the control that decides whether the fix is worth having — an ordinary answer with a fenced code block survives byte for byte. `brief` covers the TASK block and the REPAIR prompt, which goes into the child's own session, which has tools. |
+
+`w2`, `w3` and `w5` import modules with no runtime pi imports, so plain node with
+`--experimental-strip-types` is enough; `w1` reads sources and pi's dist as text;
+`w4` loads both extensions through pi's own bundled `jiti` and starts
+`_sidecar.mjs`.
+
+**`_sidecar.mjs` gained one thing this pass, additively**: it answers
+`notifications/claude/channel/permission_request`, recording the exact
+description a person would have been shown to the outbox and replying with
+`PROBE_PERMISSION` (`allow` by default, `deny`, or `ignore` to let it time out).
+Nothing that did not send one behaves differently, so `v2` and `v4` are unchanged.
+
+**Nineteenth-pass addendum, and it is about waiting.** `w4` was flaky one run in
+three with a fixed `await sleep(1500)` after `session_start`. The reason is worth
+keeping: `requestApproval` **fails closed** — "the approver was unreachable is not
+the same as the approver said yes" — so a probe that starts asking before the
+sidecar has reported its Matrix login measures the relay's own timeout and
+reports a DENY the code under test had nothing to do with. It now polls the
+notices for `connected as` with a 30-second ceiling and asserts it saw one.
+**An instrument that does not wait for its own preconditions reports a failure
+that belongs to the instrument**, and on a fail-closed path that failure looks
+exactly like the behaviour you are trying to measure.
+
+And one about the other kind of instrument. `t5` — the standing scan that keeps
+the event-bus table honest, written for AG4 because five documents drew the bus
+wrong — passed for four passes while the table was missing a package, because its
+`PACKAGES` list was **the map's own list**. It now derives seven columns rather
+than five and fails when a package that registers something has no column at all.
+**When you write a scan to keep a document honest, seed it from the thing the
+document is ABOUT, not from the document.** `w1` reads
+`scripts/pi-local.sh`; that is the whole difference between the two.
+
+## The twentieth pass (AK1–AK5) — `x1`–`x6`
+
+All five defects these were written for are **fixed**. Each probe prints BEFORE
+and NOW side by side, so it is its own control.
+
+This pass asked **what the test is a proxy for**: take a predicate, write down
+the PROPERTY it is named for and the TEST it actually runs, and enumerate the
+set where the two differ. Every finding is a predicate that is right about the
+case in front of it and wrong about a set.
+`context/design/subagents-loop-verifier-proxies.md` is the write-up; **§10.5 is
+the proxy ledger**, §10.5.1 draws the five by the DISTANCE between the two
+halves, §10.5.2 names the three shapes a proxy fails in, and §11 has the fix and
+the control-run failing count for each.
+
+`x2` is the odd one out: it is not a reproduction and not a scan but a
+**measurement taken before the code it justifies was written** — the nineteenth
+pass's handoff asked for exactly that, in those words, and §5.7 of the write-up
+is what was built on the answer.
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `x1-the-guideline-that-was-not-there-yet.mjs` | **AK1** — `registerTools` ran behind `if (isConfigured())` at FACTORY time, and `/prinny configure` writes the credentials and starts the channel in the same session. `promptGuidelines` come only from registered tools, and one of this tool's two is the only sentence in the stack that says a `[matrix]` marker is untrusted input | `node x1-…` | The REAL extension, through pi's own jiti with a stub `pi`. Unconfigured: no tool, BEFORE and NOW alike — the control that an unconfigured session still pays nothing for six tool schemas. Then the credentials are written, `session_start` fires, and the tool arrives with both guidelines printed in full. It then calls the real `renderInboundMessage` to show that the marker named in the guideline is the marker on the wire, and fires `session_start` twice to show the gate is idempotent. |
+| `x2-the-entry-the-model-never-sees.mjs` | §5.7 — the transcript | `node --experimental-strip-types x2-…` | pi 0.84.2's own `SessionManager`: a real session file, three `subagent-turn` entries between the operator's own turns, two compactions, then the file re-opened from disk with nothing in memory. Reports three things separately — what the model is SENT (`buildSessionContext`), what the transcript HOLDS (`getEntries`), and what survived on DISK (the JSONL, re-parsed). The interesting failure is the first being non-empty: that would mean every delegation's reasoning is charged to the parent's window. |
+| `x3-the-spelling-the-guard-knew.mjs` | **AK2** — `DANGEROUS_PATTERNS` tested one spelling of `rm -rf`, in a mode whose help promises "and similar" | `node --experimental-strip-types x3-…` | The shipped regex list, reconstructed verbatim, run beside the real module over 34 commands in four groups, every row printing BEFORE and NOW: the seven spellings of one `rm` (five of which passed), the same shape at `git clean`/`git reset`/`chmod`, the control that nothing the old list caught was let go, and the control that ten ordinary commands still gate nothing. Ends by printing the `reason` an approver would read, because the fix must not change the sentence. |
+| `x4-the-request-read-as-a-reply.mjs` | **AK3** — `dispatch` branched on `id` before `method`, so a server-initiated request resolved the client's own outstanding call with `undefined` | `node --experimental-strip-types x4-…` | The real `McpChild` against a real child process, in BOTH branch orders — the probe writes a copy of the module with the two blocks swapped and imports it, so BEFORE is a measurement rather than a reconstruction. BEFORE: *the call RESOLVED after 0ms with `{"content":[]}`*, and the server's request was never answered. NOW: it times out, and the request gets the `-32601` the file always meant to send. Uses a new `serverrequest` mode in `tests/fixtures/fake-sidecar.mjs`, which echoes whatever the client replies to stderr. |
+| `x5-the-approval-nobody-was-waiting-for.mjs` | **AK4** — `requestApproval` fails closed on a timeout and tells the sidecar nothing, so the Allow button stayed live forever and pressing it wrote `✅ Allowed` into the room for a call that had already been blocked | `node x5-…` | A plain `Map` beside the real `PermissionRegistry` over the same sequence: the press an hour later (BEFORE it still had the prompt; NOW it does not, and prints the sentence the room is given instead), the exact expiry boundary at 299 999 / 300 000 / 300 001 ms, and a day of an unattended run — 24 prompts held versus 1, with the bytes of `input_preview` each was holding. |
+| `x6-the-word-that-counted-as-progress.mjs` | **AK5** — `hasStateChange` is named for a change to the project and tested a word list, including `passed`, over the output of ANY tool. The audit rung reads what it writes, and could not fire on a `--check "cargo test"` run | `for m in cargo jest changelog grep control-edit control-bash; do node --experimental-strip-types x6-… $m; done` | The REAL loop module, eight iterations per mode, with the shipped predicate reconstructed for the BEFORE line. Four modes where the audit rung must now fire (`cargo`, `jest`, `changelog`, `grep`) and two controls where it must not (`control-edit`, `control-bash`). The tool output differs per turn on purpose — three identical results in a row are the stuck ladder's rule 7, which would fire first and make every case pass for the wrong reason. |
+
+`x1`, `x2` and `x5` load real modules with no runtime pi imports (or pi's dist
+directly); `x3`, `x4` and `x6` need `--experimental-strip-types`; `x1` loads
+`prinny-channel/extensions/index.ts` through pi's own bundled `jiti` with the
+same alias map `w4` uses.
+
+**Twentieth-pass addendum, and it is about what a probe is allowed to assume.**
+`x6`'s first draft used the same tool output every turn and every case passed —
+for the wrong reason. Three identical tool results in a row are `detectStuck`'s
+rule 7, which fires several rungs above the audit rung, so the probe was
+measuring the stuck ladder and reporting it as the audit ladder. **A probe that
+drives a real ladder has to get PAST every rung above the one it is about**, and
+the way to know it did is to print the sentence the loop actually said rather
+than to assert a boolean. `x6` prints it; that is the only reason the mistake
+was visible.
+
+And one about the other direction. `x4` reverts the fix by rewriting the module
+into a temp file and importing both copies in one process. That is worth more
+than a reconstruction of the old behaviour, because a reconstruction is a claim
+about what the old code did and a re-import is the old code. The cost is one
+brittle string match on the source; when it stops finding the two branches it
+throws with *"has dispatch moved?"* rather than silently measuring one order
+twice.
+
+## The twenty-first pass (AL1–AL9) — `y1`–`y9`
+
+All nine defects these were written for are **fixed**. Each prints BEFORE and
+NOW, so running one is its own control. The write-up is
+`context/design/subagents-loop-verifier-lifetimes.md`: **§10.5 is the lifetime
+ledger** — every construct in the stack with a beginning and an end, the one
+place that ends it, and the count of ways the work can finish — §10.5.1 draws the
+nine by DISTANCE (seven of nine are distance zero, and in five of those the
+correct version of the same construct is on screen at the same time as the
+defective one), §10.5.2 names the four shapes a lifetime fails in, and §11 has
+the fix and the control-run failing count for each.
+
+The axis: **for every construct with a beginning and an end, name the ONE place
+that ends it, then enumerate the paths that reach the end of the WORK without
+reaching the end of the THING.**
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `y1-the-follow-up-that-replayed-the-run-before-it.mjs` | **AL1** — a continuation's transcript subscribed at message 1 of a session that already held a settled run, and `MAX_LINES` then dropped the answer the follow-up was about | `for m in followup first compaction; do node --experimental-strip-types y1-… $m; done` | The real `streamAgentOutput` and the real `AgentTranscript` over a 142-message session, at both anchors, printing the entry the operator reads. BEFORE it opens with `step 0:` of the settled run and drops 92 lines; NOW it holds the follow-up's answer and drops none. `first` and `compaction` are the two controls the fix must not move: the FIRST attach still skips the prompt it already wrote, and the compaction re-anchor still resets to 1 because pi rebuilds the array. |
+| `y2-the-rescue-turn-that-never-ended.mjs` | **AL2** — `interveneStuck` switches the whole SESSION's model for a "rescue turn", and rung 7 of an eighteen-rung `agent_end` ladder was the only stand-down | `for m in rung3 rung3-ten rung5 rung1 stop end control; do node --experimental-strip-types y2-… $m; done` | The REAL loop module, driven with four turns of fixated output to a genuine rescue turn — and it asserts it arrived before testing anything, which is x6's lesson. Then it ends that turn each of seven ways and prints the sentence the loop actually said next to the model the session was left on. `rung3` is the shape that costs most: an unloaded rescue model answers with an empty turn, and the provider-error rung answers an empty turn by retrying — ten times, BEFORE on the model that could not answer. `control` is rung 7, the path that always worked. |
+| `y3-the-client-every-failed-attempt-built.mjs` | **AL3** — the sidecar's connect loop retries forever and built a Matrix client per attempt, on one Olm crypto store, with no path anywhere that stopped one | `for m in outage recovered shutdown; do node --experimental-strip-types y3-… $m; done` | The real `connectWithRetry` against a fake client that records whether anybody stopped it, with the shipped loop reconstructed for the BEFORE column. `outage`: a hundred failures leave a hundred unreachable clients BEFORE and none NOW. `recovered` is the control — the retry does its job in both columns, and the published client is never the one stopped. `shutdown` covers the client of the attempt that was in flight when pi quit, which the old `if (shuttingDown) return` abandoned. |
+| `y4-the-sweep-that-could-not-stop.mjs` | **AL4** — the delivery sweep armed on "a message arrived" and disarmed on a strictly weaker question, so one reported message armed a 30 s interval for the rest of the session | `for m in undelivered command answered; do node --experimental-strip-types y4-… $m; done` | An hour of 30 s ticks through the real `undeliveredRooms`, with the shipped disarm test beside the new one. The verdict is identical in both columns — the report still happens, once — and the difference is 120 sweeps versus 2. `command` is the cheaper reproduction that needs no failure at all: a Matrix `/loop status` arms it and is `answered`, which is `live: false` forever. `answered` is the mode where the shipped disarm worked, which is exactly why the defect was invisible. |
+| `y5-the-eighty-millisecond-poll-nobody-stopped.mjs` | **AL5** — `ensureTimer` armed an 80 ms poll on the first delegation, `update()` returned instead of stopping, and each tick sorted every record the manager had ever held | `node y5-… idle` / `active` / `continuation` | The real `AgentWidget` over the real `AgentManager` with fifty aged-out records. `idle`: armed by the spawn, stopped by `update()`. `active` is the control — a running delegation keeps it armed. `continuation` is the half of the fix that is not a `stopTimer`: `AgentManager.onStart` had **no setter and was constructed with `undefined`**, so the hook `startAgent` has always called was wired to nothing; this mode shows it firing and the poll coming back. Needs pi's bundled `jiti` (the widget imports `@earendil-works/pi-tui`). |
+| `y6-the-indicator-a-stopped-channel-left-up.mjs` | **AL6** — `stopChannel` cleared the delivery interval and not the typing one, so nobody was ever sent `typing: false` and every room kept the indicator up for Matrix's own 20 s timeout | `node --experimental-strip-types y6-…` | Two halves, and it says which is which. The plan is EXECUTED through the real `src/typing.ts` — three rooms, BEFORE told nothing, NOW told to stop. The ordering is READ out of `extensions/index.ts`, because that file imports pi and typebox: it prints `stopChannel`'s six steps in source order and asserts the clear happens while `child` is still non-null, since `stopTyping`'s whole body is outbound calls. |
+| `y7-the-unregister-that-was-never-called.mjs` | **AL7** — the terminal-input unregister was captured, guarded on, and never called; the reason nothing broke belongs to pi | `node --experimental-strip-types y7-…` | Mostly a MEASUREMENT rather than a reproduction, and deliberately: it walks pi's own dist and prints the chain — `teardownCurrent` → `beforeSessionInvalidate` → `resetExtensionUI` → `clearExtensionTerminalInputListeners`, with the line number of each — to establish that pi drops the subscription on every `/new`, `/resume`, `/fork`, import and quit. Then the extension's end of it. The finding is that this was a dependency on somebody else's teardown with nothing saying so. |
+| `y8-the-footer-that-outlived-the-loop.mjs` | **AL8** — `setStatus("loop", …)` appears thirty times and `setStatus("loop", undefined)` appeared none, so `/loop end` deleted the loop and left its pill in the footer | `for m in end clear stop finish; do node --experimental-strip-types y8-… $m; done` | The REAL loop module through a run and each way of ending one, printing the footer and `/loop status` **side by side**. After `/loop end` the footer said *"Loop ended"* while status said `Active: false · Goal: -` — the two disagreeing is the finding, and the footer is the one nobody has to ask. `stop` and `finish` are the controls for the twenty-nine pills that stay, because those loops still exist and are resumable. |
+| `y9-the-spill-directory-per-process.mjs` | **AL9** — the spill bound is fifty files per DIRECTORY and the directory is one per PROCESS, so nothing bounded the directories | `for m in week live legacy; do node --experimental-strip-types y9-… $m; done` | Thirty finished sessions' directories, at the file bound, in a temporary root, then the real sweep. Measured on this box before the fix: **247 directories, 230 MB, over four days**, from two prefixes. `live` is the whole risk of a sweep — a `/loop` running for days shares `/tmp` with whatever starts next and its markers still name those files — and its directory survives intact. `legacy` covers the 247 untagged ones: no evidence either way, so they are left. |
+
+`y5` needs pi's bundled `jiti`; the rest run under plain
+`node --experimental-strip-types`.
+
+**Twenty-first-pass addendum, and it is about a probe that could not reach the
+rung it named.** `_host.mjs`'s `turn()` built every assistant message with
+`stopReason: "stop"`. `agent_end`'s ladder has a rung for an ABORTED turn — rung
+5, the operator pressing Esc — and a helper that can only build `"stop"` cannot
+reach it. `y2`'s `rung5` mode therefore drove rung 7 while printing "rung5" as
+its label, and passed. `stopReason` is a parameter now, defaulting to `"stop"` so
+every existing probe is byte-identical.
+
+That is the twentieth pass's own axis one layer out: **the label is a claim about
+which code ran, and the only thing that checks it is printing the sentence the
+module actually produced.** `y2` prints it, which is the only reason the mistake
+was visible — the same reason `x6` printed it a pass earlier.
+
+And one about what a teardown in a probe or a test is allowed to compute. The
+first draft of `spill-dirs.test.ts` derived a cleanup path with
+`file.split(PREFIX)[0]`, got `/tmp`, and handed it to a recursive `rmSync` in
+`after()`. **It deleted `/tmp`.** The rule that came out of it is the same one
+the module under test follows: a teardown that takes a path from a computation
+has to prove the path is its own — under `tmpdir()`, one segment, with a known
+prefix — immediately above the destructive call, not merely where the path was
+queued. `y9` and that suite both do it twice, once at queue time and once at
+delete time.

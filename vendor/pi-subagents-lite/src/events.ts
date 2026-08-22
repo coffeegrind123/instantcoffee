@@ -50,6 +50,16 @@ export function ensureManagerAndWidget(): void {
       coordinator.onAgentComplete(record);
       getWidget()?.update();
     });
+
+    // AL5: the widget's 80 ms refresh now stops when there is nothing to draw,
+    // so something has to start it again. `startAgent` and `continueSettledAgent`
+    // both announce here; `SpawnCoordinator.spawn` also calls `ensureTimer`
+    // directly, and both are idempotent.
+    newManager.setOnStart(() => {
+      const widget = getWidget();
+      widget?.ensureTimer();
+      widget?.update();
+    });
   }
 
   if (!currentWidget) {
@@ -234,6 +244,31 @@ export function setupEventListeners(pi: ExtensionAPI): void {
     getWidget()?.setUICtx(ctx.ui as unknown as UICtx);
   });
 
+  /**
+   * The handle that ends the terminal-input subscription.
+   *
+   * Forge fork, twenty-first pass (AL7). It was captured and never called: the
+   * one thing in this package whose only purpose is to END something, and the
+   * package had no reference to it apart from the assignment and the guard that
+   * reads it as "already done".
+   *
+   * It has never leaked, and the reason is a property of the HOST rather than of
+   * anything here — measured against pi 0.84.2 rather than assumed:
+   * `runtimeHost.setBeforeSessionInvalidate` (`interactive-mode.js:345`) calls
+   * `resetExtensionUI()`, whose body reaches `clearExtensionTerminalInputListeners()`
+   * (`:1726`), and `teardownCurrent` runs that on every `/new`, `/resume`,
+   * `/fork` and import (`agent-session-runtime.js:111`). `stop()` does the same
+   * on the way out (`:5425`). So pi unsubscribes for us, every time.
+   *
+   * Two reasons to call it anyway. The guard below is `!unregisterTerminalInput`,
+   * so if pi ever stopped clearing, the symptom would be nav keys that silently
+   * stop working after a `/new` — the widget's arrows, Enter into the viewer,
+   * Escape — with nothing to report it, because the extension believes it is
+   * still subscribed. And a teardown that depends on somebody else's teardown is
+   * exactly what this pass is about: `session_shutdown` already disposes the
+   * coordinator, the store, the widget and the manager, and this was the fifth
+   * thing in the list with no line.
+   */
   let unregisterTerminalInput: (() => void) | undefined;
 
   pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
@@ -262,6 +297,16 @@ export function setupEventListeners(pi: ExtensionAPI): void {
         ctx.ui.notify(`${active.length} agent(s) killed by reload`, "warning");
       }
     }
+    // AL7: ours to end, and ended here. pi clears its own subscription list a
+    // moment later (`beforeSessionInvalidate`), so this is idempotent — the
+    // handle pi returns unsubscribes and drops the entry, and running it twice
+    // is a no-op. Cleared so the guard in `session_start` re-registers.
+    try {
+      unregisterTerminalInput?.();
+    } catch {
+      // A teardown is not worth an extension error on the way out.
+    }
+    unregisterTerminalInput = undefined;
     // Dispose coordinator, store, widget, then manager
     getCoordinator()?.dispose();
     setCoordinator(null);

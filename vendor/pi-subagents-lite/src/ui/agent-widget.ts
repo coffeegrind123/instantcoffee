@@ -474,6 +474,43 @@ export class AgentWidget {
     }
   }
 
+  /**
+   * Arm the refresh poll, if it is not already running.
+   *
+   * Forge fork, twenty-first pass (AL5). Two things were wrong with the pair
+   * this method used to be half of, and both are about what ENDS it.
+   *
+   * **Nothing stopped it.** `SpawnCoordinator.spawn` and the menu wizard call
+   * this on every spawn; `dispose()` at `session_shutdown` was the only clear,
+   * plus a defensive one for a lost manager. `update()` returns early when
+   * there is nothing to draw — and returning is not stopping, so the first
+   * delegation of a session armed an 80 ms poll that ran for the rest of it.
+   * Each tick calls `categorizeAgents()`, which calls `listAgents()`, which
+   * copies and SORTS every record the manager has ever held; nothing prunes
+   * that map, so an unattended `/loop` delegating each iteration made the tick
+   * more expensive the longer it ran, forever, to draw nothing.
+   *
+   * **It was the one long-lived INTERVAL in this stack not `unref`'d.** There
+   * are four — the manager's watchdog, prinny's typing refresh, prinny's
+   * delivery sweep and this one — and the other three say so out loud: "never
+   * hold the process open for a deadline that has outlived its session", "never
+   * hold the process open for a typing indicator", "never hold the process open
+   * to complain about a message". A widget is the least important of the four.
+   *
+   * Corrected in the same pass (§11.7): the first draft of this paragraph said
+   * "the one timer in this stack", and that is false. `SpawnCoordinator`'s
+   * nudge batch, `ConversationViewer`'s render debounce and `events.ts`'s
+   * ctrl+o read-back are ref'd one-shots measured in milliseconds, and
+   * `pi-loop-mode`'s `pendingTimer` is ref'd for as long as `--delay` says —
+   * deliberately, because between iterations that timer IS the loop, and
+   * unref'ing it would be a behaviour change rather than a tidy-up. The claim
+   * was checked after it was written, which is the wrong order and is the whole
+   * of the AE axis.
+   *
+   * `update()` now disarms when there is nothing to show, and re-arming is
+   * already wired: `AgentManager.onStart` fires for a first run AND for a
+   * continuation, and the shell's handler calls this.
+   */
   ensureTimer() {
     if (!this.widgetInterval) {
       this.widgetInterval = setInterval(() => {
@@ -483,6 +520,15 @@ export class AgentWidget {
           getSessionCtx()?.ui?.notify(`[subagents] Widget timer error: ${err}`, "warning");
         }
       }, WIDGET_REFRESH_INTERVAL);
+      this.widgetInterval.unref?.();
+    }
+  }
+
+  /** Stop the refresh poll. `ensureTimer()` is what starts it again. */
+  private stopTimer(): void {
+    if (this.widgetInterval) {
+      clearInterval(this.widgetInterval);
+      this.widgetInterval = undefined;
     }
   }
 
@@ -956,8 +1002,7 @@ export class AgentWidget {
   update() {
     if (!this.manager) {
       // Widget lost its manager reference (e.g., after session shutdown)
-      clearInterval(this.widgetInterval);
-      this.widgetInterval = undefined;
+      this.stopTimer();
       return;
     }
     if (!this.uiCtx) return;
@@ -971,6 +1016,11 @@ export class AgentWidget {
       if (this.widgetRegistered || this.lastStatusText !== undefined) {
         this.clearWidget();
       }
+      // AL5: nothing to draw and nothing that can start drawing itself — every
+      // route back into this state goes through a spawn or a continuation, and
+      // both re-arm. Returning without this is what kept an 80 ms poll over a
+      // growing record map alive for the rest of the session.
+      this.stopTimer();
       return;
     }
 
@@ -1013,11 +1063,7 @@ export class AgentWidget {
   }
 
   dispose() {
-    const interval = this.widgetInterval;
-    if (interval != null) {
-      clearInterval(interval);
-      this.widgetInterval = undefined;
-    }
+    this.stopTimer();
     if (this.uiCtx) {
       this.uiCtx?.setWidget(WIDGET_KEY, undefined);
       this.uiCtx?.setStatus(STATUS_KEY, undefined);

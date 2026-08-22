@@ -7,7 +7,8 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.js";
-import { AgentOutputLog } from "./output-file.js";
+import { AgentOutputLog, streamAgentOutput } from "./output-file.ts";
+import { AgentTranscript, transcriptEnabled } from "./transcript-entry.ts";
 import { Watchdog } from "./watchdog.js";
 import { getPiInstance, getStore } from "../shell.js";
 import { appendFollowUp, buildAnchorMessage } from "./verify.ts";
@@ -15,6 +16,7 @@ import { resolveVerifyRounds, resolveVerifyTimeoutMs, verifyAnswer, type VerifyD
 import { appendVerifyLog } from "./verify-log.ts";
 import { VERIFIER_AGENT_TYPE } from "./default-agents.js";
 import {
+  SHORT_ID_LENGTH,
   type AgentRecord,
   type AgentStatus,
   type RunCallbacks,
@@ -30,6 +32,7 @@ import { DEFAULT_CONCURRENCY, DEFAULT_GRACE_TURNS } from "../config/config-io.js
 import { SlotTable, type ConcurrencyConfig, type ConcurrencySlot } from "./concurrency-slots.ts";
 import { anchorReachesATurn } from "./compaction-anchor.ts";
 import { isVerifyingRecord } from "./record-activity.ts";
+import { undeliveredSteersReport } from "../ui/action-report.ts";
 
 export type { ConcurrencyConfig } from "./concurrency-slots.ts";
 
@@ -176,6 +179,41 @@ function formatModelError(
 ): string {
   const sanitizedError = toSingleLine(providerError);
   return model ? `${type} (${model.provider}/${model.id}): ${sanitizedError}` : `${type}: ${sanitizedError}`;
+}
+
+/**
+ * Point `streamAgentOutput` at a record's transcript.
+ *
+ * The wiring is here rather than inside `AgentTranscript` so that module can
+ * import neither pi nor the package's `.js`-suffixed siblings — which is what
+ * lets the suite load it under bare `node --experimental-strip-types` and test
+ * the bounds that an unattended run depends on. Two lines here, one dependency
+ * fewer there.
+ */
+function attachTranscript(
+  record: AgentRecord,
+  session: Parameters<typeof streamAgentOutput>[0],
+  startIndex?: number,
+): void {
+  const transcript = record.execution.transcript;
+  if (!transcript) return;
+  try {
+    transcript.setCleanup(
+      streamAgentOutput(
+        session,
+        transcript.sink,
+        undefined,
+        getStore().agent.outputThinkingBufferSize,
+        transcript.endTurn,
+        // AL1: undefined here means "this session is new", which is true at
+        // `onSessionCreated` and false for a continuation. See
+        // `streamAgentOutput` for what the wrong answer cost.
+        startIndex,
+      ),
+    );
+  } catch {
+    // A transcript that cannot be attached is not a reason to fail a spawn.
+  }
 }
 
 type OnAgentComplete = (record: AgentRecord) => void;
@@ -529,6 +567,16 @@ export class AgentManager {
       // the bounds and the switch. It never throws.
       log: (entry) => {
         appendVerifyLog({ ...entry, agentId: record.id, agentType: record.display.type });
+        // …and into the session transcript, so the judge's question and its
+        // answer sit next to the turns they are about rather than in a third
+        // file. This is the half of the operator's request that also closes
+        // item 12 of the still-unwatched list: a real prompt and a real reply,
+        // in a place somebody is already reading.
+        record.execution.transcript?.verify(
+          entry.phase === "repair" ? "repair" : "verify",
+          entry.prompt,
+          entry.reply,
+        );
       },
     };
   }
@@ -612,6 +660,21 @@ export class AgentManager {
       record.display.outputFile = record.execution.outputLog.path;
     }
 
+    // Forge fork, twentieth pass: the same turns, in the operator's own session
+    // transcript, marked as a subagent's. Not behind `outputTranscript` — that
+    // switch is about a file in /tmp, and this is about the record of what
+    // happened being where the rest of the record is. `getPiInstance()` is the
+    // PARENT's pi on purpose: the child's own is bound to a session that is
+    // thrown away.
+    if (transcriptEnabled()) {
+      const parentPi = getPiInstance();
+      if (parentPi) {
+        const transcript = new AgentTranscript(parentPi, id, type);
+        record.execution.transcript = transcript;
+        transcript.brief(prompt, options.description);
+      }
+    }
+
     this.onStart?.(record);
 
     const promise = runAgent(ctx, type, prompt, {
@@ -631,6 +694,7 @@ export class AgentManager {
       }),
       onSessionCreated: (session) => {
         record.execution.session = session;
+        attachTranscript(record, session);
         // Flush any steers that arrived before the session was ready
         if (record.execution.pendingSteers?.length) {
           for (const msg of record.execution.pendingSteers) {
@@ -697,6 +761,13 @@ export class AgentManager {
         // Count this settlement before notifying, so the completion callback
         // can tell a continuation settlement (>= 2) from the first one.
         record.execution.settlementCount++;
+        // AI3: a steer queued for a session that was never created. See
+        // `undeliveredSteersReport` for what was promised and by whom.
+        this.reportUndeliveredSteers(record);
+        // Before the output log, so the transcript's closing entry and the
+        // file's DONE line report the same numbers rather than two readings a
+        // few statements apart.
+        this.finalizeTranscript(record);
         if (record.execution.outputLog) {
           try {
             record.execution.outputLog.finalize({
@@ -723,6 +794,65 @@ export class AgentManager {
         // the slot and prompt the session again.
         record.execution.settled = true;
       });
+  }
+
+  /**
+   * Say that a queued steer never reached a model, and drop it.
+   *
+   * Forge fork, eighteenth pass (AI3). `steer()` answers `true` for a steer it
+   * parks in `record.execution.pendingSteers`, on the promise in its own comment
+   * — *"Queued, so it WILL reach the model — onSessionCreated flushes it"* — and
+   * `onSessionCreated` is the one thing a run that dies during setup never
+   * reaches. `runAgentImpl` builds a `SettingsManager`, resolves the system
+   * prompt sources, runs `detectEnv` (two git subprocesses on a 9p mount) and
+   * then `reloadAndMap()`, which calls every extension factory; that is seconds,
+   * and `record.lifecycle.status` is `running` throughout it.
+   *
+   * Reported on the same two channels every other undelivered thing in this
+   * package uses — `console.warn`, which exists headless, and the spawning
+   * session's own context. The queue is cleared afterwards so a continuation of
+   * the same record cannot report it twice.
+   *
+   * The brief is deliberately left alone. `growBrief` recorded the steer when it
+   * was accepted, and the honest repair for that is the sentence, not a rewrite:
+   * un-growing it would silently change what the verifier checks against on a
+   * record whose run is already over, and the note says the answer was not
+   * written with them.
+   */
+  /**
+   * Close this run's transcript with one line saying how it ended.
+   *
+   * Called from the settlement chain's `finally`, which is the one place every
+   * exit reaches — a completed run, a provider error, an abort, a watchdog
+   * stop and a dispose all pass through it. Anything narrower would leave a
+   * transcript that simply stops, which reads as a delegation that is still
+   * going.
+   */
+  private finalizeTranscript(record: AgentRecord): void {
+    const transcript = record.execution.transcript;
+    if (!transcript) return;
+    const verification = record.verification ? `, check ${record.verification}` : "";
+    const error = record.error ? ` — ${toSingleLine(record.error)}` : "";
+    transcript.finalize(
+      `${record.display.type} ${record.lifecycle.status}: ${record.stats.turnCount ?? 0} turn(s), ` +
+        `${record.stats.toolUses} tool use(s), ${getLifetimeTotal(record.stats.lifetimeUsage)} token(s)` +
+        `${verification}${error}`,
+    );
+    record.execution.transcript = undefined;
+  }
+
+  private reportUndeliveredSteers(record: AgentRecord): void {
+    const pending = record.execution.pendingSteers;
+    if (!pending || pending.length === 0) return;
+    record.execution.pendingSteers = undefined;
+    const report = undeliveredSteersReport(pending.length, record.id.slice(0, SHORT_ID_LENGTH));
+    console.warn(`[pi-subagents-lite] ${report.text}`);
+    try {
+      record.execution.spawnCtx?.ui?.notify?.(report.text, report.level);
+    } catch {
+      // A session that is going away is exactly the case here; the line above is
+      // the record.
+    }
   }
 
   private createCompletionGate(id: string): Promise<string> {
@@ -777,6 +907,19 @@ export class AgentManager {
 
   setOnComplete(cb: OnAgentComplete): void {
     this.onComplete = cb;
+  }
+
+  /**
+   * Told whenever a record starts running — a first run or a continuation.
+   *
+   * Forge fork, twenty-first pass (AL5). `onStart` was a constructor parameter
+   * with no setter, and `ensureManagerAndWidget` passed `undefined` for it, so
+   * the hook `startAgent` has always called was wired to nothing. It is wired
+   * now, and it is what re-arms the widget's refresh poll — which is only safe
+   * to stop because this exists.
+   */
+  setOnStart(cb: OnAgentStart): void {
+    this.onStart = cb;
   }
 
   /** Get the session-level cumulative agent cost. Survives record removal (Clear/dispose). */
@@ -1016,6 +1159,34 @@ export class AgentManager {
     // immediately — restart the watchdog before the new turn begins.
     this.watchdog.start(record.id);
 
+    // A continuation is a second run of the same record, and it settles through
+    // the same chain — which finalized the first transcript. Give it its own,
+    // so a follow-up is recorded rather than silently absent. `brief` carries
+    // the follow-up, not the original task, because that is what this run was
+    // asked.
+    if (transcriptEnabled() && !record.execution.transcript) {
+      const parentPi = getPiInstance();
+      if (parentPi) {
+        const transcript = new AgentTranscript(parentPi, record.id, record.display.type);
+        record.execution.transcript = transcript;
+        transcript.brief(message, record.display.description);
+        // AL1: this session is NOT new. It holds every message of the run that
+        // just settled, and a subscription anchored at 1 replays all of them
+        // into the follow-up's first entry — where `MAX_LINES` then drops the
+        // answer the follow-up was about. Anchored at the end of what is
+        // already there, so the first thing this transcript records is the
+        // follow-up message itself.
+        attachTranscript(record, session, session.messages.length);
+      }
+    }
+
+    // AL5: a continuation is a record going from settled back to running, and
+    // the widget's poll now stops when there is nothing to draw. `startAgent`
+    // has always announced itself here; this path never did, so the one route
+    // back into "there is something to show" that does not go through spawn()
+    // was also the one that could not re-arm the refresh.
+    this.onStart?.(record);
+
     const previousTurns = record.stats.turnCount ?? 0;
     const promise = continueAgentSession(session, message, {
       ...this.runTrackingCallbacks(record, record.execution.liveViewCallbacks, (turnCount) => {
@@ -1139,6 +1310,8 @@ export class AgentManager {
   }
 
   private removeRecord(id: string, record: AgentRecord): void {
+    record.execution.transcript?.dispose();
+    record.execution.transcript = undefined;
     record.execution.session?.dispose();
     record.execution.session = undefined;
     this.detachParentBinding(record);
@@ -1174,6 +1347,8 @@ export class AgentManager {
         record.lifecycle.completedAt = Date.now();
         this.openGate(record.id, "");
       }
+      record.execution.transcript?.dispose();
+      record.execution.transcript = undefined;
       record.execution.session?.dispose();
       this.detachParentBinding(record);
     }

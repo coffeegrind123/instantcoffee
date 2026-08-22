@@ -134,9 +134,18 @@ console.log(`
    \`.pi/extensions/stack.ts\` has nine exec sites and read \`killed\` in none of
    them. Two are now fixed — \`docker ps\`, whose empty stdout made \`/stack status\`
    report every container "not running" when the daemon merely did not answer
-   within ten seconds, and \`dockerVram\`. The remaining seven are script runners
-   whose output is reported verbatim, where a wedge shows up as empty output
-   rather than as a wrong verdict.
+   within ten seconds, and \`dockerVram\`.
+
+   ** CORRECTION, eighteenth pass (AI5). ** The sentence that stood here said
+   the remaining seven were "script runners whose output is reported verbatim,
+   where a wedge shows up as empty output rather than as a wrong verdict". Five
+   of the seven chose a verdict from \`r.code\` and said a sentence about it, and
+   the two that matter recreate llama on a 600-second timeout in a file whose own
+   confirmation prompt says the cold load is "roughly 20 minutes" — so a killed
+   \`compose up -d --force-recreate llama\` reported "llama recreated". All nine
+   now go through \`execVerdict\`, and tests/exec-verdicts.test.ts scans that
+   directory too, which is what the note above was standing in for. See
+   v5-the-verdict-the-residue-note-allowed.mjs.
 `);
 
 console.log(failures > 0 ? `   ${failures} expectation(s) failed` : "   all expectations held");

@@ -312,6 +312,57 @@ const HEADLINE_KEYS = [
 	"LLAMA_TAG",
 ];
 
+/**
+ * The verdict of one `pi.exec`, with `killed` read before `code`.
+ *
+ * Forge fork, eighteenth pass (AI5). `pi.exec` is pi's `execCommand`
+ * (`core/exec.js`), whose body is a `new Promise((resolve) => …)` with no
+ * `reject` in it, and which resolves a child it killed on its own timeout with
+ * `code: code ?? 0` — a signalled child exits with a signal and NO code. So
+ * `result.code === 0` is TRUE for a command that never finished, and a
+ * code-first verdict reads a wedge as a success that printed nothing.
+ *
+ * The seventeenth pass fixed the two call sites in this file where that produced
+ * a wrong READING — `docker ps` (every container reported "not running") and
+ * `dockerVram` — and left the other seven with a reason written into
+ * `context/testing/probes/u2-the-probe-that-did-not-answer.mjs`:
+ *
+ * > The remaining seven are script runners whose output is reported verbatim,
+ * > where a wedge shows up as empty output rather than as a wrong verdict.
+ *
+ * Five of the seven do not report output verbatim; they choose a verdict from
+ * `r.code` and say a sentence about it. The worst two are the pair that recreate
+ * llama, both on a 600-second timeout, in a file whose own text says the cold
+ * load is "~9-20 minutes" — so the timeout is INSIDE the operation's normal
+ * duration, and a killed `compose up -d --force-recreate llama` reported
+ * *"llama recreated"*, at `warn`, to an operator who then waits for a container
+ * that was never brought up. `/stack set` was the same shape one layer quieter:
+ * a killed `env_set` was reported as `KEY: old -> new`, i.e. as an .env write
+ * that did not happen.
+ *
+ * One helper rather than seven inline tests, for the reason
+ * `vendor/pi-subagents-lite/src/spawn/git-failure.ts` is one module: the next
+ * `pi.exec` in this file will be written by somebody reading a neighbour.
+ * `tests/exec-verdicts.test.ts` in that package is the standing scan, and it now
+ * covers this directory too.
+ *
+ * Returns undefined when the command really did run and exit 0.
+ */
+export function execVerdict(
+	result: { code: number; killed?: boolean },
+	timeoutMs: number,
+): { failed: true; reason: string; killed: boolean } | undefined {
+	if (result.killed) {
+		return {
+			failed: true,
+			killed: true,
+			reason: `did not finish within ${Math.round(timeoutMs / 1000)}s and was killed — it did not run to completion, so nothing below is its answer`,
+		};
+	}
+	if (result.code !== 0) return { failed: true, killed: false, reason: `exited ${result.code}` };
+	return undefined;
+}
+
 async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeInfo): Promise<StackStatus> {
 	const inDocker = existsSync("/.dockerenv");
 	const host = inDocker ? "host.docker.internal" : env.get("BIND_ADDR", "127.0.0.1") || "127.0.0.1";
@@ -325,7 +376,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		getJson<any>(`${forgeUrl}/forge/health`, DIRECT_TIMEOUT_MS),
 		getJson<any>(`${forgeUrl}/v1/models`, DIRECT_TIMEOUT_MS),
 		getJson<any[]>(`${llamaUrl}/lora-adapters`, QUEUE_BACKED_TIMEOUT_MS),
-		pi.exec("docker", ["ps", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], { timeout: 10_000 }),
+		dockerPs(pi),
 		dockerVram(pi, compose),
 	]);
 
@@ -391,27 +442,11 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 	}
 
 	const containers: StackStatus["containers"] = [];
-	// `!killed` before `code`, and it is not defensive: `pi.exec` is pi's
-	// `execCommand`, which resolves a child it killed on its own timeout with
-	// `code: code ?? 0` — a signalled child exits with a signal and NO code — and
-	// an empty stdout. So a docker daemon that did not answer within ten seconds
-	// arrived here looking exactly like a healthy `docker ps` that listed nothing,
-	// and every container in the compose file was reported "not running". On this
-	// box the documented way docker wedges is memory pressure, which is also
-	// exactly when an operator runs `/stack status`, and the obvious next action
-	// on that report is to recreate containers that are fine.
-	//
-	// Leaving `containers` empty is the honest answer: the formatter prints
-	// nothing for a service it was never told about, rather than a false "not
-	// running". Seventeenth pass (AH3); the same property of the same function is
-	// AA2 (the loop's goal check), AB3 (rtk's version probe) and the reason
-	// `vendor/pi-subagents-lite/src/spawn/git-failure.ts` exists.
-	if (psR.status === "fulfilled" && !psR.value.killed && psR.value.code === 0) {
-		const running = new Map<string, { state: string; uptime: string }>();
-		for (const line of psR.value.stdout.split("\n")) {
-			const [name, state, status] = line.split("\t");
-			if (name) running.set(name.trim(), { state: (state ?? "").trim(), uptime: (status ?? "").trim() });
-		}
+	// `dockerPs` returns null for a daemon that did not answer, and leaving
+	// `containers` empty is the honest answer: the formatter prints nothing for a
+	// service it was never told about, rather than a false "not running".
+	const running = psR.status === "fulfilled" ? psR.value : null;
+	if (running) {
 		for (const [service, name] of compose.containers) {
 			const r = running.get(name);
 			containers.push({ service, name, state: r?.state ?? "not running", uptime: r?.uptime ?? "" });
@@ -432,6 +467,41 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 }
 
 /**
+ * What docker says is running, or null when it did not say.
+ *
+ * Seventeenth pass (AH3): `!killed` before `code`, and it is not defensive.
+ * `pi.exec` is pi's `execCommand`, which resolves a child it killed on its own
+ * timeout with `code: code ?? 0` — a signalled child exits with a signal and NO
+ * code — and an empty stdout. So a docker daemon that did not answer within ten
+ * seconds arrived looking exactly like a healthy `docker ps` that listed
+ * nothing, and every container in the compose file was reported "not running".
+ * On this box the documented way docker wedges is memory pressure, which is also
+ * exactly when an operator runs `/stack status`, and the obvious next action on
+ * that report is to recreate containers that are fine.
+ *
+ * Eighteenth pass (AI5): lifted out of `collectStatus`'s `Promise.allSettled`
+ * array so the verdict sits next to the call. It was twenty-three lines away,
+ * which is correct and invisible to a scan — and `tests/exec-verdicts.test.ts`
+ * now covers this directory, with a twelve-line window.
+ */
+async function dockerPs(pi: ExtensionAPI): Promise<Map<string, { state: string; uptime: string }> | null> {
+	try {
+		const r = await pi.exec("docker", ["ps", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], {
+			timeout: 10_000,
+		});
+		if (execVerdict(r, 10_000)) return null;
+		const running = new Map<string, { state: string; uptime: string }>();
+		for (const line of r.stdout.split("\n")) {
+			const [name, state, status] = line.split("\t");
+			if (name) running.set(name.trim(), { state: (state ?? "").trim(), uptime: (status ?? "").trim() });
+		}
+		return running;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * VRAM has to be read from inside the llama container: nvidia-smi is not on
  * PATH in the pi container, and asking the host for it would report the whole
  * GPU rather than what this stack is holding.
@@ -447,8 +517,9 @@ async function dockerVram(pi: ExtensionAPI, compose: ComposeInfo): Promise<strin
 		);
 		// `killed` first, for the reason spelled out at the `docker ps` call site:
 		// a wedged daemon resolves `code: 0` with nothing on stdout, and `""` is
-		// not a VRAM reading.
-		if (r.killed || r.code !== 0) return null;
+		// not a VRAM reading. Through `execVerdict` since AI5, so there is one
+		// implementation of the rule in this file rather than a copy per site.
+		if (execVerdict(r, 15_000)) return null;
 		return r.stdout.trim().split("\n")[0] || null;
 	} catch {
 		return null;
@@ -755,7 +826,16 @@ export default function stackExtension(pi: ExtensionAPI) {
 
 		if (!target) {
 			const r = await pi.exec("bash", [script], { cwd: root!, timeout: 60_000 });
-			report("stack mode", tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 60), r.code === 0 ? "info" : "error");
+			// AI5: `killed` before `code`. See execVerdict.
+			const bad = execVerdict(r, 60_000);
+			report(
+				"stack mode",
+				[
+					...(bad ? [`mode.sh ${bad.reason}`, ""] : []),
+					...tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 60),
+				],
+				bad ? "error" : "info",
+			);
 			return;
 		}
 
@@ -778,6 +858,12 @@ export default function stackExtension(pi: ExtensionAPI) {
 		}
 
 		const applied = await pi.exec("bash", [script, target], { cwd: root!, timeout: 120_000 });
+		// AI5: `killed` before `code`, and read HERE, next to the call, because
+		// twelve lines is what `tests/exec-verdicts.test.ts` scans. A `mode.sh`
+		// killed at 120s rewrote an unknown number of .env keys, so the
+		// confirmation below — which then offers to recreate llama on the mode it
+		// claims is set — must not be printed.
+		const applyBad = execVerdict(applied, 120_000);
 		// "unchanged" lines are the majority and say nothing; the restart advice is
 		// answered by the prompt that follows, so both are dropped here.
 		const lines = cleanShellOutput(applied.stdout, applied.stderr, [
@@ -788,8 +874,8 @@ export default function stackExtension(pi: ExtensionAPI) {
 			/^\s*apply it with:/,
 			/^\s*or: docker compose/,
 		]);
-		if (applied.code !== 0) {
-			report(`stack mode ${target}`, [`mode.sh exited ${applied.code}`, ...lines], "error");
+		if (applyBad) {
+			report(`stack mode ${target}`, [`mode.sh ${applyBad.reason}`, ...lines], "error");
 			return;
 		}
 
@@ -809,24 +895,30 @@ export default function stackExtension(pi: ExtensionAPI) {
 			const bash =
 				`set -euo pipefail\nsource "${join(root!, "scripts", "lib.sh")}"\ncompose up -d --force-recreate llama\n`;
 			const r = await pi.exec("bash", ["-c", bash], { cwd: root!, timeout: 600_000 });
+			// AI5: `killed` before `code`, and this is the site where the two
+			// numbers are visibly in conflict — the timeout is ten minutes and the
+			// paragraph below says the cold load is nine to twenty. A killed
+			// `compose up` reported "llama recreated" and the operator waited for a
+			// container that was never brought up.
+			const bad = execVerdict(r, 600_000);
 			report(
 				`stack mode ${target}`,
 				[
 					...lines,
 					"",
-					r.code === 0
-						? "llama recreated. It now spends ~9-20 min reading the GGUF, and every"
-						: `recreate FAILED (exit ${r.code})`,
-					...(r.code === 0
-						? [
+					bad
+						? `recreate FAILED (${bad.reason})`
+						: "llama recreated. It now spends ~9-20 min reading the GGUF, and every",
+					...(bad
+						? tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 12)
+						: [
 								'request until then fails with 503 "Loading model" — asking the model',
 								'anything now just returns "Backend returned 503".',
 								"",
 								"Check with /stack — it reports LOADING until the model is up.",
-							]
-						: tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 12)),
+							]),
 				],
-				r.code === 0 ? "warn" : "error",
+				bad ? "error" : "warn",
 			);
 		} finally {
 			ctx.ui.setWorkingMessage?.(undefined);
@@ -933,8 +1025,20 @@ export default function stackExtension(pi: ExtensionAPI) {
 			cwd: root!,
 			timeout: 20_000,
 		});
-		if (r.code !== 0) {
-			report("stack set", [`env_set failed (exit ${r.code})`, r.stderr.trim() || r.stdout.trim()], "error");
+		// AI5: `killed` before `code`. `env_set` rewrites .env in place; a killed
+		// one may have written nothing, or half of it, and the line below reports
+		// the edit as done.
+		const setBad = execVerdict(r, 20_000);
+		if (setBad) {
+			report(
+				"stack set",
+				[
+					`env_set ${setBad.reason}`,
+					...(setBad.killed ? [`Check ${join(root!, ".env")} before assuming ${key} is unchanged.`] : []),
+					r.stderr.trim() || r.stdout.trim(),
+				],
+				"error",
+			);
 			return;
 		}
 		report("stack set", [`${key}: ${current || "(empty)"} -> ${value || "(empty)"}`, "", consequence], "warn");
@@ -967,15 +1071,21 @@ export default function stackExtension(pi: ExtensionAPI) {
 					`source "${join(root!, "scripts", "lib.sh")}"\n` +
 					`compose up -d --force-recreate ${services.join(" ")}\n`;
 				const r = await pi.exec("bash", ["-c", script], { cwd: root!, timeout: 600_000 });
+				// AI5: `killed` before `code`. The same pair of numbers as the
+				// `/stack mode` recreate above — a ten-minute timeout over an
+				// operation the confirmation prompt describes as "roughly 20
+				// minutes" — so "llama is loading" was said about a compose command
+				// pi had killed.
+				const bad = execVerdict(r, 600_000);
 				report(
 					"stack restart",
 					[
-						`docker compose up -d --force-recreate ${services.join(" ")} (exit ${r.code})`,
+						`docker compose up -d --force-recreate ${services.join(" ")} (${bad ? bad.reason : "exit 0"})`,
 						...tail(r.stdout + r.stderr, 20),
 						"",
-						cold ? "llama is loading. /stack status will show it once /props answers." : "",
+						bad ? "" : cold ? "llama is loading. /stack status will show it once /props answers." : "",
 					].filter(Boolean),
-					r.code === 0 ? "warn" : "error",
+					bad ? "error" : "warn",
 				);
 			} finally {
 				ctx.ui.setWorkingMessage?.(undefined);
@@ -1010,15 +1120,22 @@ export default function stackExtension(pi: ExtensionAPI) {
 		try {
 			const r = await pi.exec("bash", [path, ...scriptArgs], { cwd: root!, timeout });
 			const secs = ((Date.now() - started) / 1000).toFixed(0);
+			// AI5: this one already PRINTED `killed` — "(timed out)" — and then took
+			// its severity from `code` alone, so a killed `up.sh` was reported at
+			// `info` with the timeout noted inside the body of a green result. The
+			// half-knowledge is the tell: the field was read for the sentence and
+			// not for the verdict.
+			const bad = execVerdict(r, timeout);
 			report(
 				title,
 				[
-					`${script} ${scriptArgs.join(" ")}`.trim() + `  ->  exit ${r.code}${r.killed ? " (timed out)" : ""} in ${secs}s`,
+					`${script} ${scriptArgs.join(" ")}`.trim() +
+						`  ->  ${bad ? bad.reason : "exit 0"}${r.killed ? "" : ` (exit ${r.code})`} in ${secs}s`,
 					"",
 					...tail(r.stdout, 60),
 					...(r.stderr.trim() ? ["", "stderr:", ...tail(r.stderr, 20)] : []),
 				],
-				r.code === 0 ? "info" : "error",
+				bad ? "error" : "info",
 			);
 		} catch (e: any) {
 			report(title, [`failed to run ${script}: ${e?.message ?? e}`], "error");
@@ -1034,7 +1151,16 @@ export default function stackExtension(pi: ExtensionAPI) {
 			return;
 		}
 		const r = await pi.exec("docker", ["logs", "--tail", "60", name], { timeout: 30_000 });
-		report(`stack logs ${service ?? "llama"}`, tail(r.stdout + r.stderr, 60), r.code === 0 ? "info" : "error");
+		// AI5: `killed` before `code`. A wedged daemon resolves `code: 0` with an
+		// empty stdout, which here reads as a container that logged nothing —
+		// exactly the `docker ps` misreading the seventeenth pass fixed, one
+		// command over.
+		const bad = execVerdict(r, 30_000);
+		report(
+			`stack logs ${service ?? "llama"}`,
+			bad ? [`docker logs ${bad.reason}`, "", ...tail(r.stdout + r.stderr, 60)] : tail(r.stdout + r.stderr, 60),
+			bad ? "error" : "info",
+		);
 	}
 
 	/**

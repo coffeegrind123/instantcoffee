@@ -290,3 +290,95 @@ The scan that now keeps it true lives in the package that needed it
 (`vendor/pi-subagents-lite/tests/exec-verdicts.test.ts`). This package does not
 have one, and does not need one: it has two call sites, both in one file, both
 correct, and both with the reasoning in a comment beside them.
+
+## Eighteenth pass — still the control, and now it is behind a gate too
+
+AI5 finished AH3's enumeration: `.pi/extensions/stack.ts`'s remaining seven
+`pi.exec` sites, five of which chose a verdict from `r.code` and said a sentence
+about it — including two `compose up -d --force-recreate llama` calls on a
+600-second timeout, in a file whose own confirmation prompt says the cold load is
+"roughly 20 minutes".
+
+This package is unchanged, and it is still the control: **two call sites, one
+file, both reading `killed` before `code`, with the reasoning in a comment beside
+each.** It has been that way since it was written, which is why AB3 was a finding
+about the version probe's *consequence* rather than about the rule.
+
+One thing did change around it. `vendor/pi-subagents-lite/tests/exec-verdicts.test.ts`
+— the scan that keeps the rule applied — now takes a list of roots and covers
+`.pi/extensions` as well as its own `src/`. This package is still not in that
+list and still does not need to be; if a third call site is ever added here, the
+right move is to add this package as a third root rather than to trust the
+comment, for the reason AI5 exists at all.
+
+## The command that was approved, and the one that ran (AJ3)
+
+Nineteenth pass. The axis was **name every actor that can reach a decision, not
+just the one the guard was written against**, and this package is the actor that
+arrives LAST.
+
+`scripts/pi-local.sh` loads `vendor/prinny-channel` before this package,
+deliberately, with the reasoning written next to the `-e` flag:
+
+```
+   > So with prinny first, the command a person is asked to approve is the
+   > command the model wrote, and a blocked command is never handed to rtk at
+   > all. The other way round the relay would quote `rtk git status` for a model
+   > that asked for `git status`, which is an approval for a command nobody
+   > typed.
+```
+
+Both halves are true. The conclusion is one actor short: **an approval gate is
+not about the command that was REQUESTED, it is about the command that will
+RUN.** `tool_call` handlers run in load order over ONE mutable `event.input`, so
+the relay showed a person `git status`, waited for a yes, and this handler then
+rewrote `event.input.command` to `rtk git status` — which is what pi's bash tool
+executed. Measured through both real handlers on one object
+(`context/testing/probes/w4-…`, mode `approved`).
+
+The other order is no better: it quotes a string the model never wrote and spends
+a `rtk rewrite` subprocess on a call that is about to be blocked. So the order
+stays and the two handlers talk.
+
+```ts
+   export const APPROVED_COMMAND_KEY = "_prinnyApprovedCommand"
+   export function approvedAsWritten(input: unknown): boolean
+```
+
+`prinny` stamps the key with `describeCall`'s output — **what a person actually
+read** — and this handler stands down when it is present, above `shouldFilter`,
+above `rewriteCommand` and above the assignment. It is a STAND-DOWN, not a
+refusal: the command still runs, unfiltered, which is the direction every other
+decision in `gate.ts` already fails in. It costs an approved allow-listed command
+its output compression, in a session that has explicitly turned the relay on,
+which is the trade that session already chose.
+
+**Why a duplicated literal rather than an import.** Vendor packages must not
+import each other — this one is a fork of an upstream hook that knows nothing
+about Matrix — and the compaction lock keeps three copies of its protocol for
+exactly that reason. `tests/approved-command.test.ts` here reads prinny's source
+and asserts the two literals agree; `prinny/tests/permission-gate.test.ts` reads
+this file's and additionally runs the round trip through this module's real
+predicate. And deliberately **not** a `globalThis` key: a key on an object both
+handlers are already handed is a note, not a protocol.
+
+Nothing about it can fail closed. No prinny, no stamp, and this package behaves
+exactly as it did; no rtk, and the stamp is an unread key on an object pi already
+ignores unknown keys on (`validateToolArguments` runs BEFORE `beforeToolCall`).
+
+### Tests
+
+**28 tests, up from 20.** A new `tests/approved-command.test.ts`: the predicate
+itself including every shape it must read as NOT approved (the fail-open
+direction — an unrecognised value must leave rtk doing what it always did rather
+than silently switching itself off), the cross-source agreement with prinny, and
+three source assertions that the guard is ABOVE the three things it exists to
+skip.
+
+Those three are written against the exact guard form, `if (approvedAsWritten(
+event.input)) {`, rather than against the substring. **A control run for this
+finding disables the guard rather than deleting it**, and
+`if (false && approvedAsWritten(…))` still contains every substring a looser
+assertion would look for — the first version of this suite passed its own control
+run. A test that survives its own control is not a control. Disabled, 3 of 28
+now fail, and `w4 approved` shows `rtk git status` in the "what pi ran" column.

@@ -188,15 +188,61 @@ export class SpawnCoordinator {
     }
   }
 
+  /**
+   * Tear the coordinator down at `session_shutdown`.
+   *
+   * Forge fork, eighteenth pass (AI1): **a queued nudge is a finished
+   * delegation's only answer, and clearing the set is a drop.**
+   *
+   * `pendingNudges` is the batch set and `nudgeTimer` is the one timer that
+   * drains it. Everything below used to be four `clear()` calls, so any id
+   * sitting in that set when a session ended was discarded with nothing said —
+   * not to the model, not to the operator, not to the log. That is precisely the
+   * failure §11.1 (fifteenth pass) closed for the three guards INSIDE
+   * `emitIndividualNudge`, under AC1's rule:
+   *
+   *   > A delivery that did not happen is the loudest thing this class can
+   *   > report; it must not be the quietest.
+   *
+   * And the `session-replaced` guard at the top of `emitIndividualNudge` was
+   * written for this very case — its own docstring says "`session_shutdown`, or
+   * a session replaced under it" — but it can only fire for a record that
+   * settles AFTER the dispose, because the ids that were already queued are
+   * cleared here and their timer is cancelled. The report existed and the path
+   * to it did not.
+   *
+   * **AH1 made the window large.** Before it, an id sat in this set for
+   * `NUDGE_DELAY_MS` — 200 milliseconds. Since the seventeenth pass a nudge held
+   * for somebody else's compaction is put back with `COMPACTION_WAIT_MS`, over
+   * and over, for as long as the lock is held — up to `STALE_MS`, five minutes.
+   * A `/loop` that delegates in the background and is stopped while a compaction
+   * is running is the ordinary shape of that.
+   *
+   * The control is thirty lines away in the same package: `AgentManager.dispose`
+   * fails its QUEUED records honestly rather than dropping them, "so the waiting
+   * tool call resumes with an explicit error instead of hanging (US-9)". Same
+   * teardown, same kind of pending work, opposite treatment.
+   *
+   * Reported before `disposed` is set, so the drop is attributed to the session
+   * ending rather than to a session that was replaced under a live nudge — two
+   * different sentences for two different facts (see `nudge-drop.ts`).
+   */
   dispose(): void {
     if (this.nudgeTimer) {
       clearTimeout(this.nudgeTimer);
       this.nudgeTimer = null;
     }
+    const undelivered = [...this.pendingNudges];
     this.pendingNudges.clear();
     this.backgroundAgentIds.clear();
     this.heldForCompaction.clear();
     this.disposed = true;
+    // The manager is disposed AFTER the coordinator (`events.ts`'s
+    // `session_shutdown`), so the records are still readable here and the notice
+    // can name the agent and its transcript.
+    for (const agentId of undelivered) {
+      this.reportDrop("session-ending", agentId, this.manager.getRecord(agentId));
+    }
   }
 
   // ── Private ──
@@ -258,7 +304,14 @@ export class SpawnCoordinator {
    * `noOpUIContext.notify` is `() => {}` headless.
    */
   private reportDrop(reason: NudgeDropReason, agentId: string, record?: AgentRecord): void {
-    const drop = describeNudgeDrop(reason, agentId.slice(0, SHORT_ID_LENGTH), record?.display.type);
+    const drop = describeNudgeDrop(
+      reason,
+      agentId.slice(0, SHORT_ID_LENGTH),
+      record?.display.type,
+      // AI1: only `session-ending` reads it, and only when the operator turned
+      // the transcript on — see describeNudgeDrop.
+      record?.display.outputFile,
+    );
     console.warn(`[pi-subagents-lite] ${drop.log}`);
     const ctx = record?.execution.spawnCtx ?? getSessionCtx();
     try {

@@ -1211,3 +1211,530 @@ if the timing is hard to hit by hand:
 What neither probe can show is the one thing a live run would: whether the 27B,
 handed the `unblock` directive after a compaction, actually documents an
 assumption and carries on rather than asking again.
+
+## AC. Two people at once — the AI4/AI2 run
+
+The eighteenth pass's two Matrix findings, and they share a setup: **two rooms
+live in the same turn**, which is the ordinary case for a channel with two people
+on it rather than a race. pi drains its follow-up queue inside one run, so two
+messages that arrive while the bot is busy are consumed by ONE run and both rooms
+are marked live.
+
+Needs a Matrix account and two rooms — a DM and a room is enough, and they can
+both be you if you have a second client. Nothing else: no loop, no subagent, no
+verifier, no saturated context.
+
+### AC.1 A tool reply with two rooms waiting — AI4
+
+**This is the most serious thing on the unrun list**, because the failure sends
+one person's answer to another and is not undoable.
+
+1. Give pi something slow to do in the terminal — `/loop start …`, or just a
+   question that takes a while.
+2. **While it is working**, message the bot from room A, then a few seconds later
+   from room B. Ask two clearly different questions, e.g.
+   *"did the nightly build finish?"* and *"can you summarise the incident?"*
+3. Ask something that makes the model reach for the `prinny` tool rather than
+   just writing an answer. The tool description says it is for attachments,
+   quote-replies, reactions, edits, history and search — so a good prompt is
+   *"react to that with 👍"* or *"reply to that with the last 5 lines of the log
+   as a file"*.
+
+**What to look for.**
+
+1. **The tool call comes back refused**, with a sentence the model can act on:
+   `2 Matrix conversations are waiting in this turn, so I cannot tell which one
+   this is for — nothing was done. Each of them is told at the end of the turn
+   that an answer could not be attributed and to ask again, so do not retry this
+   call.`
+2. **Neither room receives anything from the tool.** Before the fix, whichever
+   room messaged LAST received it — `lastInbound` is one slot, written on every
+   arrival — regardless of which question the model was answering.
+3. **At the end of the turn both rooms get AF1's retirement notice**:
+   *"Someone else was being answered in the same turn and I could not tell which
+   reply was yours, so I sent nothing rather than send you theirs. Please ask
+   again."* That is the outcome the refusal restores: the tool and the forwarder
+   now agree.
+4. **The control, and it is the one that matters most**: do the same thing with
+   only ONE room messaging. The tool call must work exactly as it always did.
+   Then do it again with two rooms and an explicit `room_id` in the call — the
+   model will not produce one on its own, so drive it from the terminal if you
+   can — and it must still be honoured, because `history` and `search` on some
+   other room have to stay possible.
+
+`v4` reproduces the whole thing against the real extension and the real
+registered tool, including printing which room `lastInbound` was pointing at:
+
+```
+   for m in two-rooms one-room explicit; do
+     node context/testing/probes/v4-the-room-the-tool-guessed.mjs $m
+   done
+```
+
+What only a live run can show is the thing the probe cannot model: whether a 27B,
+handed that refusal, stops rather than retrying the call in a loop.
+
+### AC.2 Two `/compact`s in one turn, and one that never runs — AI2
+
+Same setup, no tool call needed.
+
+1. Give pi something slow to do in the terminal.
+2. **While it is working**, send `/compact` from room A and then `/compact` from
+   room B.
+
+**What to look for.**
+
+1. **Both rooms get the receipt**: *"The session is mid-turn — I will compact as
+   soon as it finishes rather than cutting it off."*
+2. **When the turn ends, exactly ONE compaction runs** — that was never the
+   defect and must not change. `Compaction guard: capped the summary…` appears
+   once, and the terminal shows one compaction.
+3. **BOTH rooms are told it happened**: *"Compacted the conversation context."*
+   Before the fix only the second sender heard again; the first was told
+   something would happen and then nothing, and because `deliverInbound` marks
+   the entry `answered` the undelivered sweep could not report it either.
+
+And the other half, which is one command:
+
+4. Send `/compact` from one room while the bot is mid-turn, and then, **before
+   the turn ends**, run `/prinny restart` in the terminal.
+5. The room must be told: *"I said I would compact once the turn finished, and
+   the channel is stopping before that happened, so it will not run. Nothing is
+   waiting on my side; ask again once I am back."* Before the fix the request was
+   dropped in silence, a few lines below the loop that denies every pending
+   permission because *"the channel going away is not consent"*.
+
+```
+   for m in two-rooms stopping control; do
+     node context/testing/probes/v2-the-compaction-two-people-asked-for.mjs $m
+   done
+```
+
+### AC.3 A background answer, and then quitting — AI1
+
+A third variant of §AB.1, and it is one keystroke more.
+
+1. Start a background delegation, as in §AB.1.
+2. Type `/compact` while the child is still working, and wait for the
+   *"result held — … is compacting"* notice.
+3. **Quit pi while it is still held.**
+
+**What to look for.** One line, on the way out:
+
+```
+   [Subagent "Explore" <id>] result NOT delivered to the model — the session
+   ended while the result was still queued for delivery. The answer is gone
+   with it.
+```
+
+Before the fix the id was cleared out of the batch set and nothing was said at
+all — not to the model, not to the operator, not to the log. Note what the
+sentence does NOT say: it does not tell you to open `/agents`, because the
+session that owns `/agents` is the thing that is ending. If the record had a
+transcript (`outputTranscript`), the path is named instead.
+
+Do this headless as well. `ctx.ui.notify` is `() => {}` outside a TUI, so the
+`console.warn` beside it is the whole of what you get — and it is the reason
+this is worth one line rather than none.
+
+---
+
+## AD. Who is allowed to ask — the nineteenth pass (AJ1–AJ5)
+
+Two of these need a Matrix account and nothing else. Both are about a REFUSAL
+that a person has to see, which is a shape nothing earlier in this script tests:
+every other item asks whether the machine did something, and these ask whether it
+declined and said so to the right person.
+
+### AD.1 `/stack restart llama`, from a phone — AJ1
+
+**Setup.** A configured channel (`/prinny status` says `connected`), and an
+allow-listed account. Nothing else — no loop, no subagent, no verifier.
+
+1. From the Matrix client, type `/stack` (the client's own `/` menu offers it,
+   described as *"Show local model stack status"*).
+2. Then type `/stack restart llama`.
+
+**What to look for.**
+
+```
+   /stack                 → handed to the session; the terminal shows a
+                            `stack-report` entry with the model, the slots and
+                            the throughput. This is the form the menu advertises
+                            and it still works.
+   /stack restart llama   → the SENDER is told:
+                            "/stack restart cannot be run from Matrix. Allowed
+                             here: /stack status, /stack help. Ask me in ordinary
+                             words instead: I can do read-only things with tools
+                             and tell you the answer."
+```
+
+**Before the fix**, the second one was handed to pi and a modal appeared **in the
+operator's terminal** reading *"Restart llama? … Expect roughly 20 minutes before
+it answers again. Any in-flight request will fail."* — with nothing in it saying
+a Matrix sender had asked. Answering yes recreates the container and takes the
+model away for the length of a cold load. Answering the same question in a
+headless session (`pi -p`) refused it silently, because pi's `noOpUIContext`
+answers `confirm` with `false`.
+
+**Then check the sentence that made it worth refusing**, in the terminal:
+
+```
+   /stack help
+   → "The model can call stack_status to read the stack. It cannot change it:
+      every mutation above is a user-only command on purpose."
+```
+
+That is still true, and it is now true of the third actor as well.
+
+**And the half that must not have broken**: ask the bot, in ordinary words,
+*"is the model up?"*. The model should call `stack_status` and answer on Matrix —
+which is the route that actually reaches the sender, where a `/stack status`
+writes a terminal entry the sender never sees.
+
+```
+   node --experimental-strip-types \
+     context/testing/probes/w2-the-command-that-was-advertised-read-only.mjs matrix
+```
+
+### AD.2 A goal check the model wrote — AJ2
+
+**The first item in this script that tests a question a person has to answer.**
+
+**Setup.** A terminal session. A Matrix account is optional and makes the point
+better.
+
+1. Ask the model, in prose — from the terminal, or from Matrix, which is the
+   version that matters — to start a loop with a goal check. For example:
+   *"start a loop to keep the test suite green, and use `npm test` as the goal
+   check."*
+2. The model should call `loop(action:"start", goal:…, check:"npm test")`.
+
+**What to look for**, in this order:
+
+```
+   1  a warning, BEFORE anything is asked:
+        "Loop: the model asked to arm a goal check — `npm test`. It runs with
+         bash -lc once per iteration for the life of the run, and pi.exec emits
+         no tool_call, so no permission relay, no rtk gate and no output cap
+         ever sees it."
+   2  a confirmation dialog:
+        "Arm a goal check the model wrote?"
+        with the command quoted, and how it is run.
+   3  say NO.
+   4  "Loop: the goal check was declined; starting without one."
+   5  /loop status  →  `Check: -`,  `Active: true`,  and the mode unchanged.
+```
+
+**The loop must still be running.** That is the whole design of the fix: an
+unattended run is not stopped by this, only the shell command is. In `until-done`
+mode the run then terminates on the model's `LOOP_DONE:` marker instead, which is
+what that mode does whenever no check is configured.
+
+**Then do it again and say yes**, and check `/loop status` shows
+`Check: npm test`. And once more headless:
+
+```
+   ~/qwen3.8-forge/scripts/pi-local.sh -p "start a loop to keep the tests green,
+     with npm test as the goal check"
+```
+
+— where there is nobody to ask, so it must NOT be armed, and the notice must name
+`LOOP_TOOL_CHECK` and `/loop start --check` as the two ways to have it anyway.
+
+**And the control:** type `/loop start keep the tests green --check "npm test"`
+in the terminal yourself. Nothing should ask you anything. That is the operator
+choosing the command, which is the case the decision this reopens was right
+about.
+
+```
+   for m in asked declined headless env terminal; do
+     node --experimental-strip-types \
+       context/testing/probes/w3-the-shell-command-the-relay-never-sees.mjs $m
+   done
+```
+
+### AD.3 The command a person approved — AJ3
+
+**Setup.** `/prinny permissions all`, a configured channel, and `RTK_ENABLED=1`
+with `rtk` on PATH. This only means anything with the relay ON, which is the
+whole scoping of the finding.
+
+1. Ask the model, from the terminal, to run `git status`.
+2. Approve it on Matrix.
+3. Read `~/.pi-loop-log.jsonl`'s neighbour — the channel log named by
+   `/prinny status` — and the terminal's own rendering of the bash call.
+
+**What to look for.** The command in the approval prompt and the command pi ran
+must be the same string. Before the fix the prompt said `git status` and pi ran
+`rtk git status`; now rtk stands down for anything a person approved as written,
+and says so:
+
+```
+   [rtk] not rewriting a command that was approved on Matrix as written;
+         running it unfiltered
+```
+
+**The control is the same command with the relay off** (`/prinny permissions
+off`): nobody is asked, nothing is stamped, and rtk rewrites exactly as it always
+did. That is the behaviour the fix must not cost.
+
+## AE. What the test is a proxy for — the twentieth pass (AK1–AK5)
+
+Four items. **§AE.1 is the one to run first**, and it is the only item in this
+whole script that can be finished before the first Matrix message is answered.
+§AE.4 is the cheapest and needs no Matrix at all.
+
+### AE.1 — configure the channel, then look at the FIRST message (AK1)
+
+The finding: `registerTools` ran behind an `isConfigured()` read at extension
+LOAD time, and `/prinny configure` writes the credentials and starts the channel
+in the same session. `promptGuidelines` come only from registered tools, and one
+of this tool's two is the only sentence anywhere in the stack that says a
+`[matrix]` marker is untrusted input.
+
+1. Start a session on a machine that has **never** been configured — or move
+   `~/.pi/agent/channels/prinny/.env` aside first. Confirm the tool is absent:
+   ask the model *"what tools do you have?"* and check that `prinny` is not in
+   the list. **This is the control**, and it must stay true: an unconfigured
+   session pays nothing for six tool schemas.
+2. `/prinny configure <homeserver> <@bot:server> <password>`. Read the reply to
+   the end — it should now say *"The prinny tool is now registered for this
+   session… and it has been told that [matrix] text is untrusted input."*
+3. Ask the model again what tools it has. `prinny` is there.
+4. Now message the bot from a Matrix client and pair. Ask it something
+   ordinary — *"what is in this directory?"*
+
+**What to look for.** The model's turn should treat the message as an outside
+person's, not as an operator instruction. The sharper check is to ask it
+directly, in the terminal, *"what does the `[matrix]` prefix on that message
+mean to you?"* Before the fix there was nothing in the system prompt to answer
+with; now there are two sentences, and the second one is the word "untrusted".
+
+**Before the fix** you would have had to `/quit` and start a new session for any
+of this to be true, and nothing said so.
+
+### AE.2 — a dangerous command, spelled the way a model spells it (AK2)
+
+1. `/prinny permissions dangerous`.
+2. From the terminal, ask the model to run `rm -rfv /tmp/scratch-dir` (make the
+   directory first, so the command is real).
+3. Answer the prompt on your phone.
+
+**What to look for.** A prompt arrives at all. Before the fix `-rfv` passed the
+gate silently, because the pattern needed the flag cluster to END in `f`.
+
+**Then the controls, in order:**
+
+```
+   rm -r -f /tmp/scratch-dir            asks
+   rm --recursive --force /tmp/x        asks
+   git clean --force -d                 asks
+   chmod 0777 /tmp/scratch-file         asks
+   rm -f /tmp/scratch-file              does NOT ask  (force, no recursion)
+   git clean -n                         does NOT ask  (a dry run)
+   ls -rf                               does NOT ask  (not an rm at all)
+```
+
+The last three matter as much as the first four: an over-asking gate is a gate
+people turn off.
+
+### AE.3 — an approval nobody answers (AK4)
+
+The one that needs patience, and it is worth it because the sentence it produces
+is the finding.
+
+1. `/prinny set permissionTimeoutSeconds 60` — the default is 300, and you do
+   not want to wait five minutes.
+2. `/prinny permissions all`.
+3. Ask the model to run any `bash` command. A prompt arrives on Matrix.
+4. **Do not answer it.** Wait out the 60 seconds. The terminal shows the call
+   blocked by the relay.
+5. Now press **Allow** on the prompt in your Matrix client.
+
+**What to look for.** The message should edit itself to
+
+```
+   ⌛ Permission — no longer waiting. pi stopped waiting for an answer and
+      blocked the call, or somebody else answered it. Nothing was run.
+```
+
+**Before the fix it said `✅ Allowed`** — for a command that had already been
+blocked, in the only lasting record of the decision anyone would ever read.
+
+Set `permissionTimeoutSeconds` back afterwards.
+
+### AE.4 — the audit nudge, on a project with a passing suite (AK5)
+
+No Matrix needed, and it is the one that is most likely to change how a real run
+behaves.
+
+1. In a project with a test suite that passes, start
+   `/loop start tidy up the docs. Done when: nothing is left --check "npm test"`
+   — or whatever the suite command is.
+2. Let it run at least nine iterations while it is doing analysis rather than
+   editing (asking it for a plan first is a reliable way to get that).
+
+**What to look for.** On the ninth iteration:
+
+```
+   Loop: no concrete progress for 8 iterations — requesting tangible output.
+```
+
+**Before the fix that could not happen on this project at all**, because
+`npm test` prints `42 passed` and the word `passed` counted as a change to the
+project — every iteration, forever.
+
+**The control** is the same loop while it is genuinely editing files: the nudge
+must not fire, and `/loop status` should show the iteration count climbing with
+no interventions.
+
+### AE.5 — and while you are there: watch the transcript
+
+Not a finding — the change §5.7 of the write-up describes, which has never been
+seen in a live TUI.
+
+1. In any session, ask the model to delegate something small: *"use a subagent
+   to find every call site of X"*.
+2. Watch the transcript as the child runs.
+
+**What to look for.** Entries headed `subagent <shortId> <type> · turn N`,
+dimmed, between your own turns — the brief first, then a turn per child turn,
+then the verifier's prompt and reply, then a closing line with the status and
+the counts. `ctrl+o` expands them.
+
+**Then the two checks that matter.** `/agents` → the agent → the short id in the
+header is the same one the entries carry. And ask the model, right afterwards,
+something that depends on the child's *reasoning* rather than its answer — it
+should not know, because a `type: "custom"` entry is never sent to the model.
+That is the property the whole design rests on, and it is the one thing here a
+person can check that a probe cannot.
+
+---
+
+## AF. What we start and never finish — the twenty-first pass (AL1–AL9)
+
+Six items. Four of them can be done with nothing but a terminal; two need a
+Matrix account. They are ordered cheapest first, and every one of them is
+something a probe cannot reach: what a person actually SEES.
+
+### AF.1 — the follow-up that replayed the run before it (AL1)
+
+The cheapest unrun item in the whole script, and it doubles as §AE.5's rerun.
+
+1. Ask the model to delegate something small: *"use a subagent to find every call
+   site of X"*. Let it settle.
+2. `/agents` → the record → **Steer**, and ask a follow-up:
+   *"now list only the three that pass a relative path"*.
+3. Read the transcript entry the follow-up produces.
+
+**What to look for.** The entry headed `subagent <shortId> … · turn 1` for the
+follow-up must open with the follow-up's own work. **Before the fix it opened
+with the first line of the run that had already finished**, and the answer to the
+follow-up was in the `dropped` count at the bottom.
+
+**Why a person is needed.** The symptom is indistinguishable from a long answer
+that was truncated, which is exactly why nothing about it looked like a replay.
+A test can assert the anchor; only a reader notices that the text is from the
+wrong run.
+
+### AF.2 — the footer after `/loop end` (AL8)
+
+Ten seconds, and it needs no model at all.
+
+1. `/loop start improve the parser` — let one iteration run, or don't.
+2. Look at pi's footer. There is a `loop` pill.
+3. `/loop end`.
+4. Look at the footer again, and then run `/loop status`.
+
+**What to look for.** The pill should be **gone**. Before the fix it said
+*"Loop ended"* for the rest of the session while `/loop status` said
+`Active: false · Goal: -` — the two disagreeing, with the footer being the one
+nobody has to ask.
+
+**The control**, in the same minute: `/loop start …` then `/loop stop`. The pill
+must STAY, saying "Loop stopped", because that loop still exists and
+`/loop resume` acts on it. Twenty-nine of the thirty pills are like that; `end`
+is the only one that had to go.
+
+### AF.3 — the widget stops polling (AL5)
+
+Needs nothing but patience and, ideally, a `top`.
+
+1. Delegate something. Watch the widget appear.
+2. Let it finish, and leave the session idle past the finished-row retention
+   window (`/agents` → settings shows it; the default is minutes).
+3. Watch the widget's rows disappear.
+
+**What to look for.** Nothing visible — which is the point. What changed is that
+an 80 ms interval, sorting every record the manager has ever held, **stops** when
+the last row goes. Before the fix it ran for the rest of the session and got
+slower every delegation.
+
+**The check that matters is the re-arm**, and it is the half of the fix that can
+break silently: after the widget has gone, **delegate again**. The widget must
+come back. And then the harder one — `/agents` → a settled record → **Steer**.
+That is a continuation, not a spawn, and it is the one route back into "there is
+something to draw" that does not go through `spawn()`. The widget must come back
+for that too.
+
+### AF.4 — the rescue turn on a model that is not loaded (AL2)
+
+The most interesting item in this section, and the one nobody has run.
+
+1. `/stack` — note which models are actually loaded in llama-server.
+2. Start a loop with a rescue model that is **not** one of them:
+   `/loop start <a goal the model will fixate on> --rescue-model <not-loaded>`
+3. Let it go stuck three times in a row. The notice reads
+   *"Loop: stuck 3x — rescue turn with <model>"*, and `/loop status` shows the
+   model has changed.
+4. Watch what happens next.
+
+**What to look for.** The rescue turn will produce nothing, because the model is
+not there. The loop should say *"model error, retrying"* — and `/loop status`
+must show the session back on the loop's own model **before that retry
+happens**. Before the fix all ten retries, and the pause at the end of them, ran
+on the model that could not answer, and the session stayed on it afterwards.
+
+**Then the one that cannot be undone.** Get back into a rescue turn, and this
+time type `/loop end`. The session must be back on the loop's model. That command
+runs `state = defaultState()`, which destroys the only record of what to go back
+to, so if the stand-down does not happen above that line it can never happen.
+
+**Cost of getting it wrong**: every subsequent turn the operator types is on the
+rescue model, silently, for the rest of the session.
+
+### AF.5 — the typing indicator when the channel stops (AL6) — needs Matrix
+
+1. From Matrix, ask something that will take a while. The bot shows *typing…*.
+2. In the terminal, while it is still typing: `/prinny stop`.
+
+**What to look for.** The indicator in the room should stop **immediately**.
+Before the fix nobody was sent `typing: false`, so it kept showing for up to
+another 20 seconds — Matrix's own timeout — and the last thing you saw of a
+session that had ended was a bot that appeared to still be writing.
+
+**The other half**, which is quieter: `/prinny log` afterwards should not be full
+of failed `typing` calls. The 8 s refresh used to keep firing at a sidecar that
+was gone.
+
+### AF.6 — the undelivered sweep stops sweeping (AL4) — needs Matrix
+
+Hard to see directly, so this is the indirect version.
+
+1. From Matrix, send `/loop status`. You get *"Handed `/loop status` to the
+   session…"* — a command this extension answers itself.
+2. Do nothing else for a few minutes.
+
+**What to look for.** Nothing. Specifically: you must **not** get, a minute
+later, *"I could not hand that to the session … please send it again"* — that is
+AC4, fixed long ago and still holding.
+
+What AL4 changed is invisible from the room: before it, that one command armed a
+30 second interval that ran for the rest of the session with nothing to do, over
+a map that only grows. The place to see it is `/prinny log` — there should be no
+periodic activity after the message is answered.
+
+**The real test of the sweep is still §O**, and it is unchanged: send a message
+while pi is compacting, and check you are told it could not be handed over. AL4
+must not have broken that, and the suite says it has not.

@@ -35,6 +35,13 @@ import {
   type NudgeDropReason,
 } from "../src/spawn/nudge-drop.ts";
 
+/**
+ * The three guards inside `emitIndividualNudge`.
+ *
+ * `session-ending` is deliberately NOT in this list: it is reported from
+ * `dispose()`, not from a guard, and the wiring assertions below slice the
+ * `emitIndividualNudge` body. AI1 has its own block at the bottom.
+ */
 const REASONS: NudgeDropReason[] = ["session-replaced", "no-runtime", "record-gone"];
 
 /** Strip comments: the ones below quote the three bare returns on purpose. */
@@ -179,5 +186,70 @@ describe("AG6 — the surface a dropped result points at", () => {
   it("the coordinator's own catch uses the same sentence rather than a fourth copy", () => {
     assert.match(coordinator, /RECOVERY_ADVICE/);
     assert.doesNotMatch(coordinator, /read it with AgentStatus/i);
+  });
+});
+
+/**
+ * AI1 — the nudge that was still QUEUED when the session ended.
+ *
+ * `dispose()` cleared `pendingNudges` and cancelled the one timer that drains
+ * it, so an id sitting in that set at `session_shutdown` was discarded with
+ * nothing said — while the `session-replaced` guard written for "session_shutdown,
+ * or a session replaced under it" could only ever fire for a record that settles
+ * AFTER the dispose. The report existed and the path to it did not.
+ *
+ * AH1 (seventeenth pass) made the window large: a nudge held for somebody else's
+ * compaction is put back into that same set every `COMPACTION_WAIT_MS` for as
+ * long as the lock is held, which the lock bounds at five minutes.
+ *
+ * The control for all of it is `AgentManager.dispose`, thirty lines away in the
+ * same package, which fails its QUEUED records honestly for the same reason.
+ */
+describe("AI1 — a queued nudge at session_shutdown", () => {
+  const coordinator = readFileSync(fileURLToPath(new URL("../src/spawn/spawn-coordinator.ts", import.meta.url)), "utf8");
+  const manager = readFileSync(fileURLToPath(new URL("../src/agents/agent-manager.ts", import.meta.url)), "utf8");
+
+  it("has its own sentence, distinct from a session replaced under a live nudge", () => {
+    const ending = describeNudgeDrop("session-ending", "1a2b3c4d", "Explore");
+    const replaced = describeNudgeDrop("session-replaced", "1a2b3c4d", "Explore");
+    assert.notEqual(ending.log, replaced.log, "never fired and fired-too-late are two different facts");
+    assert.match(ending.log, /still queued/);
+    assert.match(ending.notice, /result NOT delivered to the model/);
+    assert.match(ending.notice, /"Explore" 1a2b3c4d/);
+  });
+
+  it("does NOT name /agents, because the session that owns it is the thing ending", () => {
+    // AG6's rule, applied to the one reason it did not exist for: a recovery that
+    // cannot work is worse than saying there is none. `events.ts` disposes the
+    // manager two statements after the coordinator, and `/agents` reads that map.
+    const { notice } = describeNudgeDrop("session-ending", "1a2b3c4d", "Explore");
+    assert.doesNotMatch(notice, /\/agents/);
+    assert.doesNotMatch(notice, /View result/);
+    assert.ok(notice.endsWith(NO_RECOVERY_ADVICE), notice);
+  });
+
+  it("names the transcript when there is one — the only thing that outlives the session", () => {
+    const { notice } = describeNudgeDrop("session-ending", "1a2b3c4d", "Explore", "/tmp/pi-agents/1a2b3c4d.md");
+    assert.match(notice, /transcript is at \/tmp\/pi-agents\/1a2b3c4d\.md/);
+    assert.doesNotMatch(notice, /undefined/);
+  });
+
+  it("dispose() drains the pending set through reportDrop instead of clearing it", () => {
+    const body = coordinator.slice(coordinator.indexOf("  dispose(): void {"));
+    const end = body.slice(0, body.indexOf("\n  }"));
+    assert.match(end, /this\.reportDrop\("session-ending"/, "the drop has to be spoken");
+    // The defect is an ORDER as much as a call: the ids have to be read before
+    // the set is cleared, or there is nothing left to report about.
+    const read = end.indexOf("[...this.pendingNudges]");
+    const cleared = end.indexOf("this.pendingNudges.clear()");
+    assert.ok(read >= 0 && read < cleared, "read the queue before clearing it");
+  });
+
+  it("the control: AgentManager.dispose already fails its queued records loudly", () => {
+    // Same teardown, same kind of pending work, and the sentence AI1 is modelled
+    // on. If this stops being true the finding's own argument has moved.
+    const body = manager.slice(manager.indexOf("  dispose() {"));
+    assert.match(body.slice(0, body.indexOf("\n  }")), /status === "queued"/);
+    assert.match(manager, /DISPOSE_QUEUED_MESSAGE = "Agent manager disposed before the queued agent could start\."/);
   });
 });

@@ -12,6 +12,8 @@ import { executeAgentStatusTool } from "./agents/agent-status.js";
 import { renderAgentToolCall, renderAgentToolResult, renderSubagentResult } from "./ui/renderer.js";
 import { showAgentsMainMenu } from "./ui/menu/menus.js";
 import { getStore } from "./shell.js";
+import { SUBAGENT_ENTRY_TYPE, type SubagentEntry } from "./agents/transcript-entry.ts";
+import { renderSubagentEntry } from "./ui/renderer.js";
 
 // Provider-side json_schema enforcement; "prefer" falls back gracefully on
 // providers without strict mode (e.g. local Ollama).
@@ -102,6 +104,19 @@ export function registerTools(pi: ExtensionAPI): void {
   };
   // @ts-expect-error — description removed to save prompt tokens
   pi.registerTool(agentStatusTool);
+
+  /**
+   * Entry renderer — a subagent's own turns, in the operator's transcript.
+   *
+   * Forge fork, twentieth pass. A `type: "custom"` entry is written to the
+   * session file and rendered here, and `sessionEntryToContextMessages` returns
+   * `[]` for it — so this costs the model nothing on any turn, ever, which is
+   * the property that makes putting a child's whole reasoning in the parent's
+   * session affordable on a 32k window. See `agents/transcript-entry.ts`.
+   */
+  pi.registerEntryRenderer<SubagentEntry>(SUBAGENT_ENTRY_TYPE, (entry, options, theme) =>
+    renderSubagentEntry(entry.data, options as { expanded?: boolean }, theme),
+  );
 
   // Message renderer — subagent-result (background agent completion)
   pi.registerMessageRenderer("subagent-result", (message, options, theme) => {

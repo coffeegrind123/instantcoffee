@@ -69,6 +69,17 @@
 export type NudgeDropReason =
   /** The coordinator was disposed — `session_shutdown`, or a session replaced under it. */
   | "session-replaced"
+  /**
+   * The nudge was still QUEUED when the coordinator was disposed.
+   *
+   * Forge fork, eighteenth pass (AI1). Distinct from `session-replaced`, which is
+   * a nudge that fired after the dispose: this one never fired at all, because
+   * `dispose()` cleared the batch set it was sitting in. The difference matters
+   * for what is said — there is no `/agents` to open by then, so naming it would
+   * be AG6's defect restored — and it is why the reason exists rather than
+   * reusing the neighbour's sentence.
+   */
+  | "session-ending"
   /** `getPiInstance()` is empty: there is no runtime to send a message through. */
   | "no-runtime"
   /** The record was removed between the nudge being scheduled and this firing. */
@@ -124,17 +135,45 @@ export function describeNudgeHold(owner: string, shortId: string, type?: string)
   };
 }
 
-export function describeNudgeDrop(reason: NudgeDropReason, shortId: string, type?: string): NudgeDrop {
+export function describeNudgeDrop(
+  reason: NudgeDropReason,
+  shortId: string,
+  type?: string,
+  /**
+   * The record's own transcript file, when one was kept.
+   *
+   * AI1's case has no live surface to point at — the session that owns `/agents`
+   * is the thing that is ending — so the only recovery that can work is a file
+   * that is already on disk. `outputTranscript` is off by default, so this is
+   * usually absent and the sentence says so instead of inventing a recovery.
+   */
+  outputFile?: string,
+): NudgeDrop {
   const who = type ? `"${type}" ${shortId}` : shortId;
   const because =
     reason === "session-replaced"
       ? "the session was replaced before the result could be delivered"
-      : reason === "no-runtime"
-        ? "there is no live extension runtime to deliver it through"
-        : "its record was removed before the result could be delivered (cleared from /agents?)";
+      : reason === "session-ending"
+        ? "the session ended while the result was still queued for delivery"
+        : reason === "no-runtime"
+          ? "there is no live extension runtime to deliver it through"
+          : "its record was removed before the result could be delivered (cleared from /agents?)";
   // AG6: the record is what holds the answer, so when the record is gone there
   // is nothing to point at — and both surfaces read the same map.
-  const recovery = reason === "record-gone" ? NO_RECOVERY_ADVICE : RECOVERY_ADVICE;
+  //
+  // AI1: the same rule for the session that is ending. `/agents` reads the
+  // manager's map, and `session_shutdown` disposes the manager two statements
+  // after the coordinator — so naming that surface here would be a recovery that
+  // cannot work, which is exactly what AG6 was about. The transcript file is the
+  // one thing that outlives the session, when there is one.
+  const recovery =
+    reason === "record-gone"
+      ? NO_RECOVERY_ADVICE
+      : reason === "session-ending"
+        ? outputFile
+          ? `The session is going away with it; the transcript is at ${outputFile}.`
+          : NO_RECOVERY_ADVICE
+        : RECOVERY_ADVICE;
   return {
     log: `could not deliver the result of ${who}: ${because}`,
     // The operator's copy names the recovery, and it has to be one that can

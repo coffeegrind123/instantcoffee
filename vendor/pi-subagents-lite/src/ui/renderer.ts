@@ -7,6 +7,7 @@
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Theme } from "./types.js";
 import type { AgentVerification } from "../types.js";
+import type { SubagentEntry } from "../agents/transcript-entry.ts";
 import { buildStatsParts, formatMs, getDisplayName, buildModelThinkingTag, resolveModelLabel } from "./format.js";
 import { verificationBadge } from "./verification-badge.js";
 
@@ -205,4 +206,55 @@ function buildFallbackResultLine(
     line += `\n  ${theme.fg("dim", `worktree: ${d.worktreePath}`)}`;
   }
   return line;
+}
+
+// --- Entry renderer — a subagent's own turns in the operator's transcript ---
+
+/** How many lines a collapsed transcript entry shows. */
+export const TRANSCRIPT_COLLAPSED_LINES = 8;
+
+const PHASE_LABEL: Record<SubagentEntry["phase"], string> = {
+  brief: "task",
+  turn: "turn",
+  verify: "check",
+  repair: "repair",
+  done: "done",
+  capped: "capped",
+};
+
+/**
+ * One entry of a subagent's transcript.
+ *
+ * Forge fork, twentieth pass. Deliberately quiet: this is a record, not an
+ * event, and it sits between the operator's own turns. The header names the
+ * agent the way `/agents` and the widget already do — short id, then type — so
+ * three interleaved delegations can be told apart by eye without a second
+ * vocabulary. Collapsed to `TRANSCRIPT_COLLAPSED_LINES`; ctrl+o expands, which
+ * is the same key that expands a tool result.
+ */
+export function renderSubagentEntry(
+  data: SubagentEntry | undefined,
+  options: { expanded?: boolean },
+  theme: Theme,
+): Container {
+  const entry = data ?? { agentId: "", shortId: "?", agentType: "agent", phase: "turn" as const, lines: [] };
+  const box = new Container();
+  const phase = PHASE_LABEL[entry.phase] ?? entry.phase;
+  const turn = entry.phase === "turn" && entry.turn ? ` ${entry.turn}` : "";
+  const head =
+    `${theme.fg("dim", "subagent")} ${theme.fg("accent", entry.shortId)} ` +
+    `${theme.fg("dim", getDisplayName(entry.agentType) || entry.agentType)} ` +
+    `${theme.fg("dim", `· ${phase}${turn}`)}`;
+  box.addChild(new Text(head, 0, 0));
+  if (entry.description) box.addChild(new Text(`  ${theme.fg("text", entry.description)}`, 0, 0));
+
+  const lines = entry.lines ?? [];
+  const shown = options.expanded ? lines : lines.slice(0, TRANSCRIPT_COLLAPSED_LINES);
+  for (const line of shown) box.addChild(new Text(`  ${theme.fg("dim", line)}`, 0, 0));
+
+  const hidden = lines.length - shown.length + (entry.dropped ?? 0);
+  if (hidden > 0) {
+    box.addChild(new Text(`  ${theme.fg("dim", `… ${hidden} more line(s)`)}`, 0, 0));
+  }
+  return box;
 }

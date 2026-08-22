@@ -100,6 +100,50 @@ export function steerReport(ok: boolean, shortId: string, verb: "steer" | "conti
 }
 
 /**
+ * A steer that was QUEUED for a session that was never created.
+ *
+ * Forge fork, eighteenth pass (AI3). `AgentManager.steer()` has a branch for a
+ * record that is `running` but has no session yet:
+ *
+ * ```ts
+ *   if (!record.execution.session) {
+ *     record.execution.pendingSteers.push(message);
+ *     // Queued, so it WILL reach the model — onSessionCreated flushes it.
+ *     this.growBrief(record, message);
+ *     return true;
+ *   }
+ * ```
+ *
+ * `true` is what `steerReport` above turns into *"Steer sent to X…"*, and the
+ * comment is the promise: `onSessionCreated` flushes it. The window it is made
+ * in is `runAgentImpl` BEFORE the session exists, and that window is seconds
+ * long on this box — a `SettingsManager`, the system-prompt sources, `detectEnv`
+ * (two git subprocesses over a 9p mount), and `reloadAndMap()`, which runs every
+ * extension factory including rtk's shell-out to `rtk --version` on a 2s
+ * timeout. A run that dies anywhere in it — an unresolvable model, a throwing
+ * factory, a worktree that went away — never reaches `onSessionCreated`, so the
+ * flush never happens.
+ *
+ * Two things were then untrue at once, and the second is the worse one:
+ * the operator was told the steer had been sent, and `growBrief` had already
+ * recorded it, so the accumulated brief — which the anchor restates and the
+ * JUDGE checks the answer against — contains an instruction the child was never
+ * given.
+ *
+ * Said at the record's terminal transition, which is the first moment the answer
+ * is knowable. `count` is stated because a queue can hold more than one.
+ */
+export function undeliveredSteersReport(count: number, shortId: string): ActionReport {
+  const what = count === 1 ? "steer" : `${count} steers`;
+  return {
+    text:
+      `${shortId} never opened a session, so the ${what} queued for it ${count === 1 ? "was" : "were"} ` +
+      "never delivered — its answer was not written with them. Re-send them to a new agent.",
+    level: "warning",
+  };
+}
+
+/**
  * A bulk action, counted from what actually happened.
  *
  * `attempted` is the list the menu acted on, `applied` is how many the manager

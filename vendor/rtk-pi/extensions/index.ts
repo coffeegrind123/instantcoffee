@@ -22,7 +22,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent"
 
-import { extractRewrite, parseSemver, shouldFilter } from "../src/gate.ts"
+import { approvedAsWritten, extractRewrite, parseSemver, shouldFilter } from "../src/gate.ts"
 
 const REWRITE_TIMEOUT_MS = 2_000
 const MIN_SUPPORTED_RTK_MINOR = 23
@@ -87,6 +87,18 @@ export default async function (pi: ExtensionAPI) {
       const raw = event.input.command
       if (typeof raw !== "string") return
       const cmd = raw.trim()
+
+      // AJ3 (nineteenth pass): a command a person has already approved is left
+      // exactly as they read it. `vendor/prinny-channel`'s relay runs first on
+      // the same mutable `event.input` and stamps what it showed the approver;
+      // rewriting after that would mean the string on the phone and the string
+      // pi runs are two different commands. See approvedAsWritten in ../src/gate.ts.
+      if (approvedAsWritten(event.input)) {
+        console.warn(
+          "[rtk] not rewriting a command that was approved on Matrix as written; running it unfiltered"
+        )
+        return
+      }
 
       // Checked before anything else so an operator can kill filtering for one
       // launch without editing .env: RTK_DISABLED=1 qpi

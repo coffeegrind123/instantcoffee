@@ -242,6 +242,21 @@ if [[ -r "$LOOP_DIR/extensions/index.ts" ]]; then
   [[ -d "$LOOP_DIR/skills/loop-skill" ]] && pi_flags+=(--skill "$LOOP_DIR/skills/loop-skill")
   [[ -d "$LOOP_DIR/prompts" ]] && pi_flags+=(--prompt-template "$LOOP_DIR/prompts")
   LOOP_NOTE=", /loop"
+
+  # Exported, not passed as a flag: the fork reads it from `process.env`, and a
+  # value that only ever lives in .env is a knob that silently does nothing.
+  # Only "1" is exported — anything else leaves the variable unset, which is the
+  # default (ask the operator) rather than a third state.
+  #
+  # AJ2: the `loop` TOOL's `check` parameter is a shell command `runGoalCheck`
+  # runs with `bash -lc` once per iteration, and pi.exec emits no `tool_call`, so
+  # nothing in this stack reviews it. By default the operator is told and asked;
+  # this is the standing yes for an unattended run that wants it anyway. The
+  # slash command's own --check is unaffected either way.
+  if [[ "$(env_get LOOP_TOOL_CHECK)" == "1" ]]; then
+    export LOOP_TOOL_CHECK=1
+    LOOP_NOTE=", /loop (model may arm checks)"
+  fi
 else
   warn "$LOOP_DIR is missing — /loop will not exist this session."
 fi
