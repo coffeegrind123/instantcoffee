@@ -34,13 +34,62 @@ def _human(num_bytes: float) -> str:
 MAX_ATTEMPTS = int(os.environ.get("DOWNLOAD_ATTEMPTS", "12"))
 
 
+def _remote_meta(repo: str, filename: str, token: str | None):
+    """(size, sha256) the Hub currently serves for this path, or (None, None).
+
+    Never raises: a stale local file is a quality problem, but an unreachable
+    Hub must not stop an otherwise working stack from starting.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo, files_metadata=True, token=token or None)
+        for sib in info.siblings or []:
+            if sib.rfilename == filename:
+                lfs = getattr(sib, "lfs", None)
+                oid = None
+                if lfs is not None:
+                    oid = lfs.get("sha256") if isinstance(lfs, dict) else getattr(lfs, "sha256", None)
+                return getattr(sib, "size", None), oid
+    except Exception as exc:  # noqa: BLE001 - advisory only
+        print(f"[warn] could not read remote metadata for {filename}: "
+              f"{type(exc).__name__}: {exc}")
+    return None, None
+
+
 def fetch(repo: str, filename: str, token: str | None) -> Path:
     from huggingface_hub import hf_hub_download
 
     target = DEST / filename
     if target.exists():
-        print(f"[skip] {filename} already present ({_human(target.stat().st_size)})")
-        return target
+        local_size = target.stat().st_size
+        # Presence is NOT proof of currency. Repos re-upload under the same
+        # filename: unsloth/Qwen3.8-27B-GGUF replaced every UD-* file in place
+        # on 2026-08-19 for Dynamic V3, same names, different bytes. Skipping on
+        # name alone silently pins the stack to whatever it downloaded first.
+        remote_size, _ = _remote_meta(repo, filename, token)
+        if remote_size is not None and remote_size != local_size:
+            print(f"[stale] {filename} is {_human(local_size)} locally but "
+                  f"{_human(remote_size)} on the Hub — the file was replaced "
+                  f"upstream.")
+            if os.environ.get("REDOWNLOAD_STALE", "").strip() not in ("1", "true", "yes"):
+                print("[stale] keeping the local copy. Set REDOWNLOAD_STALE=1 "
+                      "to replace it (and expect a full re-transfer).")
+                return target
+            backup = target.with_suffix(target.suffix + ".superseded")
+            print(f"[stale] REDOWNLOAD_STALE set — moving the old file to "
+                  f"{backup.name} and re-fetching.")
+            if backup.exists():
+                backup.unlink()
+            target.rename(backup)
+        else:
+            if remote_size is None:
+                print(f"[skip] {filename} already present ({_human(local_size)}) "
+                      f"— remote size unknown, currency NOT checked")
+            else:
+                print(f"[skip] {filename} already present and current "
+                      f"({_human(local_size)})")
+            return target
 
     print(f"[get ] {repo} :: {filename}")
     # Download into a cache dir on the same volume, then move into place. The

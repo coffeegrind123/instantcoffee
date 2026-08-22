@@ -6,18 +6,51 @@
 # The numbers below were measured on this model, on this box, with the config
 # that is in .env right now. The next scripts/update.sh run regenerates this
 # file.
-updated_utc         = 2026-08-17T03:30:00Z
-llama_image         = ghcr.io/ggml-org/llama.cpp:server-cuda-b10200
-llama_image_digest  = sha256:48b8053c05319cde97e64463d117b5747d3fb27475b176f85edf27bd503fa7f9
+#
+# 2026-08-22: llama_image b10200 -> b10573, KV cache f16/f16 -> q8_0/q8_0,
+# context 32768 -> 65536. MEASURED on this box after the change (see
+# `verified` below). The model file is still the pre-Dynamic-V3 build at the
+# time of these numbers; a re-download is in flight and the quant-level
+# numbers will need one more pass. See the 2026-08-22 entry in
+# context/design/decisions.md.
+updated_utc         = 2026-08-22T00:00:00Z   # V3 weights ARE live (see model_file_sha256)
+llama_image         = ghcr.io/ggml-org/llama.cpp:server-cuda-b10573
+llama_image_digest  = sha256:f74f5805191a8030bff26e2a7890d737fc2b5d0931220c953d25e1b7d7613ef5
+llama_image_prev    = server-cuda-b10200 @ sha256:48b8053c05319cde97e64463d117b5747d3fb27475b176f85edf27bd503fa7f9
 forge_version       = 0.9.0
 model_repo          = unsloth/Qwen3.8-27B-GGUF
 model_file          = Qwen3.8-27B-UD-Q4_K_XL.gguf
-model_file_sha256   = bee238bbeb3dc0a34bde4d0dedbaee1f98c009e8bb4226f03070054c12fb1372
+model_file_sha256   = 3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e
+                      Unsloth Dynamic V3. TAKEN 2026-08-22 and live since; the
+                      2026-08-22 spec sweep ran on it. 17559178144 bytes,
+                      mtime 1787404836 (2026-08-22T13:20:36Z) — those two are
+                      what spec-sweep.sh stamps into each result, because
+                      unsloth replaces UD-* files IN PLACE (they did on
+                      2026-08-19) so the filename identifies nothing.
+                      Verified by GGUF header parse that it still carries the
+                      MTP head (block_count 65, nextn_predict_layers 1,
+                      blk.64.nextn.* present).
+                      PREVIOUS, still on disk as *.gguf.superseded and kept as
+                      the rollback: sha256 bee238bbeb3dc0a34bde4d0dedbaee1f98c0
+                      09e8bb4226f03070054c12fb1372, 17923394624 bytes, mtime
+                      1786799731. 17.9 GB; delete when satisfied with V3.
 model_repo_modified = 2026-08-15T05:48:44.000Z
-context_size        = 32768
+context_size        = 65536 (CHANGED 2026-08-22; MEASURED, was 32768). A
+                      44511-token request answered end-to-end through forge in
+                      23.9 s retrieving two facts planted at opposite ends, and
+                      a 97936-token one refused cleanly, so the window is real
+                      and enforced. Cost +384 MiB against the old 32K f16 pair.
 rtk_version         = 0.45.0
 rtk_filters         = allow-list verified (2026-08-16, ./scripts/rtk.sh --check)
-kv_cache            = f16/f16 (quantized V takes prefill off the GPU — see .env)
+kv_cache            = q8_0/q8_0 (CHANGED 2026-08-22; MEASURED — prefill four
+                      digits and rising with depth, see verified). Previous
+                      f16/f16 entry read "quantized V takes prefill off the
+                      GPU"; the real rule is that a stock CUDA build compiles
+                      only MATCHED flash-attention KV pairs, so f16 K with q8_0
+                      V fell to the CPU. Matched q8_0/q8_0 is a compiled kernel.
+                      4-bit KV stays off the table: llama.cpp#27109 (open) has
+                      q4_x collapsing prefill to 34-106 t/s on this exact
+                      qwen35 hybrid architecture, against 991-1276 t/s at q8_0.
 load_mode           = none (mmap off; MODELS_DIR is a 9p bind mount)
 reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget)
 spec_config         = ngram-simple,draft-mtp at n-max 4 / p-min 0.40 — the
@@ -25,14 +58,107 @@ spec_config         = ngram-simple,draft-mtp at n-max 4 / p-min 0.40 — the
                       Replaces the inherited 3.6 values (draft-mtp / 2 / 0.75).
                       Output is unchanged: every draft is verified against the
                       target model, so this is decode speed only.
-verified            = smoke test 11/11 including a real tool call through forge;
-                      prefill 1375 tok/s; decode 53.5 tok/s on the synthetic
-                      (novel-text) bench and 191.0 tok/s on the repetition bench
-                      (echo 99%, draft/cycle 26.8); draft acceptance 48.1%
-                      novel / 63.6% repetitive; VRAM 21998 MiB of 24564 at
-                      CTX_SIZE=32768; cold load 12-27 min depending on page cache
+verified            = 2026-08-22, b10573 / q8_0-q8_0 / 65536, pre-V3 weights:
+                      smoke test 11/11 including a real tool call through forge
+                      (n_ctx reported 65536, matches .env).
+                      VRAM 22382 MiB of 24564 -- i.e. DOUBLE the context for
+                      +384 MiB against the 21998 MiB the old f16/f16 32K
+                      config used. ~2.1 GiB still free.
+                      Prefill by prompt length (tok/s), synthetic bench:
+                        541 -> 1121   1053 -> 1504   2077 -> 1799
+                        4125 -> 2032  8221 -> 2338  16413 -> 1706-2162
+                        32797 -> 2243
+                      Four digits throughout and RISING with depth, which is
+                      the proof that CUDA flash attention is serving the
+                      q8_0/q8_0 pair. llama.cpp#27109's 4-bit failure mode is
+                      the opposite shape: two digits, falling monotonically.
+                      Decode 52.6-70.4 tok/s; draft acceptance 0.41-0.65.
+                      Cold load 20 min (17.9 GB at ~15-38 MB/s over 9p).
+                      PRIOR (b10200 / f16-f16 / 32768, for comparison):
+                      prefill 1375, decode 53.5 busy / 67.8 on a quiet box.
+
+                      Repetition workload (bench_repeat.py, the file-rewrite
+                      shape pi actually produces): decode 176-180 tok/s, echo
+                      0.988 with echo_exact_tokenizer true, draft acceptance
+                      0.623-0.627, draft/cycle ~20.9. So ngram-simple still
+                      fires correctly on b10573 with a q8_0 cache. Prior figures
+                      were 191.0 tok/s and draft/cycle 26.8 on a QUIET box; this
+                      run was taken while the 17.6 GB Dynamic V3 download was
+                      saturating the same 9p mount, so treat the gap as
+                      conditions rather than regression until re-run.
+
+                      End-to-end through forge at the new window: a 44511-token
+                      request answered in 23.9 s, finish=stop, retrieving two
+                      distinct facts planted at opposite ends of the document
+                      (exact match on both). 36% past the old 32768 ceiling and
+                      impossible before. Negative control: a 97936-token version
+                      was refused cleanly with "exceeds the available context
+                      size (65536 tokens)", so the window is enforced rather
+                      than silently truncating.
+                      Reasoning budget checked, not assumed: at REASONING_EFFORT
+                      medium three prompts produced 77 / 900 / 636 chars of
+                      reasoning against a 4096-token budget, all answers
+                      correct, budget never hit. Not binding; left alone.
+
+                      Outliers were discarded as contention, and then that was
+                      PROVEN rather than assumed. Three bench runs came back at
+                      1032 (16413), 418 and 908 (32797) while the host sat at
+                      load average 16.5 on 16 cores with 146 MiB free and
+                      another agent process at 191% CPU.
+                      The control: llama's own print_timings_pp uses the SAME
+                      stats.t_prompt_ms()/n_prompt_tps() the API reports, so
+                      every prefill the engine ever ran is in its log. Across
+                      155 prompt-processing lines spanning 8217 to 44507 tokens,
+                      NO prefill was ever below 1900 tok/s -- the slow figures
+                      have no counterpart in the engine's own accounting.
+                      Once the host settled (load 6.6, 1.8 GiB free), three
+                      consecutive 32797 runs gave 2243.4 / 2269.6 / 2200.7
+                      tok/s with cache_n 0 on all three -- a spread of +-1.5%.
+                      Decode over the same three: 52.0 / 59.1 / 52.3, +-6%.
+                      So prefill is reproducible to ~1.5% and decode to ~6% on
+                      a settled box, and decode is the limiting metric for any
+                      A/B. For spec-config comparisons prefer draft/cycle,
+                      which is a property of the drafting rather than the clock.
+                      This is the trap spec_variance_note describes; the control
+                      is to re-run and to cross-check the engine's own log, not
+                      to believe one number.
+verified_on_v3      = PARTIAL, and the split matters. Everything in `verified`
+                      above — smoke 11/11, the 44511-token end-to-end request,
+                      the 97936-token negative control, the VRAM figure and the
+                      prefill-by-depth curve — was measured on the PRE-V3
+                      weights, before the Dynamic V3 file was taken.
+                      What HAS been measured on V3 is the 2026-08-22 spec sweep:
+                      18 configs x 3 runs, prefill 1144-1686 tok/s on repeat and
+                      1294-1500 on synthetic, decode 43.7-191.0, ECHO 0.988 on
+                      every repeat row. Nothing anomalous, and the drafting
+                      behaves the same, so V3 is not suspected.
+                      OUTSTANDING: the smoke test has not been run against V3.
+                      It is ~20 min of cold load; do it before trusting the
+                      `verified` block as a description of what is running now.
+spec_verdict        = 2026-08-22 re-sweep on b10573 / q8_0 / 65536 / V3 weights:
+                      KEEP ngram-simple,draft-mtp at n-max 4 / p-min 0.40. It is
+                      in the top group on both workloads and nothing beats it.
+                      repeat workload (mean tok/s): ngram-baseline 191.0,
+                      ngram-n3 189.8, ngram-n4 182.5 (tied within spread), then
+                      mtp-n4 120.2, mtp-n3 103.6, mtp-n2 83.0. ECHO 0.988 on all
+                      rows. ngram-simple is worth ~1.6x on real traffic, which
+                      dwarfs every n-max/p-min effect measured.
+                      n-max 6/8 clearly worse; the widely-shared 4090 config
+                      n6/p-min 0.82 was the WORST of twelve (43.7 mean).
+                      Caution when reading the table: --report shows max, not
+                      mean, and synthetic within-config spread reaches 17.3
+                      tok/s -- wider than the gaps between the top four. Use the
+                      repeat workload and draft/cycle to decide, not synthetic.
 spec_measured       = full grid in context/bench/spec-sweep/ and the 2026-08-16
                       and 2026-08-17 entries in context/design/decisions.md.
+                      Since 2026-08-22 every result file carries the pin set
+                      that produced it (llama tag + digest, ctx, both KV types,
+                      weights by size and mtime). --resume re-runs anything
+                      measured on a different stack instead of skipping it, and
+                      --report says so when a table mixes stacks. `--pins`
+                      prints what this box would stamp right now. The 20
+                      existing files were backfilled and are flagged as
+                      reconstructed on every print.
                       Against the old draft-mtp / 2 / 0.75 on the same box:
                       1.23x on novel text, 2.20x on repetitive.
 spec_variance_note  = the 53.5 tok/s synthetic figure above was taken on a busy
@@ -41,15 +167,26 @@ spec_variance_note  = the 53.5 tok/s synthetic figure above was taken on a busy
                       measured 67.8 tok/s for this same config on a quiet box.
                       Treat single decode numbers as contention-sensitive and
                       compare configs only within one sweep run.
-vram_note           = 21998 MiB is +529 MiB against the pre-adoption 21469 MiB.
+vram_note           = 22382 MiB of 24564 at 64K/q8_0 (2026-08-22), ~2.1 GiB
+                      free. The 32K/f16 figures below are kept for the
+                      arithmetic they explain, not as the current state.
+                      21998 MiB is +529 MiB against the pre-adoption 21469 MiB.
                       n_outputs_per_seq is 1 + common_speculative_n_max(), and
                       ngram-simple reports size_m = 48, so the server sizes its
                       output buffers for 49 rather than 3. ~2.5 GiB headroom
                       remains at 32K; raising CTX_SIZE will hit this sooner than
                       it used to.
-draft_depth_note    = settled. p-min was the binding knob, not n-max: at p-min
-                      0.75 the draft was cut to one token on ~70% of cycles
-                      (draft/cycle 1.30 against a ceiling of 2). Loosening p-min
-                      first is what made raising n-max pay. draft/cycle still
-                      pins against the ceiling at n-max 4 (3.79), so n-max 6/8
-                      is untested and may pay further.
+draft_depth_note    = settled, and the 2026-08-17 open question is now CLOSED.
+                      p-min was the binding knob, not n-max: at p-min 0.75 the
+                      draft was cut to one token on ~70% of cycles (draft/cycle
+                      1.30 against a ceiling of 2). Loosening p-min first is
+                      what made raising n-max pay.
+                      That entry closed with "draft/cycle still pins against the
+                      ceiling at n-max 4 (3.79), so n-max 6/8 is untested and
+                      may pay further". It was tested on 2026-08-22 and it does
+                      NOT pay: n-max 6 and 8 are ~15% worse than 2-4. Depth
+                      keeps rising (draft/cycle 4.80 at n6, 6.15 at n8) while
+                      decode falls, because on a 4-bit quant each extra verified
+                      token costs ~23.4% against 6.7% at BF16 (llama.cpp#27342).
+                      draft/cycle pinning against the ceiling is therefore NOT
+                      on its own a reason to raise n-max.

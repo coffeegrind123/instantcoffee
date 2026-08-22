@@ -28,6 +28,26 @@ services:
     # default to llama.cpp's own "disabled" values, so a .env predating those
     # keys still starts a server that behaves exactly as before.
     #
+    # preserve_thinking, NOT preserve_reasoning. On startup b10573 logs
+    #   "chat template supports preserving reasoning, consider enabling it via
+    #    --reasoning-preserve"
+    # Do not follow that hint here. --reasoning-preserve sets the template kwarg
+    # `preserve_reasoning`, and this model's template never reads that key —
+    # checked against the GGUF's embedded template, where `preserve_reasoning`
+    # occurs 0 times and `preserve_thinking` occurs twice, in
+    #   {%- if preserve_thinking is undefined or preserve_thinking is true
+    #          or loop.index0 > ns.last_query_index %}
+    # Note that branch also means the template PRESERVES BY DEFAULT when the key
+    # is undefined, so the explicit `true` below is belt-and-braces, not the
+    # thing switching it on. Setting --reasoning-preserve instead would be a
+    # silent no-op.
+    #
+    # -ctk and -ctv MUST be the same type. A stock CUDA build compiles only
+    # matched flash-attention kernels (f16/f16, q4_0/q4_0, q8_0/q8_0,
+    # bf16/bf16); a mismatched pair returns BEST_FATTN_KERNEL_NONE and prefill
+    # silently moves to the CPU. See CACHE_TYPE_K in .env, and llama.cpp#20866.
+    # The defaults here are f16/f16 so a .env predating these keys is unchanged.
+    #
     # Do NOT put comments inside the folded block below: `#` is not a comment in
     # a YAML folded scalar, it becomes part of the command line, and compose
     # then rejects the whole service with "invalid command line string".
@@ -43,6 +63,8 @@ services:
       --chat-template-kwargs '{"preserve_thinking": true, "reasoning_effort": "${REASONING_EFFORT:-medium}"}'
       -ngl ${NGL}
       -fa ${FLASH_ATTN}
+      -ctk ${CACHE_TYPE_K:-f16}
+      -ctv ${CACHE_TYPE_V:-f16}
       -kvu
       -c ${CTX_SIZE}
       -np ${PARALLEL_SLOTS}
@@ -157,6 +179,11 @@ services:
       GGUF_FILE: ${GGUF_FILE}
       MMPROJ_FILE: ${MMPROJ_FILE}
       HF_TOKEN: ${HF_TOKEN:-}
+      # The downloader compares the local file's size against what the Hub
+      # currently serves, because repos re-upload under the same filename.
+      # Unset, a size mismatch is reported and the local copy kept; set to 1,
+      # the old file is moved aside as *.superseded and re-fetched.
+      REDOWNLOAD_STALE: ${REDOWNLOAD_STALE:-}
       # Xet is huggingface_hub's default chunked transfer. On this link it
       # stalled dead at ~1.1 GB with the connection still open and no error, so
       # the downloader uses plain HTTP range requests, which resume reliably.

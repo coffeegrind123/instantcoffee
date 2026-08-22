@@ -44,10 +44,52 @@ pi. `coding` is the default.
 > bump: 0.9 rejects `--budget-mode` for externally managed backends (the proxy
 > refuses to start), and `/health` now forwards the *backend's* readiness while
 > forge's own liveness moved to `/forge/health`. Both are handled here — see the
-> forge notes in `.env`. pi went 0.84.1 → 0.84.2, which is uneventful. llama.cpp
-> stays pinned at `b10200` deliberately: nothing between it and the newest
-> published CUDA image is Qwen3.8-specific, and the one commit that is
-> (`reasoning_effort` as an API field) has not shipped in an image yet.
+> forge notes in `.env`. pi went 0.84.1 → 0.84.2, which is uneventful.
+>
+> **Superseded 2026-08-22.** The line that used to stand here said llama.cpp
+> "stays pinned at `b10200` deliberately: nothing between it and the newest
+> published CUDA image is Qwen3.8-specific". That is no longer true, and the
+> pin has moved to **`server-cuda-b10573`**. Four commits in the gap bear on
+> this stack: a Qwen tool-call parsing fix (#26793), an MTP memory-allocation
+> fix (#26605), a `draft-mtp` fix (#27400), and `2b562109` (#26079), which adds
+> a CUDA MMVQ→MMQ crossover table labelled "tuned on RTX 4090" where `b10200`
+> had **no Ada Lovelace entry at all**. That last one changes nothing at the
+> current `n-max 4` — both builds pick the same kernel for a verify batch of 5
+> — but it is what makes the `n-max 6/8` rows of the sweep measure something
+> other than a GEMV cliff. The three correctness fixes are the immediate
+> reason to move.
+>
+> **Also 2026-08-22 — the 32K context ceiling was a misdiagnosis, and is gone.**
+> The KV cache did not have to be `f16/f16`. A stock CUDA build compiles only
+> **matched** flash-attention KV pairs (`f16/f16`, `q4_0/q4_0`, `q8_0/q8_0`,
+> `bf16/bf16`); the experiment that produced the ~65x prefill collapse used
+> `f16` K with `q8_0` V, and it was the *mismatch* that pushed flash attention
+> onto the CPU, not the quantization. Confirmed by llama.cpp#20866. Matched
+> `q8_0/q8_0` halves the cache, so `CTX_SIZE` is now **65536**. 4-bit KV stays
+> off the table — llama.cpp#27109 (open) has `q4_x` collapsing prefill to
+> 34–106 t/s on this exact `qwen35` hybrid architecture against 991–1276 t/s at
+> `q8_0`, which is what makes most of the public 130K–250K 4090 recipes
+> unusable here. DFlash2 (PR #27342) is **not** adopted: a report on the PR from
+> an RTX 4090 running this model against multi-turn tool-result histories — this
+> stack's exact workload — measures generation collapsing to 12–14 tok/s on a
+> real agentic session, with `draft-mtp` immune on the identical request.
+> Full reasoning and citations in the 2026-08-22 entry of
+> `context/design/decisions.md`.
+>
+> **Measured on the box the same day**, on `b10573` / `q8_0-q8_0` / `65536`:
+> smoke test **11/11** including a real tool call through forge; VRAM
+> **22382 MiB of 24564** — double the context for **+384 MiB** against the old
+> f16/f16 32K config's 21998 MiB, with ~2.1 GiB spare. Prefill by prompt length:
+> 1121 @ 541, 1504 @ 1053, 1799 @ 2077, 2032 @ 4125, 2338 @ 8221, 1706–2162 @
+> 16413, 2243 @ 32797 tok/s — four digits throughout and *rising* with depth,
+> which is the proof that flash attention is on the GPU (llama.cpp#27109's 4-bit
+> failure is the opposite shape: two digits, falling). Decode 52.6–70.4 tok/s.
+> Two outlier runs were discarded as host contention, not measurement — see the
+> `verified` block in `versions.lock` for why and what the control was.
+>
+> **Throughput itself is unchanged; the win banked here is the window.** The
+> speed work is `./scripts/spec-sweep.sh`, which now has n3/n6/n8 rows —
+> and it must be run on a quiet box.
 
 ```
               pi  (scripts/pi-local.sh)
@@ -62,7 +104,7 @@ pi. `coding` is the default.
                   ▼
        ┌─────────────────────┐   llama-server     :8080
        │  llama.cpp (CUDA)    │   Qwen3.8-27B, --jinja native function
-       │                      │   calling, 32K context
+       │                      │   calling, 64K context
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -135,7 +177,8 @@ cd ~/my-project && qpi
 | `./scripts/spec-sweep.sh --dry-run` | Plan the speculative-decoding sweep and price it |
 | `./scripts/spec-sweep.sh --only baseline,pmin-050,pmin-040` | Is the MTP draft p-min-bound or n-max-bound |
 | `./scripts/spec-sweep.sh --workload repeat` | What `ngram-simple` is worth on repetitive output |
-| `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything |
+| `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything — with mean, max and within-config spread, and a provenance block that says whether every row came off one stack |
+| `./scripts/spec-sweep.sh --pins` | What build, context size, KV types and weights this box would stamp on a result right now |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
@@ -149,7 +192,7 @@ cd ~/my-project && qpi
 | `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 | `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (39 tests, no install) |
 | `cd vendor/prinny-channel && npm test` | Test the Matrix channel (296 tests, no install) |
-| `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (16 tests, no install) |
+| `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (28 tests, no install) |
 
 ## Updating
 
@@ -190,7 +233,7 @@ The keys worth knowing:
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
 | `GGUF_FILE` | set by the active mode | `coding` uses `Qwen3.8-27B-UD-Q4_K_XL.gguf`; `prose` the Heretic-decensored IQ4_XS. See the VRAM table |
-| `CTX_SIZE` | `32768` | Context per slot; also what forge uses as its token budget. Capped by the f16 KV cache — see below |
+| `CTX_SIZE` | `65536` | Context per slot; also what forge uses as its token budget. Sized by the `q8_0/q8_0` KV cache — see below |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it. The guard against a turn that thinks itself out of an answer entirely — at a cap, `xhigh` has been measured returning 12,582 reasoning chars and **zero** content |
 | `REASONING_BUDGET_MESSAGE` | *(see `.env`)* | What the engine injects when the budget runs out. Phrase it toward delivering, not toward answering — an agentic turn cut off mid-plan still needs to be free to call a tool |
 | `REASONING_EFFORT` | `medium` | **New in 3.8.** `xhigh`\|`high`\|`medium`\|`low` — `high` is rewritten to `xhigh`, anything else fails the request *for this setting*. A **request** may instead send `{"reasoning_effort":"none"}` (llama.cpp intercepts it before the template) or override per turn with `{"chat_template_kwargs":{"reasoning_effort":"low"}}`; forge forwards both. Upstream defaults to `xhigh`; this stack does not, see below |
@@ -373,22 +416,36 @@ the GGUF still declares `full_attention_interval=4`, `head_count_kv=4` and 256-w
 K/V heads, and every quant is within 10 MB of its 3.6 counterpart, so the table below
 carries over byte for byte.
 
-**The KV cache must be f16/f16 here, and that is what sets the context size.**
+**The KV cache must be a MATCHED pair, and that is what sets the context size.**
 Measured on this machine on 2026-08-12, not inherited from a guide:
 
 | KV cache | Prompt processing | 12K-token request |
 | --- | --- | --- |
 | `-ctk f16 -ctv q8_0` | 26–140 tok/s, **falling** as the prompt grows (GPU at 0%) | never finished inside forge's 600s timeout |
-| f16 / f16 (what this repo now uses) | **1806 tok/s** | **6.9 s**, correct answer |
+| f16 / f16 | **1806 tok/s** | **6.9 s**, correct answer |
+| `q8_0 / q8_0` (what this repo now uses) | see `versions.lock` — being re-measured | — |
 
-A quantized V cache takes prefill off the GPU on build `b10200` — roughly a **65×**
-penalty on every prompt, which is exactly the workload a coding agent generates. It
-cannot be worked around by disabling flash attention either: llama.cpp refuses to
-start with `V cache quantization requires flash_attn`. So the choice is f16/f16, and
-f16/f16 costs about **132 KiB per token** against ~98 KiB with a quantized V.
+**Corrected 2026-08-22.** That measurement is real, but the conclusion drawn from
+it — "a quantized V cache takes prefill off the GPU" — was one step too broad, and
+it is what held `CTX_SIZE` at 32768 for ten days. A stock CUDA build compiles only
+**matched** flash-attention KV pairs (`f16/f16`, `q4_0/q4_0`, `q8_0/q8_0`,
+`bf16/bf16`); mixing types returns `BEST_FATTN_KERNEL_NONE` and attention falls to
+the CPU. The failing row above mixes `f16` K with `q8_0` V. It was the *mismatch*.
+Upstream confirms it: llama.cpp#20866, where the fix is a rebuild with
+`-DGGML_CUDA_FA_ALL_QUANTS=ON` and another reporter measures the same collapse
+(96 → 2361 tok/s across that flag). Disabling flash attention is still not an
+escape — llama.cpp refuses to start with `V cache quantization requires flash_attn`.
 
-That is why `CTX_SIZE` is **32768** rather than 65536 — a 32K window that answers in
-seconds beats a 64K window that times out.
+So a matched `q8_0/q8_0` was available the whole time. Only **16 of 64 layers** hold
+a KV cache on this hybrid architecture (`16 × (3 × GatedDeltaNet → 1 × Gated
+Attention)`), so with the MTP block counted the cache is ~68 KiB/token at `f16` and
+~36 KiB/token at `q8_0`. `CTX_SIZE` is now **65536**, which costs about 130 MiB more
+than the 32K `f16` window it replaced.
+
+**4-bit KV is not an option here**, whatever the public 4090 recipes say: llama.cpp
+\#27109 (open) reports `q4_x` collapsing prefill to 34–106 tok/s on this exact
+`qwen35` hybrid architecture against 991–1276 tok/s at `q8_0`, with generation
+unaffected — so a decode-only benchmark will not catch it.
 
 | GGUF | Weights | @32K f16/f16 | Verdict on ~22.4 GiB |
 | --- | --- | --- | --- |
@@ -559,6 +616,37 @@ checked rather than taken from the README:
 - **Done-ness can be objective.** `--check "CMD"` runs a shell command after
   every iteration and believes the exit code, not the model's claim.
 
+**The no-progress nudge now fires on the runs it was written for.** After eight
+iterations with no concrete change the loop stops asking for the next batch and
+demands a tangible artifact instead. What counted as "a change" used to be a
+word list — including `passed`, `fixed` and `successfully` — matched against the
+output of *any* tool, so a `--check "cargo test"` run that prints `42 passed`
+every iteration pinned the counter and the nudge could never fire; so did a
+`read` of a CHANGELOG and a `grep` that matched `updated`. Now a `write` or an
+`edit` counts by definition, `bash` and `Agent` are the only tools whose output
+is read at all, and the verdict words are gone. See AK5 in
+`context/design/subagents-loop-verifier-proxies.md`.
+
+**One thing to know about `--check`, because it is the sharpest edge here.** The
+command runs with `bash -lc` once per iteration, for the life of the run and
+across `/loop resume`, through `pi.exec` — which emits no `tool_call`, so nothing
+in this stack reviews it: not the Matrix permission relay, not `rtk-pi`'s gate,
+not the compaction guard's output cap. Typed by you in the terminal that is
+exactly right, and unchanged. Two other routes to the same field are narrower:
+
+```
+   from Matrix        --check is REFUSED outright, with its own reason, along
+                      with --model and --rescue-model  (AD6)
+   from the MODEL     the `loop` tool declares `check`. You are told the model
+                      asked, and asked to confirm it; with nobody to ask the
+                      check is not armed and the LOOP STARTS ANYWAY, without one.
+                      LOOP_TOOL_CHECK=1 in .env is the standing yes.   (AJ2)
+```
+
+`--until-done` without a check still terminates on the model's `LOOP_DONE:`
+marker, which is what that mode does whenever no check is configured — so
+declining costs the run its objective done-ness, not the run.
+
 Verified end to end on Qwen3.6-27B: given a `PLAN.md`, a two-iteration run
 produced a working module and a passing test, and `python3 test_calc.py` exited
 0 — the plan's own acceptance criterion.
@@ -700,6 +788,29 @@ steers "wrap up immediately" at the limit and hard-aborts only after the grace
 turns, so hitting it produces an answer rather than a severed run. `StopAgent` is
 the parent's kill switch.
 
+**A subagent's own turns are in the session transcript.** Twentieth pass, and it
+is the answer to *"a delegation just ran; where is the record of what it did?"*.
+Before it, one delegation put exactly two things in the parent's session file —
+the `Agent` tool call and its result, or the `subagent-result` message — and the
+child's own turns lived in an in-memory session that is thrown away, a `/tmp`
+log that is off by default, and the verifier's JSONL. Now every child turn, the
+brief, each verifier call and the outcome are written into the operator's own
+transcript as `subagent-turn` entries, headed with the short id `/agents` uses:
+
+```
+   ┌ subagent  a3f9c2  Explore  · turn 1 ──────────────────────────────────┐
+   │   …[TOOL] bash(grep -rn 'foo(' src)                                   │
+   │   …[ASSISTANT] Three: src/a.ts:12, src/b.ts:40, src/c.ts:7.           │
+   └───────────────────────────────────────────────────────────────────────┘
+```
+
+It costs the model nothing, ever: pi's `sessionEntryToContextMessages` returns
+`[]` for a `type: "custom"` entry, so it persists and renders and is never
+context — measured against pi's own `SessionManager`, across two compactions and
+a re-open from disk, before the code was written. Bounded at 60 entries per
+delegation and 4,000 characters each; `SUBAGENT_TRANSCRIPT=0` turns it off. See
+§5.7 of `context/design/subagents-loop-verifier-proxies.md`.
+
 **`/loop` was put back, and then taken out again**, which is worth a paragraph
 because the reason is the sharpest edge in this whole design. Subagents run **in
 the parent's process**, so a child session binds the *same module object* — and
@@ -735,7 +846,15 @@ clean run is worth asking a judge about.
 
 The judge is a fresh one-turn agent with no tools that sees **only** the task and
 the answer — not the child's session. A model shown its own reasoning ratifies
-its own answer, so the judge is made harder to fool by knowing less. A failed
+its own answer, so the judge is made harder to fool by knowing less. It knows
+less about the *work*, not about the *text*: both the task and the answer are
+quoted into its prompt inside fences, and a subagent's answer is model output
+shaped by whatever the subagent read — so an answer containing a fence used to
+end the quoted region early and continue in instruction position, above the two
+lines the judge is meant to obey. Both blocks are now defused the way
+`prinny-channel` has always defused a Matrix sender's `</channel>` and `[matrix]`
+(a zero-width space, and nothing else touched: an answer is expected to contain
+code). See AJ4 in `context/design/subagents-loop-verifier-authority.md`. A failed
 verdict continues the *child* once, since that is where the context to fix it
 lives — and that fix is then judged in its turn, because the answer least worth
 trusting unchecked is the one produced by a child already known to have drifted.
@@ -865,15 +984,31 @@ loudly, which is what the source-text verification is for.
 
 **A Matrix sender can run a named few pi commands.** `sendUserMessage` passes
 `expandPromptTemplates: false`, so a `/` message had never executed anything — it
-reached the model as literal text. Allowed now: `/compact`, `/stack`, and the
-whole `/loop` lifecycle. Refused, each on its own grounds: `/prinny` (it edits
-the allowlist itself), `/trust` (loads a project's extensions — arbitrary code),
-`/login`, `/logout`, `/settings`, `/share`, `/export`, `/copy`, `/new`, `/fork`,
-`/resume`, `/session`, `/tree`, `/quit`, `/model`, `/name`, plus the `--model`
-flag on anything permitted, which would route around the `/model` refusal. A
-refused command is answered on Matrix and **not** delivered to the model, so it
-cannot be talked into running it another way. Anything unrecognised stays prose —
-`/usr/bin/foo is broken` is a sentence. See `src/command-routing.ts`.
+reached the model as literal text. Allowed now: `/compact` (which this extension
+performs itself, because pi's `prompt()` dispatches extension commands only), the
+whole `/loop` lifecycle, and **`/stack status` and `/stack help` — not the rest of
+`/stack`**. Refused, each on its own grounds: `/prinny` (it edits the allowlist
+itself), `/trust` (loads a project's extensions — arbitrary code), `/login`,
+`/logout`, `/settings`, `/share`, `/export`, `/copy`, `/new`, `/fork`, `/resume`,
+`/session`, `/tree`, `/quit`, `/model`, `/name`, plus `--model`, `--rescue-model`
+and `--check` on anything permitted, which would route around a refusal made
+elsewhere. A refused command is answered on Matrix and **not** delivered to the
+model, so it cannot be talked into running it another way. Anything unrecognised
+stays prose — `/usr/bin/foo is broken` is a sentence. See
+`src/command-routing.ts`.
+
+`/stack` was allowed in full until 2026-08-19, and it should not have been: every
+one of its twelve subcommands ends in `pi.exec`, which emits no `tool_call`, so
+none of them passes the permission relay — and `/stack up`, `/stack smoke`,
+`/stack bench <args>`, `/stack logs` and `/stack slots erase` had no confirmation
+of any kind. The five that did have one used `ctx.ui.confirm`, which is a modal
+in **your** terminal that said nothing about a Matrix sender having asked for it.
+The two forms that remain are exactly what the sidecar advertises the command as.
+If the sender's real question is "is the model up?", ask in ordinary words: the
+model calls the read-only `stack_status` tool and answers on Matrix, which is a
+route that actually reaches them — a `/stack status` writes a terminal entry
+they never see. See AJ1 in
+`context/design/subagents-loop-verifier-authority.md`.
 
 **The typing indicator follows "Working…".** Up between `agent_start` and
 `agent_settled`, refreshed every 8s against Matrix's 20s expiry. Two subtleties
@@ -894,6 +1029,20 @@ send that.
 `sudo`, force pushes and similar. pi has no approval system of its own, so this
 is the extension's own gate rather than a relay of one; it **fails closed**, so
 a dead channel blocks rather than allows.
+
+"And similar" is now a property rather than a spelling. The three guards that
+name one — a recursive force delete, discarding working-tree changes, making
+something world-writable — read the command's tokens instead of matching a
+regex, so `rm -rfv`, `rm -r -f`, `rm --recursive --force`, `rm /path -rf`,
+`git clean --force -d` and `chmod 0777` all ask, and `rm -- -rf` (a file with
+that name) still does not. See AK2 in
+`context/design/subagents-loop-verifier-proxies.md`.
+
+**A prompt nobody answers now says so.** The relay stops waiting after
+`permissionTimeoutSeconds` and blocks the call. It tells the sidecar how long it
+will wait, so an Allow pressed after that is answered *"no longer waiting … pi
+blocked the call. Nothing was run"* rather than `✅ Allowed` — which is what the
+room used to be told about a command that never ran.
 
 > **One Matrix account per channel.** Two bots signed into the same account
 > duplicate every delivery and fight over the crypto store, which ends with a
@@ -1213,6 +1362,18 @@ otherwise. Diffed against the real command, rtk's filters are mostly faithful:
 same bytes at every size tried up to 180 KB. The allow-list is narrow because
 most filters **save nothing on a repo shaped like this one**, not because most of
 them lie.
+
+**And one command it will not rewrite whatever the allow-list says: one a person
+has already approved.** With the Matrix permission relay on (`/prinny permissions
+all`), a `bash` call is shown to a human on their phone before it runs — and this
+extension's handler runs one position AFTER that relay, on the same tool-call
+input object. So the approver read `git status` and pi ran `rtk git status`,
+which is an approval for a different command; the channel log recorded the first
+one too. The relay now stamps what it showed on the call, and rtk stands down
+when it sees the stamp — leaving the command unfiltered, which is the direction
+every other decision in that file already fails in. With the relay off (the
+default) nothing is stamped and nothing changes. See AJ3 in
+`context/design/subagents-loop-verifier-authority.md`.
 
 `cat` is the one entry denied on principle rather than arithmetic. It costs 0%
 to deny today, and rtk's README advertises "signatures and structure over full
@@ -1719,7 +1880,7 @@ many layers were actually offloaded.
 Drop a rung on the quant table or lower `CTX_SIZE`. **Do not reach for
 `-ctk f16 -ctv q8_0`** — a quantized V cache buys ~2 GiB of VRAM and takes
 prefill off the GPU entirely (~65x slower, measured); it is why `CTX_SIZE` is
-32768 rather than 65536. See the quant section above.
+65536 since 2026-08-22 (was 32768). See the quant section above.
 
 **`docker pull` from ghcr.io fails with `denied` on a public image.**
 A stale ghcr credential in `~/.docker/config.json` is being sent and rejected — this
@@ -1789,7 +1950,11 @@ scripts/
   bench_quality.py      reasoning effort vs ANSWER QUALITY: hidden edge-case
                         assertions, model code executed, LOC as the
                         over-engineering proxy. Length is not quality
-  spec-sweep.sh         sweep SPEC_TYPE x n-max x p-min, report draft/cycle
+  spec-sweep.sh         sweep SPEC_TYPE x n-max x p-min, report draft/cycle.
+                        Every result records the pin set that produced it,
+                        so --resume cannot skip a row measured on another
+                        build and --report cannot pass a mixed table off as
+                        a comparison
   slot-cache.sh         save/restore KV cache — UNUSED, and read its header first
   mode.sh               switch between the regimes in modes/
   download_model.py     resumable GGUF fetch

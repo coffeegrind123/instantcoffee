@@ -59,5 +59,19 @@
     "n_max": 2,
     "p_min": 0.5,
     "workload": "repeat"
-  }
+  },
+  "pins": {
+    "llama_tag": "server-cuda-b10200",
+    "llama_digest": "sha256:48b8053c05319cde97e64463d117b5747d3fb27475b176f85edf27bd503fa7f9",
+    "ctx_size": "32768",
+    "cache_type_k": "f16",
+    "cache_type_v": "f16",
+    "model_repo": "unsloth/Qwen3.8-27B-GGUF",
+    "gguf_file": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+    "gguf_size": "17923394624",
+    "gguf_mtime": "1786799731"
+  },
+  "pins_source": "backfilled-2026-08-22",
+  "pins_note": "Backfilled 2026-08-22 from the quarantine note and versions.lock. These are the 2026-08-16 runs: llama.cpp b10200, f16/f16 KV, CTX_SIZE 32768, and the pre-Dynamic-V3 weights now parked on disk as Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded (17923394624 bytes, written 2026-08-15T13:15Z, i.e. before these runs). Stamped so the files say for themselves why they are not comparable, rather than relying on a README that travels separately from them.",
+  "measured_utc": "2026-08-16T13:50:08Z"
 }

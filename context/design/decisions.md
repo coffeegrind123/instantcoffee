@@ -6220,3 +6220,1104 @@ implementations, and **the next package to send into pi will not know the
 protocol exists.** There is no scan for that one; a grep for
 `sendMessage`/`sendUserMessage` across `vendor/` and `.pi/extensions/` is the
 whole of it, and it takes about ten seconds.
+
+## 2026-08-19 — eighteenth audit pass over subagents/loop/verifier (AI1–AI5)
+
+A full re-read of the whole stack, written up as
+`context/design/subagents-loop-verifier-promises.md` — ~2,950 lines, and
+self-contained in the same way the two before it: §1 the machine in one drawing,
+§2 pi itself, §3 the event bus and the two things that are NOT on it, §4–§9 the
+six packages in full, each ending in a table of its one-slot queues and what
+empties them.
+
+**The axis, and it is the seventeenth pass's own closing lesson widened.** That
+pass ended with *"a decision to leave something open is a claim, and it ages."* A
+decision is not the only thing this stack writes down: it writes down sentences
+it says to a Matrix sender, to the operator, to the parent model, and to the next
+person who opens the file. So: **quote the sentence, then find the path on which
+it is not true.**
+
+**The gates were run before anything was written**, so the *before* column is a
+measurement of the tree as the pass found it: 1,041 tests, 77 probes, lint 95/95.
+After: 1,071 tests, 82 probes, lint 95/95.
+
+Four of the five findings are the same mechanical shape, and it is worth naming
+because the next one will be too: **a ONE-SLOT QUEUE whose promise is per-person
+and whose slot is per-session.** A grep for module-level `let x: T | undefined`
+finds two thirds of them; the other third are fields on a class or on a record,
+and both of the ones this pass found there.
+
+**AI4 — the room the tool guessed.** `forwardToMatrix` refuses to send when more
+than one Matrix room is live, and says why: *"guessing would send one person's
+conversation to another — worse than silence, and not undoable."* The `prinny`
+TOOL is the second route into the same sidecar `reply`, and it guessed: `room_id`
+comes from `lastInbound`, a one-slot last-write-wins variable written on every
+arrival, under a comment saying it is *"neither in the schema nor something the
+model can get wrong"*. Two rooms live in one turn is AF1's own ordinary case —
+pi drains its follow-up queue inside ONE run — so the model answering the FIRST
+sender sent that answer to the SECOND. And it could not correct the guess:
+`renderInboundMessage` deliberately drops `room_id` from what the model sees.
+`resolveActionRoom` now applies the same refusal, an explicit `room_id` still
+wins, and both refusals read one `liveRooms()` helper.
+
+**AI1 — the answer that was still queued when the session ended.**
+`SpawnCoordinator.dispose()` cleared `pendingNudges` and cancelled the one timer
+that drains it, so a finished background delegation's answer sitting in that set
+at `session_shutdown` was discarded with nothing said anywhere — while the
+`session-replaced` drop report, whose own docstring names `session_shutdown`,
+could only fire for a record settling AFTER the dispose. AH1 had widened the
+window from 200 ms to five minutes by turning the drop into a wait. The control
+is thirty lines away: `AgentManager.dispose()` fails its queued records honestly
+(US-9), and `events.ts` calls the two disposals one after the other. The new
+`session-ending` reason does NOT name `/agents`, because the map `/agents` reads
+is disposed two statements later — AG6's rule for the one reason it did not exist
+for.
+
+**AI2 — the compaction two people asked for.** A Matrix `/compact` that arrives
+mid-turn is answered *"I will compact as soon as it finishes"* and parked in one
+slot, last-write-wins. One compaction was always right; one REPLY was not, and
+`deliverInbound` marks the entry `answered` so the undelivered sweep could not
+report it either. The same module answers two senders correctly on the path that
+acts IMMEDIATELY. And `stopChannel` dropped the whole request in silence, a few
+lines below a loop that denies every pending permission because *"the channel
+going away is not consent."* Now `rooms: string[]`, merged by the same rule
+`mergeAwaiting` uses (AE3), and `abandonPendingCompaction()` is `stopChannel`'s
+first statement — the order is half the fix, because `callSidecar` reads `child`.
+
+**AI3 — the steer that never reached a session.** `AgentManager.steer()` answers
+`true` for a steer it queues, under *"Queued, so it WILL reach the model —
+onSessionCreated flushes it"*, and the operator reads that as "Steer sent to X…".
+The subagent BUILD WINDOW is seconds long — a settings manager, the system-prompt
+sources, two git subprocesses on a 9p mount, and every extension factory re-run
+for the child — and a run that dies in it never reaches `onSessionCreated`.
+Measured: one second after `spawn()` the record reads `running` with no session,
+and the same spawn settled at ~16.5 s. Worse, `growBrief` had already recorded
+the steer, so the brief the JUDGE checks the answer against contained an
+instruction the child never got. The settlement chain now says so; the brief is
+deliberately left alone.
+
+**AI5 — the residue note that was wrong.** The seventeenth pass fixed two of
+`.pi/extensions/stack.ts`'s nine `pi.exec` sites and wrote the other seven down
+as *"script runners whose output is reported verbatim, where a wedge shows up as
+empty output rather than as a wrong verdict."* Five of them choose a verdict from
+`r.code`. The two that matter recreate llama on a **600-second timeout**, in a
+file whose own confirmation prompt says the cold load is *"roughly 20 minutes"* —
+so a killed `compose up -d --force-recreate llama` reported "llama recreated",
+and `/stack set` reported an `.env` write that may not have happened. All nine now
+go through one `execVerdict` helper, and `tests/exec-verdicts.test.ts` — AH3's
+standing scan — covers `.pi/extensions` as a second root. **The scan gained a
+control it did not have:** deleting a root from the list took the suite from 377
+tests to 375 with nothing failing, so the roots are asserted by name as well.
+*A scan that finds nothing passes; a scan that is no longer asked passes too.*
+
+**No finding in `pi-loop-mode`, and the working is recorded rather than the
+absence.** §13.2 of the write-up and the new section in that package's `FORK.md`
+list its three one-slot queues, every path that empties each, and the six
+operator-facing sentences it makes — each followed to the path that would
+falsify it. Two near-misses are written down so they are not re-derived:
+`pauseForCheckFailure`/`pauseForProviderFailure` not calling
+`resetContextRecovery()` where the third function in the same block does, and
+`agent_settled` and `session_compact` consuming `contextRecoveryPending` in
+opposite clear-order. Both need `state.active` true after a runToken bump with no
+reset, and no such path exists.
+
+**The residue, stated in the tense that would have helped:** eleven one-slot
+queues in this stack hold something somebody is owed, seven were already right,
+and the four that were not are this pass. The next one will be added by somebody
+writing a deferral, and the question to ask about it is not "does it deliver?" —
+all four delivered — but **"what empties this slot, and what does the person who
+was promised hear in each case?"**
+
+
+## 2026-08-19 — nineteenth audit pass over subagents/loop/verifier (AJ1–AJ5)
+
+A full re-read of the whole stack, written up as
+`context/design/subagents-loop-verifier-authority.md` — ~2,500 lines, and
+self-contained in the same way the three before it: §1 the machine in one
+drawing, §2 pi itself, §3 the event bus, §4–§9 the packages in full. Two things
+are new in the shape of the document: §1 opens with a table of **the five
+actors**, and §3 lists **all nine** multi-handler orderings rather than the four
+that were interesting.
+
+**The axis.** Almost every guard in this stack names a WHO — *"user-only
+control"*, *"the operator asked to be consulted"*, *"the command a person is
+asked to approve"*, *"the caller is already inside the trust boundary"*. A guard
+that names an actor is a claim about a SET, and none of them was written next to
+a list of who the members are. So: **name every actor that can reach a decision,
+not just the one it was written against.** There are five — the OPERATOR at the
+terminal, the parent MODEL, an allow-listed Matrix SENDER, a CHILD session in
+this process, and the MACHINERY itself — and every finding is a guard that is
+correct about the actor it names and silent about a different one.
+
+**The gates were run before anything was written**: 1,071 tests, 82 probes, lint
+95/95. After: 1,108 tests, 87 probes, lint 95/95.
+
+**AJ1 — `/stack` was advertised read-only and allowed in full.**
+`vendor/prinny-channel`'s `MATRIX_ALLOWED` had `stack: null`, which means the
+whole command, while the sidecar advertises it to a Matrix client's `/` menu as
+*"Show local model stack status"* and `.pi/extensions/stack.ts` says of itself
+*"every mutation above is a user-only command on purpose"*, under a section
+header reading `--- user-only control ---`. "User-only" was decided against the
+MODEL, which cannot type a slash command; the SENDER can, through this table.
+`/stack up`, `/stack smoke`, `/stack bench ARGS`, `/stack logs` and
+`/stack slots erase` had no confirmation at all; five more had `ctx.ui.confirm`,
+which is a modal in the OPERATOR's terminal that does not say who asked and
+answers `false` headless. And every branch of `/stack` ends in `pi.exec`, which
+emits no `tool_call` — **AD6's own argument, one line up in the same object**.
+Narrowed to `['status', 'help']`, exactly what is advertised, plus a
+`MATRIX_DEFAULT_SUBCOMMAND` table so the bare `/stack` still works. The
+per-subcommand arm of `classifyMatrixCommand` had existed, tested, since the
+table was written and had never once run against real traffic, because both
+entries were `null`.
+
+**AJ2 — a decision reopened, because its reason named the wrong caller.** §11.4
+of `…-controls.md` left the `loop` tool's `check` parameter open on the grounds
+that *"the caller is already inside the trust boundary"*. The terminal is; the
+caller of a TOOL is the model, and `permissionMode` is precisely an operator
+saying the model is not — while `prinny-channel`'s own `promptGuidelines` call
+what reaches the model "untrusted input". So AD6's refusal of `--check` from
+Matrix is routed around in one hop: the sender asks in prose, the model calls
+`loop(check:"…")`, and `runGoalCheck` runs it with `pi.exec("bash", ["-lc", …])`
+once per iteration for the life of the run. **The warning was already in the
+module, on the branch where a `--check` does nothing** (`goalLooksLikeFlags`).
+Now: announced always, armed by `LOOP_TOOL_CHECK=1`, confirmed when there is
+anybody to ask, and otherwise not armed — with the LOOP starting either way,
+because an unattended run must not be stopped by this.
+
+**AJ3 — the command a person approved, and the command that ran.** `tool_call`
+handlers run in load order over one mutable `event.input`, and the launcher loads
+`prinny-channel` before `rtk-pi` deliberately, so *"the command a person is asked
+to approve is the command the model wrote"*. Both halves of that sentence are
+true and the conclusion is one actor short: an approval gate is about the command
+that will RUN, and rtk rewrites `event.input.command` afterwards. The approver
+read `git status`; pi ran `rtk git status`. Fixed by a stamp on the object both
+handlers already share — the mechanism `toolCallListener` uses for
+`_resolvedAgent` — with the literal duplicated in each package and a cross-source
+test on each side, and deliberately not a fourth `globalThis` key.
+
+**AJ4 — the judge's prompt has three writers, and one of them is the child.**
+`buildJudgePrompt` quotes the answer inside a triple-backtick fence and asks its
+question underneath, so an answer containing a fence continued in INSTRUCTION
+position above the two lines the judge is meant to obey. The defence exists in
+this repo twice, in `prinny-channel/src/inbound.ts`, with the attack written out
+in each docstring — in the package that knows its writer is a stranger. A
+zero-width space defuses a run of backticks and a line opening with the verdict
+or reason keyword, and nothing else, because an answer is expected to contain
+code and the word "addressed".
+
+**AJ5 — the map's order, and the probe that was given the map's list.** §3.1 of
+three documents said `tool_call` runs *"prinny FIRST, then rtk, then subagents"*;
+it runs subagents, prinny, rtk, so the safety property beside it is false. And
+`.pi/extensions/browser-guard.ts` registers the FIRST `tool_result` handler in
+the process and had no column in any table. `t5` — the standing scan written for
+AG4, because five documents drew the bus wrong — could see neither, because its
+`PACKAGES` list was the map's own list. It now derives seven columns and fails on
+a package with handlers and no column; `w1` is new and reads the `-e` order out
+of `scripts/pi-local.sh` and pi's own two ordering rules out of pi's source.
+
+**Two negatives recorded so they are not re-derived.** `emitToolCall` is the only
+emit method in pi's runner with no `try`/`catch` around the handler call — not a
+finding, because `prepareToolCall` catches it and turns the call into an error
+result, and all three handlers guard themselves. And `beginCompaction` returns
+`false` when somebody else holds the lock while all three callers discard the
+return value — not a finding, because each reads `compactionInFlight()`
+immediately above with no `await` in between.
+
+**Nothing found in `.pi/extensions/compaction-guard`, and the working is
+recorded** (§13.2 of the write-up): it names no actor, registers no tool and no
+command, and both hooks are bounded by construction.
+
+**Four things transfer out.** (1) *A guard that names an actor is a claim about a
+set* — writing down the five names turned every guard in the stack into a
+question with a countable answer, and it is the cheapest artefact in the document
+to produce. (2) *A model is a conduit, not a principal*: whenever a decision
+turns on trusting the caller, write down where the caller's own instructions come
+from. (3) *"Who else" is sometimes "who NEXT"* — three of five findings are a
+guard that was true when it ran and undone afterwards. (4) **A probe given the
+artefact's own list can only confirm the artefact's arithmetic**: when you write
+a scan to keep a document honest, seed it from the thing the document is ABOUT.
+
+**A new fail-open/fail-closed rule, stated for the first time** (§10.3): *fail
+open when the failure costs QUALITY, fail closed when it costs a decision that
+belongs to a person.* Every guard in the stack is on the right side of that line;
+AJ2 was the one that was not.
+
+## 2026-08-22 — the KV cache was never the constraint we thought, and the pin went stale
+
+Source material: two HN threads on Qwen3.8-27B (the Artificial Analysis score
+thread and Simon Willison's "excellent, but it defaults to overthinking"), and
+28 X/Twitter posts on 4090/3090 tuning of this exact model. Every load-bearing
+claim below was then checked against llama.cpp source at a named ref, the
+llama.cpp issue tracker, the Hugging Face API, or the GGUF header — because on
+first pass the social-media claims and the careful measurements disagreed, and
+the careful measurements won three times out of three.
+
+### 1. `-ctk f16 -ctv q8_0` did not fail because V was quantized
+
+`.env` recorded, from a real measurement, that a quantized V cache takes prefill
+off the GPU and costs ~65x, and concluded the cache "has to be f16/f16". The
+measurement was right. The conclusion was one step too broad, and it is what has
+capped `CTX_SIZE` at 32768 ever since.
+
+`ggml/src/ggml-cuda/fattn.cu`, `ggml_cuda_get_best_fattn_kernel()`:
+
+```c
+#ifndef GGML_CUDA_FA_ALL_QUANTS
+    if (K->type != V->type) {
+        return BEST_FATTN_KERNEL_NONE;
+    }
+#endif
+```
+
+`GGML_CUDA_FA_ALL_QUANTS` is a compile-time option that the official
+`ggml-org/llama.cpp` CUDA images do not set, so only the four **matched** pairs
+in the `#else` branch of `ggml_cuda_flash_attn_ext_vec()` are compiled —
+`f16/f16`, `q4_0/q4_0`, `q8_0/q8_0`, `bf16/bf16`, each at head sizes 64, 128 and
+256. The failing experiment used K `f16` with V `q8_0`: a mismatched pair, so
+`BEST_FATTN_KERNEL_NONE`, so no CUDA flash attention, so prefill on the CPU.
+
+Confirmed upstream rather than inferred: llama.cpp#20866 ("Asymmetric K/V cache
+quantization types cannot be offloaded to GPU", closed) has a contributor
+stating the mixed kernels "aren't built by default. You need to rebuild
+llama.cpp with `-DGGML_CUDA_FA_ALL_QUANTS=ON`", and a second reporter measuring
+96 t/s prefill with the GPU at 0% and 180 MHz against 2361 t/s after rebuilding
+with the flag — a ~25x gap of the same shape as the ~65x seen here.
+
+So a **matched** quantized pair was always available. `CACHE_TYPE_K` /
+`CACHE_TYPE_V` now exist as first-class keys (defaulting to `f16` in compose so
+an older `.env` is unchanged) and are set to `q8_0`/`q8_0`.
+
+### 2. …but 4-bit KV really is broken, and specifically on this architecture
+
+llama.cpp#27109 (OPEN) — "CUDA: 4-bit KV cache (q4_1/q4_0) collapses prefill to
+~34 t/s on qwen35 hybrid". Same architecture as ours; the reporter describes it
+as "qwen35 hybrid … 65 blocks, 17 attention layers, GQA 4x256". Their table:
+
+| KV types      | prefill      | generation |
+|---------------|--------------|------------|
+| q8_0 / q8_0   | 991–1276 t/s | ~60 t/s    |
+| q4_1 / q8_0   | 34–106 t/s   | ~60 t/s    |
+
+A 4-bit V alone reproduced it (195 t/s vs 1174 t/s). Generation is untouched, so
+a decode-only benchmark does not catch it. The MMQ shared-memory guard of
+\#26141 is explicitly ruled out; the bug is open and unexplained.
+
+This matters because most of the public 4090 recipes for this model run
+`-ctk q4_0 -ctv q4_0` to reach 130K–250K windows. On this architecture that is a
+prefill trap however good the decode number looks. `q8_0/q8_0` is not a
+quality-motivated compromise here — it is the only quantized pair the model can
+currently use, and #27109's own numbers show it is the fast path.
+
+### 3. Only 16 of 64 layers have a KV cache
+
+From the model card — `Hidden Layout: 16 × (3 × (Gated DeltaNet → FFN) → 1 ×
+(Gated Attention → FFN))` — and the GGUF metadata (`head_count_kv 4`,
+`key_length 256`, `value_length 256`, `full_attention_interval 4`). The other 48
+layers are linear and hold a fixed-size recurrent state that `-ctk`/`-ctv` do
+not touch; `llama_memory_hybrid` takes `type_k`/`type_v` for the attention half
+and separate `type_r`/`type_s` for the recurrent half, so there is no guard
+against a quantized attention cache on a hybrid model.
+
+Counting the MTP block at `blk.64` gives the 17 that #27109 reports:
+
+    f16/f16    17 × 4 × 256 × 2 × 2 B = 68 KiB/token
+    q8_0/q8_0  the same at ~1.0625 B/value = 36 KiB/token
+
+64K at `q8_0` therefore costs ~130 MiB more than the 32K `f16` window it
+replaces. `CTX_SIZE` 32768 → 65536. 96K is plausible against the last measured
+21998 MiB of 24564 but is unmeasured, and the compute buffers and the
+speculative output buffer (`n_outputs_per_seq = 1 + ngram_simple.size_m = 49`)
+also scale, so it is not being taken on arithmetic alone.
+
+### 4. The llama.cpp pin was 23 days and 373 builds stale
+
+`b10200` is 2026-07-30. The comment justifying the pin said nothing between it
+and the newest published image was Qwen3.8-specific. Four commits in the gap
+are:
+
+- **2b562109** (#26079, 2026-08-20) — per-HW/per-quant MMVQ→MMQ decode
+  crossover. `b10200`'s `ggml_cuda_should_use_mmvq()` has **no Ada Lovelace
+  entry at all**, so a 4090 uses the MMVQ (GEMV) kernel for every batch up to
+  `MMVQ_MAX_BATCH_SIZE = 8`. The new table is labelled "tuned on RTX 4090" and
+  crosses Q4_K/Q5_K to MMQ above `ne11` 7.
+
+  **Correction on first reading of this commit:** it buys nothing at the
+  current `n-max 4`. The verify batch is `1 + n_max` = 5, and for Q4_K both
+  builds pick MMVQ at 5 (b10200 because 5 ≤ 8, b10573 because 5 ≤ 7). The
+  builds diverge only at a verify batch of exactly **8**, i.e. `n-max 7`. Above
+  that — where `ngram-simple` operates, at draft/cycle 26.8 — both are on MMQ.
+  Its real value is that it makes the `n-max 6/8` rows of the sweep measure
+  something other than the GEMV cliff, which is what they would have hit on
+  b10200.
+- **#26793** — `chat: tighten bare function parsing for Qwen models`. The whole
+  tool path here is `--jinja` native function calling on a Qwen model.
+- **#26605** — `fit: fix memory allocation for MTP layers`.
+- **#27400** — `common: fix draft-mtp with embeddings`.
+
+`server-cuda-b10573` is the newest published CUDA server image
+(`sha256:f74f5805191a8030bff26e2a7890d737fc2b5d0931220c953d25e1b7d7613ef5`);
+b10549 and b10581 exist as tags but have no image. Published tags near the head:
+b10499, b10524, b10548, b10573.
+
+### 5. The local model file is the pre-Dynamic-V3 build, and the downloader could not tell
+
+`unsloth/Qwen3.8-27B-GGUF` re-uploaded every `UD-*` file **in place** on
+2026-08-19 for Dynamic V3 — same filenames, different bytes. The repo's current
+`UD-Q4_K_XL` LFS oid is `3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e`;
+`versions.lock` records `bee238bb…`. Unsloth claim >10% higher accuracy at the
+same size, and the card additionally lists tool-calling template fixes
+("parsing nested objects") and Developer-role support — both of which land
+directly on this stack's forge/pi path.
+
+`scripts/download_model.py` skipped on **filename existence alone**, so
+re-running it would have reported `[skip] … already present` and silently kept
+the old weights. It now compares the local size against the Hub's, reports a
+mismatch as `[stale]`, and re-fetches only when `REDOWNLOAD_STALE=1` (moving the
+old file aside as `*.superseded` rather than deleting it).
+
+**The MTP head survives Dynamic V3.** The claim circulating on X that Unsloth
+"moved the MTP model out of the main download" is wrong, and it was worth
+checking because this stack depends on the head being in the mainline quant.
+Parsing the GGUF header of the current file directly by HTTP range request:
+`qwen35.block_count = 65`, `qwen35.nextn_predict_layers = 1`, and
+`blk.64.nextn.{eh_proj,enorm,hnorm,shared_head_norm}` all present, 866 tensors,
+`blk` indices 0..64. The new `MTP/mtp-Qwen3.8-27B-Q4_0.gguf` in the repo is an
+*additional* standalone drafter, not a replacement. (Vision tensors: 0 — vision
+is `mmproj-F16.gguf`, as before, and `MMPROJ_FILE` stays empty.)
+
+### 6. DFlash2 (PR #27342): not adopted, and the reason is our workload
+
+This is the headline of most of the source material — "lossless 90 tok/s",
+"4.6× faster", 87 t/s at 30K on a 4090 with this exact quant. It is also still
+an open PR, updated the day this was written.
+
+The disqualifying evidence is on the PR itself, from a reporter on **RTX 4090 +
+`unsloth/Qwen3.8-27B-GGUF` UD-IQ4_XS + multi-turn tool-result histories** —
+this stack's exact hardware, model family and workload shape:
+
+> generation degrades 3–5× on multi-turn tool-result histories as output
+> accumulates (MTP/no-spec immune on the identical request)
+
+Their matrix: no spec, flat 31–32 t/s; `draft-mtp` n3, 38–63 t/s; `draft-dflash`
+n7, **60–105 → 19–20 t/s by ~28k output**. On a real ~200-message agentic
+session it "sits at 12–14 t/s from ~200 output tokens on every turn". The
+degradation needs *both* the multi-turn tool-result structure *and* accumulated
+output — either alone is clean, which is exactly why the single-prompt
+benchmarks in the source material look so good. Two further PR commenters advise
+waiting for the merge.
+
+Also on the PR, the most careful measurement of this model anywhere in the
+material — an H200 sweep — shows the quantized case inverting against BF16:
+
+    Qwen3.8-27B BF16    MTP n-max 2/3/4/7 -> 1.48x / 1.56x / 1.58x / 1.48x
+    Qwen3.8-27B Q4_K_M  MTP n-max 2/3/4/7 -> 1.30x / 1.24x / 1.17x / 0.91x
+
+On a 4-bit quant MTP got monotonically *worse* with depth and at n-max 7 was
+slower than no speculation, because the marginal cost of one more verified token
+is 6.7% at BF16 but 23.4% at Q4_K_M. We run a 4-bit quant. That directly
+contradicts the 2026-08-17 conclusion here that n-max 4 beat n-max 2, and the
+likely explanation is that p-min and n-max moved in the same step. The sweep grid
+in `scripts/spec-sweep.sh` now brackets it: n3 as well as n6/n8, plus the n6 /
+p-min 0.82 pair from a public 4090 config, all at the new pin.
+
+### 7. Considered and rejected
+
+- **NVFP4 / W4A4** — Blackwell-only. The 4090 is Ada; no FP4 tensor cores.
+- **UD-Q3_K_XL (13.1 GB)** — the Dynamic V3 Q3 reported to beat 16 GB Q4s on
+  perplexity. An independent GPQA-diamond ladder across eight cuts on one 5090
+  found 4-bit-and-up to be a single flat band and recommended **UD-Q4_K_XL on
+  24 GB cards** by name. With q8_0 KV there is no VRAM reason to drop to Q3.
+- **The "Sharp" chat template** — one tester reports −10–15% tok/s *and*
+  50–100% more tokens for the same task, another that it bakes in opinionated
+  system instructions. This stack already drives `reasoning_effort` and
+  `preserve_thinking` through `--chat-template-kwargs`; a third-party template
+  would fight that.
+- **`--spec-ngram-simple-size-m`** left at its default 48. It is the reason
+  `n_outputs_per_seq` is 49 and costs ~529 MiB, and lowering it would reclaim
+  most of that — but the repetition bench's draft/cycle of 26.8 shows the long
+  drafts are doing real work on exactly the file-rewrite shape pi produces. It
+  is a VRAM lever to pull only if 64K does not fit.
+
+### What is now unverified
+
+`versions.lock` was measured on `b10200`, `f16/f16` KV, 32K, and the
+pre-Dynamic-V3 weights. Every performance number in it is provisional until
+`./scripts/smoke-test.sh` and `./scripts/bench.sh` are re-run. **The first check
+after starting is prefill: thousands of tok/s means flash attention is on the
+GPU, three digits means the KV pair is not being served by a compiled kernel.**
+
+## 2026-08-22 (later the same day) — measured, on the box
+
+The changes above are no longer provisional. Stack brought up on `b10573` with
+`q8_0/q8_0` at `CTX_SIZE=65536`, against the pre-Dynamic-V3 weights.
+
+**It fits, and the context doubled for almost nothing.** `n_ctx_slot = 65536,
+kv_unified = 'true'`, VRAM **22382 MiB of 24564** — against 21998 MiB for the
+old f16/f16 32K config. Double the window for **+384 MiB**, with ~2.1 GiB still
+free. Cold load 20 minutes, reading the 17.9 GB file at 15–38 MB/s through
+`p9_client_rpc` (the process sits in `D` state throughout; `rchar` on
+`/proc/7/io` is the only honest progress indicator, because the container's
+`BlockIO` stays near zero on a 9p mount and the GPU's allocated-but-unfilled
+model buffer reads as a full 18.5 GB from the first minute).
+
+**Smoke test 11/11**, including a real tool call through forge
+(`get_weather({'city': 'Paris'})` in 1.3 s) and the server reporting
+`n_ctx=65536` back to the checker.
+
+**Prefill is on the GPU.** This was the one thing that had to be true:
+
+| prompt tokens | prefill tok/s |
+|---|---|
+| 541 | 1121 |
+| 1053 | 1504 |
+| 2077 | 1799 |
+| 4125 | 2032 |
+| 8221 | 2338 |
+| 16413 | 1706 / 2162 |
+| 32797 | 2243 |
+
+Four digits throughout, and *rising* with depth. That shape is the proof.
+llama.cpp#27109's 4-bit failure mode is the exact opposite — two digits, falling
+monotonically as the prompt grows (106 → 79 → 62 → 34 t/s in their log). We are
+not on that path. Decode 52.6–70.4 tok/s, draft acceptance 0.41–0.65.
+
+**Two runs were discarded, and saying so is the point.** One 16413 run came back
+at 1032 tok/s and one 32797 run at 418 tok/s with decode at 34. Taken at face
+value the second looks like exactly the #27109 collapse. It was not: the host
+was at load average 16.53 on 16 cores with **146 MiB free** and another agent
+process at 191% CPU. Re-running 16413 immediately gave 2162 and 1706. The
+control is to re-run, not to believe one number — `spec_variance_note` in
+`versions.lock` already said this and it caught us again.
+
+### Three things found only by running it
+
+**1. `b10573` rejects `--dry-penalty-last-n -1` and the container crash-loops.**
+Upstream deleted the sentinel between the builds. b10200:
+`int32_t dry_penalty_last_n = -1; // 0 = disable penalty, -1 = context size`,
+rejecting only `value < -1`. b10573: default `64`, rejects *any* negative. The
+failure is at argument parsing, before the model is touched, so it presents as
+a container that restarts every few seconds with no model log at all. Ported to
+`65536` — what `-1` meant — and it must now track `CTX_SIZE` by hand.
+
+Generalising: after this, the whole rendered argument list was replayed against
+the new image with `-m` pointed at a nonexistent path, so parsing completes and
+every remaining flag is validated in one two-second run instead of one
+crash-loop per bad flag. All 91 args pass. That check is worth repeating on
+every image bump.
+
+**2. Do not follow the `--reasoning-preserve` hint the server prints.** On
+startup b10573 logs *"chat template supports preserving reasoning, consider
+enabling it via --reasoning-preserve"*. That flag sets the template kwarg
+`preserve_reasoning`. This model's template never reads that key: in the GGUF's
+embedded template `preserve_reasoning` occurs **0** times and `preserve_thinking`
+occurs twice, in
+
+```jinja
+{%- if preserve_thinking is undefined or preserve_thinking is true
+       or loop.index0 > ns.last_query_index %}
+```
+
+which is what `--chat-template-kwargs` already sets. Taking the hint would be a
+silent no-op. That branch also shows the template preserves *by default* when
+the key is undefined, so the explicit `true` is belt-and-braces. Recorded in
+`docker-compose.yml` next to the flag so it does not get "fixed" later.
+
+**3. `cache_reuse` was already known-dead and the note in `.env` was right.**
+`llama_memory_can_shift()` returns false for hybrid/recurrent memory, so
+`--cache-reuse` is disabled at startup. The same code path exists in b10200
+(`tools/server/server-context.cpp`), so this is not a b10573 regression — it has
+never run on this model. No change; the existing comment already says so.
+
+### End-to-end at the new window, through forge, with recall checked
+
+The benches above talk to llama directly. This one goes through the real path
+(pi's path: forge -> llama) and checks the thing that actually matters about a
+bigger window — whether the model can still *find* things in it.
+
+A synthetic document was built with a distinctive fact in the first section and
+another in the last, separated by ~400 sections of nonce filler:
+
+```
+Section 0.   The commissioning code for the north relay is ZEPHYR-4417.
+...398 sections of filler...
+Section 400. The decommissioning code for the south relay is BASALT-9032.
+Question: state BOTH relay codes exactly, north first. Nothing else.
+```
+
+Result: **prompt_tokens 44511, elapsed 23.9 s, `finish=stop`, answer
+`ZEPHYR-4417 BASALT-9032`** — both needles exact, at opposite ends of the
+window, with `q8_0` K and V. That is ~2100 tok/s of prefill *while the 17.6 GB
+Dynamic V3 download was saturating the 9p mount*.
+
+That request could not have been made before today: 44511 tokens is 36% past
+the old 32768 ceiling.
+
+**Negative control, run first by accident and worth keeping.** The initial
+version of this probe was ~98K tokens. llama refused it cleanly —
+`request (97936 tokens) exceeds the available context size (65536 tokens)` — a
+400 that forge surfaced as a 502. So the window is genuinely 65536 and enforced,
+not silently truncating, which is the failure mode that would have made the
+recall result meaningless.
+
+### The reasoning budget is not truncating, and medium is doing its job
+
+`REASONING_BUDGET=4096` was sized against the 32K window and was a candidate for
+raising now that the window doubled. Measured instead of assumed — three prompts
+of increasing difficulty through forge, checking `reasoning_content` length and
+whether the budget message fired:
+
+| prompt | reasoning chars | completion tokens | budget hit | answer |
+|---|---|---|---|---|
+| `2+2` | 77 | 32 | no | `4` |
+| two-train meeting point | 900 | 836 | no | correct, with working |
+| 4 non-attacking queens on 4x4 | 636 | 699 | no | `(1,2)(2,4)(3,1)(4,3)` — valid |
+
+Nothing close to 4096. The HN threads' "Qwen 3.8 defaults to overthinking" is an
+`xhigh` phenomenon — the figure quoted there is 17,576 reasoning tokens for one
+HTML tool — and `medium`, which this stack already runs, keeps traces two orders
+of magnitude shorter. No change made. The budget is a backstop that is not
+currently binding, which is what a backstop should look like.
+
+### Where the speed actually stands
+
+Prefill and decode are roughly where they were; the win banked today is the
+context window, not throughput. Decode 52.6–70.4 against a prior 53.5 (busy) /
+67.8 (quiet) is inside the noise this box generates. That is the expected
+outcome — as corrected above, the `b10573` MMVQ table changes nothing at
+`n-max 4`, and the three commits that justified the bump are correctness fixes.
+
+The throughput work is the sweep, and it is now unblocked: `spec-sweep.sh` has
+n3/n6/n8 rows and the n6/p-min-0.82 pair, and `b10573` is the build on which
+those rows measure something real. **It must be run on a quiet box** — today's
+host would have produced garbage, as the two discarded runs show.
+
+## 2026-08-22 — twentieth audit pass over subagents/loop/verifier (AK1–AK5)
+
+A full re-read of the whole stack, written up as
+`context/design/subagents-loop-verifier-proxies.md` — ~1,800 lines, and
+self-contained in the same way the four before it: §1 the machine in six
+drawings, §2 pi itself, §3 the event bus, §4–§9 the packages in full. Two things
+are new in the shape of the document: §1 gains **panel F, where the evidence of
+a delegation goes**, before and after this pass, and §3 gains **§3.3 — which
+emitters THREAD a handler's return value and which discard it**, which is not
+uniform and which three of the stack's behaviours depend on.
+
+**The axis.** Take a predicate — a guard, a branch, a condition — and write down
+two things separately: the PROPERTY it is named for, and the TEST it actually
+runs. Then enumerate the set where the two differ.
+
+The axis is cheap because both halves are usually already written. The property
+is in the function's name, in the `what` field beside the regex, or in the help
+text an operator reads; the test is three lines below. Nothing has to be
+inferred. And it is finite, because a proxy has a countable failure set: the
+spellings of `rm`, the shapes of a JSON-RPC message, the moments at which a file
+can appear.
+
+It is not the same as surface 8 (*what we believe about ourselves*) or surface
+12 (*what we promised*), and the difference decides the fix. A promise is broken
+on a PATH and ends in a patch. A proxy is wrong on a SET and ends in a different
+predicate: AK2's repair is not "handle `-rfv`", it is "stop testing the
+spelling"; AK5's is not "remove the word `passed`", it is "a reader cannot have
+changed anything".
+
+**The five findings, all fixed.**
+
+- **AK1** — `registerTools` ran behind `if (isConfigured())` at FACTORY time,
+  which is the one moment at which the answer is most often *no*:
+  `/prinny configure` writes the credentials, starts the channel and returns
+  *"Channel started"* all in the same session. `promptGuidelines` are collected
+  from REGISTERED tools and from nowhere else, and one of this tool's two is the
+  only sentence in the stack that says a `[matrix]` marker is untrusted input.
+  So the session in which Matrix first reached the process was the session in
+  which the model was never told what the marker means. Fixed with
+  `ensureToolsRegistered`, idempotent, from the factory, from `session_start`
+  and from both `configure` arms — before `startChannel()`.
+- **AK2** — `DANGEROUS_PATTERNS[0]` is named *"recursive force delete"* and
+  tested `\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*f\b`. Five of seven spellings of one
+  `rm` passed the gate, including `rm -rfv` (any flag letter after the `f`
+  defeats the trailing `\b`), `rm -r -f`, `rm --recursive --force` and
+  `rm /path -rf`; also `git clean --force -d`, `git reset HEAD~1 --hard`,
+  `chmod 0777` and `chmod a+rwx`. The three entries that name a property are now
+  functions over the command's tokens; the eleven that genuinely are about a
+  spelling stay regexes.
+- **AK3** — `McpChild.dispatch` branched on `typeof id === "number"` before
+  looking at `method`, and JSON-RPC gives a server-initiated REQUEST both. Such
+  a message resolved the client's own outstanding call with `undefined`, and
+  `nextId` starts at 1, so the first one in a fresh process would have resolved
+  the handshake. The `method not found` answer was already written eight lines
+  below, for exactly this case, and was unreachable for a numeric id.
+- **AK4** — `requestApproval` fails CLOSED on a timeout and tells the sidecar
+  nothing, so a permission prompt stayed answerable for the life of the process
+  and pressing Allow an hour later answered `✅ Allowed` and edited the room's
+  own record of the decision to say so, for a call that had already been
+  blocked. Fixed with `timeout_ms` on the request and a `PermissionRegistry`
+  with an `expiresAt` on the sidecar side.
+- **AK5** — `hasStateChange(toolName, text, isError)` is named for a change to
+  the project and tested a word list — including `passed`, `fixed` and
+  `successfully` — over the output of ANY tool. It writes
+  `state.lastStateChangeIteration`, which the audit rung reads, and the audit
+  rung is the loop's only defence against eight iterations of analysis with
+  nothing to show. On a `--until-done --check "cargo test"` run — the shape this
+  loop exists for — `42 passed` pinned the counter every iteration and the rung
+  could not fire.
+
+**The artefact: §10.5, the proxy ledger.** Seventeen predicates, each with the
+property it names, the test it runs, and the set where the two differ. Two
+readings come out of it.
+
+§10.5.1 draws the five findings by the DISTANCE between the two halves: **four
+of five have the property and the test in the same file, and in three of those
+the property is written out in prose within twenty lines of the test that fails
+it.** AK3's counterexample is eight lines below the branch that swallows it.
+That is the same distance the eighteenth pass measured for promises and the
+nineteenth for actors, and it keeps being the answer: these are not deep bugs,
+they are two halves of one sentence that nobody put side by side.
+
+§10.5.2 names **three shapes a proxy fails in, and each shape says what its fix
+has to be**:
+
+```
+   A SPELLING FOR A PROPERTY   AK2, AK5   fix: ask the question directly.
+                                          Never by adding a case.
+   A SNAPSHOT FOR A FACT       AK1, AK4   fix: read it again where it is used.
+                                          Never by refreshing more often.
+   A SUPERSET FOR A CASE       AK3        fix: order the branches. It announces
+                                          itself — there is always a second,
+                                          unreachable branch written for the
+                                          case the first one swallowed.
+```
+
+**Four of the five are in `vendor/prinny-channel`, and that is a fact about the
+axis rather than about the package.** prinny is where predicates have names a
+PERSON reads — a permissions mode with help text, a prompt with an Allow button,
+a marker the model is told to distrust. A private helper's proxy is invisible
+because nobody wrote down what it was supposed to mean. The residue this leaves
+is explicit: §10.5 has seventeen rows and they are the ones with public names.
+
+**The transcript work, asked for on 2026-08-19 and now done.** A subagent's own
+turns are written into the same session transcript the operator's turns go into,
+marked as a subagent's — `AgentTranscript` in
+`vendor/pi-subagents-lite/src/agents/transcript-entry.ts`, one `type: "custom"`
+session entry per child turn plus the brief, each verifier call and the end,
+rendered by `renderSubagentEntry` and bounded at 60 entries per agent.
+
+The property it rests on was **measured before the code was written**, which is
+what the previous handoff asked for in those words: a `type: "custom"` entry is
+written to the session file, rendered in the transcript, and returns `[]` from
+`sessionEntryToContextMessages` — so it never reaches the model, before or after
+either of two compactions, in memory or re-opened from disk. Probe `x2` is that
+measurement against pi 0.84.2's own `SessionManager`.
+
+The implementation is deliberately a **second SINK, not a second formatter**:
+`streamToOutputFile` became `streamAgentOutput(session, sink, stats,
+bufferSize, onTurnFlush)` and the `/tmp` log is now that function with a file
+for a sink. `onTurnFlush` is what lets one entry cover a whole turn, so a
+40-turn child costs 40 entries rather than several thousand.
+
+**Four transferable rules.**
+
+1. **A predicate is a claim about a set.** Write the set down twice — from the
+   name and from the code — and the difference is the finding.
+2. **The shape of the proxy chooses the fix.** Adding a case to a spelling test
+   is not a fix; it is the next pass's finding with one more example in it.
+3. **Two guards for one property, one of them unreachable, is a tell.** If
+   somebody wrote a second branch for a case, the first branch is probably
+   eating it.
+4. **A probe that drives a real ladder has to get past every rung above the one
+   it is about** — and the way to know it did is to print the sentence the
+   machine actually said, not to assert a boolean. `x6`'s first draft passed
+   every case by tripping the stuck detector three rungs higher up.
+
+**Two measured negatives worth keeping.** `unregisterTerminalInput` in
+`pi-subagents-lite/src/events.ts` is set once and never cleared, which looks
+like a listener that cannot be re-registered after a session replacement; it is
+not, because pi runs the extension FACTORY again for every session load and
+clears the old subscription itself (`core/extensions/loader.js`,
+`modes/interactive/interactive-mode.js`). And `SHORTENING_MARKER` is a
+module-level `/g` regex, which is exactly the `lastIndex` hazard `goal-check.ts`
+builds its own matcher per call to avoid — it is only ever used with
+`String.prototype.replace`, which resets it. Both files are right about their
+own usage and they disagree about the rule.
+
+**Gates.** 1,108 → 1,153 tests across five packages, 87 → 93 probes, lint 97/97
+files. The *before* column was measured before anything was written. The
+`prinny-channel` suite needed its sidecar runtime rebuilt
+(`node server/bin/prinny-channel.mjs --prepare`) because `PermissionRegistry` is
+new in `server/src/permissions.ts` and that suite tests the compiled artefact
+rather than a re-compile of it.
+
+
+## 2026-08-22 (evening) — Dynamic V3 weights taken
+
+The re-download ran to completion: 17.6 GB at ~3 MB/s over ~1.4 h, the old file
+parked as `Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded` rather than deleted. Kept
+until V3 is verified better-or-equal; it is the rollback.
+
+New file is **17,559,178,144 bytes**, byte-exact against what the Hub reports.
+
+**Header verified before spending 20 minutes loading it.** The whole
+speculative-decoding setup depends on the MTP head being in the mainline quant,
+and the X claim that Unsloth had moved it out was already shown false for the
+remote file — but the *local* file is what gets loaded, so it was parsed too:
+
+```
+gguf v3  tensors=866  kv=50
+arch           : qwen35
+block_count    : 65        nextn layers : 1
+context_length : 262144    file_type    : 15
+MTP tensors    : 4  blk.64.nextn.{eh_proj,enorm,hnorm,shared_head_norm}.weight
+blk range      : 0..64 (65)
+chat_template  : 9993 chars | preserve_thinking=2 preserve_reasoning=0
+```
+
+Two things worth keeping from that:
+
+- **The chat template is 9993 chars, the same length the smoke test reported for
+  the pre-V3 file.** So the template did not change. Unsloth's release notes
+  advertise "tool calling improvements: makes parsing nested objects to make
+  tool calling succeed more" and Developer-role support; whatever those are,
+  they are not in this GGUF's embedded template. Do not expect a tool-calling
+  behaviour change from this swap — the V3 claim that applies here is the
+  per-layer quantization accuracy one, and nothing else.
+- `preserve_reasoning` is still absent and `preserve_thinking` still present
+  twice, so the `--chat-template-kwargs` decision above carries over unchanged.
+
+### A trap worth writing down: single-file bind mounts do not work here
+
+`docker run -v /tmp/script.py:/script.py` silently produced an empty directory
+and `can't find '__main__' module`. `/tmp` inside this container is not on the
+9p share that Docker Desktop bind-mounts from, so there is nothing for it to
+mount and it invents a directory. Piping the script to `python -` over stdin
+works and needs no shared path. Same class of problem as the `//c/users/...`
+rule in the global notes, and it will bite any throwaway-container helper.
+
+## 2026-08-22 — twenty-first audit pass over subagents/loop/verifier (AL1–AL9)
+
+A full re-read of the whole stack, written up as
+`context/design/subagents-loop-verifier-lifetimes.md` — ~2,000 lines, and
+self-contained in the same way the five before it: §1 the machine in seven
+drawings, §2 pi itself, §3 the event bus, §4–§9 the packages in full. Three
+things are new in the shape of the document: §1 gains **panel B, the lifetime
+map** (every construct with a beginning and an end, with a ✘ where the arrow out
+was missing) and **panel C, the four scopes and who ends each**; §2 gains
+**§2.2 — a table of what pi ends for you and what it does not**, which is the
+first thing to re-check on a pi upgrade.
+
+**The axis.** For every construct with a beginning and an end, name the ONE place
+that ends it. Then enumerate the paths that reach the end of the WORK without
+reaching the end of the THING.
+
+The axis is deliberately mechanical, and that is its whole value: you do not have
+to understand what a timer is for in order to ask who clears it. It is also
+finite — a construct has a countable number of ways to finish — and it is
+cheap, because a teardown is written next to the thing it tears down, so a
+*missing* teardown is almost always adjacent to a *present* one for a sibling
+construct. Seven of this pass's nine findings are distance zero, and in five of
+those the correct version of the same construct is on screen at the same time as
+the defective one.
+
+It is not the same as surface 12 (*what we promised*), though AL3 was reachable
+from either: `state.ts`'s header says the crypto store must never be shared
+between two running bots, and `startMatrix` is the path where that is false. The
+difference decides the fix. A promise is broken on a PATH and ends in a patch. A
+lifetime is one of four shapes, and the shape says what the repair has to be:
+
+```
+   ONE ENDING, MANY EXITS       → a named function called from every exit,
+                                  never "handle X too"          AL2 AL6 AL8
+   NO ENDING AT ALL             → write the end; if there is no path back to
+                                  the start, that is a SECOND finding
+                                                                AL3 AL5 AL7 AL9
+   AN ENDING THAT CANNOT BE     → make the disarm the SAME predicate as the
+   REACHED                        arm, in one function               AL4
+   A BEGINNING THAT ASSUMES     → make the anchor a parameter; the default that
+   IT IS THE FIRST                was right stays right and says whose it is
+                                                                     AL1
+```
+
+**The nine findings, all fixed.**
+
+- **AL3** — the sidecar's `startMatrix` retries the homeserver forever,
+  deliberately, and constructed a `Bot` per attempt while nothing anywhere
+  stopped one. `bot` is assigned only on the success path, so every failed
+  attempt's client was unreachable and running — on one Olm crypto store, in a
+  tree whose own `state.ts` header says that store must never be shared between
+  two running bots. Fixed by extracting the loop into `server/src/connect.ts`,
+  a module that imports **nothing** so a test can drive it; the split between
+  `build` and `start` is the fix, because after `build` resolves there is
+  something that has to be stopped.
+- **AL2** — `interveneStuck` switches the whole SESSION's model for a "rescue
+  turn", and the undo was rung 7 of an eighteen-rung `agent_end` ladder that five
+  rungs return above and three commands never reach. One `standDownRescue`, ten
+  callers.
+- **AL9** — the spill bound is fifty files per DIRECTORY and the directory is one
+  per PROCESS. Measured before the fix: 247 directories, 230 MB, four days. The
+  directory carries its owner's pid now, and a new writer sweeps dead owners'
+  directories once.
+- **AL1** — a continuation's transcript subscribed at message 1 of a session that
+  already held a settled run, so the follow-up's first entry replayed it and the
+  bound then evicted the answer the follow-up was about.
+- **AL4** — the delivery sweep armed on "a message arrived" and disarmed on a
+  strictly weaker question, so one report armed a 30 s interval for the session.
+- **AL5** — the widget's 80 ms poll had no disarm, and each tick sorted every
+  record the manager had ever held. Fixing it exposed that `AgentManager.onStart`
+  had no setter and was constructed with `undefined`.
+- **AL6** — `stopChannel` cleared one of the file's two intervals. Nobody was
+  ever sent `typing: false`, so a session that ended left a bot apparently still
+  writing in every room.
+- **AL7** — the terminal-input unregister was captured, guarded on and never
+  called. Latent: pi drops the subscription itself, measured. The fix is half a
+  call and half a paragraph naming pi's chain.
+- **AL8** — `setStatus("loop", …)` thirty times and `setStatus("loop",
+  undefined)` none. Twenty-nine are right; `/loop end` deletes the loop one line
+  above its own pill.
+
+**Three corrections that are not findings.** §11.10 a bound asserted on the wrong
+side (an empty entry satisfies "under the cap" perfectly); §11.11 a claim about
+unref'd timers written before it was checked; §11.12 a probe mode named `rung5`
+whose helper could not build an aborted turn, so it drove rung 7 under the wrong
+label.
+
+**Decisions taken, and the reasons, so they are not relitigated.**
+
+- **The record map stays unbounded.** A settled delegation can be steered, so the
+  record and its `AgentSession` are kept until Clear or session end. Retiring one
+  on a timer silently removes the operator's ability to steer a delegation they
+  are reading. If it is ever bounded, the bound must ANNOUNCE itself the way
+  `AgentTranscript`'s does — never a row that quietly is not there.
+- **The connect retry keeps no attempt cap.** That is the point of it, and now
+  that a failed attempt leaves nothing behind, the thousandth attempt costs what
+  the first did.
+- **`pi-loop-mode`'s `pendingTimer` stays ref'd.** Between iterations that timer
+  IS the loop; unref'ing it would be a behaviour change, not a tidy-up.
+- **AL9 sweeps by PID, not by age.** Age cannot tell a finished session from a
+  `/loop` that has run for a week and last spilled on Monday. A recycled pid
+  reads as alive and its directory is kept — the safe direction. The precedent is
+  in this tree twice already: prinny's bootstrap lock and its `bot.pid`.
+- **A pre-AL9 spill directory (no pid in the name) is never swept.** There is no
+  evidence either way about who owns it, and deleting on no evidence is how a
+  sweep eats a live session's files.
+
+**One thing went wrong.** The first draft of
+`.pi/extensions/compaction-guard/tests/spill-dirs.test.ts` computed a cleanup
+path with `file.split(PREFIX)[0]`, got `/tmp`, and handed it to a recursive
+`rmSync` in `after()`. It deleted `/tmp` — ~5,430 entries, ~37 GB, including
+another concurrent session's files. Nothing in the repository was touched and
+every gate was re-run afterwards, but none of it is recoverable. The rule that
+came out of it, and it is the same rule the module under test follows: **a
+teardown that takes its path from a computation has to prove the path is its own
+immediately above the destructive call, not where the path was queued.** The
+suite checks twice now.
+
+**Gates.** 1,174 → 1,222 tests; 97 → 106 probes; lint clean everywhere, and
+`prinny-channel`'s lint now covers `server/src/*.ts`, which it never had.
+
+## 2026-08-22 (night) — the spec sweep, and why the answer is "change nothing"
+
+Full grid re-run on the final stack: b10573, `q8_0/q8_0`, `CTX_SIZE=65536`,
+Dynamic V3 weights. 12 configs on `synthetic`, 6 on `repeat`, `--repeat 3`.
+Host was quiet (load 0.55-5). `.env` verified byte-identical before and after
+(md5 `7abfdd2b…`), so the sweep's restore worked despite the /tmp incident.
+
+### The result: the config already in .env is correct
+
+`ngram-simple,draft-mtp` at n-max 4 / p-min 0.40 is in the top group on both
+workloads. Nothing from the 28 X/Twitter posts or the two HN threads beats it.
+
+### repeat workload (the file-rewrite shape pi actually produces)
+
+| config | mean | max | min | draft/cycle | echo |
+|---|---:|---:|---:|---:|---:|
+| ngram-baseline (n2/p0.75) | 191.0 | 201.4 | 173.9 | 20.84 | 0.988 |
+| ngram-n3 | 189.8 | 198.1 | 177.0 | 23.54 | 0.988 |
+| **ngram-n4 (production)** | 182.5 | 198.0 | 170.3 | 23.51 | 0.988 |
+| mtp-n4 | 120.2 | 121.6 | 118.5 | 3.97 | 0.988 |
+| mtp-n3 | 103.6 | 105.4 | 102.7 | 2.99 | 0.988 |
+| mtp-n2 | 83.0 | 88.0 | 80.0 | 2.00 | 0.988 |
+
+ECHO 0.988 on every row, so the script's own comparability precondition holds.
+
+**`ngram-simple` is worth ~1.6x on real traffic** (182-191 vs 83-120). That
+dwarfs every n-max and p-min difference in the entire study. If one line of this
+config had to be defended, it is `SPEC_TYPE=ngram-simple,draft-mtp`.
+
+**p-min stops mattering once ngram-simple is drafting.** `ngram-baseline` runs
+p-min 0.75 — worst-in-class on synthetic at 48.9 — and is top here. At
+draft/cycle 20.84 the MTP p-min gate is almost never the binding constraint.
+The 2026-08-17 conclusion that p-min is "the binding knob" is true *for
+draft-mtp alone*, and does not generalise to the chained config we actually run.
+
+### Synthetic was the wrong instrument, and it inverted one answer
+
+Among draft-mtp-only rows, `repeat` gives a clean monotonic **n4 > n3 > n2**
+(120.2 / 103.6 / 83.0) with spreads of only 1-8 tok/s. Synthetic *means* had
+suggested the opposite (n3 61.8 > n4 59.3), with within-config spreads up to
+17.3 tok/s — larger than the differences being compared. Two lessons:
+
+1. **A within-config spread wider than the between-config gap is not a result.**
+   Eleven synthetic configs were ranked before noticing that the top four sat
+   inside a single config's own run-to-run range.
+2. **`--report` shows `max`, not mean** (`spec-sweep.sh:378`, `| max ) as $tg`).
+   Ranking by mean and ranking by max disagreed on n3 vs n4. Neither is wrong;
+   quoting one without saying which is.
+
+### What is robust, across both workloads and both estimators
+
+- **n-max 6 and 8 are clearly worse** than 2-4 (~15% on synthetic). This kills
+  the n-max 6-8 advice in the 4090 posts and confirms the H200 Q4_K_M sweep
+  posted to llama.cpp#27342: on a 4-bit quant each extra verified token costs
+  23.4% against 6.7% at BF16, so depth stops paying early.
+- **The specific "44 -> 134 tok/s" reddit config (n6 / p-min 0.82) is the worst
+  of all twelve**, at 43.7 mean / 45.5 max — below even the pre-Aug-17 baseline.
+  Its draft/cycle is 1.77 against a ceiling of 6: p-min 0.82 truncates the draft
+  to under two tokens, so its 84.7% acceptance is bought by refusing to draft.
+  This is the clearest single case in the whole exercise of a widely-shared
+  number that does not survive being measured.
+
+### Housekeeping
+
+`context/bench/spec-sweep/repeat/{baseline,pmin-050}` were from 2026-08-16 —
+b10200, f16/f16, 32K, pre-V3 — and `--report` globs the directory, so they would
+have printed in the same table as today's runs with nothing marking them. Moved
+to `repeat/stale-2026-08-16/` with a README. The synthetic directory is fully
+re-run and clean.
+
+## 2026-08-22 (later that night) — a benchmark result that cannot say what produced it is not a result
+
+Follow-on to the sweep above. Nothing was re-measured; this pass closes the two
+hygiene items that sweep left behind, and both of them are about *provenance*
+rather than performance. Neither is hypothetical — each one had already cost
+something.
+
+### 1. The `.env` backup lived where another process could delete it
+
+`spec-sweep.sh` rewrites three keys in `.env` and restores a whole-file backup
+on exit. That backup was `mktemp "${TMPDIR:-/tmp}/spec-sweep-env.XXXXXX"`, and
+on 2026-08-22 another process in this container deleted `/tmp` wholesale while
+the sweep was mid-flight. The results survived — they are written under
+`context/bench/` — but the backup would not have, and `restore_env` only acted
+`if [[ -s "$ENV_BACKUP" ]]`.
+
+So a vanished backup made the restore a **silent no-op**, leaving `.env` holding
+whichever config the sweep was on. An n-max 6 or 8 value would have become
+production, printing nothing. It would have surfaced days later as "the stack
+feels slower" with no trace of the cause. It missed us by luck: `.env` was
+afterwards verified byte-identical to a pre-sweep copy (md5
+`7abfdd2b4ea00070375017f3929e3fe7`, still current).
+
+Three changes:
+
+- the backup is `$REPO_ROOT/.env.spec-sweep-backup`, a fixed path inside the
+  repo, gitignored. Nothing outside the repo can remove it.
+- `restore_env` is **loud** when the backup is missing: it prints the three spec
+  values `.env` currently holds and points at `spec_config` in `versions.lock`
+  for what production is meant to be. It also returns 1, so the branch is
+  testable; both call sites use `|| true` because the script runs under `set -e`
+  and a missing backup must not also skip the server restore and the report.
+- a **leftover** backup now blocks the next sweep. It means an earlier run died
+  without restoring, so `.env` probably still holds that run's config; starting
+  a new sweep would overwrite the backup with those values and destroy the only
+  copy of the real ones. The script prints both side by side and refuses.
+
+Both branches were exercised rather than reasoned about: with a planted backup
+the guard prints the diff and exits 1; with none it proceeds; with the backup
+deleted the restore prints the block above instead of nothing.
+
+### 2. Results now carry the pin set that produced them
+
+A result file recorded its spec config and nothing else. So `--resume` skipped
+any config with a result file, regardless of which llama.cpp build, KV type,
+context size or **weights** produced it, and `--report` globbed the directory
+and printed whatever it found as one table.
+
+That is exactly how two 2026-08-16 files (b10200, f16/f16, 32K, pre-Dynamic-V3)
+came to be sitting in `repeat/` looking current, and the only thing that caught
+them was someone noticing an mtime. They ranked 73.8 and 72.2 tok/s — perfectly
+plausible as slow configs. A six-day-old number in a fresh-looking table is the
+most expensive kind of wrong, because it reads as a measurement.
+
+Every result now carries `pins`:
+
+```json
+{"llama_tag":"server-cuda-b10573",
+ "llama_digest":"sha256:f74f5805...",
+ "ctx_size":"65536","cache_type_k":"q8_0","cache_type_v":"q8_0",
+ "model_repo":"unsloth/Qwen3.8-27B-GGUF",
+ "gguf_file":"Qwen3.8-27B-UD-Q4_K_XL.gguf",
+ "gguf_size":"17559178144","gguf_mtime":"1787404836"}
+```
+
+plus `measured_utc`, and `config` gained `repeat` and `prompt_len`.
+
+- **`--resume` compares pins** and re-runs on a mismatch, naming the fields that
+  differ rather than dumping two blobs.
+- **`--report` groups by pin set** and says loudly when a table mixes stacks or
+  contains an unstamped file. Verified with a deliberately mixed directory: it
+  reports three stacks and names which configs belong to which.
+- **`--pins`** prints what would be stamped right now, which is how a reported
+  mismatch gets diagnosed without reading JSON.
+
+Two implementation notes worth keeping. The digest comes from `docker image
+inspect` on **this box**, not from `versions.lock`, because a re-pulled tag is
+precisely the drift this exists to catch and the lock file is written by hand.
+And the weights are pinned by **size and mtime, not sha256**: unsloth replaces
+`UD-*` files in place — they did on 2026-08-19 for Dynamic V3 — so the filename
+proves nothing, but hashing 17.5 GB across a 9p bind mount costs more than the
+entire bench does. Size and mtime already separate every generation of that file
+on disk (17559178144 for V3 against 17923394624 for its predecessor). The stat
+runs inside a throwaway container against the same mount, using the llama image
+because it is already local; pulling a small one would make pin capture depend
+on the network. Pins are captured **once** per invocation, before the first
+recreate, so a mid-sweep change cannot stamp different pins on rows of one table.
+
+### The existing 20 result files were backfilled, and the backfill says so
+
+They carry `pins_source: "backfilled-2026-08-22"`, and `--report` prints
+`(reconstructed, not stamped at run time)` beside them every time. This is
+evidence, not recall:
+
+- The exited `qwen38-llama` container from the end of that sweep still exists.
+  `docker inspect` gives image `server-cuda-b10573`, `-c 65536`, `-ctk/-ctv
+  q8_0`, `-m /models/Qwen3.8-27B-UD-Q4_K_XL.gguf`, created `17:01Z` — the same
+  minute the last result file was written.
+- Every result file's mtime is later than the V3 gguf's (`13:20Z`), so all of
+  them ran against V3.
+- `spec-sweep.sh` rewrites only `SPEC_TYPE`, `SPEC_DRAFT_N_MAX` and
+  `SPEC_DRAFT_P_MIN` — never `LLAMA_TAG`, `CTX_SIZE` or `CACHE_TYPE_*`. The
+  build, window, KV type and weights therefore *cannot* have varied across the
+  run. This is the load-bearing argument; the other two corroborate it.
+
+The two quarantined 2026-08-16 files were stamped with their own (different)
+pins, so they now say for themselves why they are not comparable instead of
+relying on a README that travels separately from them.
+
+### The report table stopped hiding its own error bars
+
+`--report` printed one unlabelled `DECODE` column, and it was `max`. Ranking the
+same twelve configs by mean and by max disagreed on n3 vs n4, and the
+disagreement was invisible because nothing said which statistic was on screen —
+a number was quoted in a handoff without anyone knowing what it was.
+
+The table now prints `DEC-MEAN`, `DEC-MAX` and `SPREAD` (max − min within one
+config), sorted by mean, with the legend leading on: *read SPREAD before reading
+the ranking*. On the synthetic workload the top row is 64.4 with a spread of 9.4
+and the second is 63.4 with a spread of 17.3 — the ranking is inside the noise,
+and the table now says so itself instead of leaving it to be discovered. All
+figures reproduce the hand-computed means in the entry above exactly.
+
+Formatting is fixed-decimal with trailing zeros kept, built from the rounded
+integer rather than `tostring`, which drops them — a column holding `191`,
+`191.0` and `4.1` beside `23.54` reads as three precisions when it is one.
+
+### One documented claim was false and is corrected in the script
+
+The header stated that synthetic has no repetition by construction, so
+ngram-simple "cannot fire and its rows measure overhead only". It fires. The
+nonce randomises the salt and the ordering, but the keyword soup is drawn from a
+small fixed vocabulary, so short spans recur within a prompt. Measured:
+synthetic `ngram-n4` drafts **4.10** tokens per cycle against draft-mtp-only
+n4's **3.42**. So a synthetic ngram row is not a clean overhead measurement and
+its margin over the matching draft-mtp row is partly real drafting. It still
+understates the upside badly — the same pair is 182.5 against 120.2 on `repeat`
+— so synthetic remains the wrong instrument for that question, for a different
+reason than the one written down.

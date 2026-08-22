@@ -4,48 +4,48 @@
     {
       "requested": 1024,
       "status": 200,
-      "wall_s": 6.35,
+      "wall_s": 5.73,
       "prompt_n": 1053,
-      "prompt_tps": 938.0202872497833,
+      "prompt_tps": 890.1354730398001,
       "predicted_n": 256,
-      "predicted_tps": 48.93766876299007,
+      "predicted_tps": 56.33313694055396,
       "cache_n": 0,
-      "draft_n": 225,
-      "draft_accepted": 146,
-      "draft_acceptance": 0.649
+      "draft_n": 383,
+      "draft_accepted": 178,
+      "draft_acceptance": 0.465
     },
     {
       "requested": 1024,
       "status": 200,
-      "wall_s": 6.67,
+      "wall_s": 6.47,
       "prompt_n": 1053,
-      "prompt_tps": 1408.2905920036376,
+      "prompt_tps": 1325.300143353928,
       "predicted_n": 256,
-      "predicted_tps": 47.46524427289947,
+      "predicted_tps": 48.65584878601749,
       "cache_n": 0,
-      "draft_n": 216,
-      "draft_accepted": 143,
-      "draft_acceptance": 0.662
+      "draft_n": 400,
+      "draft_accepted": 172,
+      "draft_acceptance": 0.43
     },
     {
       "requested": 1024,
       "status": 200,
-      "wall_s": 6.49,
+      "wall_s": 5.84,
       "prompt_n": 1053,
-      "prompt_tps": 1500.7546529807723,
+      "prompt_tps": 1425.890267384893,
       "predicted_n": 256,
-      "predicted_tps": 48.8629027668475,
+      "predicted_tps": 56.67583555739684,
       "cache_n": 0,
-      "draft_n": 199,
-      "draft_accepted": 141,
-      "draft_acceptance": 0.709
+      "draft_n": 419,
+      "draft_accepted": 181,
+      "draft_acceptance": 0.432
     }
   ],
   "config": {
-    "name": "ngram-baseline",
+    "name": "ngram-pmin-040-n6",
     "spec_type": "ngram-simple,draft-mtp",
-    "n_max": 2,
-    "p_min": 0.75,
+    "n_max": 6,
+    "p_min": 0.4,
     "workload": "synthetic"
   },
   "pins": {
@@ -61,5 +61,5 @@
   },
   "pins_source": "backfilled-2026-08-22",
   "pins_note": "Backfilled 2026-08-22; these runs predate pin stamping. Not guesswork: the exited qwen38-llama container from the end of this sweep records image server-cuda-b10573, -c 65536, -ctk/-ctv q8_0, -m /models/Qwen3.8-27B-UD-Q4_K_XL.gguf, and was created 2026-08-22T17:01Z — the same minute the last result here was written. Every result file in this directory has an mtime later than the V3 gguf's (2026-08-22T13:20Z), so all of them ran against V3. And spec-sweep.sh rewrites only SPEC_TYPE, SPEC_DRAFT_N_MAX and SPEC_DRAFT_P_MIN, never LLAMA_TAG, CTX_SIZE or the CACHE_TYPE_* keys, so the whole sweep necessarily shared these four pins.",
-  "measured_utc": "2026-08-22T16:25:13Z"
+  "measured_utc": "2026-08-22T16:21:26Z"
 }

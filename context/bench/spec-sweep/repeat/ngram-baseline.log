@@ -4,7 +4,7 @@
 #1 DONE 0.0s
 
 #2 [internal] load build definition from Dockerfile.forge
-#2 transferring dockerfile: 4.11kB 0.0s done
+#2 transferring dockerfile: 4.96kB 0.0s done
 #2 DONE 0.1s
 
 #3 [internal] load metadata for docker.io/library/python:3.13-slim
@@ -22,22 +22,22 @@
 #6 DONE 0.0s
 
 #5 [internal] load build context
-#5 transferring context: 473B 0.1s done
+#5 transferring context: 531B 0.2s done
 #5 DONE 0.2s
 
 #7 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.0"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
 #7 CACHED
 
-#8 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py /tmp/patches/
+#8 [2/8] RUN test -n "0.9.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
 #8 CACHED
 
-#9 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/bench_repeat.py scripts/ab_think_lang.py /work/scripts/
+#9 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py /tmp/patches/
 #9 CACHED
 
-#10 [2/8] RUN test -n "0.9.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#10 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && rm -rf /tmp/patches
 #10 CACHED
 
-#11 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && rm -rf /tmp/patches
+#11 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/bench_repeat.py scripts/ab_think_lang.py /work/scripts/
 #11 CACHED
 
 #12 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
@@ -47,32 +47,32 @@
 #13 CACHED
 
 #14 exporting to image
-#14 exporting layers 0.0s done
-#14 exporting manifest sha256:ec2ba38362a5b53606c22d73eef7e3f4f816d14de98e6ea7458ea98fcb8aaad2 done
-#14 exporting config sha256:1eb17606d0750a8ce82b17569ec9e69d58e90216c0d7f868e3627a7254332baf done
-#14 exporting attestation manifest sha256:508292f2696a12c8a12f2aed3f72e26fd9e984d19ccdcfd22985d270477b66ff 0.0s done
-#14 exporting manifest list sha256:3d73b52d39ecae3c62fb4bd8d09a271503df37a471d4157f8e740bca5003573d
-#14 exporting manifest list sha256:3d73b52d39ecae3c62fb4bd8d09a271503df37a471d4157f8e740bca5003573d 0.0s done
+#14 exporting layers done
+#14 exporting manifest sha256:669efb3e3dd9e721312b696dd9c7a1f6779fcf11714ac76f81f697b16886d6d5 done
+#14 exporting config sha256:17f9d544357840876c7e2eba7ed3d443283fe26d6468e8aeba7b18c05d81a5ae done
+#14 exporting attestation manifest sha256:8fcb71d2bd8836b5e7d85ff92eb7935dc19bc1391a3f4e8cb3d781b2a0e7af05
+#14 exporting attestation manifest sha256:8fcb71d2bd8836b5e7d85ff92eb7935dc19bc1391a3f4e8cb3d781b2a0e7af05 0.1s done
+#14 exporting manifest list sha256:e8e2a4c9f538d1ad1561d6055f0100ff8189e65e84ae75efbc5e910fa1111ed5 0.0s done
 #14 naming to docker.io/qwen38-forge/proxy:0.9.0 done
 #14 unpacking to docker.io/qwen38-forge/proxy:0.9.0 0.0s done
-#14 DONE 0.2s
+#14 DONE 0.3s
 
 #15 resolving provenance for metadata file
 #15 DONE 0.0s
  Image qwen38-forge/proxy:0.9.0 Built 
- Container qwen38-forge-bench-run-c9bf2584fed9 Creating 
- Container qwen38-forge-bench-run-c9bf2584fed9 Created 
+ Container qwen38-forge-bench-run-d4fbbe9d520f Creating 
+ Container qwen38-forge-bench-run-d4fbbe9d520f Created 
 
 bench-repeat — qwen3.8-27b via http://llama:8080
 repetitive rewrite workload; echo measured over 12-token windows (ngram-simple's default lookup width)
 
-  funcs=12   prompt=1211   out=1228  decode= 128.1 tok/s  echo=  99%  wall= 10.95s draft=1139/1767 (64% accepted)
-  funcs=12   prompt=1211   out=1214  decode= 152.5 tok/s  echo=  99%  wall=  9.57s draft=1133/1759 (64% accepted)
-  funcs=12   prompt=1211   out=1228  decode= 135.8 tok/s  echo=  99%  wall= 10.94s draft=1141/1768 (64% accepted)
+  funcs=12   prompt=1211   out=1175  decode= 173.9 tok/s  echo=  99%  wall=  7.94s draft=1092/1730 (63% accepted)
+  funcs=12   prompt=1211   out=1175  decode= 197.6 tok/s  echo=  99%  wall=  7.27s draft=1092/1730 (63% accepted)
+  funcs=12   prompt=1211   out=1175  decode= 201.4 tok/s  echo=  99%  wall=  7.24s draft=1092/1730 (63% accepted)
 
-best decode: 152.5 tok/s     mean echo: 99% across 3 usable run(s)
-draft acceptance: 3413/5294 = 64.5%
-draft per cycle:  20.60 tokens
+best decode: 201.4 tok/s     mean echo: 99% across 3 usable run(s)
+draft acceptance: 3276/5190 = 63.1%
+draft per cycle:  20.84 tokens
 
 With ngram-simple enabled, draft/cycle can reach 48 (its size_m) because a
 lookup hit costs no forward pass. With draft-mtp alone it cannot exceed
@@ -85,16 +85,16 @@ price for.
     {
       "requested": 12,
       "status": 200,
-      "wall_s": 10.95,
+      "wall_s": 7.94,
       "workload": "repeat",
       "prompt_n": 1211,
-      "prompt_tps": 927.7688652720256,
-      "predicted_n": 1228,
-      "predicted_tps": 128.1260593484498,
+      "prompt_tps": 1036.1594847095887,
+      "predicted_n": 1175,
+      "predicted_tps": 173.8914825315341,
       "cache_n": 0,
-      "draft_n": 1767,
-      "draft_accepted": 1139,
-      "draft_acceptance": 0.645,
+      "draft_n": 1730,
+      "draft_accepted": 1092,
+      "draft_acceptance": 0.631,
       "echo": 0.988,
       "echo_exact_tokenizer": true,
       "completion_tokens_measured": 1120
@@ -102,16 +102,16 @@ price for.
     {
       "requested": 12,
       "status": 200,
-      "wall_s": 9.57,
+      "wall_s": 7.27,
       "workload": "repeat",
       "prompt_n": 1211,
-      "prompt_tps": 1114.714321087431,
-      "predicted_n": 1214,
-      "predicted_tps": 152.54726923424414,
+      "prompt_tps": 1626.4486607652502,
+      "predicted_n": 1175,
+      "predicted_tps": 197.63411427426698,
       "cache_n": 0,
-      "draft_n": 1759,
-      "draft_accepted": 1133,
-      "draft_acceptance": 0.644,
+      "draft_n": 1730,
+      "draft_accepted": 1092,
+      "draft_acceptance": 0.631,
       "echo": 0.988,
       "echo_exact_tokenizer": true,
       "completion_tokens_measured": 1120
@@ -119,16 +119,16 @@ price for.
     {
       "requested": 12,
       "status": 200,
-      "wall_s": 10.94,
+      "wall_s": 7.24,
       "workload": "repeat",
       "prompt_n": 1211,
-      "prompt_tps": 1383.3849865602606,
-      "predicted_n": 1228,
-      "predicted_tps": 135.75303913247174,
+      "prompt_tps": 1612.6283044897916,
+      "predicted_n": 1175,
+      "predicted_tps": 201.41944088776904,
       "cache_n": 0,
-      "draft_n": 1768,
-      "draft_accepted": 1141,
-      "draft_acceptance": 0.645,
+      "draft_n": 1730,
+      "draft_accepted": 1092,
+      "draft_acceptance": 0.631,
       "echo": 0.988,
       "echo_exact_tokenizer": true,
       "completion_tokens_measured": 1120

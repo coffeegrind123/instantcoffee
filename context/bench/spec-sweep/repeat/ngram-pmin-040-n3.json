@@ -2,51 +2,63 @@
   "model": "qwen3.8-27b",
   "rows": [
     {
-      "requested": 1024,
+      "requested": 12,
       "status": 200,
-      "wall_s": 6.35,
-      "prompt_n": 1053,
-      "prompt_tps": 938.0202872497833,
-      "predicted_n": 256,
-      "predicted_tps": 48.93766876299007,
+      "wall_s": 7.97,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 921.7529899885905,
+      "predicted_n": 1175,
+      "predicted_tps": 176.9547889557904,
       "cache_n": 0,
-      "draft_n": 225,
-      "draft_accepted": 146,
-      "draft_acceptance": 0.649
+      "draft_n": 1742,
+      "draft_accepted": 1101,
+      "draft_acceptance": 0.632,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
     },
     {
-      "requested": 1024,
+      "requested": 12,
       "status": 200,
-      "wall_s": 6.67,
-      "prompt_n": 1053,
-      "prompt_tps": 1408.2905920036376,
-      "predicted_n": 256,
-      "predicted_tps": 47.46524427289947,
+      "wall_s": 7.31,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1630.8688046176078,
+      "predicted_n": 1175,
+      "predicted_tps": 194.40794005744144,
       "cache_n": 0,
-      "draft_n": 216,
-      "draft_accepted": 143,
-      "draft_acceptance": 0.662
+      "draft_n": 1742,
+      "draft_accepted": 1101,
+      "draft_acceptance": 0.632,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
     },
     {
-      "requested": 1024,
+      "requested": 12,
       "status": 200,
-      "wall_s": 6.49,
-      "prompt_n": 1053,
-      "prompt_tps": 1500.7546529807723,
-      "predicted_n": 256,
-      "predicted_tps": 48.8629027668475,
+      "wall_s": 7.31,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1652.9692706051287,
+      "predicted_n": 1175,
+      "predicted_tps": 198.11734520732372,
       "cache_n": 0,
-      "draft_n": 199,
-      "draft_accepted": 141,
-      "draft_acceptance": 0.709
+      "draft_n": 1742,
+      "draft_accepted": 1101,
+      "draft_acceptance": 0.632,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
     }
   ],
   "config": {
-    "name": "ngram-baseline",
+    "name": "ngram-pmin-040-n3",
     "spec_type": "ngram-simple,draft-mtp",
-    "n_max": 2,
-    "p_min": 0.75,
-    "workload": "synthetic"
+    "n_max": 3,
+    "p_min": 0.4,
+    "workload": "repeat"
   },
   "pins": {
     "llama_tag": "server-cuda-b10573",
@@ -61,5 +73,5 @@
   },
   "pins_source": "backfilled-2026-08-22",
   "pins_note": "Backfilled 2026-08-22; these runs predate pin stamping. Not guesswork: the exited qwen38-llama container from the end of this sweep records image server-cuda-b10573, -c 65536, -ctk/-ctv q8_0, -m /models/Qwen3.8-27B-UD-Q4_K_XL.gguf, and was created 2026-08-22T17:01Z — the same minute the last result here was written. Every result file in this directory has an mtime later than the V3 gguf's (2026-08-22T13:20Z), so all of them ran against V3. And spec-sweep.sh rewrites only SPEC_TYPE, SPEC_DRAFT_N_MAX and SPEC_DRAFT_P_MIN, never LLAMA_TAG, CTX_SIZE or the CACHE_TYPE_* keys, so the whole sweep necessarily shared these four pins.",
-  "measured_utc": "2026-08-22T16:25:13Z"
+  "measured_utc": "2026-08-22T16:53:52Z"
 }

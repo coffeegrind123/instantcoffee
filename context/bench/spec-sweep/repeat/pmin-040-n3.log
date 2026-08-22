@@ -8,12 +8,11 @@
 #2 DONE 0.1s
 
 #3 [internal] load metadata for docker.io/library/python:3.13-slim
-#3 DONE 0.0s
+#3 DONE 0.1s
 
 #4 [internal] load .dockerignore
-#4 transferring context:
 #4 transferring context: 2B 0.0s done
-#4 DONE 0.1s
+#4 DONE 0.0s
 
 #5 [1/8] FROM docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
 #5 resolve docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 0.0s done
@@ -21,9 +20,9 @@
 
 #6 [internal] load build context
 #6 transferring context: 531B 0.1s done
-#6 DONE 0.2s
+#6 DONE 0.1s
 
-#7 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && rm -rf /tmp/patches
+#7 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
 #7 CACHED
 
 #8 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/bench_repeat.py scripts/ab_think_lang.py /work/scripts/
@@ -38,7 +37,7 @@
 #11 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py /tmp/patches/
 #11 CACHED
 
-#12 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#12 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && rm -rf /tmp/patches
 #12 CACHED
 
 #13 [8/8] WORKDIR /work
@@ -48,9 +47,9 @@
 #14 exporting layers done
 #14 exporting manifest sha256:669efb3e3dd9e721312b696dd9c7a1f6779fcf11714ac76f81f697b16886d6d5 done
 #14 exporting config sha256:17f9d544357840876c7e2eba7ed3d443283fe26d6468e8aeba7b18c05d81a5ae done
-#14 exporting attestation manifest sha256:d4015fc09a7050bbe278e3f4b40a6406ce57117394f0567721c13db397eee89e
-#14 exporting attestation manifest sha256:d4015fc09a7050bbe278e3f4b40a6406ce57117394f0567721c13db397eee89e 0.1s done
-#14 exporting manifest list sha256:0fae2310e35d4de4369ba9263b4ab7da8efdf1b7099219c2330f56c217ef6749 0.0s done
+#14 exporting attestation manifest sha256:97ac9021dba63fec91b40268b53e8ac18986d767ffc0c407c0c7e3967fffbd87 0.1s done
+#14 exporting manifest list sha256:7136e5b861960fa628396b1a75c15f7778c8d562246818b6bf65a22843a9bdef
+#14 exporting manifest list sha256:7136e5b861960fa628396b1a75c15f7778c8d562246818b6bf65a22843a9bdef 0.0s done
 #14 naming to docker.io/qwen38-forge/proxy:0.9.0 done
 #14 unpacking to docker.io/qwen38-forge/proxy:0.9.0 0.0s done
 #14 DONE 0.2s
@@ -58,19 +57,19 @@
 #15 resolving provenance for metadata file
 #15 DONE 0.0s
  Image qwen38-forge/proxy:0.9.0 Built 
- Container qwen38-forge-bench-run-c34a50c60849 Creating 
- Container qwen38-forge-bench-run-c34a50c60849 Created 
+ Container qwen38-forge-bench-run-d4f6d78195ae Creating 
+ Container qwen38-forge-bench-run-d4f6d78195ae Created 
 
 bench-repeat — qwen3.8-27b via http://llama:8080
 repetitive rewrite workload; echo measured over 12-token windows (ngram-simple's default lookup width)
 
-  funcs=12   prompt=1211   out=1175  decode= 118.5 tok/s  echo=  99%  wall= 11.00s draft=937/947 (99% accepted)
-  funcs=12   prompt=1211   out=1175  decode= 121.6 tok/s  echo=  99%  wall= 10.76s draft=937/945 (99% accepted)
-  funcs=12   prompt=1211   out=1177  decode= 120.6 tok/s  echo=  99%  wall= 11.05s draft=938/949 (99% accepted)
+  funcs=12   prompt=1211   out=1177  decode= 102.7 tok/s  echo=  99%  wall= 12.39s draft=880/887 (99% accepted)
+  funcs=12   prompt=1211   out=1175  decode= 105.4 tok/s  echo=  99%  wall= 12.41s draft=879/884 (99% accepted)
+  funcs=12   prompt=1211   out=1214  decode= 102.8 tok/s  echo=  99%  wall= 13.15s draft=902/935 (96% accepted)
 
-best decode: 121.6 tok/s     mean echo: 99% across 3 usable run(s)
-draft acceptance: 2812/2841 = 99.0%
-draft per cycle:  3.97 tokens
+best decode: 105.4 tok/s     mean echo: 99% across 3 usable run(s)
+draft acceptance: 2661/2706 = 98.3%
+draft per cycle:  2.99 tokens
 
 With ngram-simple enabled, draft/cycle can reach 48 (its size_m) because a
 lookup hit costs no forward pass. With draft-mtp alone it cannot exceed
@@ -83,32 +82,15 @@ price for.
     {
       "requested": 12,
       "status": 200,
-      "wall_s": 11.0,
+      "wall_s": 12.39,
       "workload": "repeat",
       "prompt_n": 1211,
-      "prompt_tps": 1129.5430061140828,
-      "predicted_n": 1175,
-      "predicted_tps": 118.52903648412591,
+      "prompt_tps": 1324.3164624237506,
+      "predicted_n": 1177,
+      "predicted_tps": 102.68251074106213,
       "cache_n": 0,
-      "draft_n": 947,
-      "draft_accepted": 937,
-      "draft_acceptance": 0.989,
-      "echo": 0.988,
-      "echo_exact_tokenizer": true,
-      "completion_tokens_measured": 1120
-    },
-    {
-      "requested": 12,
-      "status": 200,
-      "wall_s": 10.76,
-      "workload": "repeat",
-      "prompt_n": 1211,
-      "prompt_tps": 1617.7663069107075,
-      "predicted_n": 1175,
-      "predicted_tps": 121.63146123105959,
-      "cache_n": 0,
-      "draft_n": 945,
-      "draft_accepted": 937,
+      "draft_n": 887,
+      "draft_accepted": 880,
       "draft_acceptance": 0.992,
       "echo": 0.988,
       "echo_exact_tokenizer": true,
@@ -117,16 +99,33 @@ price for.
     {
       "requested": 12,
       "status": 200,
-      "wall_s": 11.05,
+      "wall_s": 12.41,
       "workload": "repeat",
       "prompt_n": 1211,
-      "prompt_tps": 1685.9603082341966,
-      "predicted_n": 1177,
-      "predicted_tps": 120.56230010724508,
+      "prompt_tps": 1436.9043550897977,
+      "predicted_n": 1175,
+      "predicted_tps": 105.43693551049529,
       "cache_n": 0,
-      "draft_n": 949,
-      "draft_accepted": 938,
-      "draft_acceptance": 0.988,
+      "draft_n": 884,
+      "draft_accepted": 879,
+      "draft_acceptance": 0.994,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 13.15,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1610.25242801068,
+      "predicted_n": 1214,
+      "predicted_tps": 102.81573563895996,
+      "cache_n": 0,
+      "draft_n": 935,
+      "draft_accepted": 902,
+      "draft_acceptance": 0.965,
       "echo": 0.988,
       "echo_exact_tokenizer": true,
       "completion_tokens_measured": 1120

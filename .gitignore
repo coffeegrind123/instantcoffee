@@ -4,6 +4,12 @@
 # Transient backup written by update.sh while it applies a change.
 .env.bak
 
+# Whole-file .env backup held by scripts/spec-sweep.sh for the length of a
+# sweep. It lives here rather than in TMPDIR on purpose (see the comment in
+# that script); a copy left behind means a sweep died without restoring, and
+# the next sweep refuses to start until it is dealt with.
+.env.spec-sweep-backup
+
 # Models are large binaries fetched by scripts/download-model.sh. They live in
 # MODELS_DIR, outside the repo, but guard against a stray copy landing here.
 *.gguf
