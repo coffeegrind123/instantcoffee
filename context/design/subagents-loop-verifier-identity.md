@@ -1786,11 +1786,30 @@ Two halves.
 
 as root 3 of four. AN7 found two readers that hardcoded that path, wrote
 `src/agent-dir.ts` so the question has one answer, converted both, and did not
-scan for a third. This was the third — and it is the reader that decides **which
-skills a SUBAGENT is given**. On a relocated install the parent session loads the
-operator's skills from `$PI_CODING_AGENT_DIR/skills` and every child loads them
-from a `~/.pi/agent/skills` that pi does not use, which for a fresh relocation is
-not there at all.
+scan for a third. This was the third.
+
+**Corrected 2026-08-23, by trying to hand-test it (§AI.7).** This paragraph used
+to say it is *"the reader that decides which skills a SUBAGENT is given"*, full
+stop. That is an overstatement, and the correction is worth more than the
+original claim. Measured: a child's ordinary skill discovery goes through pi's
+`DefaultResourceLoader` at `agents/agent-runner.ts:544`, built with
+`agentDir: getAgentDir()` — **pi's own function, which honours the override**.
+`skill-loader.ts` is reached only by `preloadSkills` and `loadSkillMeta`, i.e.
+only for an agent whose frontmatter *names* its skills (`skills:` or
+`preload_skills:`).
+
+So the blast radius is narrower and more specific than recorded: on a relocated
+install, an agent that names its skills looked them up in a
+`~/.pi/agent/skills` that pi does not use — which for a fresh relocation is not
+there at all — and was handed *"(Skill "x" not found in .pi/skills/,
+.agents/skills/, or global skill locations)"* for a skill sitting in the
+operator's real skills directory. A default `general-purpose` child was never
+affected, which is why nothing noticed.
+
+**How the overstatement survived**: the hand test was written but never run, and
+the recipe it was written with (a default subagent) cannot reach the path. The
+first BEFORE column produced the same answer as NOW — see §AI.7, which now
+carries the recipe that does reach it.
 
 **Four spellings of one variable.** All four readers of `PI_CODING_AGENT_DIR` in
 `prinny-channel` — `src/config.ts`, `server/src/state.ts`,

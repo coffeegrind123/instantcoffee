@@ -10,7 +10,10 @@
  * ```
  *
  * `PI_CODING_AGENT_DIR` is pi's `ENV_AGENT_DIR`. Everything else in this stack
- * honours it — pi's `getAgentDir()`, `scripts/pi-local.sh` in two places,
+ * honours it — pi's `getAgentDir()`, `scripts/pi-local.sh` in two places
+ * (**AO10, 2026-08-23: and IGNORED it in two more, in the same file, including
+ * the one that writes `models.json`. This sentence was a partial count nobody
+ * had recounted — see `ab10`**),
  * `prinny-channel/src/config.ts`, `server/src/state.ts`, and this package's own
  * `verify-log.ts`. On a relocated install the one that did not reads a path pi
  * never writes, finds nothing, and answers `hideThinkingBlock: false` — so the

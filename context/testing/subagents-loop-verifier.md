@@ -2264,18 +2264,91 @@ that never existed. Probe `ab6` drives all five sites through the real store.
 
 ### AI.7 — a relocated agent directory and a subagent's skills (AO7) — needs a model
 
-**Unseen.** `PI_CODING_AGENT_DIR` pointed somewhere other than `~/.pi/agent`:
+**Attempted 2026-08-23, and the first recipe was wrong. Still unverified — but
+the reason is now known, and it corrected the finding.**
+
+The recipe this section shipped with was:
 
 ```
-   PI_CODING_AGENT_DIR=/tmp/pi-elsewhere ./scripts/pi-local.sh
+   PI_CODING_AGENT_DIR=<dir> ./scripts/pi-local.sh
+   # a skill in <dir>/skills, none in ~/.pi/agent/skills
+   # delegate, ask the child to list its skills
 ```
 
-with a skill placed in `/tmp/pi-elsewhere/skills` and **not** in
-`~/.pi/agent/skills`. Delegate, and ask the child to list the skills it can see.
-It must see the relocated one. Before AO7 `skill-loader.ts` was the third reader
-AN7's fix did not reach: the parent loaded the operator's skills from the
-relocated directory and every child loaded them from a `~/.pi/agent/skills` that
-pi does not use — which on a fresh relocation is empty.
+**It does not test anything.** Run for real, with `skill-loader.ts` reverted to
+its pre-AO7 hardcoded path, the child answered `relocated-marker` — *the same as
+the fixed column*. A control that cannot fail, again, and this time in the recipe
+rather than in the suite.
+
+**Why**, measured rather than guessed: a child's ordinary skill discovery is pi's
+`DefaultResourceLoader`, built at `agents/agent-runner.ts:544` with
+`agentDir: getAgentDir()` — **pi's own function, which honours the override**.
+`skill-loader.ts` is only reached by `preloadSkills` and `loadSkillMeta`, which
+run only for an agent whose frontmatter *names* its skills. A default
+`general-purpose` child cannot reach the code AO7 fixed.
+
+**The recipe that does reach it.** In the relocated directory, an agent that
+names the skill:
+
+```
+   <dir>/skills/relocated-marker/SKILL.md      name: relocated-marker
+   <dir>/agents/skill-lister.md                skills: relocated-marker
+```
+
+```
+   ---
+   name: skill-lister
+   description: Lists the skills it was given by name.
+   skills: relocated-marker
+   ---
+   List every skill you can see, one skill name per line, and nothing else.
+   If you can see none, answer exactly: NONE
+   ```
+
+Then `Agent(agent: "skill-lister", prompt: "list them")`.
+
+**What to look for.** NOW: `relocated-marker`. BEFORE (root 3 of `loadAllSkills`
+put back to `join(homedir(), ".pi", "agent")`): the child is handed
+*"(Skill "relocated-marker" not found in .pi/skills/, .agents/skills/, or global
+skill locations)"* for a skill sitting in the operator's real skills directory.
+
+**Note this needs AO10's fix to run at all** — before it, the launcher wrote
+`models.json` into `~/.pi/agent` while pi read the relocated directory, so a
+relocated session had no model provider. See §AI.10.
+
+### AI.10 — a relocated install has a model at all (AO10) — terminal only
+
+**RUN 2026-08-23**, and it is the finding AI.7 walked into.
+
+```
+   pi --list-models | grep forge                                    # the control
+   PI_CODING_AGENT_DIR=<dir> ./scripts/pi-local.sh --install-only
+   PI_CODING_AGENT_DIR=<dir> pi --list-models | grep forge
+```
+
+**Run the control first and in the same minute.** "No `forge`" is worth nothing
+until the same command with the override unset has been seen finding it —
+otherwise a typo in the invocation reads as the finding.
+
+```
+   BEFORE   wrote ~/.pi/agent/models.json          ← pi does not read this
+            PI_CODING_AGENT_DIR=… pi --list-models → nothing
+   NOW      wrote <dir>/models.json
+            PI_CODING_AGENT_DIR=… pi --list-models → forge  qwen3.8-27b
+```
+
+`scripts/pi-local.sh` asked where pi's agent directory is in four places and
+answered two ways: `PI_DIR` — which receives `models.json` **and**
+`settings.json` — ignored the override, while the prinny state path and the MCP
+adapter path honoured it. Worse than the AN7/AO7 instances, which made a
+relocated install read an empty directory and fall back to a default: this one
+left pi with no provider for the local model, which is the single thing the
+launcher exists to arrange.
+
+The rule now lives once per language — `agent_dir()` in `scripts/lib.sh`,
+`agentDir()` in `vendor/pi-subagents-lite/src/agent-dir.ts` — and probe `ab10`'s
+`rule` mode compares them value for value, including the `"  "` case where pi
+means *a relative directory* and not *unset*.
 
 ### AI.8 — a worktree of your own repository, reached through a symlink (AO8) — terminal only
 

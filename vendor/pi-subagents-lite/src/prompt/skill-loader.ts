@@ -71,7 +71,8 @@ export function loadAllSkills(cwd: string): Skill[] {
 
   const defaultsResult = loadSkills({
     cwd: resolvedCwd,
-    agentDir: join(homedir(), ".pi", "agent"),
+    // AO7: `agentDir()`, not a hardcoded join — see the header.
+    agentDir: agentDir(),
     skillPaths: [],
     includeDefaults: true,
   });

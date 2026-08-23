@@ -24,7 +24,12 @@
  *                                                                   ignored
  * ```
  *
- * `scripts/pi-local.sh` honours `PI_CODING_AGENT_DIR` in two places, pi's own
+ * `scripts/pi-local.sh` honours `PI_CODING_AGENT_DIR` in two places — and
+ * IGNORED it in two more in the same file until AO10 (2026-08-23), including
+ * `PI_DIR`, which is where it writes `models.json`, so a relocated install got
+ * no `forge` provider at all. The rule now lives once per language:
+ * `agentDir()` here, `agent_dir()` in `scripts/lib.sh`, pinned against each
+ * other by `tests/agent-dir.test.ts` and probe `ab10`. pi's own
  * `getAgentDir()` honours it, `vendor/prinny-channel/src/config.ts` honours it,
  * and `server/src/state.ts` honours it with a comment saying why — *"a pi
  * installation that has been relocated takes the channel's state with it rather

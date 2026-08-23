@@ -172,3 +172,74 @@ describe("AO7 — nobody else hardcodes the agent directory", () => {
     assert.match(call, /agentDir: agentDir\(\)/, "…in the loadSkills call itself");
   });
 });
+
+/**
+ * AO10 — the same rule in the other language, and the file that installs the
+ * provider.
+ *
+ * This package's scan above holds the TypeScript side. The stack has a second
+ * reader of the same fact in bash: `scripts/pi-local.sh` writes `models.json`
+ * (the custom provider that points pi at forge) and `settings.json` into pi's
+ * agent directory, and it asked where that is in FOUR places while answering two
+ * ways — `PI_DIR` ignored the override; the prinny state path and the MCP
+ * adapter path honoured it.
+ *
+ * Measured 2026-08-23, with the control run in the same minute:
+ *
+ * ```
+ *   pi --list-models                              forge  qwen3.8-27b
+ *   PI_CODING_AGENT_DIR=<dir> pi --list-models    (nothing)
+ * ```
+ *
+ * Worse than the AN7/AO7 instances: those made a relocated install read an empty
+ * directory and fall back to a default. This one left pi with **no provider for
+ * the local model at all** — the one thing the launcher exists to arrange.
+ *
+ * The rule now lives once per language: `agentDir()` here, `agent_dir()` in
+ * `scripts/lib.sh`. This pins that the shell one exists, is what the launcher
+ * asks, and encodes the same three decisions — pi's bare truthiness guard, the
+ * tilde expansion, and the `~/.pi/agent` default. Probe `ab10` drives both and
+ * compares them value for value; this is the cheap half that fails on the edit.
+ */
+describe("AO10 — the launcher's copy of the rule", () => {
+  const REPO = new URL("../../../", import.meta.url);
+  const lib = readFileSync(new URL("scripts/lib.sh", REPO), "utf8");
+  const launcher = readFileSync(new URL("scripts/pi-local.sh", REPO), "utf8");
+  /** Comments in both files quote the defect on purpose. */
+  const launcherCode = launcher.replace(/^\s*#.*$/gm, "");
+
+  it("the shell helper exists — the control for every absence assertion below", () => {
+    assert.match(lib, /^agent_dir\(\) \{/m, "scripts/lib.sh no longer defines agent_dir");
+    assert.match(launcherCode, /source .*lib\.sh/, "the launcher no longer sources it");
+    assert.ok(launcherCode.length > 1000, "the launcher slice is empty — the comment strip ate it");
+  });
+
+  it("the launcher asks in more than one place, so agreeing is not automatic", () => {
+    const sites = (launcherCode.match(/\$\(agent_dir\)/g) ?? []).length;
+    assert.ok(sites >= 3, `expected at least 3 sites through agent_dir, found ${sites}`);
+  });
+
+  it("no agent-directory path in the launcher is built from $HOME", () => {
+    // The defect verbatim: `PI_DIR="${HOME}/.pi/agent"`.
+    assert.doesNotMatch(launcherCode, /\$\{?HOME\}?\/\.pi\/agent/, "the pre-AO10 form is back");
+  });
+
+  it("and none reads the override inline instead of through the rule", () => {
+    assert.doesNotMatch(launcherCode, /\$\{PI_CODING_AGENT_DIR:-/, "two spellings of one rule again");
+  });
+
+  it("the shell rule encodes the same three decisions this module does", () => {
+    const body = lib.slice(lib.indexOf("agent_dir() {"), lib.indexOf("# --- json"));
+    // pi's guard is bare truthiness, NOT a trim — a value of "  " is a relative
+    // directory to pi and not `unset`. That is AO7, one language over.
+    assert.match(body, /-n "\$override"/, "the guard");
+    assert.doesNotMatch(body, /xargs|sed .*s\/\^\[|trim/, "a trim here would diverge from pi");
+    assert.match(body, /"~"/, "the bare-tilde case pi's expandTildePath has");
+    assert.match(body, /"~\/"\*/, "the ~/… case");
+    assert.match(body, /\.pi\/agent/, "the default when the override is unset");
+  });
+
+  it("and the variable it reads is the one this module names", () => {
+    assert.match(lib, new RegExp(`\\$\\{${ENV_AGENT_DIR}:-`), `the shell reads ${ENV_AGENT_DIR}`);
+  });
+});

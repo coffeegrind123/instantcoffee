@@ -18,19 +18,19 @@ number that means something (`…-identity.md` §12.5):
 ```
    ls context/testing/probes/*.mjs                                  126
      minus the four shared helpers  _host  _register  _sidecar  _ts-hook
-                                                                    123
+                                                                    124
      minus one un-lettered one-off  verify-prior-fixes.mjs
-                                                                    122  ← probes
+                                                                    123  ← probes
 ```
 
 **A probe is a lettered file** — `<letter(s)><n>-<what-it-shows>.mjs` — and there
-are **122** of them, up from 113 before the twenty-fourth pass (121 after it, and
-`ab9` was added the session after — see the AO9 addendum at the end). The four `_`
+are **123** of them, up from 113 before the twenty-fourth pass (121 after it;
+`ab9` and `ab10` were added the session after — see the AO9 addendum at the end). The four `_`
 files are shared fixtures, not probes; `verify-prior-fixes.mjs` is a one-off
 re-check from the second audit, kept because it still runs.
 
 Earlier numbers in `HANDOFF.md` and in the pass write-ups (111 → 118 → 126 → 127)
-are the first column, all files; 114 → 122 → 123 is the second. Neither was wrong
+are the first column, all files; 114 → 122 → 124 is the second. Neither was wrong
 and neither said which it was.
 
 | Probe | Finding | Run with | What it shows now (post-fix) |
@@ -859,7 +859,7 @@ predecessor (`json-store.ts`, `runtime-stamp.mjs`, `notice-buffer.ts`), the
 BEFORE column is the old EXPRESSION next to the new one, named and quoted, so a
 reader can check that what is being called BEFORE is what actually shipped.
 
-## The twenty-fourth pass (AO1–AO9) — `ab1`–`ab9`
+## The twenty-fourth pass (AO1–AO10) — `ab1`–`ab10`
 
 All seven defects these were written for are **fixed**. Each prints BEFORE and
 NOW, so running one is its own control. The write-up is
@@ -892,6 +892,8 @@ homeserver's clock, another build of ourselves.
 
 | `ab8-the-worktree-that-was-its-own-repo.mjs` | **AO8** — `sameRepo` compared a realpath'd target against a parent cwd that was not, and `git rev-parse --git-common-dir` answers RELATIVE in a main worktree and ABSOLUTE in a linked one | `for m in shapes logical physical foreign; do node --experimental-strip-types ab8-… $m; done` | The fixture is **real git** — a repository, a symlink to it, a linked worktree and a second repository, built in a temp directory and removed at the end — because the finding is about what git actually prints. `shapes` prints the git version and all three answers rather than asserting them from memory. `logical` is the finding: with a symlinked parent cwd the parent side resolves to `…/link/.git` against the target's `…/real/.git`, **BEFORE `sameRepo → false`** for a worktree of the parent's own repository, NOW true. `physical` is the control and the reason this is latent — with a physical parent cwd both columns were already right, and the fix changes nothing on this platform. `foreign` checks the gate still gates: a genuinely different repository is still not the same repo, through the symlink as well as through the real path. |
 | `ab9-the-wiring-no-probe-drove.mjs` | **AO9** — AO1's fix was held by nothing: `agent-id.test.ts` and `ab1` both drive the extracted rule, and neither touches `tool-execution.ts:450`, the call that uses it | `for m in published ambiguous refusal full; do node ab9-… $m; done` | The **shipped** `executeStopAgentTool`, loaded through pi's own jiti the way `q2` does, over a real `AgentManager`. BEFORE swaps `resolveId` on the instance for the exact `getRecord` lookup the tool used to make; nothing else differs. `published`: 50 minted ids asked with the eight every surface prints — **BEFORE 0/50 stopped, NOW 50/50**, and the child's `abortController` really aborted rather than merely reported. `ambiguous`: two records sharing the published eight, and the tool names both candidates at a length that tells them apart instead of stopping one. `refusal` is the one to read — the refusal sentence is *identical* in both columns (`Agent 5e3ae827 not found. Running agents: e14e3787 (general-purpose), 06aae107 (explore)`), and each offered id is retried **through the tool**: **0 of 2 accepted BEFORE, 2 of 2 NOW.** That is the loop with no exit, executable. No `--experimental-strip-types`: jiti compiles the TypeScript. |
+
+| `ab10-the-directory-the-launcher-installed-into.mjs` | **AO10** — `scripts/pi-local.sh` asked where pi's agent directory is in four places and answered two ways; the one that ignored the override is where it writes `models.json` | `for m in relocated rule sites live; do node --experimental-strip-types ab10-… $m; done` | `relocated` runs the **shipped launcher** for real under a sandbox `HOME` and a relocated `PI_CODING_AGENT_DIR`, and checks which directory `models.json` lands in — BEFORE `$HOME/.pi/agent`, which pi does not read, NOW the relocated one, with `forge` in it. On this box before the fix, with the control in the same minute: `pi --list-models` found `forge`, and the same command with the override set found nothing — **a relocated install had no provider for the local model at all**. `rule` compares `agent_dir()` in bash against `agentDir()` in TypeScript, value for value, including `"  "`, which pi means as a *relative directory* and not as *unset* (AO7); the harness uses a sentinel rather than `.trim()`, because trimming destroys exactly the case being tested — the probe failed on it first. `sites` asserts the shipped launcher has one answer: no agent-dir path built from `$HOME`, no inline read of the override, with the helper's existence as the control so "none found" cannot mean "nothing looked". `live` prints what both languages answer here. |
 
 `ab1`–`ab8` need `--experimental-strip-types`: they load `.ts` modules directly.
 **`ab9` does not** — it goes through pi's own jiti, which compiles the TypeScript

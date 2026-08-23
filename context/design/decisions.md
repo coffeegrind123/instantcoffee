@@ -8065,3 +8065,74 @@ check feeds a value back, it has to go back in through the door it came out of.*
 **Gates after it:** 1,434 → **1,441** tests (503 → **510** in
 `pi-subagents-lite`), lint **115/115** unchanged — neither a source pin nor a
 probe adds a file to `src/` — and 121 → **122** lettered probes.
+
+## 2026-08-23 (later still) — AO10, found by trying to run a hand test
+
+Running §AI.7 — the last unseen hand test that needed only a model — required a
+relocated `PI_CODING_AGENT_DIR`. The session it started had no model.
+
+### What was measured, with the control first
+
+```
+   pi --list-models                              forge  qwen3.8-27b
+   PI_CODING_AGENT_DIR=<dir> pi --list-models    (nothing)
+```
+
+`scripts/pi-local.sh` asked where pi's agent directory is in **four** places and
+answered two ways: `PI_DIR` — which receives `models.json`, the custom provider
+that points pi at forge, and `settings.json`, the compaction budget — used
+`${HOME}/.pi/agent`, while the prinny state path and the MCP adapter path both
+honoured the override.
+
+### The decisions
+
+**The rule is written once per language, not once per stack.** `agent_dir()` in
+`scripts/lib.sh` alongside `agentDir()` in
+`vendor/pi-subagents-lite/src/agent-dir.ts`. Two languages need two copies; what
+they must not have is two *rules*. `tests/agent-dir.test.ts` pins that the shell
+one exists, is what the launcher asks, and encodes the same three decisions;
+probe `ab10`'s `rule` mode compares them value for value.
+
+**The shell copy reproduces pi's guard exactly, including the ugly part.** pi
+tests bare truthiness, so `"  "` is a *relative directory* and not *unset* — the
+AO7 decision, one language over. A `-n` after trimming would be a better rule and
+a different one, and pi is right by definition because pi writes the files.
+
+**This one is worse than AN7 and AO7 and the entry says so.** Those made a
+relocated install read an empty directory and fall back to a default. This left
+pi with no provider for the local model at all — the single thing the launcher
+exists to arrange — and it fails as *"pi has no models"*, which reads like a
+broken install rather than a launcher bug.
+
+**A sentence that was wrong in three places, and none of them was lying.**
+`aa7`'s header, `agent-dir.ts`'s header and §11.7 of the identity write-up all
+say *"`scripts/pi-local.sh` honours `PI_CODING_AGENT_DIR` in two places"*. True.
+Also incomplete: it ignored it in two more, in the same file. **A count is a
+claim, and a partial count reads exactly like a complete one.** All three now say
+so.
+
+### And the finding this attempt corrected
+
+**§11.7's account of AO7 was an overstatement**, and the hand test is what showed
+it. It said `skill-loader.ts` is *"the reader that decides which skills a SUBAGENT
+is given"*. Measured: a child's ordinary skill discovery is pi's
+`DefaultResourceLoader` (`agents/agent-runner.ts:544`) built with
+`agentDir: getAgentDir()` — pi's own function, which honours the override.
+`skill-loader.ts` is reached only by `preloadSkills` and `loadSkillMeta`, i.e.
+only for an agent whose frontmatter *names* its skills.
+
+So the first BEFORE column for §AI.7 produced the same answer as NOW — **a third
+control this week that could not fail**, after AO9's `Map.get` test and `ab9`'s
+own first draft. The pattern is worth naming: *a control that produces the same
+answer as the fixed column is not a passing test, it is a broken instrument*, and
+the correct response is to find the door the code actually goes through rather
+than to record the run as evidence.
+
+§AI.7 now carries the recipe that reaches the path — an agent whose frontmatter
+declares `skills:` — and is honestly marked **unverified**, because the corrected
+recipe has not been run.
+
+**Gates after it:** 1,441 → **1,447** tests (510 → **516** in
+`pi-subagents-lite`; `agent-dir.test.ts` 15 → 21), lint 115/115, 122 → **123**
+lettered probes. Control run: 2 of 21 in `agent-dir.test.ts`, and 2 of `ab10`'s
+4 modes exit 1.

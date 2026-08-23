@@ -1,3 +1,179 @@
+# Handoff — 2026-08-23 (AO10, and three controls that could not fail)
+
+Continuation of the entry below, same day. The brief was its item 1: **AI.7**,
+the last unseen hand test needing only a model. It is **still unverified**, and
+the reason is the session's result — the attempt found a launcher bug that made a
+relocated session modelless, and then found that AO7's recorded blast radius was
+wider than the code supports.
+
+```
+                                    prev       now
+   vendor/pi-subagents-lite  tests   510        516    agent-dir.test.ts 15 → 21
+   vendor/pi-loop-mode       tests   278        278
+   vendor/prinny-channel     tests   550        550
+   .pi/extensions/compaction-guard    75         75
+   vendor/rtk-pi             tests    28         28
+                                   ─────      ─────
+                                   1,441      1,447
+   lettered probes                    122        123    (ab10 is new)
+```
+
+All five suites green, lint 115/115, **all 35 `ab*` probe modes exit 0**.
+
+## AO10 — a relocated install had no model at all
+
+`scripts/pi-local.sh` asked where pi's agent directory is in **four** places and
+answered two ways. `PI_DIR` — which receives `models.json` (the custom provider
+pointing pi at forge) and `settings.json` — used `${HOME}/.pi/agent`; the prinny
+state path and the MCP adapter path honoured `PI_CODING_AGENT_DIR`.
+
+**Measured, control first and in the same minute:**
+
+```
+   pi --list-models                              forge  qwen3.8-27b
+   PI_CODING_AGENT_DIR=<dir> pi --list-models    (nothing)
+```
+
+Worse than the AN7/AO7 instances it follows: those made a relocated install read
+an empty directory and fall back to a default. This left pi with **no provider
+for the local model**, and it presents as *"pi has no models"* — a broken install,
+not a launcher bug.
+
+**Fix:** `agent_dir()` in `scripts/lib.sh`, wired into all three sites. It
+reproduces pi's guard exactly, including the ugly part — bare truthiness, so
+`"  "` is a *relative directory* and not *unset*, which is AO7's decision one
+language over. **Two languages need two copies; what they must not have is two
+rules.** Held by `tests/agent-dir.test.ts` (+6 tests, **control 2 of 21**) and
+probe `ab10`, four modes (**control: 2 of 4 exit 1**), whose `relocated` mode runs
+the shipped launcher for real under a sandbox `HOME`.
+
+**A sentence that was wrong in three places, and none of them was lying.**
+`aa7`'s header, `agent-dir.ts`'s header and §11.7 all say *"pi-local.sh honours
+`PI_CODING_AGENT_DIR` in two places"*. True, and incomplete — it ignored it in two
+more, in the same file. **A count is a claim, and a partial count reads exactly
+like a complete one.** All three corrected.
+
+## AI.7 — unverified, and it corrected the finding it was testing
+
+The recipe §AI shipped with does not test anything. Run for real with
+`skill-loader.ts` reverted to its pre-AO7 hardcoded path, the child answered
+`relocated-marker` — **the same as the fixed column**.
+
+**Why**, measured rather than guessed: a child's ordinary skill discovery is pi's
+`DefaultResourceLoader` (`agents/agent-runner.ts:544`), built with
+`agentDir: getAgentDir()` — pi's own function, which honours the override.
+`skill-loader.ts` is reached only by `preloadSkills` and `loadSkillMeta`, i.e.
+only for an agent whose frontmatter **names** its skills.
+
+So §11.7's *"the reader that decides which skills a SUBAGENT is given"* is an
+overstatement. Corrected in place, with the narrower and more specific blast
+radius: an agent that names its skills, on a relocated install, was handed
+*"(Skill "x" not found…)"* for a skill sitting in the operator's real skills
+directory. A default `general-purpose` child was never affected — which is why
+nothing noticed.
+
+§AI.7 now carries the recipe that reaches the path (an agent with
+`skills: relocated-marker` in the relocated `agents/` dir) and is marked
+**unverified**, because that recipe has not been run. The fixture is written; it
+needs one delegation each way.
+
+## The pattern this session actually found
+
+**Three controls that could not fail, in one day:**
+
+```
+   AO9    a test named `control` asserting a fact about `Map`
+   ab9    its own first draft, asking the manager instead of the tool
+   AI.7   a hand-test recipe whose BEFORE column ran different code
+```
+
+**A control that produces the same answer as the fixed column is not a passing
+test — it is a broken instrument**, and the response is to find the door the code
+actually goes through, not to record the run as evidence. That sentence is the
+most transferable thing here, and it is worth more than either finding.
+
+## Next session — in this order
+
+1. **Finish AI.7.** The fixture exists (§AI.7 has both files). Two delegations:
+   one with `skill-loader.ts` as shipped, one with root 3 reverted. Expect
+   `relocated-marker` and the not-found sentence respectively. **If BEFORE and
+   NOW agree again, the recipe is still wrong — do not record it as passing.**
+2. **AI.2 and AI.3** still need a phone and a second Matrix account. Unchanged
+   for three sessions; both are written out in §AI.
+3. **The AO9 sweep**, carried: every probe whose header says "this module imports
+   pi and cannot be loaded here" is a candidate for the same gap. `ab3` (AO3,
+   `markLive`/`liveRooms` in `extensions/index.ts`) is eight quoted lines with
+   nothing executing them, and `ab9` proves jiti gets round it.
+
+## Still open, carried
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. Unchanged; the repair is a lock file.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unchanged, carried for a fourth pass.
+   · `mcp-stdio.ts`'s reply path is `typeof id === 'number'`; a server echoing a
+     JSON-RPC id as a string drops the reply. Latent here — this stack's sidecar
+     always echoes numbers.
+   · The AO9 sweep above.
+```
+
+## A concurrent session committed this tree mid-control-run — read this before `git log -p`
+
+While this work was in flight, another session committed the whole working tree
+(`8000df3`, *"commit the concurrent session's in-flight work"*, and the two
+commits either side of it). It swept up the fourth through twenty-fourth passes,
+which needed committing anyway — and it caught **one file in the middle of a
+control run**.
+
+```
+   vendor/pi-subagents-lite/src/prompt/skill-loader.ts
+     committed with   agentDir: join(homedir(), ".pi", "agent")   ← pre-AO7
+     i.e. AO7's fix UNDONE in the history, for §AI.7's BEFORE column
+```
+
+**Repaired by the commit that carries this entry**, so the tip is correct. It is
+recorded because a reader following that file's history sees AO7 applied,
+reverted with no explanation, and re-applied — and the middle step is a control
+run, not a decision.
+
+**Audited, and the damage stops there.** Every other file edited for a control
+this session matches the tip exactly:
+
+```
+   tool-execution.ts   HEAD == tree, 65b785a9…, resolveId(requestedId) present
+   pi-local.sh         HEAD has PI_DIR="$(agent_dir)"   — AO10's fix
+   lib.sh              HEAD == tree
+```
+
+**The lesson is cheap and general: a control run leaves the tree wrong on
+purpose, and anything that snapshots the tree — another session, a hook, a
+watcher — will believe it.** Restoring by content hash makes the window small; it
+does not make it zero. If a control run is going to take a model turn, say so
+where a concurrent session can see it.
+
+## What changed on disk
+
+```
+   NEW   context/testing/probes/ab10-the-directory-…-installed-into.mjs  4 modes
+         scripts/lib.sh                        agent_dir(), the rule in bash
+         scripts/pi-local.sh                   three sites through it
+         vendor/pi-subagents-lite/tests/agent-dir.test.ts   AO10, 15 → 21
+         vendor/pi-subagents-lite/src/agent-dir.ts          the "two places" note
+         context/testing/probes/aa7-…mjs                    same correction
+         context/design/subagents-loop-verifier-identity.md §11.7 corrected
+         context/testing/subagents-loop-verifier.md         §AI.7 rewritten,
+                                                            §AI.10 added
+         context/testing/probes/README.md      ab10 row, 122 → 123
+         context/design/decisions.md           the AO10 entry
+         context/HANDOFF.md                    this entry
+```
+
+`skill-loader.ts` and `pi-local.sh` were each reverted for a control run and
+restored by content, not by diff.
+
+---
+
 # Handoff — 2026-08-23 (the engine thread: the divergence read, one measurement, one defect)
 
 Committed as `6ec91c4` on `main`. The delegation-stack thread's in-flight work
