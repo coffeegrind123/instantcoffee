@@ -42,18 +42,89 @@ local_env_unset() {
   # Drop the marker line and the key line, leave everything else byte-identical.
   # .env.local holds the HF token on this machine; a blunt rewrite is not on.
   sed -i -E "/^${key}=/d" "$LOCAL_ENV"
-  sed -i -E "\|^# --- set by scripts/capture\.sh|d" "$LOCAL_ENV"
+  # Drop only the marker lines that no longer sit above a key of ours — a marker
+  # is written per key, so removing them all would orphan the ones still in use.
+  python3 - "$LOCAL_ENV" <<'PYCLEAN'
+import sys
+path = sys.argv[1]
+lines = open(path).read().split("\n")
+out = []
+for i, line in enumerate(lines):
+    if line.startswith("# --- set by scripts/capture.sh"):
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not nxt.startswith(("FORGE_BACKEND_URL=", "CAPTURE_POSITION=", "CAPTURE_UPSTREAM=")):
+            # local_env_set writes a blank separator before each marker. Drop
+            # that one line and no others: stripping every trailing blank
+            # instead would eat the blank line the user's own file ends with,
+            # and the round trip has to be byte-identical or it is not a round
+            # trip.
+            if out and not out[-1].strip():
+                out.pop()
+            continue
+    out.append(line)
+open(path, "w").write("\n".join(out))
+PYCLEAN
 }
 
 capture_url() { printf 'http://capture:8082'; }
 
 cmd_on() {
-  local upstream position
-  upstream="$(env_get CAPTURE_UPSTREAM)"; : "${upstream:=http://llama:8080}"
-  position="$(env_get CAPTURE_POSITION)"; : "${position:=forge-llama}"
+  # The first cut of this took "$@" and ignored it, so `capture.sh on --position
+  # client-forge` started a model-facing tape and said nothing. An argument that
+  # is accepted and discarded is worse than one that is refused.
+  local position="" upstream=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --position) position="${2:-}"; shift 2 || die "--position needs a value" ;;
+      --position=*) position="${1#*=}"; shift ;;
+      --upstream) upstream="${2:-}"; shift 2 || die "--upstream needs a value" ;;
+      --upstream=*) upstream="${1#*=}"; shift ;;
+      *) die "capture.sh on: unknown argument '$1' (expected --position or --upstream)" ;;
+    esac
+  done
+  [[ -z "$position" ]] && position="$(env_get CAPTURE_POSITION)"
+  : "${position:=forge-llama}"
+
+  # The position decides the upstream AND which end moves. Getting these two out
+  # of step produces a tape labelled as one thing and holding the other, which is
+  # the one failure the whole design is built to prevent.
+  case "$position" in
+    forge-llama)
+      : "${upstream:=$(env_get CAPTURE_UPSTREAM)}"; : "${upstream:=http://llama:8080}" ;;
+    client-forge)
+      : "${upstream:=http://forge:8081}" ;;
+    *)
+      [[ -n "$upstream" ]] || die \
+        "position '$position' is not one this script knows how to wire (forge-llama, client-forge) — pass --upstream too" ;;
+  esac
+
   echo "==> starting the recorder   position=${position}  upstream=${upstream}"
   echo "    tape -> $(env_get CAPTURES_DIR) on the host, /captures in the container"
+  local_env_set CAPTURE_POSITION "$position"
+  local_env_set CAPTURE_UPSTREAM "$upstream"
   compose --profile capture up -d --build capture || die "capture container failed to start"
+
+  if [[ "$position" == "client-forge" ]]; then
+    # The CLIENT moves here, not the backend. Repointing forge as well would put
+    # the recorder on both sides of itself.
+    local port; port="$(env_get CAPTURE_PORT)"; : "${port:=8082}"
+    echo
+    cmd_status
+    cat <<NOTE
+
+Recording the CLIENT side. forge is untouched and still talks to llama directly.
+Point pi at the recorder instead of at forge:
+
+    PI_BASE=http://localhost:${port}      (pi reads \$(agent_dir)/models.json —
+                                           see scripts/pi-local.sh)
+
+This tape is what the agent ASKED FOR. It does NOT show forge's rewrites, so it
+cannot feed a fidelity measurement on its own; take it alongside a forge-llama
+tape when you want the pair.
+Turn it off with:  ./scripts/capture.sh off
+NOTE
+    return 0
+  fi
 
   echo "==> repointing forge at the recorder (this recreates the forge container)"
   local_env_set FORGE_BACKEND_URL "$(capture_url)"
@@ -71,6 +142,8 @@ NOTE
 cmd_off() {
   echo "==> repointing forge back at llama (this recreates the forge container)"
   local_env_unset FORGE_BACKEND_URL
+  local_env_unset CAPTURE_POSITION
+  local_env_unset CAPTURE_UPSTREAM
   compose up -d forge || die "forge failed to come back up"
   echo "==> stopping the recorder (the tape is kept)"
   compose --profile capture stop capture >/dev/null 2>&1 || true

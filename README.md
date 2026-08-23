@@ -191,6 +191,7 @@ cd ~/my-project && qpi
 | `./scripts/capture.sh index` | What workstreams are on the tape, rebuilt from a flat log by longest-common-prefix over per-message hashes. `rw` counts history REWRITES — a turn whose prompt was not the previous one plus a suffix |
 | `./scripts/capture.sh export s7f3a91 --out /captures/corpus/deep.txt` | Turn one workstream into a `llama-perplexity --kl-divergence-base` corpus, rendered through the server's own `/apply-template` and checked against the token count the server itself reported for that request |
 | `./scripts/capture.sh import-pi ~/.pi/agent/sessions/<slug>/*.jsonl` | Read pi's own transcripts into the same shape — real sessions already on disk. They carry no system prompt and no tool schemas, so every record is stamped `gaps` and refused for a corpus without `--allow-gaps` |
+| `docker run --rm --entrypoint python qwen38-forge/proxy:${FORGE_VERSION} /work/scripts/test_forge_patches.py` | Do the five build-time forge patches actually BEHAVE? The patches already fail the build when forge's source moves — that is a check on the input. This drives the patched functions inside the image: content vs reasoning_content on a tool-call turn, a reasoning-only turn surviving, the cross-tool merge staying off, and `FORGE_MERGE_ACROSS_TOOLS=1` putting it back |
 | `./scripts/capture.sh self-test` | 98 checks over the recorder and the session rebuilder, no server needed. Includes the two controls that can fail: an unbuffered-stream check and a recorder that raises on every write |
 | `./scripts/bench-literal.sh --sweep 2000,16000,48000,90000 --repeat 3` | The same probe as a depth sweep. Reports per-field exact-match rates and classifies each miss — `tail_swap` and `dropped_head` are flipped tokens, `truncated` and `missing` are usually the model declining to copy |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
@@ -2065,6 +2066,9 @@ scripts/
                         gaps named
   test_capture_proxy.py the recorder's unit + live-socket suite, including the
                         no-buffering control and the exploding-recorder control
+  test_forge_patches.py behaviour gate for the five build-time forge patches.
+                        Runs INSIDE the built image, because it imports the
+                        patched package. CI runs it after the image build
   probe_lib.py          shared by ctx_needle.py and bench_literal.py: the nonce,
                         the varied filler, and the document builder that
                         CALIBRATES its length against the server's tokenizer.

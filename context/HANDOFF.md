@@ -264,12 +264,15 @@ asks a different question.
    that its corpus is now one command away. Still costs a llama stop (~20 min
    cold reload), still caps at ~64K for the f16 arm, still needs disk checked
    for a full-vocab logits file.
-3. **Decide whether to deploy patches 4 and 5.** They are written, measured and
-   committed, and a `docker compose build forge` is all it takes. The evidence is
-   in `context/design/forge-on-the-tool-call-path.md` §5. The one thing a
-   deployment changes that a reader should agree to first: pi will start showing
-   the model's actual sentence on tool-calling turns instead of its reasoning,
-   which is a visible difference in every session.
+3. ~~**Decide whether to deploy patches 4 and 5.**~~ **DEPLOYED, same session,**
+   once the operator confirmed the live pi session was finished. `docker compose
+   build forge` + recreate; verified on the real stack by the matched pair
+   (llama "I'm going to look up the current weather in Paris." / forge the same
+   sentence plus `reasoning_content`, where before forge returned the reasoning
+   as content) and `smoke-test.sh` 11/11. `scripts/test_forge_patches.py` is the
+   standing gate — 22 checks, run inside the image, wired into CI after the
+   build, because the patches' own source-text check is a check on the INPUT and
+   a patch can apply cleanly to shifted text and still return the wrong field.
 4. **Carried, unchanged**: a GPU-heavy foreground VRAM floor is still unmeasured,
    and `eval_expr` still needs `--only eval_expr --repeat 20` at two levels.
 

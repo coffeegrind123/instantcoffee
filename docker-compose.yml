@@ -315,8 +315,9 @@ services:
   # own rewrites. See .env's capture section and
   # context/design/inference-divergence-and-this-stack.md §7.
   #
-  # No published port. Nothing outside the compose network should reach it, and
-  # a tape recorder that is reachable from the LAN is a transcript leak.
+  # The port is published on BIND_ADDR (127.0.0.1 by default) because the
+  # client-facing position needs somewhere for pi to point. A tape recorder
+  # reachable from the LAN is a transcript leak, so do not widen BIND_ADDR for it.
   #
   # The healthcheck probes /capture/health, which the proxy answers ITSELF and
   # never forwards — the same lesson forge's /forge/health records: a check that
@@ -342,6 +343,11 @@ services:
     # guarantee doing its job on day one. The tape was empty and SAID so, rather
     # than a healthy-looking service quietly recording nothing.
     user: "0:0"
+    # Published on the loopback so the CLIENT-facing position has somewhere for
+    # pi to point. In the default model-facing position nothing outside the
+    # compose network needs it, and BIND_ADDR keeps it off the LAN either way.
+    ports:
+      - "${BIND_ADDR}:${CAPTURE_PORT:-8082}:8082"
     entrypoint: ["python", "/work/scripts/capture_proxy.py"]
     command: >
       --upstream ${CAPTURE_UPSTREAM:-http://llama:8080}

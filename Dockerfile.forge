@@ -109,11 +109,18 @@ COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py \
      scripts/bench.py scripts/bench_repeat.py scripts/bench_quality.py \
      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py \
      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py \
-     /work/scripts/
+     scripts/test_forge_patches.py /work/scripts/
 # probe_lib.py is in that list even though nothing runs it directly: ctx_needle.py
 # and bench_literal.py both import it, and a missing IMPORT fails at start-up with
 # ModuleNotFoundError rather than with the "can't open file" that made the
 # bench_quality.py omission below obvious.
+#
+# test_forge_patches.py is in the list because it can only run INSIDE this image:
+# it imports the patched forge package and drives the patched functions. The
+# patches already fail the BUILD if forge's source text moves, but that is a
+# check on the input — a patch can apply cleanly to text that has shifted and
+# produce a package that imports, serves, and returns the wrong field, which is
+# the exact shape of every defect these patches exist to fix.
 #
 # bench_quality.py was MISSING from this list until 2026-08-23 while README.md
 # documented a command that runs it, so that command failed with "can't open
