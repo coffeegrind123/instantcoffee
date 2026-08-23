@@ -180,7 +180,10 @@ cd ~/my-project && qpi
 | `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything — with mean, max and within-config spread, and a provenance block that says whether every row came off one stack |
 | `./scripts/spec-sweep.sh --pins` | What build, context size, KV types and weights this box would stamp on a result right now |
 | `./scripts/capacity-probe.sh --config 'ctx-96k\|CTX_SIZE=98304' --bench prefill` | Does a launch flag FIT, and what does it cost in VRAM — context window, ngram table size, draft cache type |
-| `./scripts/capacity-probe.sh --list` | Re-print the capacity table without running anything |
+| `./scripts/capacity-probe.sh --list` | Re-print the capacity table without running anything — now with within-config SPREAD, SPREAD% and DRAFT/CYCLE, and a provenance footer |
+| `./scripts/vram-floor.sh` | How much VRAM the Windows desktop is holding, sampled over 15 minutes without stopping llama, and what that leaves for a bigger context window |
+| `./scripts/vram-floor.sh --report` | Re-print the last floor capture without re-sampling |
+| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --control` | Prove the quality harness before trusting it: reference implementations must score 5/5 or the grid refuses to run |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000 --control 105000` | Prove a context window is real: a nonce at each end of the document must come back, and a prompt past the limit must be refused by name |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
@@ -1967,6 +1970,11 @@ scripts/
                         a distinct nonce at EACH END of the document must come
                         back, plus a negative control past the limit. Sizes the
                         prompt from the server's /tokenize, not an estimate
+  vram-floor.sh         what the WINDOWS DESKTOP holds on the shared GPU,
+                        sampled over a period and WITHOUT stopping llama.
+                        Decomposes the device with Windows' own GPU perf
+                        counters, since nvidia-smi returns [N/A] per process
+                        under WDDM. Needs the host bridge
   spec-sweep.sh         sweep SPEC_TYPE x n-max x p-min, report draft/cycle.
                         Every result records the pin set that produced it,
                         so --resume cannot skip a row measured on another

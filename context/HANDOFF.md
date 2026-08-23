@@ -1,3 +1,469 @@
+# Handoff — next session: commit the engine work, then measure the floor under load
+
+The three jobs from the last handoff are all answered and every config question
+they touched is CLOSED. Nothing here is blocked, and nothing needs a decision
+from anyone before it can start.
+
+**The stack is on 96K and correct.** `.env` byte-identical to HEAD, smoke 11/11
+on five consecutive runs including the canonical `./scripts/smoke-test.sh`,
+llama and forge both healthy. No experimental value is left anywhere.
+
+Do these in order. Job 1 is the only one with a deadline attached to it — the
+work is uncommitted and shares two files with another session.
+
+---
+
+## 1. FIRST: commit, and mind the two shared files
+
+**This is the only urgent item.** The engine/bench work from the last session is
+finished and verified but **entirely uncommitted**, and another agent is working
+in this repo concurrently.
+
+Cleanly mine, safe to stage as a unit:
+
+```
+   scripts/vram-floor.sh                                   (new)
+   scripts/smoke_test.py  scripts/bench_quality.py
+   scripts/capacity-probe.sh  scripts/spec-sweep.sh  scripts/lib.sh
+   docker-compose.yml
+   versions.lock
+   context/design/vram-floor-and-the-shared-desktop.md      (new)
+   context/bench/capacity/                                  (results + vram-floor.csv)
+```
+
+**`README.md` and `context/HANDOFF.md` are SHARED.** Both carry the other
+session's uncommitted twenty-third/twenty-fourth-pass work interleaved with
+mine. `git add` on either stages their work too. Either split the hunks, or
+agree with them who lands those two files. Do NOT commit them blind — the last
+session deliberately staged one file for exactly this reason and said so.
+
+Check `git status` before AND after. The other session was writing to `vendor/`
+and `.pi/` with mtimes seconds old.
+
+Suggested commit scope for the engine half:
+
+```
+   feat(engine,bench): attribute the VRAM floor, reject the draft-KV lever,
+                       measure V3 answer quality
+```
+
+---
+
+## 2. Measure the floor WHILE THE DESKTOP IS IN USE
+
+This is the one measurement left that could still move a decision, and it is now
+a 15-minute job that does not touch llama:
+
+```sh
+./scripts/vram-floor.sh              # 60 samples, 15 s apart
+./scripts/vram-floor.sh --report     # re-read without re-sampling
+```
+
+**Why it matters.** The 47-sample capture is IDLE-DESKTOP only, and its median
+(1,406 MiB) is almost exactly the LOWEST of the six values the old stop-llama
+method ever recorded (1,405 / 1,536 / 1,881 / 1,905 / 1,961 / 2,027). So the
+capture establishes the good end of the range and says nothing about the bad
+end — and the bad end is what every window decision is refused against.
+
+**Run it while actually using the machine**: browsing, a video call, a game,
+whatever the box really does. Then compare against `context/bench/capacity/
+vram-floor.csv`. If the active floor turns out to be ~1.5 GiB rather than the
+2,027 MiB worst case, 128K is worth ONE more look. If it confirms 2,027+, 128K
+is closed permanently and should be recorded as such.
+
+**The bridge must be running.** `~/.claude-host-bridge-token` EXISTING DOES NOT
+MEAN THE BRIDGE IS UP — it was present all last session while nothing listened
+on 6799. The script probes the port and treats HTTP 401 as healthy. If it is
+down, ask the user to run
+`C:\Users\User\Downloads\as\data\claude-host-bridge\start-bridge.bat`; only they
+can start it.
+
+---
+
+## 3. `bench_quality.py` is at its ceiling and needs harder tasks
+
+V3 scores **100% at every effort level**, so the task set can no longer separate
+`none` from `xhigh` on correctness — it now discriminates only on LOC and wall.
+Anyone re-running it to re-decide `REASONING_EFFORT` will learn nothing.
+
+Add 2-3 harder tasks. Good candidates are ones where over-engineering actually
+costs correctness rather than only lines: a parser with precedence, an
+interval/date-arithmetic problem with timezone edges, a small state machine with
+an explicit error contract.
+
+**Write the reference implementation in the same commit.** You will not be able
+to skip it — `main()` now refuses to run the grid unless every reference scores
+5/5, and `--control` runs just that check. That is deliberate; it is what turned
+"a human verified this once in August" into something enforced.
+
+Keep in mind when reading results: **`pass%` and `LOC` are contention-proof and
+`wall` is not.** The current V3 `wall` column was taken on a box at load 20 and
+is not comparable with the 2026-08-17 figures.
+
+---
+
+## What is CLOSED — do not re-litigate any of these
+
+Each is recorded with its measurement in `versions.lock`, and re-opening one
+costs a 15-20 minute cold load to learn something already known.
+
+```
+   CTX_SIZE          98304. Proven by ctx_needle.py both-ends retrieval at
+                     90,055 tokens with a 105,026-token control refused by name.
+   128K              REFUSED on measurement. 72 MiB free at the idle floor,
+                     -548 MiB at the worst observed floor — it would fail to
+                     ALLOCATE. Reopen ONLY if job 2 above finds a much lower
+                     active floor. It is NOT broken: it loads and serves a
+                     120,029-token prompt at 1,726 tok/s. Headroom, not function.
+   draft-KV q8_0     REJECTED. -ctkd/-ctvd q8_0 COSTS +216 MiB at 96K. It saves
+                     180 MiB of draft KV and spends 396 MiB of draft compute
+                     buffer. Do not put "~180 MiB sitting there" back into any
+                     VRAM arithmetic.
+   size_m            48. VRAM flat within 6 MiB across 48/32/24/16 while
+                     draft/cycle falls 24.98 -> 11.60.
+   REASONING_EFFORT  medium. Re-confirmed on V3 — and read the ceiling caveat
+                     in job 3 before re-running the bench to re-decide it.
+   V3 weights        adopted, quality-verified. The 17.9 GB
+                     Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded rollback is not
+                     needed and can be deleted whenever the disk is wanted.
+   spec config       ngram-simple,draft-mtp at n-max 4 / p-min 0.40.
+```
+
+---
+
+## Method notes that were paid for, and will bite again
+
+- **Read the WHOLE `-lv 5` table, not the line you came for.** The draft-KV
+  lever was "engine-confirmed" from the KV line while the compute line directly
+  beneath it more than cancelled it. The refuting evidence sat in a log on disk
+  from the day the lever was proposed.
+- **`SPREAD%` before `DEC-MEAN`.** `capacity-probe.sh --list` now prints
+  DEC-MEAN, SPREAD, SPREAD% and DRAFT/CYCLE. Reject any decode comparison above
+  ~15%. `DRAFT/CYCLE` survives contention when decode does not; when they
+  disagree, believe DRAFT/CYCLE.
+- **Compare only WITHIN one probe invocation.** Separate invocations each
+  measure their own idle floor while the desktop moves underneath — that is how
+  96K->128K was once reported as +245 MiB when the engine said +1,408.
+- **Before reporting an absence, run the control.** The one wrong finding of the
+  last session came from running `smoke_test.py` a way nobody runs it and
+  generalising to the tool. `./scripts/smoke-test.sh` — the documented command,
+  three lines away in the README — would have refuted it in 90 seconds.
+- **A tunable may default; a fact must not.** A container variable used as a
+  FACT ABOUT THE STACK IT IS VERIFYING must be forwarded explicitly, because its
+  default silently turns a failing check into a passing weaker one.
+- **`label` is a jq keyword.** `--arg label X` is a compile error no matter how
+  the key is quoted. Use `lbl`. It cost a 15-minute cold load once and it bit
+  again interactively last session.
+- **`.env` is committed**, so `git checkout -- .env` is always a clean restore,
+  and both probe scripts verify their backup against `git show HEAD:.env`.
+- **Eleven capacity rows are UNSTAMPED and cannot be fixed.** `b10573` appears
+  in zero capacity logs, so the engine build was never recorded for them.
+  `--list` warns that the table mixes stacks; that warning is correct and should
+  stay until those rows are re-run or moved aside. Provenance is the one thing
+  that cannot be added in hindsight.
+
+---
+
+## Not mine, but noted
+
+- **The delegation-stack thread has its own open list** — see the twenty-third
+  and twenty-fourth pass sections and their own "Next session" items (`/prinny
+  prepare` is BLOCKING rather than merely stale, nobody has watched a quarantine
+  happen, `renderSubagentEntry` has still never been drawn in a live TUI). That
+  work is a different agent's and is not covered here.
+- **A hung test.** `tests/json-store.test.ts` (PID 853149, under claude PID
+  625055) sat at 100% of one core for over an hour. It is the other session's
+  AN1 test. Worth telling them; a 60-minute unit test is hung, not slow.
+- **`monero-wallet-rpc` is crashlooping** on this box. Unrelated to this repo.
+
+---
+
+# Handoff — 2026-08-23 (the quiet-box work: what the desktop was holding all along)
+
+Three jobs came in from the previous handoff and all three are answered. The one
+that mattered was job 0, because it was framed as a chore blocking the real work
+and it turned out to BE the real work: the thing that made 128K a judgement call
+is now a measurement, and the measurement says no.
+
+- **The VRAM floor is the Windows desktop, and it is now attributable.**
+  1,406 MiB median across 47 samples, spread over ~20 ordinary desktop
+  processes. Not one closable thing.
+- **128K is refused on evidence.** 72 MiB free at the idle floor and **-548 MiB
+  at the worst floor this box has been in** — it would fail to allocate, not run
+  thin. Stay on 96K.
+- **V3 answer quality is 100% at every effort level**, against 84/96/100/100 on
+  the pre-V3 weights. No regression anywhere. The rollback is not needed.
+- **The draft-KV q8_0 lever does not exist.** It was measured as "~180 MiB
+  sitting there"; it COSTS +216 MiB. The evidence refuting it was in the log on
+  disk from the day it was proposed.
+- **Four checks were not checking what their names said**, across four tools,
+  and were fixed rather than worked around. That is most of the diff.
+- **One finding of mine was wrong and is retracted in place** — I reported the
+  smoke test's context check as hollow after running it a way nobody runs it.
+  See the smoke-test section; the correction is more useful than the finding.
+
+## 0. The floor, and why the previous session could not see it
+
+The old method was `docker compose stop llama; nvidia-smi` — one sample, costing
+a 15-20 minute cold reload, attributing nothing. It produced 1,405 / 1,536 /
+1,881 / 1,905 / 1,961 / 2,027 MiB across a morning and no way to know where in
+that range a decision sat.
+
+The obvious next step fails silently: `nvidia-smi --query-compute-apps` on the
+Windows host NAMES every process and returns `[N/A]` for every `used_gpu_memory`,
+because per-process attribution does not exist under WDDM. That `[N/A]` is
+exactly where the last session stopped.
+
+**Windows' own GPU performance counters do decompose it**, and
+`scripts/vram-floor.sh` (new) uses them — 15 minutes, and it never touches llama:
+
+```
+   \GPU Adapter Memory(*)\Dedicated Usage    whole device
+   \GPU Process Memory(*)\Dedicated Usage    per process, by pid
+
+   floor = adapter total - vmwp        (vmwp = the WSL2/Docker VM = llama)
+```
+
+**Three instruments agree, which is why this is worth building on:**
+
+```
+   Windows perf counters, adapter - vmwp, 47 samples   1372.6 / 1406.3 / 1435.4
+   plain nvidia-smi on the host, 59 samples            1376   / 1405   / 1442
+   the OLD method: stop llama, nvidia-smi in-container       1381
+```
+
+The third came free — it is `capacity-probe.sh`'s own idle-floor step, taken
+minutes later during job 1, and it shares no mechanism with the other two.
+
+**llama moved EXACTLY 0.0 MiB across all 47 samples** — the same 21,677.4, not
+"about zero". That is what licenses the subtraction, and it means the floor can
+be watched in production without ever stopping the server.
+
+**Two traps, both paid for:**
+
+- **Do not sum the per-process counters.** They double-count: `dwm` maps every
+  other window's surface and reports ~4,751 MiB, and the per-process column sums
+  to 27,800 MiB on a 24,564 MiB device. A first pass read dwm's 4.7 GB as a
+  finding ("the compositor is eating a fifth of the card"). It is an artefact.
+  Only the adapter counter is additive — and it agrees with nvidia-smi within
+  12 MiB, which is the control that makes the rest trustworthy.
+- **The token file is not the bridge.** `~/.claude-host-bridge-token` existed
+  while nothing listened on 6799. `vram-floor.sh` probes the port and treats a
+  401 as healthy.
+
+Full write-up: `context/design/vram-floor-and-the-shared-desktop.md`.
+
+## 1. The draft-KV lever, and the line nobody read
+
+**Verdict: REJECTED. Do not set `-ctkd`/`-ctvd`.** It was recorded as "~180 MiB
+sitting there, engine-confirmed at `-lv 5`, not inferred". The engine
+confirmation was real and the conclusion was still wrong.
+
+The draft KV line says exactly what was claimed — 384.00 -> 204.00 MiB at 96K.
+**The line nobody read is the next one:**
+
+| CUDA0 buffer | f16 control | q8_0 | delta |
+|---|---:|---:|---:|
+| draft KV | 384.00 | 204.00 | **-180.00** |
+| draft compute | 164.02 | **560.28** | **+396.26** |
+| CUDA0 total | 21,173.64 | 21,389.90 | **+216.26** |
+
+The draft compute buffer becomes **exactly the main context's** (560.28).
+Quantising the MTP head's KV drops the draft context off its small specialised
+graph onto a full-width workspace. Same at 64K in the ORIGINAL 2026-08-22 logs
+(`draftkv-*-contended.log`): 132.02 -> 400.28, net +148.26. **The evidence was
+on disk from the day the lever was proposed.**
+
+Sampled VRAM agreed with the engine all along: 23,019 -> 23,233, i.e. +214
+against the engine's +216. The earlier note recorded a CONFLICT between the two
+instruments; there was none. It was comparing a sampled TOTAL against an engine
+SUBTOTAL.
+
+**Decode was never the problem**, and this is the part worth keeping:
+
+```
+   control  176.4 tok/s   spread 12.2%   draft/cycle 24.89
+   q8_0     174.4 tok/s   spread 10.9%   draft/cycle 24.39
+```
+
+Within noise on every axis, both arms under the 15% spread gate. **The lever
+passes every acceptance criterion the previous handoff wrote for it and must
+still be rejected**, because those criteria were about decode and the defect is
+in VRAM. Acceptance criteria are only as good as their coverage of the ways the
+thing can be wrong.
+
+## 2. V3 answer quality — the last open question on the weights, closed
+
+`bench_quality.py` had never run on the V3 weights; only their speed had been
+checked.
+
+| effort | pass% (pre-V3) | LOC (pre-V3) | wall |
+|---|---:|---:|---:|
+| none | **100.0** (84.0) | 142 (164) | 21.6s |
+| low | **100.0** (96.0) | 74 (63) | 63.0s |
+| **medium** (production) | **100.0** (100.0) | **68** (71) | 71.1s |
+| xhigh | **100.0** (100.0) | 84 (99) | 274.1s |
+
+No regression anywhere; `none` gains 16 points. `medium` holds 100% and writes
+slightly less code than the old weights did. `REASONING_EFFORT` stays at medium —
+xhigh ties on correctness, writes 24% more code and costs 3.9x the wall.
+**`Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded` (17.9 GB) is not needed.**
+
+**THIS BENCH IS NOW AT ITS CEILING.** 100% at all four levels means the task set
+can no longer separate them on correctness — only on LOC and wall. Re-running it
+to re-decide the effort will teach nothing until harder tasks are added, and
+adding one means writing its reference implementation first.
+
+The `wall` column was taken on a box at load 20 and is NOT comparable with the
+2026-08-17 figures. pass% and LOC are contention-proof, which is the only reason
+this bench can run on a busy box at all.
+
+## 3. 128K, and why the answer got HARDER rather than softer
+
+The engine's own `-lv 5` delta for 96K -> 128K is **+1,408 MiB** and is solid; a
+sampled delta once got this same comparison wrong by 1,163 MiB. So:
+
+```
+   free at 128K  =  24,564  -  (device total at 96K  +  1,408)
+```
+
+| desktop state | floor | free at 128K |
+|---|---:|---:|
+| idle, median of 47 | 1,406 | **72 MiB** |
+| idle, best sample | 1,373 | 106 MiB |
+| idle, worst sample | 1,435 | 43 MiB |
+| **active, worst ever observed** | 2,027 | **-548 MiB** |
+
+The whole idle spread — best sample to worst — is 43 to 106 MiB. Every point of
+it is inside the noise of a single allocation. And the last row is decisive: at
+the worst desktop state this box has actually been in, 128K does not fit at all.
+
+**The handoff's optimistic branch is refuted.** It hoped the floor might be "a
+browser or something closable", which would buy ~1.5 GiB. The closable items are
+brave 199, chrome 193, WindowsTerminal 172, Discord 95, VSCodium 62 — and those
+are upper bounds, because aliasing inflates them. The unclosable part
+(compositor, csrss, explorer, shell hosts, Docker Desktop) is most of the list.
+
+96K keeps ~1,480 MiB free idle and ~860 MiB at the worst observed floor.
+
+**128K got FURTHER away today, not closer.** The handoff's third scenario had
+draft-KV q8_0 plus a lower floor arriving at ~1,860 MiB free. Both halves are now
+measured and both go the wrong way — see §1 above.
+
+**128K is not BROKEN** — it loads, serves and answers a 120,029-token prompt at
+1,726/1,720/1,705 tok/s. This is a headroom refusal. Do not go looking for a bug.
+
+## The tools that could not answer the question asked of them
+
+Three of them, and finding each one cost nothing but reading the tool before
+trusting its output. This is the pattern worth carrying forward.
+
+- **`capacity-probe.sh --list` did not print SPREAD.** The previous handoff said
+  it did, and wrote job 1's acceptance criterion against it ("SPREAD under ~15%
+  on BOTH arms"). Only `spec-sweep.sh --report` had it. The table now prints
+  **DEC-MEAN, SPREAD, SPREAD% and DRAFT/CYCLE**, using spec-sweep's exact
+  definitions so the two tools cannot disagree about the same runs. It
+  immediately showed that `draftkv-q8`'s stored arm had **SPREAD% 99.0** and that
+  `sizem-default`'s decode column was 58% — both noise, both previously quoted
+  as means.
+- **`capacity-probe.sh` stamped no provenance at all**, while `spec-sweep.sh` one
+  directory over has stamped a pin set since 2026-08-22 for exactly this reason.
+  A capacity row taken on pre-V3 weights at b10200 printed identically to one
+  taken today. `capture_stack_pins` and `pin_diff` now live in `lib.sh` and both
+  scripts use them; the refactor was verified behaviour-preserving against a
+  stored stamp (identical key set, and the only value difference was the true one,
+  `ctx_size: 65536 -> 98304`). All 11 existing capacity rows correctly flag as
+  UNSTAMPED — and they cannot be honestly backfilled: `b10573` appears in ZERO
+  capacity logs, so the engine build was never recorded. Provenance is the one
+  thing that cannot be added in hindsight.
+- **`bench_quality.py`'s "non-optional" control was a docstring sentence**
+  describing something a human did once in August. It is now code: `REFERENCES`
+  holds a known-correct implementation per task, scored through the same
+  `run_tests()` the model output goes through, and `main()` REFUSES to run the
+  grid unless all are 5/5. `--control` runs just that check. The control was
+  itself controlled — one assertion was broken deliberately and `word_wrap`
+  dropped to 4/5 and the run refused.
+
+## And then the smoke test — one real bug, and one of mine
+
+Both turned up by RUNNING it repeatedly rather than reading it. The first one is
+a correction to my own first conclusion, and it is the more useful of the two.
+
+**1. `no repeat loop (OpenAI tool call)` was fed the whole JSON envelope.**
+`_check_content_repeats(json.dumps(data), ...)` — a degenerate-repeat detector
+reading JSON's own punctuation. The trigger is `}}}`: a forge response ends
+`"prompt_tokens_details": {"cached_tokens": N}}}`.
+
+It looked intermittent and was not random. `prompt_tokens_details` only appears
+once the prefix cache has something to report, so **the first call after a llama
+restart ends `}}` and passes, and every warm call after it ends `}}}` and
+fails** — which is exactly the pattern observed: first run of the session 11/11,
+next three all "possible sampling regression" about a value the sampler never
+produced. Located at offset 608 of a live envelope, with nothing else in it
+repeating at all.
+
+Now fed `message.content` plus the tool calls' `arguments` — what the
+plain-completion arm in the same file has always done. **Two callers of one
+helper, and only one got the hard case.** This one is real on every path,
+including `./scripts/smoke-test.sh`.
+
+**2. `context matches CTX_SIZE` — and the scope I got wrong first time.**
+
+The `bench` compose service did not forward `CTX_SIZE`, and `smoke_test.py`
+defaulted it to a hardcoded `32768`, making the assertion `n_ctx >= 32768` while
+its PASS line printed `.env asks for 32768`. I found that, and then **wrote down
+that the check had never compared against `.env` and that `versions.lock`'s two
+context adoptions rested on it. That was wrong.**
+
+`./scripts/smoke-test.sh` runs the **`smoketest`** service, which has forwarded
+`CTX_SIZE` all along. The hollow path was `--entrypoint python bench
+/work/scripts/smoke_test.py` — undocumented, not how any recorded verification
+was taken, and the invocation I had chosen myself because I was already using
+`bench` for `bench_quality.py`. Re-running the canonical path prints `server
+reports 98304, .env asks for 98304`. **Retracted in `versions.lock`; the
+adoptions were never in doubt.**
+
+> **I generalised from one invocation to the tool.** The control that would have
+> caught it immediately is the one this repo already insists on: before
+> reporting an absence, run the same method against something you KNOW is
+> there. Running `./scripts/smoke-test.sh` — the documented command, three lines
+> away in the README — would have shown 98304 straight away.
+
+What still needed fixing, and did: `bench` now forwards `CTX_SIZE` and
+`PARALLEL_SLOTS`; **the default is gone**, so an unforwarded environment FAILS
+loudly instead of silently asserting something weaker than the check's name; and
+the comparison is **equality**, since `>=` cannot tell "the flag was applied"
+from "the flag was ignored and a larger window was already loaded" — a live risk
+when probes recreate containers. Controlled three ways: absent -> FAIL naming
+the cause; `CTX_SIZE=32768` against a 98304 server -> FAIL (`>=` passed this);
+correct value -> PASS.
+
+> **The rule, which is the durable part:** a variable a container uses as a
+> TUNABLE may default. One it uses as a FACT ABOUT THE STACK IT IS VERIFYING
+> must not — a default turns a failing check into a passing weaker one.
+
+Smoke is 11/11 across five consecutive runs, including the canonical path.
+
+## Ground truth
+
+- Stack is on **96K** and stays there. `.env` verified byte-identical to HEAD
+  before and after every probe.
+- `size_m` CLOSED at 48. Reasoning effort CLOSED at medium — and now with V3
+  evidence, plus the ceiling caveat above.
+- **128K CLOSED as refused**, on measurement rather than estimate. Do not
+  re-litigate without a floor measurement taken WHILE THE DESKTOP IS IN USE.
+- The floor's **active** distribution is still unmeasured. That is the one half
+  that could still move anything, and `vram-floor.sh` makes it a 15-minute job.
+- **Smoke is 11/11** across four consecutive runs, and now means it.
+- Three separate times today the same shape turned up: **one helper, two
+  callers, and only one caller got the hard case** — `readGlobalRaw`/
+  `readProjectRaw` in the twenty-third pass, `spec-sweep`/`capacity-probe` on
+  provenance, and `check_plain_completion`/`check_openai_tool_call` on the
+  repeat detector. It is not found by looking harder at one place. It is found
+  by putting the two callers side by side.
+
+---
+
 # Handoff — next session: the quiet-box work (draft-KV, V3 quality, and 128K revisited)
 
 Three jobs, and they share one blocker. Two measurements were left unfinished
