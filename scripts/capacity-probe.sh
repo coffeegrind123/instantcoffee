@@ -258,13 +258,73 @@ probe() {
     --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg bench "$BENCH" \
     --argjson result "$bench_json" \
+    --argjson pins "$(capture_stack_pins)" \
     '{"label":$lbl, "settings":$settings, "loaded":($loaded == 1),
       "server_n_ctx":$n_ctx,
       "vram_used_mib":$used, "vram_total_mib":$total, "vram_idle_mib":$idle,
-      "bench":$bench, "measured_utc":$when, "result":$result}' >"$js"
+      "bench":$bench, "measured_utc":$when, "pins":$pins, "result":$result}' >"$js"
 
   if (( ok_load )); then
     ok "  $label — n_ctx=$n_ctx  VRAM ${used}/${total} MiB (idle floor ${IDLE_USED:-?})"
+  fi
+  return 0
+}
+
+# The provenance footer. spec-sweep.sh has one of these; this is the second,
+# and it is deliberately a SECOND rather than a shared function: what is shared
+# is the DATA (capture_stack_pins, pin_diff, both in lib.sh), because that is
+# the part where a disagreement would be a wrong answer. The presentation
+# differs — this table keys on .label and carries its window in its own
+# server_n_ctx column, where the sweep keys on .config.name and puts ctx in the
+# pin set — and forcing one function to do both would take more jq fragments as
+# arguments than it would save.
+report_pins() {
+  local files=("$@") cur rows n_groups
+  cur="$(capture_stack_pins | jq -cS '.')"
+
+  rows="$(jq -s -r --argjson cur "$cur" '
+    # Key order is not meaning: normalise both sides before comparing, or every
+    # result reads as a different stack.
+    def norm: if . == null then null else (to_entries | sort_by(.key) | from_entries) end;
+    group_by(.pins | norm | tojson)
+    | map({ pins: .[0].pins, n: length,
+            names: ([ .[].label // "?" ] | sort | join(", ")) })
+    | .[]
+    | [ (if .pins == null then "UNSTAMPED"
+         elif (.pins | norm | tojson) == ($cur | norm | tojson) then "CURRENT"
+         else "OTHER" end),
+        (if .pins == null then "-"
+         else ([ "llama=" + (.pins.llama_tag // "?"),
+                 "digest=" + ((.pins.llama_digest // "?") | sub("^sha256:"; "") | .[0:12]),
+                 "gguf=" + (.pins.gguf_file // "?") + " " + (.pins.gguf_size // "?") + "b"
+                     + " mtime " + (.pins.gguf_mtime // "?")
+               ] | join("  ")) end),
+        (.n | tostring),
+        .names,
+        (.pins | tojson) ] | @tsv
+  ' "${files[@]}")"
+
+  n_groups="$(printf '%s\n' "$rows" | grep -c . || true)"
+
+  printf '\n%s provenance\n' "==>"
+  if [[ "$n_groups" -gt 1 ]]; then
+    warn "THIS TABLE MIXES $n_groups DIFFERENT STACKS. The rows above are NOT comparable."
+  fi
+  local kind pins n names raw
+  while IFS=$'\t' read -r kind pins n names raw; do
+    [[ -n "$kind" ]] || continue
+    case "$kind" in
+      CURRENT)   printf '  [current stack] %s result(s)\n    %s\n' "$n" "$pins" ;;
+      OTHER)     warn "  [DIFFERENT STACK] $n result(s): $names"
+                 warn "    $pins"
+                 pin_diff "$raw" "$cur" >&2 ;;
+      UNSTAMPED) warn "  [NO PIN SET] $n result(s) predating pin stamping: $names"
+                 warn "    Nothing records which engine build or which weights produced"
+                 warn "    these. Re-run them, or do not quote them." ;;
+    esac
+  done <<< "$rows"
+  if [[ "$n_groups" == 1 ]] && ! printf '%s\n' "$rows" | grep -q '^UNSTAMPED\|^OTHER'; then
+    ok "  all results came off the stack this box is configured for"
   fi
   return 0
 }
@@ -273,27 +333,75 @@ report() {
   local files=("$RESULTS_DIR"/*.json)
   [[ -e "${files[0]}" ]] || { warn "no probes in $RESULTS_DIR yet"; return 1; }
   printf '\n%s capacity probes\n' "==>"
-  printf '%-16s %-34s %6s %8s %9s %9s %9s\n' \
-    LABEL SETTINGS LOADED N_CTX VRAM-MiB FREE-MiB DECODE
-  printf '%.0s-' {1..100}; printf '\n'
+  # SETTINGS is LAST and unpadded on purpose: it is the one field with no bound
+  # (an LLAMA_EXTRA_FLAGS row runs to 70 chars) and every column placed after it
+  # loses its alignment for the whole table. Truncating it instead would be
+  # worse — what distinguishes two arms is often the tail, e.g. `-ctkd q8_0`.
+  printf '%-18s %6s %8s %9s %9s %9s %8s %8s %10s  %s\n' \
+    LABEL LOADED N_CTX VRAM-MiB FREE-MiB DEC-MEAN SPREAD SPREAD% DRAFT/CYC SETTINGS
+  printf '%.0s-' {1..110}; printf '\n'
+  # SPREAD and DRAFT/CYC use the SAME definitions as spec-sweep.sh --report, so
+  # the two tools cannot disagree about the same runs: SPREAD is max-min within
+  # one config's own --repeat runs, and DRAFT/CYCLE is sum(draft_n) over
+  # sum(predicted_n - draft_accepted).
+  #
+  # They are here because this table printed DEC-MEAN alone, and a mean is the
+  # one statistic that hides the thing that invalidates it. On 2026-08-23 a
+  # draft-KV arm returned 59.9/177.4/118.7 tok/s — mean 118.7, which read as a
+  # config effect and was actually one contention outlier. The mean is not the
+  # signal; the spread is the alarm. SPREAD% is the gate: reject any decode
+  # comparison above ~15%.
+  #
+  # DRAFT/CYCLE is a property of the drafting rather than of the clock, so it
+  # survives contention when decode does not. When the two disagree, believe it.
   jq -r -s '
+    def num(x): if (x|type) == "number" then x else 0 end;
+    def dec($n): (. * pow(10; $n) | round | tostring) as $i
+      | (if ($i | startswith("-")) then "-" else "" end) as $sg
+      | ($i | ltrimstr("-")) as $d
+      | (if (($d | length) < ($n + 1)) then (("0" * ($n + 1 - ($d | length))) + $d) else $d end) as $d
+      | $sg + ($d[0:(($d | length) - $n)]) + "." + ($d[-$n:]);
+    def r1: dec(1);
+    def r2: dec(2);
     sort_by(.measured_utc) | .[]
-    | ([ (.result.rows // [])[] | select(.error == null and .cached != true) | .predicted_tps ]) as $tg
-    | [ .label, .settings,
+    | . as $doc
+    | ([ (.result.rows // [])[]
+         | select(.error == null and .cached != true and .unrepeated != true) ]) as $u
+    | ([ $u[] | select(.draft_n != null) ]) as $d
+    | ([ $u[].predicted_tps | num(.) ]) as $tgs
+    | ( if ($tgs|length) > 0 then (($tgs|add) / ($tgs|length)) else 0 end ) as $mean
+    | ( [ $d[].draft_n        | num(.) ] | add // 0 ) as $dn
+    | ( [ $d[].draft_accepted | num(.) ] | add // 0 ) as $da
+    | ( [ $d[].predicted_n    | num(.) ] | add // 0 ) as $pn
+    | ( ($pn - $da) ) as $cycles
+    | [ .label,
         (if .loaded then "yes" else "NO" end),
         (.server_n_ctx // "-"),
         (.vram_used_mib // "-"),
         (if (.vram_used_mib // "") != "" and (.vram_total_mib // "") != ""
          then ((.vram_total_mib|tonumber) - (.vram_used_mib|tonumber) | tostring) else "-" end),
-        (if ($tg|length) > 0 then (($tg|add)/($tg|length) * 10 | round / 10 | tostring) else "-" end)
+        (if ($tgs|length) > 0 then ($mean | r1) else "-" end),
+        (if ($tgs|length) > 1 then ((($tgs|max) - ($tgs|min)) | r1) else "-" end),
+        (if ($tgs|length) > 1 and $mean > 0
+         then (((((($tgs|max) - ($tgs|min)) / $mean) * 100) | r1) + "%") else "-" end),
+        (if $cycles > 0 then (($dn / $cycles) | r2) else "-" end),
+        .settings
       ] | @tsv' "${files[@]}" \
-  | while IFS=$'\t' read -r l s ld n v f d; do
-      printf '%-16s %-34s %6s %8s %9s %9s %9s\n' "$l" "$s" "$ld" "$n" "$v" "$f" "$d"
+  | while IFS=$'\t' read -r l ld n v f d sp spp dpc s; do
+      printf '%-18s %6s %8s %9s %9s %9s %8s %8s %10s  %s\n' \
+        "$l" "$ld" "$n" "$v" "$f" "$d" "$sp" "$spp" "$dpc" "$s"
     done
   printf '\nLOADED=NO is a result: the config does not fit. VRAM is whole-device,\n'
   printf 'so read it against the idle floor recorded in each JSON, not as zero.\n'
-  printf 'DECODE is the mean of the bench runs, and only comparable within one\n'
+  printf 'DEC-MEAN is the mean of the bench runs, and only comparable within one\n'
   printf 'workload — see --bench in the header.\n'
+  printf '\nREAD SPREAD%% BEFORE READING DEC-MEAN. Above ~15%% the runs disagree with\n'
+  printf 'each other more than any config effect this probe can resolve, and the\n'
+  printf 'mean is an artefact of whichever run got starved. Re-run on a quiet box\n'
+  printf 'rather than quoting it. DRAFT/CYC survives contention when decode does\n'
+  printf 'not, so when the two disagree, believe DRAFT/CYC.\n'
+
+  report_pins "${files[@]}"
 }
 
 main() {

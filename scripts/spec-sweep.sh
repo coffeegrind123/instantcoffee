@@ -330,30 +330,10 @@ PINS_JSON=""
 capture_pins() {
   if [[ -n "$PINS_JSON" ]]; then printf '%s' "$PINS_JSON"; return 0; fi
 
-  local tag models gguf image digest st size mtime
-  tag="$(env_get LLAMA_TAG)"
-  models="$(env_get MODELS_DIR)"
-  gguf="$(env_get GGUF_FILE)"
-  image="ghcr.io/ggml-org/llama.cpp:$tag"
-
-  # The digest of the image ON THIS BOX, not the one versions.lock remembers.
-  # A re-pulled tag is precisely the drift this exists to catch, and the lock
-  # file is written by hand.
-  digest="$(docker image inspect "$image" \
-              --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' \
-              2>/dev/null || true)"
-  digest="${digest##*@}"
-
-  # MODELS_DIR is a Docker-Desktop host path (`//d/...`); it is not readable
-  # from this container, so the stat runs inside a throwaway container against
-  # the same mount the llama service uses. The llama image is used rather than
-  # a small one because it is already local — pulling alpine here would make a
-  # pin capture depend on the network. ~1.1 s, once per invocation.
-  st="$(docker run --rm --entrypoint sh -v "$models:/models:ro" "$image" \
-          -c "stat -c '%s %Y' '/models/$gguf'" 2>/dev/null || true)"
-  size="${st%% *}"; mtime="${st##* }"
-  [[ "$size" == "$st" ]] && { size=""; mtime=""; }
-
+  # The engine image and the weights on disk now come from lib.sh, because
+  # capacity-probe.sh needs exactly the same six keys and had none of them.
+  # The keys below are the ones THIS sweep varies or holds fixed from .env.
+  #
   # SPEC_NGRAM_* are launch flags this script does NOT sweep — they come from
   # .env and stay fixed for a whole run — so they belong with the stack rather
   # than with the swept config. They matter here: `size_m` sets
@@ -362,30 +342,16 @@ capture_pins() {
   # what ngram-simple can draft. Without them in the pin set, a size_m
   # experiment produces result files indistinguishable from the baseline.
   # Empty means "flag not passed", i.e. the engine default.
-  PINS_JSON="$(jq -nc \
-    --arg tag "$tag" --arg digest "$digest" \
+  PINS_JSON="$(jq -c \
     --arg ctx "$(env_get CTX_SIZE)" \
     --arg k "$(env_get CACHE_TYPE_K)" --arg v "$(env_get CACHE_TYPE_V)" \
-    --arg repo "$(env_get MODEL_REPO)" --arg gguf "$gguf" \
-    --arg size "$size" --arg mtime "$mtime" \
     --arg nmh "$(env_get SPEC_NGRAM_MIN_HITS)" \
     --arg nsn "$(env_get SPEC_NGRAM_SIZE_N)" \
     --arg nsm "$(env_get SPEC_NGRAM_SIZE_M)" \
-    '{llama_tag:$tag, llama_digest:$digest, ctx_size:$ctx,
-      cache_type_k:$k, cache_type_v:$v,
-      model_repo:$repo, gguf_file:$gguf,
-      gguf_size:$size, gguf_mtime:$mtime,
-      ngram_min_hits:$nmh, ngram_size_n:$nsn, ngram_size_m:$nsm}')"
+    '. + {ctx_size:$ctx, cache_type_k:$k, cache_type_v:$v,
+          ngram_min_hits:$nmh, ngram_size_n:$nsn, ngram_size_m:$nsm}' \
+    <<<"$(capture_stack_pins)")"
   printf '%s' "$PINS_JSON"
-}
-
-# Print only the keys that differ, so a mismatch names the cause instead of
-# dumping two JSON blobs and leaving the reader to spot the one changed field.
-pin_diff() {
-  jq -rn --argjson a "$1" --argjson b "$2" '
-    ($a + $b | keys_unsorted[]) as $k
-    | select(($a[$k] // "") != ($b[$k] // ""))
-    | "      \($k): \($a[$k] // "-")  ->  \($b[$k] // "-")"' | sort -u
 }
 
 select_configs() {

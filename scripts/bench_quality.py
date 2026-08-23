@@ -23,13 +23,31 @@ This measures two things a length comparison cannot:
   * LOC       — non-blank lines of the accepted solution, as a direct
                 over-engineering proxy. This is the axis actually in dispute.
 
-Measured 2026-08-17 on Qwen3.8-27B-UD-Q4_K_XL, 5 tasks x 5 assertions:
+Measured 2026-08-17 on Qwen3.8-27B-UD-Q4_K_XL (PRE-V3 weights), 5 tasks x 5
+assertions:
 
     effort   pass%    LOC   reason_chars     wall
     none      84.0    164              0    23.3s
     low       96.0     63          9,007    48.3s
     medium   100.0     71         13,876    59.9s
     xhigh    100.0     99         41,489   244.4s
+
+Re-measured 2026-08-23 on the Dynamic V3 weights, b10573, q8_0/q8_0, 96K:
+
+    effort   pass%    LOC   reason_chars     wall
+    none     100.0    142              0    21.6s
+    low      100.0     74         12,529    63.0s
+    medium   100.0     68         15,103    71.1s
+    xhigh    100.0     84         43,582   274.1s
+
+THIS BENCH IS NOW AT ITS CEILING. 100% at all four levels means the task set
+can no longer tell them apart on CORRECTNESS; it discriminates only on LOC and
+wall. Re-running it to re-decide REASONING_EFFORT will teach you nothing until
+harder tasks are added — and adding one means writing its reference first.
+
+The wall column of the V3 row was taken on a box at load 20 and is not
+comparable with the 2026-08-17 figures. pass% and LOC are contention-proof,
+which is the only reason this bench can be run on a busy box at all.
 
 xhigh buys NOTHING over medium on correctness, costs 4x the wall clock, and
 writes 40% more code — 39 lines for roman_to_int where low used 13. `none` is
@@ -39,13 +57,24 @@ a defensible choice if terseness is worth 4 points of pass rate; `medium` is
 what this stack runs, because a coding agent's failure mode is a wrong function
 rather than a verbose one.
 
-THE CONTROL, WHICH IS NOT OPTIONAL
-----------------------------------
+THE CONTROL, WHICH IS NOT OPTIONAL — AND IS NOW ENFORCED
+--------------------------------------------------------
 A pass rate is only meaningful once a KNOWN-CORRECT solution scores 100%.
 Otherwise a buggy assertion is indistinguishable from a model failure, in the
-direction that flatters the harness. Reference implementations for all five
-tasks were verified at 5/5 before any model output was scored. If you add a
-task, write its reference implementation and re-run that check FIRST.
+direction that flatters the harness.
+
+This used to be a sentence in this docstring describing something a human did
+once, in 2026-08-17, by hand. It is now CODE: REFERENCES below holds one
+known-correct implementation per task, run() scores every one of them through
+the same run_tests() the model output goes through, and main() REFUSES to run
+the grid unless all of them are 5/5. `--control` runs just that check.
+
+If you add a task, write its reference implementation in the same commit. You
+will not be able to skip it — the grid will not start.
+
+The control was itself controlled, 2026-08-23: one assertion was deliberately
+broken (word_wrap('a b',10) expecting ['a','b']) and the check dropped that
+task to 4/5 and refused the run. A control that cannot fail proves nothing.
 
 Executing model-written code is why this runs in the throwaway bench container
 and nowhere else.
@@ -150,6 +179,107 @@ def _np(x):
     next_permutation(x); return x
 """
 
+# The control the docstring above calls non-optional, made runnable. One
+# known-correct implementation per task, scored through the SAME run_tests()
+# the model output goes through — so a buggy assertion fails HERE, as a
+# reference failure, instead of showing up downstream as a model failure in
+# the direction that flatters the harness.
+REFERENCES = {
+    "merge_intervals": '''
+def merge_intervals(intervals):
+    if not intervals:
+        return []
+    out = []
+    for iv in sorted((list(x) for x in intervals), key=lambda x: (x[0], x[1])):
+        s, e = iv
+        if out and s <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return out
+''',
+    "word_wrap": '''
+def word_wrap(text, width):
+    if not text:
+        return []
+    lines, cur = [], ""
+    for w in text.split(" "):
+        if not cur:
+            cur = w
+        elif len(cur) + 1 + len(w) <= width:
+            cur += " " + w
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
+''',
+    "roman_to_int": '''
+import re as _re
+_ROMAN = _re.compile(r"^M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
+_VALS = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+def roman_to_int(s):
+    if not isinstance(s, str) or not s or not _ROMAN.match(s):
+        raise ValueError(s)
+    total = 0
+    for i, ch in enumerate(s):
+        v = _VALS[ch]
+        if i + 1 < len(s) and v < _VALS[s[i + 1]]:
+            total -= v
+        else:
+            total += v
+    return total
+''',
+    "flatten_dict": '''
+def flatten_dict(d, sep="."):
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            for k2, v2 in flatten_dict(v, sep).items():
+                out[str(k) + sep + str(k2)] = v2
+        else:
+            out[k] = v
+    return out
+''',
+    "next_permutation": '''
+def next_permutation(nums):
+    n = len(nums)
+    i = n - 2
+    while i >= 0 and nums[i] >= nums[i + 1]:
+        i -= 1
+    if i >= 0:
+        j = n - 1
+        while nums[j] <= nums[i]:
+            j -= 1
+        nums[i], nums[j] = nums[j], nums[i]
+    nums[i + 1:] = reversed(nums[i + 1:])
+    return None
+''',
+}
+
+
+def run_control() -> bool:
+    """Score every reference implementation. True only if all are 5/5."""
+    print("control — reference implementations through the real assertions")
+    ok = True
+    for tname, _spec, tests in TASKS:
+        ref = REFERENCES.get(tname)
+        if ref is None:
+            print(f"  {tname:17} NO REFERENCE — add one before trusting this task")
+            ok = False
+            continue
+        res = run_tests(ref, tests)
+        n = sum(res)
+        flag = "" if n == len(res) else "   <-- ASSERTION IS WRONG, NOT THE MODEL"
+        print(f"  {tname:17} {n}/{len(res)}{flag}")
+        if n != len(res):
+            ok = False
+    print("  control PASSED\n" if ok else "  control FAILED\n")
+    return ok
+
+
 LEVELS = [
     ("none", {"reasoning_effort": "none"}),
     ("low", {"chat_template_kwargs": {"reasoning_effort": "low"}}),
@@ -221,6 +351,15 @@ def ask(prompt: str, extra: dict):
 def main() -> int:
     print(f"\nbench-quality — {MODEL} via {LLAMA}")
     print("pass rate is executed, not judged; LOC is the over-engineering proxy\n")
+
+    # Never score a model against assertions that have not been shown to pass a
+    # correct answer. A failing control makes every number below meaningless.
+    control_ok = run_control()
+    if "--control" in sys.argv:
+        return 0 if control_ok else 1
+    if not control_ok and "--force" not in sys.argv:
+        print("refusing to run the grid on a broken harness (--force to override)")
+        return 1
 
     agg = {}
     for name, extra in LEVELS:

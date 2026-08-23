@@ -24,7 +24,25 @@ import urllib.request
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080").rstrip("/")
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.8-27b")
-CTX_SIZE = int(os.environ.get("CTX_SIZE", "32768"))
+# NO DEFAULT, deliberately. This is not a tunable, it is the FACT the
+# "context matches CTX_SIZE" check exists to verify — and a default turns that
+# check into a lie rather than into an error.
+#
+# It was `int(os.environ.get("CTX_SIZE", "32768"))` until 2026-08-23. Mind the
+# SCOPE, because a first pass overstated it: the `smoketest` compose service —
+# which is what ./scripts/smoke-test.sh runs, and how every recorded
+# verification was taken — has forwarded CTX_SIZE all along, so the check has
+# always compared against the real .env value on the documented path. The
+# service that did NOT forward it was `bench`, reachable only as
+# `--entrypoint python bench /work/scripts/smoke_test.py`, which nothing
+# documents. The 64K and 96K adoptions are NOT undermined; that claim was
+# retracted (see versions.lock, smoke_test_note).
+#
+# The default is still gone, because that invocation existed and the failure
+# mode is the point: an unforwarded environment must FAIL loudly, not quietly
+# assert something weaker than the check's own name.
+CTX_SIZE = int(os.environ["CTX_SIZE"]) if os.environ.get("CTX_SIZE") else None
+PARALLEL_SLOTS = int(os.environ.get("PARALLEL_SLOTS") or 1)
 
 # Generous: a cold 27B on one 4090 with a thinking budget is not fast.
 INFER_TIMEOUT = float(os.environ.get("SMOKE_TIMEOUT", "600"))
@@ -143,12 +161,29 @@ def check_llama_props() -> None:
     n_ctx = props.get("default_generation_settings", {}).get("n_ctx") or props.get("n_ctx")
     record("llama /props", True, f"n_ctx={n_ctx}")
 
-    if isinstance(n_ctx, int) and n_ctx > 0:
-        # -np N splits the total context across slots; this is the per-slot value.
+    if CTX_SIZE is None:
+        # Absent is not "assume a default" — it means this check cannot run, and
+        # saying so is the whole point. A silent fallback is what made this
+        # check hollow for two context adoptions.
         record(
             "context matches CTX_SIZE",
-            n_ctx >= CTX_SIZE // max(1, int(os.environ.get("PARALLEL_SLOTS", "1"))),
-            f"server reports {n_ctx}, .env asks for {CTX_SIZE}",
+            False,
+            "CTX_SIZE is not set in this container, so there is nothing to "
+            "compare against. Forward it from .env in whichever "
+            "docker-compose.yml service is running this script.",
+        )
+    elif isinstance(n_ctx, int) and n_ctx > 0:
+        # -np N splits the total context across slots; this is the per-slot value.
+        # EQUALITY, not >=. The old >= could not tell "the flag was applied" from
+        # "the flag was ignored and something larger was already loaded", which is
+        # exactly the confusion a context adoption needs this check to resolve.
+        want = CTX_SIZE // max(1, PARALLEL_SLOTS)
+        record(
+            "context matches CTX_SIZE",
+            n_ctx == want,
+            f"server reports {n_ctx}, .env asks for {CTX_SIZE}"
+            + (f" across {PARALLEL_SLOTS} slots -> {want} per slot"
+               if PARALLEL_SLOTS > 1 else ""),
         )
 
     chat_tmpl = props.get("chat_template") or ""
@@ -223,7 +258,31 @@ def check_openai_tool_call() -> None:
         f"{usage.get('completion_tokens', '?')} completion tokens",
     )
     record("tool arguments parse as JSON", isinstance(args.get("city"), str), f"city={args.get('city')!r}")
-    _check_content_repeats(json.dumps(data), "OpenAI tool call")
+
+    # What the MODEL generated, not the transport envelope. This was
+    # `json.dumps(data)` until 2026-08-23, i.e. the whole response object — and
+    # a degenerate-repeat detector run over JSON finds JSON's own punctuation.
+    #
+    # The trigger was `}}}`. A forge response ends
+    # ..."usage": {..., "prompt_tokens_details": {"cached_tokens": 279}}}
+    # and three identical characters in a row is exactly what the detector is
+    # built to report. So the check failed with "output repeats 3x with length 1
+    # — possible sampling regression" about a value the sampler never produced.
+    #
+    # It looked intermittent and was not random: `prompt_tokens_details` only
+    # appears once the prefix cache has something to report, so the FIRST call
+    # after a llama restart ends `}}` and passes, and every warm call after it
+    # ends `}}}` and fails. Measured, not reasoned: three consecutive runs
+    # failed, and a probe against a live response located the run of three at
+    # offset 608 in the envelope with nothing else in it repeating at all.
+    #
+    # It is worth noting WHY that survived: the plain-completion arm below has
+    # always passed `content`, i.e. the correct thing. Same file, same helper,
+    # two callers, and only one of them got the hard case.
+    generated = (msg.get("content") or "") + "".join(
+        (c.get("function") or {}).get("arguments") or "" for c in calls
+    )
+    _check_content_repeats(generated, "OpenAI tool call")
 
 
 def check_plain_completion() -> None:

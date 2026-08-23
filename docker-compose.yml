@@ -229,6 +229,18 @@ services:
       LLAMA_URL: http://llama:8080
       MODEL_ALIAS: ${MODEL_ALIAS}
       BENCH_TIMEOUT: ${BENCH_TIMEOUT:-900}
+      # For `--entrypoint python bench /work/scripts/smoke_test.py`. That is not
+      # the documented way to run the smoke test — ./scripts/smoke-test.sh uses
+      # the `smoketest` service above, which has forwarded CTX_SIZE all along —
+      # but it is reachable, and until 2026-08-23 it fell back to a hardcoded
+      # 32768 and asserted `n_ctx >= 32768` under the name "context matches
+      # CTX_SIZE". No recorded verification came from that path.
+      # The rule it cost us anyway: a variable the container uses as a TUNABLE
+      # may default; a variable it uses as a FACT ABOUT THE STACK IT IS
+      # VERIFYING must be forwarded, because its default silently becomes the
+      # answer. smoke_test.py now has no default and fails loudly instead.
+      CTX_SIZE: ${CTX_SIZE}
+      PARALLEL_SLOTS: ${PARALLEL_SLOTS:-1}
 
   # ---------------------------------------------------------------------------
   # One-shot A/B of a THINK_LANG fragment. Runs INSIDE the compose network.

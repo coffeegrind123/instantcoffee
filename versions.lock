@@ -13,7 +13,7 @@
 # time of these numbers; a re-download is in flight and the quant-level
 # numbers will need one more pass. See the 2026-08-22 entry in
 # context/design/decisions.md.
-updated_utc         = 2026-08-23T00:00:00Z   # 96K adopted; V3 live and smoke-verified
+updated_utc         = 2026-08-23T10:40:00Z   # V3 answer quality measured: 100% at every effort
 llama_image         = ghcr.io/ggml-org/llama.cpp:server-cuda-b10573
 llama_image_digest  = sha256:f74f5805191a8030bff26e2a7890d737fc2b5d0931220c953d25e1b7d7613ef5
 llama_image_prev    = server-cuda-b10200 @ sha256:48b8053c05319cde97e64463d117b5747d3fb27475b176f85edf27bd503fa7f9
@@ -68,7 +68,10 @@ kv_cache            = q8_0/q8_0 (CHANGED 2026-08-22; MEASURED — prefill four
                       q4_x collapsing prefill to 34-106 t/s on this exact
                       qwen35 hybrid architecture, against 991-1276 t/s at q8_0.
 load_mode           = none (mmap off; MODELS_DIR is a 9p bind mount)
-reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget)
+reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget).
+                      Re-confirmed on the V3 weights 2026-08-23 — see
+                      quality_on_v3 below, and read its first caveat before
+                      re-running the bench to re-decide this.
 spec_config         = ngram-simple,draft-mtp at n-max 4 / p-min 0.40 — the
                       measured optimum of a full 2x6 grid, adopted 2026-08-17.
                       Replaces the inherited 3.6 values (draft-mtp / 2 / 0.75).
@@ -138,10 +141,20 @@ verified            = 2026-08-22, b10573 / q8_0-q8_0 / 65536, pre-V3 weights:
                       This is the trap spec_variance_note describes; the control
                       is to re-run and to cross-check the engine's own log, not
                       to believe one number.
-verified_at_96k     = YES, 2026-08-23. Smoke 11/11 at n_ctx 98304 including the
-                      "context matches CTX_SIZE" check and a real tool call
-                      through forge, plus the ctx_needle.py both-ends retrieval
-                      and its negative control (see context_size above).
+verified_at_96k     = YES, 2026-08-23. Smoke 11/11 at n_ctx 98304 including a
+                      real tool call through forge, plus the ctx_needle.py
+                      both-ends retrieval and its negative control (see
+                      context_size above).
+                      The "context matches CTX_SIZE" check was part of that
+                      11/11 and DID compare against .env: ./scripts/smoke-test.sh
+                      runs the `smoketest` compose service, which has always
+                      forwarded CTX_SIZE. (A 2026-08-23 pass briefly recorded
+                      that this check was hollow. It was not, on this path —
+                      see smoke_test_note for what actually was.)
+                      The load-bearing evidence is still ctx_needle.py: a nonce
+                      retrieved from each end of a 90,055-token document with a
+                      105,026-token control refused by name. A /props readback
+                      cannot prove a window is intact in the middle.
                       Prefill at depth, from the capacity probe: 90029-token
                       prompts at 1786/1778/1770 tok/s — four digits and steady,
                       which is the shape that rules out llama.cpp#27109 (that
@@ -165,6 +178,44 @@ verified_on_v3      = YES, 2026-08-22 (late). Smoke test 11/11 against the
                       re-run: the 44511-token end-to-end request, the 97936-
                       token negative control, the VRAM figure and the
                       prefill-by-depth curve. Nothing suggests they moved.
+quality_on_v3       = YES, 2026-08-23, and the last open question about the V3
+                      weights is CLOSED. bench_quality.py had never been run on
+                      them — only their SPEED had been checked — because the
+                      script was missing from Dockerfile.forge's COPY list while
+                      README documented the command.
+                      5 tasks x 5 executed assertions, model code extracted and
+                      RUN, against the 2026-08-17 pre-V3 baseline:
+
+                        effort   pass% (was)     LOC (was)    wall
+                        none     100.0 (84.0)   142 (164)    21.6s
+                        low      100.0 (96.0)    74  (63)    63.0s
+                        medium   100.0 (100.0)   68  (71)    71.1s
+                        xhigh    100.0 (100.0)   84  (99)   274.1s
+
+                      No regression anywhere; `none` gains 16 points and `low`
+                      4. Production `medium` holds 100% and writes slightly less
+                      code than the pre-V3 weights did. The 17.9 GB
+                      Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded rollback is not
+                      needed and can be deleted whenever the disk is wanted.
+                      REASONING_EFFORT stays at medium: xhigh ties on
+                      correctness, writes 24% more code and costs 3.9x the wall.
+                      CAVEAT 1 — THE BENCH IS NOW AT ITS CEILING. 100% at all
+                      four levels means the task set can no longer tell them
+                      apart on correctness; it now discriminates only on LOC and
+                      wall. Anyone re-running it to answer "which effort?" will
+                      learn nothing new until harder tasks are added, and adding
+                      one means writing its reference implementation FIRST.
+                      CAVEAT 2 — the wall column was measured on a box at load
+                      20 and is not comparable with the 2026-08-17 figures. Only
+                      pass% and LOC are contention-proof, which is why this
+                      bench can run on a busy box at all.
+                      The control is now EXECUTABLE rather than a claim in a
+                      docstring: `bench_quality.py --control` scores a
+                      known-correct reference implementation for every task
+                      through the same run_tests() the model output goes
+                      through, main() refuses to run the grid if it fails, and
+                      it was itself controlled by breaking one assertion and
+                      watching word_wrap drop to 4/5.
 spec_verdict        = 2026-08-22 re-sweep on b10573 / q8_0 / 65536 / V3 weights:
                       KEEP ngram-simple,draft-mtp at n-max 4 / p-min 0.40. It is
                       in the top group on both workloads and nothing beats it.
@@ -225,6 +276,110 @@ vram_note           = MEASURED FROM THE ENGINE 2026-08-23, at -lv 5, rather
                       +529 was the total delta from adopting the whole spec
                       config, most of it the MTP DRAFT CONTEXT, which cannot be
                       given back without giving up draft-mtp.
+smoke_test_note     = TWO FIXES 2026-08-23, both found by RUNNING the smoke
+                      test repeatedly rather than by reading it. Read (1) with
+                      its scope, which a first pass got wrong.
+                      (1) THE `bench` SERVICE DID NOT FORWARD CTX_SIZE, and
+                      smoke_test.py defaulted it to a hardcoded 32768, making
+                      the assertion `n_ctx >= 32768` — true for every window
+                      this stack has run, while its own PASS line printed
+                      ".env asks for 32768".
+                      SCOPE, AND THE PART THE FIRST PASS GOT WRONG: this affected
+                      smoke_test.py run via `--entrypoint python bench`, which is
+                      NOT the documented way to run it and is not how any recorded
+                      verification was taken. ./scripts/smoke-test.sh runs the
+                      `smoketest` service, which has forwarded CTX_SIZE all
+                      along, and re-running it 2026-08-23 prints "server reports
+                      98304, .env asks for 98304". The `verified` and
+                      `verified_at_96k` entries are therefore NOT undermined; a
+                      first pass claimed they were, from one bad invocation
+                      generalised to the tool. Retracted.
+                      What was fixed and why it still matters: `bench` now
+                      forwards CTX_SIZE and PARALLEL_SLOTS; the DEFAULT IS GONE,
+                      so an unforwarded environment now FAILS loudly instead of
+                      silently asserting something weaker than the check's name;
+                      and the comparison is EQUALITY rather than >=, because >=
+                      cannot tell "the flag was applied" from "the flag was
+                      ignored and a larger window was already loaded" — a live
+                      risk when probes recreate containers.
+                      Controlled three ways: CTX_SIZE absent -> FAIL naming the
+                      cause; CTX_SIZE=32768 against a 98304 server -> FAIL (>=
+                      passed this); correct value -> PASS.
+                      THE RULE, which is the durable part: a variable a container
+                      uses as a TUNABLE may default; one it uses as a FACT ABOUT
+                      THE STACK IT IS VERIFYING must not, because a default turns
+                      a failed check into a passing weaker one.
+                      (2) "no repeat loop (OpenAI tool call)" fed the WHOLE JSON
+                      ENVELOPE to a generation-quality detector — this one is
+                      real on EVERY path, including ./scripts/smoke-test.sh.
+                      The trigger is `}}}`: a forge response ends
+                      "prompt_tokens_details": {"cached_tokens": N}}}, so the
+                      check reported "possible sampling regression" about JSON
+                      punctuation. Not random — that field only appears once the
+                      prefix cache has something to report, so the FIRST call
+                      after a llama restart ends `}}` and passes and every warm
+                      call after ends `}}}` and fails. Located at offset 608 of a
+                      live envelope with nothing else in it repeating at all.
+                      Now fed message.content plus the tool_calls' arguments,
+                      which is what the plain-completion arm in the same file
+                      always did — two callers of one helper, one got the hard
+                      case. Smoke 11/11 on five consecutive runs since,
+                      including the canonical ./scripts/smoke-test.sh.
+host_floor_note     = THE FLOOR IS THE WINDOWS DESKTOP, ATTRIBUTED 2026-08-23.
+                      Full write-up: context/design/vram-floor-and-the-shared-
+                      desktop.md. Measure it with ./scripts/vram-floor.sh —
+                      15 minutes, and it does NOT stop llama.
+                      What holds the card, from Windows' own GPU perf counters
+                      (nvidia-smi --query-compute-apps returns [N/A] for every
+                      used_gpu_memory under WDDM, which is where the previous
+                      attempt stopped):
+                        vmwp    21677 MiB  the WSL2/Docker VM, i.e. llama
+                        floor    ~1413     everything else, ~20 desktop procs
+                      Biggest CLOSABLE items are brave 199, chrome 193,
+                      WindowsTerminal 172, Discord 95, VSCodium 62 MiB. There is
+                      no single big thing to close: the handoff's hope that the
+                      floor might drop to a few hundred MiB is REFUTED.
+                      DO NOT SUM THE PER-PROCESS COUNTERS. dwm maps every other
+                      window's surface and reports ~4751 MiB; the per-process
+                      column sums to 27800 on a 24564 MiB device. Only the
+                      adapter counter is additive, and it agrees with nvidia-smi
+                      within 12 MiB (23099.8 vs 23088) — that is the control
+                      that makes the rest of this trustworthy.
+                      The second control: vmwp is BYTE-IDENTICAL across samples
+                      while the device total moves, so all variation is desktop
+                      and floor = total - vmwp is a valid subtraction.
+                      15-min idle capture, 47 paired samples: floor
+                      1372.6 / 1406.3 / 1435.4 (min/median/max), and llama moved
+                      EXACTLY 0.0 MiB — the same 21677.4 in all 47.
+                      Cross-checked by an independent 59-sample plain nvidia-smi
+                      series run at the same time: floor 1376 / 1405 / 1442.
+                      That median of ~1405 is exactly the LOWEST of the six
+                      values the old stop-llama method ever recorded
+                      (1405/1536/1881/1905/1961/2027), so an idle desktop sits
+                      at the bottom of the historical range.
+                      READ THAT AS IDLE ONLY. It does not repeal the 2027 MiB
+                      seen across an active morning, and the active distribution
+                      is still unmeasured — that is the half that decides
+                      anything. Run vram-floor.sh WHILE USING the desktop next.
+ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
+                      free at 128K = 24564 - (device total at 96K + 1408), where
+                      +1408 is the engine's own -lv 5 delta (20426 -> 21834) and
+                      not a sampled one; a sampled delta got this same
+                      comparison wrong by 1163 MiB once.
+                        desktop idle  (floor 1406)      72 MiB free
+                          best/worst idle sample     106 / 43 MiB
+                        desktop worst (floor 2027)    -548 MiB — DOES NOT FIT
+                      The worst row is the one that settles it: at the worst
+                      desktop state this box has actually been in, 128K fails to
+                      allocate rather than merely running thin. Even with the
+                      draft-KV q8_0 lever spent on it (~+240 MiB at 128K) the
+                      idle case is ~306 MiB and the worst is still negative.
+                      96K by contrast keeps ~1480 MiB free idle and ~860 MiB at
+                      the worst observed floor. STAY ON 96K.
+                      NOTE 128K is not BROKEN — it loads, serves and answers a
+                      120,029-token prompt at 1726/1720/1705 tok/s prefill. This
+                      is a headroom refusal, not a function one, so do not go
+                      looking for a bug.
 ngram_size_m_note   = LEAVE IT AT 48. Swept 2026-08-23 (context/bench/capacity/
                       sizem-*.json). VRAM is flat within 6 MiB across 48/32/24/
                       16, so there is nothing to reclaim, and lowering it only
@@ -234,21 +389,35 @@ ngram_size_m_note   = LEAVE IT AT 48. Swept 2026-08-23 (context/bench/capacity/
                       common_speculative_n_max() (common/speculative.cpp:2283)
                       takes the MAX over enabled speculators, so ngram-simple's
                       size_m (48) overrides draft.n_max (4).
-draft_kv_note       = UNADOPTED LEVER, measured 2026-08-23, awaiting a quiet box.
-                      The MTP draft context runs F16 KV while the main context
-                      runs q8_0, because --spec-draft-type-k/-ctkd and -ctvd
-                      (common/arg.cpp:4043) default to F16 and docker-compose.yml
-                      has never set them. Nobody knew this was unquantized.
-                      Setting both to q8_0 is engine-confirmed to work: draft KV
-                      256 -> 136 MiB at 64K (~180 MiB at 96K), and drafting is
-                      intact (draft/cycle 24.18 -> 23.05).
-                      NOT ADOPTED because decode could not be measured: the arm
-                      returned 59.9/177.4/118.7 tok/s against a control of
-                      166.4/190.1/184.9 — a contention outlier, spread 117.5.
-                      Re-run on a quiet box before changing anything. Keep K and
-                      V MATCHED whatever you choose; mismatched types fall off
-                      the CUDA flash-attention path, which is the whole reason
-                      this stack was stuck at 32K for ten days.
+draft_kv_note       = REJECTED 2026-08-23. DO NOT SET -ctkd/-ctvd q8_0. The
+                      "~180 MiB sitting there" DOES NOT EXIST; the flag costs
+                      +216 MiB at 96K rather than saving 180.
+                      What the earlier note got wrong: it read the draft KV line
+                      and not the draft COMPUTE line directly beneath it.
+                      Quantising the MTP head's KV drops the draft context off
+                      its small specialised graph onto a full-width workspace —
+                      the draft compute buffer becomes EXACTLY the main
+                      context's compute buffer size.
+                        96K  draft KV      384.00 -> 204.00   -180.00
+                             draft compute 164.02 -> 560.28   +396.26
+                             CUDA0 total 21173.64 -> 21389.90  +216.26
+                        64K  draft KV      256.00 -> 136.00   -120.00
+                             draft compute 132.02 -> 400.28   +268.26
+                                                    net       +148.26
+                      Sampled whole-device VRAM agrees and always did: 23019 ->
+                      23233 at 96K (+214 against the engine's +216). The two
+                      instruments were never in conflict — one of them was only
+                      being read one line deep.
+                      The 64K numbers come from the ORIGINAL 2026-08-22 logs,
+                      kept as draftkv-*-contended.log. The evidence that refutes
+                      the lever was on disk from the day it was proposed.
+                      Decode was fine, which is why VRAM is the whole story:
+                      96K re-run on an acceptable box gave 176.4 (spread 12.2%)
+                      for the control against 174.4 (spread 10.9%) for q8_0,
+                      draft/cycle 24.89 vs 24.39. Within noise on every axis.
+                      Keep K and V MATCHED whatever you choose; mismatched types
+                      fall off the CUDA flash-attention path, which is the whole
+                      reason this stack was stuck at 32K for ten days.
 draft_depth_note    = settled, and the 2026-08-17 open question is now CLOSED.
                       p-min was the binding knob, not n-max: at p-min 0.75 the
                       draft was cut to one token on ~70% of cycles (draft/cycle

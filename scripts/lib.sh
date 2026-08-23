@@ -182,3 +182,69 @@ lock_get() {
     }' "$file"
 }
 
+
+# --------------------------------------------------------------------------
+# Stack provenance: WHICH engine and WHICH weights produced a measurement.
+#
+# spec-sweep.sh has stamped this since 2026-08-22, because two six-day-old
+# result files from a different build sat in its results directory printing as
+# though they were current. capacity-probe.sh stamped nothing at all — its
+# result JSONs carry a label, a settings delta and a timestamp, so a row taken
+# on the pre-V3 weights at b10200 prints identically to one taken today. That
+# is the same shape of gap, one script over, and it is unfixable in hindsight:
+# provenance can only be captured at measurement time.
+#
+# This is the part of the pin set that is INVARIANT across one invocation —
+# the engine image and the weights on disk. Per-config values (ctx size, KV
+# type) deliberately live with the caller, because capacity-probe.sh rewrites
+# .env between configs and a memoized ctx_size would report the first config's
+# window for every row after it.
+capture_stack_pins() {
+  if [[ -n "${STACK_PINS_JSON:-}" ]]; then printf '%s' "$STACK_PINS_JSON"; return 0; fi
+
+  local tag models gguf image digest st size mtime
+  tag="$(env_get LLAMA_TAG)"
+  models="$(env_get MODELS_DIR)"
+  gguf="$(env_get GGUF_FILE)"
+  image="ghcr.io/ggml-org/llama.cpp:$tag"
+
+  # The digest of the image ON THIS BOX, not the one versions.lock remembers.
+  # A re-pulled tag is precisely the drift this exists to catch, and the lock
+  # file is written by hand.
+  digest="$(docker image inspect "$image" \
+              --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' \
+              2>/dev/null || true)"
+  digest="${digest##*@}"
+
+  # MODELS_DIR is a Docker-Desktop host path (`//d/...`); it is not readable
+  # from this container, so the stat runs inside a throwaway container against
+  # the same mount the llama service uses. The llama image is used rather than
+  # a small one because it is already local — pulling alpine here would make a
+  # pin capture depend on the network. ~1.1 s, once per invocation.
+  #
+  # size+mtime rather than a hash: hashing 17.5 GB over a 9p mount takes
+  # minutes, and the failure this catches is "the weights were swapped", which
+  # moves both.
+  st="$(docker run --rm --entrypoint sh -v "$models:/models:ro" "$image" \
+          -c "stat -c '%s %Y' '/models/$gguf'" 2>/dev/null || true)"
+  size="${st%% *}"; mtime="${st##* }"
+  [[ "$size" == "$st" ]] && { size=""; mtime=""; }
+
+  STACK_PINS_JSON="$(jq -nc \
+    --arg tag "$tag" --arg digest "$digest" \
+    --arg repo "$(env_get MODEL_REPO)" --arg gguf "$gguf" \
+    --arg size "$size" --arg mtime "$mtime" \
+    '{llama_tag:$tag, llama_digest:$digest,
+      model_repo:$repo, gguf_file:$gguf,
+      gguf_size:$size, gguf_mtime:$mtime}')"
+  printf '%s' "$STACK_PINS_JSON"
+}
+
+# Print only the keys that differ, so a mismatch names the cause instead of
+# dumping two JSON blobs and leaving the reader to spot the one changed field.
+pin_diff() {
+  jq -rn --argjson a "$1" --argjson b "$2" '
+    ($a + $b | keys_unsorted[]) as $k
+    | select(($a[$k] // "") != ($b[$k] // ""))
+    | "      \($k): \($a[$k] // "-")  ->  \($b[$k] // "-")"' | sort -u
+}
