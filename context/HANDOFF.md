@@ -1,3 +1,225 @@
+# Handoff — 2026-08-24 (the engine thread: the control ran, and it moved the headline)
+
+Continues "the corpus exists, and the KLD run is half a result" (`6f2f4b8`).
+Its item 1 said the f16-vs-f16 null control had to run before anything else and
+that nothing in the table was quotable until it did. It ran. **The instrument is
+exact — and the number the last session led with turns out to be an artefact of
+the tool, not a property of q8_0.**
+
+## The null control, which is the whole point
+
+```
+   f16 base vs f16 test, two processes, same corpus, same flags, same base file
+
+   Mean    KLD:   0.000000   (max 6.7e-5)     Same top p: 100.000 ± 0.000 %
+   RMS Δp    :   0.001 %                      Mean PPL(Q): 11.605510
+```
+
+`Mean PPL(Q)` is the base arm's own `Final estimate: PPL = 11.6055`, recomputed
+in a different process by a different function, to six figures. There is no
+floor to subtract. `--null-control` is now a first-class arm of `kld-run.sh`
+that PREPENDS itself to the test list and shares the base pass, so it is
+cheaper than skipping it and cannot be forgotten.
+
+## The headline changed
+
+**`Mean PPL(Q)/PPL(base) = 1.1649` is not a q8_0 penalty. The null control
+reports 1.1703 — larger, with no quantisation in the run at all.**
+
+`perplexity.cpp` stores base log-probs as uint16 over a window clamped 16 nats
+below the max logit (`min_logit = std::max(min_logit, max_logit - 16)`), so any
+token with NLL above ~16.5 is recorded as ~16.5 and `Mean PPL(base)` is biased
+low, by more in chunks that hold more genuinely surprising tokens. Both arms
+show it identically.
+
+**Correction to the last handoff**, which explained the same gap as different
+scoring windows (`first = min(512, n_ctx/2)` vs `n_ctx/2`). At this tag both are
+`n_ctx/2` — perplexity.cpp:542 and perplexity.cpp:1792. The windows are
+identical. Do not re-derive the wrong explanation.
+
+The real comparison is live-vs-live:
+
+```
+   n_ctx                4096       8192
+   PPL  f16 KV        11.6055    16.0634
+   PPL  q8_0 KV       11.5513    16.0893
+   q8_0 / f16          0.9953     1.0016      <- no penalty, opposite signs
+   Mean   KLD          0.13697    0.21802
+   Median KLD          0.00101    0.00108
+   99.0%  KLD           3.2328     7.1081
+   RMS Δp               5.148 %    5.746 %
+   Same top-1          95.284 %   94.087 %    <- against a 100.000 % floor
+```
+
+**q8_0 KV costs nothing in perplexity and a real amount in the tail.** The
+median token does not move; 4.7% of tokens change their top-1. That is what
+"diverges, then recovers" looks like measured token by token.
+
+The 4096 column came out **identical to every printed digit** on 2026-08-23 and
+2026-08-24, off two independently written base files. Teacher-forced perplexity
+is reproducible run to run here, not just within a run.
+
+## The scoping fact nobody had written down
+
+Read out of the GGUF and confirmed against the tensor table:
+
+```
+   general.architecture           = qwen35
+   qwen35.block_count             = 65      (64 layers + one MTP head)
+   qwen35.context_length          = 262144
+   qwen35.full_attention_interval = 4
+   qwen35.ssm.state_size / group_count / inner_size = 128 / 16 / 6144
+
+   blocks with attn_q/attn_k (17): 3 7 11 15 19 23 27 31 35 39 43 47 51 55 59 63 +64
+   blocks with ssm_*         (48): 0 1 2 4 5 6 8 9 10 12 ...
+```
+
+**qwen35 is a hybrid, and only 16 of its 64 layers have a KV cache at all.**
+`-ctk/-ctv q8_0` quantises those 16 and nothing else; the other 48 carry a
+fixed-size recurrent state the flag cannot touch. So the fidelity numbers above
+are the cost of quantising a **quarter** of this model's state, and the article
+this stack keeps comparing itself against measured dense transformers, where the
+same flag would touch four times as much. `versions.lock:kv_cache` and §4 of the
+divergence document both read as if "the KV cache" were the whole thing.
+
+## The 16384 anomaly: real, reproducible, and now with a candidate mechanism
+
+PPL climbs with n_ctx on BOTH corpora, and dropping chunk 1 does not rescue it:
+
+```
+   corpus          n_ctx   chunks    PPL     chunk 1   PPL ex-chunk 1
+   deep-s26b5bb     4096     17     11.61       3.04        12.62
+   deep-s26b5bb     8192      8     16.06      28.89        14.77
+   deep-s26b5bb    12288      5     72.16     497.63        44.53
+   deep-s26b5bb    16384      4     94.00     653.52        49.25
+   pi-150turn       4096     22     23.99   49158.45        16.69
+   pi-150turn      16384      5     32.90      47.48        30.02
+```
+
+REFUTED, each with a control, so nobody re-walks them:
+
+```
+   the logits path / memory   D1: same pass with NO logits file -> [1]653.5247,
+                              PPL 94.0001. Byte-identical, 21.75 s/pass instead
+                              of 249.95, no swapping.
+   the batch count            C1: -c 4096  -b 512  -> 11.6055 (= -b 2048)
+                              C2: -c 8192  -b 8192 -> 16.0634 (= -b 2048)
+                              Both directions. Every per-chunk figure matched.
+   flash attention            C5: -c 16384 -fa off -> 93.0580 (vs 94.0000 on)
+   the trained context        perplexity's own warning did not fire; the GGUF
+                              says context_length = 262144.
+   one corpus's partition     pi-150turn degrades in the same direction.
+```
+
+CANDIDATE MECHANISM, and it is a property of the model rather than a defect:
+48 of 64 layers compress all history into a state of FIXED size, and perplexity
+scores tokens at positions n_ctx/2 .. n_ctx-1 — so raising n_ctx directly raises
+how much history every scored token is carrying (2,048-4,095 tokens at 4096
+against 8,192-16,383 at 16384). A pure-attention model would not care. This is
+consistent with the evidence, NOT proven: it does not explain why the two
+corpora degrade at different rates (x1.8 and x3.9). The direct test is to score
+the SAME tokens at two different history lengths, which perplexity's chunking
+cannot do on its own.
+
+**Consequence either way: do not compare absolute PPL across depths on this
+stack.** It does not touch the q8_0 result, which has its control and compares
+two arms at one depth.
+
+## The other 16384 problem, now guarded
+
+The base arm wrote **594,062,932 bytes of an expected 16,272,437,236 and exited
+0.** perplexity.cpp never checks the ofstream, so the first short write latches
+badbit and every later write is silently discarded — which is why the file holds
+0.146 of chunk 0 and nothing else.
+
+Not disk (7.7 TB free). Not the kernel's 2 GiB `write()` cap: that cap is real
+(`os.write()` of 2.49 GB returns exactly 2,147,479,552) but libstdc++'s
+`xwrite()` loops through it, and a compiled probe issuing the identical
+4,068,043,768-byte `ostream::write` **to the same 9p directory** completes and
+reads back intact. Not the mount. It is memory pressure — that pass runs at
+~15.2 GiB resident on a 22 GiB box; the same probe completes in seconds under
+`--memory=8g` and does not finish within two minutes under `--memory=5g`. That
+is a correlation, not a captured errno — nobody has read what the failing
+`write(2)` actually returned, and a probe that reports it would settle it.
+
+`verify_logits()` now sizes the file against its own header after every base
+pass and refuses the test arm. Its four paths (complete / truncated / bad header
+/ missing) were each exercised against fabricated files first.
+
+## A defect in the guard next to it, found by the same run
+
+The preflight hardcoded `n_vocab = 151936` — Qwen3-8B's. This model has
+**248,320**. Every host-memory verdict it printed was 63% under; it said
+`n_ctx 16384  ok: ~14244 MiB` for a pass that wanted ~15.2 GiB resident with
+13.9 GiB free. `gguf_n_vocab()` now reads `tokenizer.ggml.tokens`' array count
+out of the GGUF metadata block (under 2 KB of I/O, no server needed), and if it
+cannot, the memory verdicts are not printed at all rather than computed from a
+guess.
+
+## Mine, and it cost the 16384 test arms
+
+**I edited `scripts/kld-run.sh` while it was executing.** bash reads a script
+lazily by byte offset, so the edit shifted everything under the interpreter and
+it ran garbage — `line 508: se: command not found`, rc=127 — after the 16384
+base arm. The trap still restarted llama and nothing was lost but time. Do not
+edit a running bash script; copy it first.
+
+## Next session — in this order
+
+1. **Nothing here is blocked and nothing is half-done.** The q8_0 result has its
+   control and is written up. If you want one more thing on it, the honest gap
+   is that 4096 and 8192 are both far below the 96K this stack runs, and limits
+   (1) and (2) say that gap cannot be closed by this route.
+2. **The direct test of the fixed-state hypothesis**, if the depth question is
+   worth more time: score the SAME tokens at two different history lengths.
+   perplexity's own chunking cannot — position and history move together — so it
+   needs a corpus prefixed with filler to shift a region's position, or
+   `perplexity_v2`'s `--ppl-stride` mode, which holds the history window fixed.
+   If it confirms, "PPL degrades with context length on this model" belongs in
+   `versions.lock` as a first-class property of the stack, because the server
+   runs a 98,304-token window.
+3. **The `FORGE_MERGE_ACROSS_TOOLS=1` arm at real depth.** §4a's strongest claim
+   — that patch 5 is what keeps `cache_n` growing to 66,750 — rests on §4's
+   synthetic three-turn result plus the patch's mechanism, not on a measurement
+   at 68k. One capture session with that one variable flipped turns an inference
+   into a number.
+4. **`context/design/inference-divergence-and-this-stack.md` §4 and
+   `versions.lock:kv_cache` both got a scoping paragraph, not a rewrite.** If
+   somebody has appetite, §4's three "things that keep this from being an alarm"
+   should be re-read now that the KV cache is known to be a quarter of the
+   model's state — the third one ("the alternative may not exist on this box")
+   is priced on a VRAM figure that assumed otherwise.
+
+## Housekeeping
+
+`//d/llm-captures/kld/` holds `logits-f16-16384.bin` — the 594,062,932-byte
+truncated file, kept deliberately as the evidence for §3b. The 17.3 GB
+`logits-f16-4096.bin` was deleted; it regenerates from one base pass.
+`.kld-logs/` holds every run's raw output: `20260823T210410Z` (the null control
+and the q8_0 arm), `diag-*` (D1), `batchctl-*` (C1, C2), `depthctl-*` (C3, C4),
+`depthctl2-*` (C5, C6, C7).
+
+The recorder is out of the path and `.env.local` is untouched. `qwen38-llama`
+was stopped and restarted five times over the session and is back up.
+
+## Still open, carried
+
+```
+   · The four records of a real pi session on the tape (`s735f17`, 21,329
+     prompt tokens, 16 tools) are UNTOUCHED and still need their operator's
+     decision.
+   · A GPU-heavy foreground VRAM floor is still unmeasured.
+   · `eval_expr` still needs `--only eval_expr --repeat 20` at two levels.
+   · `forge/proxy/convert_anthropic.py` still has patch 4's hole in a starker
+     form. Off this stack's path; needs a `thinking` block shape decided.
+   · `access.json` / `.env` two-writer race; `/loop resume` not clearing turn
+     buffers; `mcp-stdio.ts`'s numeric-id reply path. All unchanged.
+   · The 2026-08-23 handoff asked whoever ran `compose down` on the whole stack
+     at 21:08 that day to say so somewhere. Still unanswered.
+```
+
+---
+
 # Handoff — 2026-08-23 (the engine thread: the corpus exists, and the KLD run is half a result)
 
 Continues the engine thread's section below ("the tape exists, and it changed

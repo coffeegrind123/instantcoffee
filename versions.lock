@@ -67,6 +67,19 @@ kv_cache            = q8_0/q8_0 (CHANGED 2026-08-22; MEASURED — prefill four
                       4-bit KV stays off the table: llama.cpp#27109 (open) has
                       q4_x collapsing prefill to 34-106 t/s on this exact
                       qwen35 hybrid architecture, against 991-1276 t/s at q8_0.
+                      READ 2026-08-24 OUT OF THE GGUF, AND IT SCOPES EVERY
+                      SENTENCE ABOVE: qwen35 is a HYBRID, and only 16 of its 64
+                      layers have a KV cache at all. `full_attention_interval=4`
+                      — blocks 3, 7, 11 ... 63 carry attn_q/attn_k; the other 48
+                      carry ssm_* and a FIXED-SIZE recurrent state (conv_kernel 4,
+                      state_size 128, group_count 16, inner_size 6144) that -ctk
+                      / -ctv do not touch and cannot. Confirmed against the
+                      tensor table, not just the metadata keys. So "q8_0 KV" here
+                      quantises a QUARTER of the model's state, and the fidelity
+                      numbers in kv_cache_fidelity should be read as the cost of
+                      that quarter — the article this stack compares itself
+                      against measured dense transformers, where the same flag
+                      would touch four times as much.
 load_mode           = none (mmap off; MODELS_DIR is a 9p bind mount)
 reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget).
                       Re-confirmed on the V3 weights 2026-08-23 — see
@@ -386,6 +399,93 @@ literal_fidelity    = MEASURED 2026-08-23, and it is a CLEAN NEGATIVE. New
                       the weights, or the spec config. It is cheap: the 90k arm
                       is ~55 s of prefill per unique document and the second
                       record on the same document is a cache hit at ~5 s.
+kv_cache_fidelity   = MEASURED 2026-08-24, and the instrument was measured
+                      first. ./scripts/kld-run.sh, llama-perplexity
+                      --kl-divergence, teacher-forced, on a REAL captured
+                      workstream (/captures/corpus/deep-s26b5bb.txt: 69,440
+                      tokens, 62 messages, 16 tool schemas, control delta +0
+                      against the server's own token counter).
+                      THE NULL CONTROL RAN FIRST AND IS EXACT. f16 vs f16, two
+                      processes, same corpus, same flags, same base logits file:
+                      Mean KLD 0.000000 (max 6.7e-5), same-top-1 100.000 %,
+                      RMS Delta-p 0.001 %, and Mean PPL(Q) 11.605510 against the
+                      base arm's own Final estimate 11.6055. `--null-control` is
+                      now a first-class arm that shares the base pass, so it
+                      cannot be skipped.
+                        n_ctx                          4096        8192
+                        chunks / tokens scored      17/34,799    8/32,760
+                        PPL  f16 KV                  11.6055     16.0634
+                        PPL  q8_0 KV                 11.5513     16.0893
+                        q8_0 / f16                    0.9953      1.0016
+                        Mean   KLD                   0.13697     0.21802
+                        Median KLD                   0.00101     0.00108
+                        99.0%  KLD                    3.2328      7.1081
+                        Maximum KLD                  31.7209     33.7666
+                        RMS Delta-p                   5.148 %     5.746 %
+                        Same top-1                   95.284 %    94.087 %
+                      READ IT AS: no perplexity penalty (under half a percent,
+                      opposite signs), and a real tail. The median token moves
+                      by KLD 0.001 and the 90th percentile by 0.026; the 99th is
+                      3.2. Mean Delta-p is -0.014 % — unbiased — with RMS 5.1 %
+                      and extremes at +/-99.999 %. 4.7 % of tokens change their
+                      top-1 at 4096 and 5.9 % at 8192, against a control floor
+                      of exactly 0.000 %.
+                      DO NOT QUOTE `Mean PPL(Q)/PPL(base)`. It reads 1.164857
+                      for q8_0-vs-f16 and 1.170322 in the NULL CONTROL — larger
+                      with no quantisation at all. perplexity.cpp stores its base
+                      log-probs as uint16 over a window clamped 16 nats below the
+                      max logit, so any token with NLL above ~16.5 is recorded as
+                      ~16.5 and Mean PPL(base) is biased low. Not a defect in the
+                      run and not the "different scoring windows" explanation an
+                      earlier handoff gave — perplexity.cpp:542 and :1792 both
+                      use first = n_ctx/2.
+                      REPRODUCIBLE run to run: the 4096 column came out identical
+                      to every printed digit on 2026-08-23 and 2026-08-24, off two
+                      independently written base logits files.
+                      LIMITS, read from perplexity.cpp at b10573, not inferred.
+                      (1) the corpus must hold 2*n_ctx tokens, so the deepest arm
+                      a real session can support is CTX_SIZE/2 = 49,152 and the
+                      64K the divergence document asked for is unreachable from
+                      real traffic; (2) the ceiling is HOST RAM sized on
+                      n_ctx*n_vocab — n_vocab 248,320 here, 15.16 GiB resident at
+                      16384 and 60.6 GiB at 64K, on a 22 GiB box — VRAM never
+                      binds; (3) perplexity tokenizes with parse_special=false
+                      and has no flag for it, so both arms see <|im_start|> as
+                      ordinary text (the COMPARISON is unaffected; the sequence
+                      is not the serve-time one).
+                      ONE THING IS OPEN AND IT IS NOT ABOUT THE KV CACHE.
+                      PPL climbs with n_ctx on this corpus — 11.6055 at 4096,
+                      16.0634 at 8192, 94.0000 at 16384 — which is backwards for
+                      more context and is unexplained. Reproducible to four
+                      decimals across runs. REFUSED so far: the logits path and
+                      memory (the same pass with no logits file at all returns
+                      the identical numbers), the batch count in both directions
+                      (-c 4096 -b 512 -> 11.6055; -c 8192 -b 8192 -> 16.0634),
+                      n_ctx_train (perplexity's own warning did not fire; the
+                      GGUF says context_length 262144), flash attention and the
+                      physical ubatch (-fa off: 93.0580 at 16384 and 11.5284 at
+                      4096, about -1 % at BOTH depths; -ub 2048: 91.7255), and
+                      one corpus's partition (pi-150turn degrades the same way,
+                      x1.8 against x3.9). CANDIDATE MECHANISM, unproven: 48 of
+                      the 64 layers are state-space with a FIXED-SIZE state, and
+                      perplexity scores positions n_ctx/2..n_ctx-1, so raising
+                      n_ctx raises how much history every scored token carries.
+                      Until it is understood, do not compare absolute PPL across
+                      depths on this stack. It does not touch the q8_0 result
+                      above, which has its control.
+                      A SECOND, SEPARATE DEFECT, now guarded: the 16384 base arm
+                      wrote 594,062,932 bytes of an expected 16,272,437,236 and
+                      EXITED 0. perplexity.cpp never checks the ofstream, so the
+                      first short write latches badbit and every later write is
+                      silently discarded. Not disk (7.7 TB free), not the kernel
+                      2 GiB write cap (libstdc++ loops — a compiled probe issues
+                      the identical 4,068,043,768-byte ostream::write to the same
+                      9p directory and completes), not the mount. It is memory
+                      pressure: that pass runs at ~15.2 GiB resident on a 22 GiB
+                      box. verify_logits() now sizes the file against its own
+                      header after every base pass; its four paths were exercised
+                      against fabricated files.
+                      Full account: context/design/kv-cache-fidelity-measured.md.
 ctx_needle_reverify = 2026-08-23, after the probe_lib.py extraction. The filler,
                       the nonce and the tokenizer-calibrated document builder
                       moved out of ctx_needle.py so bench_literal.py could share

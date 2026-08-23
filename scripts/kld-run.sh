@@ -3,7 +3,15 @@
 # The q8_0-vs-f16 KV-cache fidelity run.
 #
 #   ./scripts/kld-run.sh --corpus /captures/corpus/deep.txt [--depths 8192,65536]
-#   ./scripts/kld-run.sh --corpus ... --dry-run       print the four commands, run nothing
+#   ./scripts/kld-run.sh --corpus ... --null-control   f16 vs f16: RUN THIS FIRST
+#   ./scripts/kld-run.sh --corpus ... --dry-run        print the commands, run nothing
+#
+# RUN THE NULL CONTROL BEFORE QUOTING ANY NUMBER. `--null-control` points the
+# test arm at the base arm's own KV type, so the run compares f16 against f16
+# across two processes. It must return KLD ~ 0 and same-top-1 ~ 100%; whatever
+# it does return is this instrument's FLOOR, and a q8_0 result is only worth the
+# distance between it and that floor. `--base-kv` / `--test-kv` set the two arms
+# independently if you want some other pair.
 #
 # WHY. context/design/inference-divergence-and-this-stack.md §4: this stack
 # adopted q8_0 KV on throughput and VRAM and never on fidelity, and §7 item 4
@@ -42,6 +50,9 @@ OUT_SUBDIR="kld"
 DRY=0
 KEEP_LOGITS=0
 UNPINNED=0
+BASE_KV="f16"
+TEST_KV="q8_0"
+NULL_CONTROL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,10 +62,41 @@ while [[ $# -gt 0 ]]; do
     --depths=*) DEPTHS="${1#*=}"; shift ;;
     --out-subdir) OUT_SUBDIR="${2:-}"; shift 2 || die "--out-subdir needs a value" ;;
     --keep-logits) KEEP_LOGITS=1; shift ;;
+    --base-kv) BASE_KV="${2:-}"; shift 2 || die "--base-kv needs a value" ;;
+    --base-kv=*) BASE_KV="${1#*=}"; shift ;;
+    --test-kv) TEST_KV="${2:-}"; shift 2 || die "--test-kv needs a value" ;;
+    --test-kv=*) TEST_KV="${1#*=}"; shift ;;
+    --null-control) NULL_CONTROL=1; shift ;;
     --unpinned) UNPINNED=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument '$1'" ;;
+  esac
+done
+
+# THE NULL CONTROL IS A FIRST-CLASS ARM, NOT A THING TO REMEMBER.
+#
+# `--null-control` PREPENDS the base arm's own KV type to the list of test arms,
+# so the run compares f16 against f16 before it compares anything else: two
+# independent processes, the same weights, the same corpus, the same flags,
+# reading the SAME logits file. It must come back at KLD ~ 0 and same-top-1
+# ~ 100%. Whatever it actually returns is this instrument's FLOOR, and every
+# q8_0 number is worth only the distance between it and that floor.
+#
+# It prepends rather than replaces because the control and the measurement then
+# share one base pass and one base file, which is both cheaper (the base arm is
+# the expensive half) and a stricter comparison than two runs a day apart.
+#
+# It exists as a flag because the first run of this script had no control at
+# all, and a 4.7% top-1 flip rate with no floor under it is equally consistent
+# with a broken comparison. A control you have to remember to run is a control
+# that does not get run.
+TEST_KVS="$TEST_KV"
+if (( NULL_CONTROL )); then TEST_KVS="${BASE_KV},${TEST_KV}"; fi
+for kv in "$BASE_KV" ${TEST_KVS//,/ }; do
+  case "$kv" in
+    f32|f16|bf16|q8_0|q5_0|q5_1|q4_0|q4_1|iq4_nl) ;;
+    *) die "unknown KV cache type '$kv' (f32 f16 bf16 q8_0 q5_0 q5_1 q4_0 q4_1 iq4_nl)" ;;
   esac
 done
 
@@ -78,6 +120,61 @@ LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
 OUTDIR="/captures/${OUT_SUBDIR}"
 REF_TOKENS=""
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# Both arms are in the filenames so a null control and a q8_0 run can share a
+# directory without one silently overwriting the other's evidence.
+logits_path() { echo "${OUTDIR}/logits-${BASE_KV}-$1.bin"; }
+base_log()    { echo "${OUTDIR}/base-${BASE_KV}-$1.log"; }
+test_log()    { echo "${OUTDIR}/test-$2-vs-${BASE_KV}-$1.log"; }
+
+# ---------------------------------------------------------------------------
+# n_vocab, from the GGUF's own metadata.
+#
+# Everything that bounds this experiment's host-memory cost is n_ctx * n_vocab,
+# so n_vocab has to be a fact rather than a remembered constant. GGUF puts its
+# metadata key-value block at the head of the file and `tokenizer.ggml.tokens`
+# early within it, so this reads under 2 KB and stops at the array's count — it
+# never touches the token strings, let alone the tensors.
+#
+# `llama_vocab_n_tokens()` is exactly the length of that array, which is the
+# same number perplexity writes into the logits file's header — so verify_logits
+# later re-states it from an independent source, and a disagreement would show.
+# ---------------------------------------------------------------------------
+gguf_n_vocab() {
+  docker run --rm -i --user 0:0 -v "${MODELS}:/models:ro" \
+      --entrypoint python "$SIDECAR_IMAGE" - "/models/${GGUF}" <<'GGUFPY' 2>&1
+import struct, sys
+FIXED = {0:1, 1:1, 2:2, 3:2, 4:4, 5:4, 6:4, 7:1, 10:8, 11:8, 12:8}
+T_STR, T_ARR = 8, 9
+try:
+    f = open(sys.argv[1], "rb")
+    if f.read(4) != b"GGUF":
+        print("not a GGUF file"); sys.exit(1)
+    _ver, _ntensors, nkv = struct.unpack("<IQQ", f.read(20))
+    u32 = lambda: struct.unpack("<I", f.read(4))[0]
+    u64 = lambda: struct.unpack("<Q", f.read(8))[0]
+    st  = lambda: f.read(u64())
+    def skip(t):
+        if t in FIXED: f.read(FIXED[t])
+        elif t == T_STR: st()
+        elif t == T_ARR:
+            et, n = u32(), u64()
+            if et in FIXED: f.read(FIXED[et] * n)
+            elif et == T_STR:
+                for _ in range(n): st()
+            else: raise ValueError("array of metadata type %d" % et)
+        else: raise ValueError("metadata type %d" % t)
+    for _ in range(nkv):
+        key = st().decode("utf-8", "replace")
+        t = u32()
+        if key == "tokenizer.ggml.tokens" and t == T_ARR:
+            u32(); print(u64()); sys.exit(0)
+        skip(t)
+    print("tokenizer.ggml.tokens not present in the metadata"); sys.exit(1)
+except Exception as e:
+    print("%s: %s" % (type(e).__name__, e)); sys.exit(1)
+GGUFPY
+}
 
 # ---------------------------------------------------------------------------
 # Preflight. Everything that can be checked without stopping the server is
@@ -206,30 +303,62 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
   #     is not reachable from a real session at all. It would need a corpus
   #     twice this server's own context window.
   #
-  # (2) HOST RAM, NOT VRAM, IS THE CEILING.
-  #     The base arm holds two buffers sized on n_ctx:
+  # (2) HOST RAM, NOT VRAM, IS THE CEILING — AND IT IS SIZED ON n_vocab.
+  #     The base arm holds two buffers sized on n_ctx * n_vocab:
   #         logits.reserve(size_t(n_ctx) * n_vocab)          4 B per entry
   #         log_probs.resize(size_t(n_ctx) * nv)             2 B per entry
-  #     with n_vocab 151,936 and nv = 2*((n_vocab+1)/2)+4. That is ~0.87 GiB of
-  #     ordinary host memory per 1,024 tokens of n_ctx, on top of everything
-  #     else on the box. 64K would want ~56 GiB. The card is irrelevant to it.
-  local nvocab=151936
+  #     with nv = 2*((n_vocab+1)/2)+4. `reserve` commits address space but only
+  #     the rows actually inserted are touched, and only positions >= n_ctx/2
+  #     produce output — so the RESIDENT cost is (n_ctx/2)*n_vocab*4 for the
+  #     logits plus the whole n_ctx*nv*2 for log_probs, which resize() zeroes
+  #     and therefore faults in completely.
+  #
+  #     n_vocab IS READ OUT OF THE GGUF, NOT ASSUMED. This block used to
+  #     hardcode 151,936 (Qwen3-8B's). The model actually pinned here has
+  #     248,320, so every verdict it printed was 63% under — it called n_ctx
+  #     16384 "ok: ~14244 MiB" for a pass that in fact wanted ~22.7 GiB on a
+  #     22 GiB box. A wrong constant in a guard is worse than no guard: it
+  #     answers confidently.
+  local nvocab
+  nvocab="$(gguf_n_vocab)"
+  if [[ "$nvocab" =~ ^[0-9]+$ ]]; then
+    echo "    n_vocab       ${nvocab} (tokenizer.ggml.tokens, read from the GGUF)"
+  else
+    echo "    n_vocab       COULD NOT BE READ from /models/${GGUF}: ${nvocab}"
+    echo "                  the host-memory verdicts below cannot be computed, so they"
+    echo "                  are not printed. Nothing is guarding the depth you picked."
+    nvocab=""
+  fi
+  local nv=$(( nvocab ? 2 * ((nvocab + 1) / 2) + 4 : 0 ))
   local avail_mb; avail_mb="$(docker run --rm alpine free -m | awk '/^Mem:/{print $7}')"
   local swap_mb;  swap_mb="$(docker run --rm alpine free -m | awk '/^Swap:/{print $4}')"
   echo "    host memory   ${avail_mb} MiB available, ${swap_mb} MiB free swap"
   local blocked=0
   for d in ${DEPTHS//,/ }; do
-    local need_mb=$(( d * (nvocab * 4 + (nvocab + 8) * 2) / 1048576 ))
+    local need_mb=0
+    (( nvocab )) && need_mb=$(( ( (d / 2) * nvocab * 4 + d * nv * 2 ) / 1048576 ))
     local need_tok=$(( 2 * d ))
     local verdict="ok"
     if [[ -n "$REF_TOKENS" ]] && (( REF_TOKENS < need_tok )); then
       verdict="REFUSED: needs ${need_tok} tokens, the corpus has ${REF_TOKENS}"
       blocked=1
+    elif (( ! nvocab )); then
+      verdict="unchecked: n_vocab unknown, so host memory was not verified"
     elif (( need_mb > avail_mb + swap_mb )); then
       verdict="REFUSED: needs ~${need_mb} MiB host RAM, only $(( avail_mb + swap_mb )) MiB incl. swap"
       blocked=1
     elif (( need_mb > avail_mb )); then
-      verdict="tight: ~${need_mb} MiB wanted against ${avail_mb} MiB free — will swap"
+      # NOT just "it will be slow". OBSERVED TWICE at n_ctx 16384 on this box:
+      # the base arm swaps, one of its ~3.8 GiB log-prob writes comes up short,
+      # the ofstream latches badbit, EVERY LATER WRITE IS SILENTLY DISCARDED,
+      # and perplexity exits 0 with a file holding 0.6 GB of an expected 15.2.
+      # The identical write to the identical directory completes when the box
+      # has headroom, so this is memory pressure and not the path. verify_logits
+      # catches it after the fact; this is the warning before it.
+      verdict="TIGHT: ~${need_mb} MiB wanted against ${avail_mb} MiB free — it will
+                  swap, and a swapping base arm has been observed writing a
+                  SHORT logits file and still exiting 0. Free memory first, or
+                  expect verify_logits to refuse this depth"
     else
       verdict="ok: ~${need_mb} MiB host RAM, ${need_tok} tokens needed"
     fi
@@ -310,14 +439,105 @@ pass() {
   return $rc
 }
 
-LOCAL_LOGDIR="${REPO_ROOT}/.kld-logs/${STAMP}"
-mkdir -p "$LOCAL_LOGDIR"
+# ---------------------------------------------------------------------------
+# Size the logits file the base arm just wrote against what it MUST be.
+#
+# WHY THIS EXISTS. perplexity.cpp never checks the ofstream after a write:
+#     logits_stream.write("_logits_", 8);
+#     logits_stream.write((const char *)&n_vocab, sizeof(n_vocab));
+#     logits_stream.write((const char *)tokens.data(), n_chunk*n_ctx*sizeof(tokens[0]));
+#     out.write((const char *)log_probs.data(), size_t(n_token)*nv*sizeof(uint16_t));
+# — four writes, no `if (!logits_stream)` anywhere, and the base arm exits 0
+# either way. A short write is therefore SILENT at the producing end and
+# surfaces one process later as
+#     kl_divergence: failed reading log-probs for chunk 0
+# which reads like a corrupt file of unknown provenance. It happened at
+# n_ctx=16384 on the first run of this script and cost a whole depth.
+#
+# The expected size is not guessed: the writer's own header states n_ctx,
+# n_vocab and n_chunk, so this reads those three ints back out of the file and
+# derives the rest from the same expressions the writer used.
+#
+#     8                                  "_logits_"
+#     4                                  n_ctx      (int32, written by perplexity())
+#     4                                  n_vocab    (int32)
+#     4                                  n_chunk    (int32)
+#     n_chunk * n_ctx * 4                the evaluation tokens (llama_token)
+#     n_chunk * (n_ctx - 1 - n_ctx/2)
+#             * nv * 2                   the log-probs, nv = 2*((n_vocab+1)/2)+4
+#
+# The reader consumes exactly this and in exactly this order, so a mismatch of
+# any size means the test arm is going to fail or, worse, read the wrong bytes.
+verify_logits() {
+  local logits="$1"
+  local report rc=0
+  report="$(docker run --rm -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" -c "
+import os, struct, sys
+path = '$logits'
+try:
+    size = os.stat(path).st_size
+except OSError as e:
+    print('MISSING  ' + str(e)); sys.exit(1)
+with open(path, 'rb') as f:
+    head = f.read(20)
+if len(head) < 20 or head[:8] != b'_logits_':
+    print('BAD HEADER  first 20 bytes: ' + head[:20].hex()); sys.exit(1)
+n_ctx, n_vocab, n_chunk = struct.unpack('<iii', head[8:20])
+nv = 2 * ((n_vocab + 1) // 2) + 4
+first = n_ctx // 2
+per_chunk = (n_ctx - 1 - first) * nv * 2
+want = 20 + n_chunk * n_ctx * 4 + n_chunk * per_chunk
+print(f'header    n_ctx={n_ctx} n_vocab={n_vocab} n_chunk={n_chunk} nv={nv}')
+print(f'per chunk {per_chunk:,} bytes of log-probs')
+print(f'expected  {want:,}')
+print(f'actual    {size:,}')
+if size == want:
+    print('verdict   COMPLETE')
+    sys.exit(0)
+if size > want:
+    print(f'verdict   LONGER than the header describes, by {size - want:,} bytes —')
+    print('          this is not a short write. Stale file, or a different corpus.')
+    sys.exit(1)
+short = want - size
+# The reader consumes the header and the token block, then one per_chunk block
+# per chunk in order, so the first read that runs out is the first chunk beyond
+# what the file actually holds.
+avail = max(0, size - (20 + n_chunk * n_ctx * 4))
+readable = avail // per_chunk
+print(f'verdict   TRUNCATED, short by {short:,} bytes ({short / per_chunk:.3f} chunks)')
+print(f'          {readable} of {n_chunk} chunks are complete; the test arm will')
+print(f'          fail reading log-probs for chunk {readable}')
+sys.exit(1)
+" 2>&1)" || rc=1
+  echo "    logits file"
+  echo "${report}" | sed 's/^/                  /'
+  return $rc
+}
 
-echo "q8_0-vs-f16 KV fidelity run   ${STAMP}"
+LOCAL_LOGDIR="${REPO_ROOT}/.kld-logs/${STAMP}"
+# Not on a dry run — it writes nothing, and an empty stamped directory per
+# --dry-run is litter that looks like a run that produced no output.
+(( DRY )) || mkdir -p "$LOCAL_LOGDIR"
+
+echo "KV-cache fidelity run   ${STAMP}"
 echo "  image     ${IMAGE}"
 echo "  model     /models/${GGUF}"
 echo "  corpus    ${CORPUS}"
 echo "  depths    ${DEPTHS}"
+echo "  base arm  -ctk ${BASE_KV} -ctv ${BASE_KV}   (writes the logits)"
+for kv in ${TEST_KVS//,/ }; do
+  if [[ "$kv" == "$BASE_KV" ]]; then
+    echo "  test arm  -ctk ${kv} -ctv ${kv}   NULL CONTROL — measures the instrument, not the KV type"
+  else
+    echo "  test arm  -ctk ${kv} -ctv ${kv}   (reads the logits, reports KLD)"
+  fi
+done
+if (( ! NULL_CONTROL )) && [[ ",${TEST_KVS}," != *",${BASE_KV},"* ]]; then
+  echo
+  echo "  NOTE: no null control in this run. Nothing establishes the floor these"
+  echo "        numbers sit above. Add --null-control unless one has already been"
+  echo "        run against this corpus, this model and these depths."
+fi
 echo "  logs      ${LOCAL_LOGDIR}"
 echo
 
@@ -327,8 +547,10 @@ if (( DRY )); then
   echo
   echo "==> dry run: the passes that WOULD run"
   for d in ${DEPTHS//,/ }; do
-    pass base f16   "$d" "${OUTDIR}/logits-f16-${d}.bin" "${OUTDIR}/base-f16-${d}.log"
-    pass test q8_0  "$d" "${OUTDIR}/logits-f16-${d}.bin" "${OUTDIR}/test-q8_0-${d}.log"
+    pass base "$BASE_KV" "$d" "$(logits_path "$d")" "$(base_log "$d")"
+    for kv in ${TEST_KVS//,/ }; do
+      pass test "$kv" "$d" "$(logits_path "$d")" "$(test_log "$d" "$kv")"
+    done
   done
   echo
   echo "dry run only; qwen38-llama was not touched."
@@ -349,11 +571,26 @@ trap restore EXIT INT TERM
 
 FAILED=0
 for d in ${DEPTHS//,/ }; do
-  LOG_BASE="${OUTDIR}/logits-f16-${d}.bin"
-  pass base f16  "$d" "$LOG_BASE" "${OUTDIR}/base-f16-${d}.log"  || { FAILED=1; echo "    base arm at ${d} failed; skipping its test arm"; continue; }
-  pass test q8_0 "$d" "$LOG_BASE" "${OUTDIR}/test-q8_0-${d}.log" || FAILED=1
+  LOG_BASE="$(logits_path "$d")"
+  pass base "$BASE_KV" "$d" "$LOG_BASE" "$(base_log "$d")" \
+    || { FAILED=1; echo "    base arm at ${d} failed; skipping its test arm"; continue; }
+
+  # Between the arms, because a truncated file is the base arm's failure and
+  # naming it here is the difference between "perplexity wrote a short file" and
+  # "the test arm cannot read chunk 0".
+  if ! verify_logits "$LOG_BASE"; then
+    FAILED=1
+    echo "    the base arm at ${d} did not write a complete logits file; skipping its"
+    echo "    test arm. Its own exit code was 0 — perplexity.cpp never checks the"
+    echo "    ofstream. Keep the file (--keep-logits) and look at it before re-running."
+    continue
+  fi
+
+  for kv in ${TEST_KVS//,/ }; do
+    pass test "$kv" "$d" "$LOG_BASE" "$(test_log "$d" "$kv")" || FAILED=1
+  done
   if (( ! KEEP_LOGITS )); then
-    # Full-vocab logits are tens of GB per depth. They are reproducible from the
+    # Full-vocab logits are ~10 GB per depth. They are reproducible from the
     # base arm; the numbers that matter are in the logs.
     docker run --rm -v "${CAPS}:/captures" alpine rm -f "$LOG_BASE" || true
     echo "    removed $LOG_BASE (pass --keep-logits to keep it)"

@@ -150,6 +150,17 @@ The article's Test 2 is exactly that missing experiment, and its answer for int8
 is "diverges, then recovers" — not a disaster, but not free either, and its
 headline is that the effect grows past ~40k. This stack runs a **96K** window.
 
+**Update, 2026-08-24: this section is now measured, and it needs one scoping
+fact it was written without.** See `context/design/kv-cache-fidelity-measured.md`
+for the run and `versions.lock:kv_cache_fidelity` for the summary. The result:
+q8_0 KV costs **no measurable perplexity** (0.9953 at n_ctx 4096, 1.0016 at
+8192, against an f16-vs-f16 null control returning KLD 0.000000 and same-top-1
+100.000%) and moves **4.7% of tokens' top-1** with a violent tail (99th
+percentile KLD 3.2, median 0.001). The scoping fact: **qwen35 is a hybrid and
+only 16 of its 64 layers have a KV cache** — `full_attention_interval = 4`, the
+other 48 layers are state-space — so `-ctk/-ctv` quantise a quarter of this
+model's state, not all of it. The article measured dense transformers.
+
 Three things keep this from being an alarm:
 
 - **llama.cpp's q8_0 KV is not vLLM's int8/FP8 KV.** q8_0 is blockwise — 32
@@ -371,8 +382,14 @@ Recorded as `spec_logprobs_note` in `versions.lock`.
    now re-scores its own real response against deliberately wrong expectations
    and requires all four corruption classes to be flagged. A probe that returned
    `exact` unconditionally would have produced identical output up to that point.
-4. **Still open, and still the one that needs a reload: the q8_0-vs-f16 KLD
-   run at 64K.** It answers §4 properly, and its result would price the real trade —
+4. ~~**Still open, and still the one that needs a reload: the q8_0-vs-f16 KLD
+   run at 64K.**~~ **DONE 2026-08-24 at 4096 and 8192, with an exact null
+   control — and 64K turns out to be unreachable, for reasons read out of
+   perplexity.cpp rather than inferred.** See
+   `context/design/kv-cache-fidelity-measured.md`. The corpus must hold 2*n_ctx
+   tokens, so the deepest arm a real session can support is CTX_SIZE/2 = 49,152;
+   and the ceiling is host RAM sized on n_ctx*n_vocab (~61 GiB resident at 64K
+   on a 22 GiB box), not the VRAM §6 priced. The original text, for the record: It answers §4 properly, and its result would price the real trade —
    96K at q8_0 against ~64K at f16 — which is currently settled by default.
    **The corpus it was waiting for is now buildable in one command**
    (`./scripts/capture.sh export <id> --out /captures/corpus/deep.txt`), and the
@@ -381,13 +398,21 @@ Recorded as `spec_logprobs_note` in `versions.lock`.
    ON for a working session first, which is a decision for whoever is next at
    the keyboard, not something to leave running by default.
 
-5. **New, and cheap, because the tape carries it already: does forge's history
-   rewriting cost a re-prefill at depth?** Every record now holds `cache_n`, so
-   the question in §4 of `forge-on-the-tool-call-path.md` — where a clean
-   three-turn measurement shows the reusable prefix growing without forge and
-   pinned with it — is answerable on a real 90k session without any new
-   instrument. It is a throughput question, not a fidelity one, but it is the
-   largest unpriced number on the production path.
+5. ~~**New, and cheap, because the tape carries it already: does forge's history
+   rewriting cost a re-prefill at depth?**~~ **DONE, 2026-08-24, and the answer
+   is no.** Read off `s26b5bb`, the 29-turn workstream captured for item 4's
+   corpus: `cache_n` grows monotonically 0 -> 66,750 across the session, never
+   plateaus and never resets. 1,078,947 prompt tokens presented, **67,149
+   actually prefilled** — 93.8% reused overall and 96.0% over the second half,
+   with the largest single prefill 6,301 tokens against a 28,648-token prompt.
+   The §4 pinning is real and is what `patches/forge_merge_across_tools.py`
+   fixed: `s26b5bb` ran with that patch live and `FORGE_MERGE_ACROSS_TOOLS=0`.
+   Without any reuse this session would have cost 16.1x the prefill it paid.
+   No `=1` arm was run at this depth, so the counterfactual is the patch's
+   mechanism plus §4's synthetic result, not a measurement. The three `rewrite` joins are pi's own ephemeral
+   `[context budget]` notice, not forge. Full account in §4a of
+   `forge-on-the-tool-call-path.md`. Cost: no GPU time — the tape already had
+   it.
 
 ## 8. What this does NOT change
 

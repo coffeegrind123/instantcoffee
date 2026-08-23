@@ -146,6 +146,108 @@ prefix from growing, and the same workload without forge grows it.** That is a
 throughput question worth an order of magnitude at depth, and the tape can now
 answer it directly on a real session — `cache_n` is on every record.
 
+## 4a. The tape answered it, and patch 5 is what fixed it
+
+Written 2026-08-24 against `s26b5bb` — the 29-turn `pi` workstream captured for
+the KLD corpus. Real tool work over a copy of this repo, through forge, with
+**patches 1–5 live and `FORGE_MERGE_ACROSS_TOOLS=0`** — that is, with §5's fix
+in the path, which the §4 measurement above did not have. 62 messages at the
+deepest, 16 tool schemas, 19 tool calls, 5,693 prompt tokens on turn 0 and
+**68,225 on turn 28**. `cache_n` is llama's
+own count of tokens it did not have to evaluate; `prompt_n` is what it did.
+
+```
+     #  join          msgs   prompt   cache_n  prompt_n    reuse
+     0  new              2     5693         0      5693     0.0%
+     1  continuation     4     7099      5845      1254    82.3%
+     3  continuation     8    12681      7831      4850    61.8%
+     7  continuation    16    21364     16196      5168    75.8%
+    10  continuation    23    29405     28874       531    98.2%
+    14  continuation    31    37816     36066      1750    95.4%
+    18  continuation    39    46107     45899       208    99.5%
+    22  continuation    47    55145     54570       575    99.0%
+    25  continuation    54    62230     58270      3960    93.6%
+    26  rewrite         55    63104     62147       957    98.5%
+    27  rewrite         59    66833     62987      3846    94.2%
+    28  rewrite         61    68225     66750      1475    97.8%
+```
+
+**`cache_n` grows monotonically across all 29 turns, 0 → 66,750.** It never
+plateaus, never resets, and never falls. Over the whole session the model was
+presented with 1,078,947 prompt tokens and actually prefilled **67,149** of them
+— 93.8% reused, and 96.0% over the second half. The largest single prefill in
+the session is 6,301 tokens, at turn 9, against a 28,648-token prompt.
+
+**Read this as patch 5 working, not as §4 having been wrong.** §4's three arms
+were measured against a forge that still merged across a tool result — the
+`user1, assistant(tool_calls), tool, user2 -> user1+user2, assistant, tool`
+rewrite that `patches/forge_merge_across_tools.py` exists to stop, and which a
+coding agent hits on every turn that carries a new instruction. `s26b5bb` ran
+with that patch live and the cross-tool merge off, and the reusable prefix
+tracks the conversation all the way to 68k instead of freezing at 352.
+
+So the throughput risk §4 flagged is **real and is now paid for**: without any
+reuse this session would have cost 16.1× the prefill it actually paid, and
+before patch 5 it would have re-prefilled from the first user message on every
+turn that followed a tool result with new user text. The number that was
+"the largest unpriced number on the production path" is now priced, and the
+price is 93.8% reuse.
+
+**What is NOT established here:** there is no `FORGE_MERGE_ACROSS_TOOLS=1` arm
+at this depth. The counterfactual above is §4's synthetic three-turn result plus
+the patch's own mechanism, not a measurement on `s26b5bb`. Running one is a
+single capture session with that one variable flipped, and it would turn the
+strongest claim in this section from an inference into a number.
+
+### The three `rewrite` joins are pi's, not forge's
+
+Turns 26, 27 and 28 are classified `rewrite` rather than `continuation`, which is
+the classifier saying the history below the tail changed. It did, and the cause is
+`vendor/pi-loop-mode/src/context-budget.ts`: above 60% of the window pi appends a
+one-line `[context budget] 34.3k of 98.3k tokens left (65% used)…` notice as an
+**ephemeral** message — injected per LLM call, never written to the session
+(`emitContext()` clones the array first). So it is present in the request forge
+records and gone from the next one, and the message that occupied that index is
+replaced by whatever really came next.
+
+Two shapes appear on the tape, and forge's own patch 1 produces the second:
+
+```
+   turn 25 -> 26   msg[53] was the standalone budget notice; in turn 26 that
+                   index holds the assistant reply instead. A pure tail swap.
+
+   turn 26 -> 27   msg[54] was the real user message WITH the notice fused on
+                   as a second content block; in turn 27 it is the same user
+                   message with one block. pi appended the notice as its own
+                   user message directly after a real one, and forge's
+                   _merge_consecutive() (patches/forge_merge_consecutive.py)
+                   merged the two adjacent user messages into one.
+```
+
+The second shape is forge's and not pi's, and that is checkable rather than
+inferred: `contextBudgetMessage()` always returns `{role: "custom", content:
+[{type: "text", text}]}` — **one** block, its own message, appended last. A
+two-block user message cannot come out of it. The asymmetry on the tape says
+the same thing from the other side: at turn 28 the notice sits at msg[60]
+*unmerged*, because msg[59] is a `tool` message and the roles differ. Merge when
+adjacent and same-role, leave alone otherwise — that is patch 1's rule exactly.
+
+Neither costs anything here, because both land on the **last** message: turns 26,
+27 and 28 prefilled 957, 3,846 and 1,475 tokens against prompts of 63k–68k, at
+98.5% / 94.2% / 97.8% reuse. The merge is worth naming anyway — it converts a
+pure append into an in-place edit of the final user message, which is free only
+for as long as nothing follows it.
+
+**So patch 5 has no gap, and forge is not rewriting the history below the tail.**
+That was the open question; it is closed. Note that the one merge forge *does*
+still perform here is patch 1's — the adjacent case, which patch 5 deliberately
+keeps — and it lands on the last message, where it costs nothing. Reproduce with:
+
+```
+   ./scripts/capture.sh show s26b5bb          # the joins, per turn
+   # cache_n / prompt_n are on response.timings of every completion record
+```
+
 ## 5. Both are now fixed, and the fixes are measured
 
 Written the same day as §1–§4, against a SEPARATELY TAGGED test image and a
