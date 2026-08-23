@@ -250,7 +250,7 @@ sequential awaited loop, so an async factory keeps its position.
    1  stack     .pi/extensions/stack.ts                 tool + command, 0 handlers
    2  browser   .pi/extensions/browser-guard.ts         1 handler
    3  loop      vendor/pi-loop-mode/extensions/index.ts 13 handlers
-   4  guard     .pi/extensions/compaction-guard/        3 handlers
+   4  guard     .pi/extensions/compaction-guard/        7 handlers
    5  subag     vendor/pi-subagents-lite/src/index.ts   4 handlers
    6  prinny    vendor/prinny-channel/extensions/       7 handlers
    7  rtk       vendor/rtk-pi/extensions/index.ts       1 handler
@@ -499,9 +499,9 @@ what pi does with a handler's return value (§3.3).
    event                  stack  browser  loop   guard  subag  prinny  rtk    threading
    ─────────────────────────────────────────────────────────────────────────────────────
    session_start                          ✓             ✓      ✓             ignored
-   session_shutdown                       ✓             ✓      ✓             ignored
+   session_shutdown                       ✓      ✓      ✓      ✓             ignored
    session_before_compact                 ✓      ✓                           LAST TRUTHY WINS
-   session_compact                        ✓                                  ignored
+   session_compact                        ✓      ✓                           ignored
    before_agent_start                     ✓                                  collected
    before_provider_request                ✓                                  threaded
    context                                ✓      ✓                           structuredClone,
@@ -515,12 +515,22 @@ what pi does with a handler's return value (§3.3).
                                                                               EVENT IS MUTATED
    tool_result                     ✓      ✓      ✓                           one object, fields
                                                                               merged per handler
-   agent_start                                                 ✓             ignored
+   agent_start                                   ✓             ✓             ignored
    agent_end                              ✓                    ✓             ignored
-   agent_settled                          ✓                    ✓             ignored
+   agent_settled                          ✓      ✓             ✓             ignored
    ─────────────────────────────────────────────────────────────────────────────────────
-   handler count           0       1      13      3      4      7       1
+   handler count           0       1      13      7      4      7       1
 ```
+
+**Four guard rows were missing until 2026-08-23, and `t5` is what said so.**
+`session_compact`, `agent_start`, `agent_settled` and `session_shutdown` were
+added to `.pi/extensions/compaction-guard` after this table was last written by
+hand, and the table said the guard had three handlers while the source had
+seven. The probe derives the table and diffs it; it had been failing for a while
+with nobody running it, for the reason in §13 — see the note there on the nine
+probes that stopped starting their channel. `agent_start` is the row to notice:
+it went from one handler to two, so it acquired an ORDER, and §3.2 had no line
+for it.
 
 `stack` registers no events at all — a tool and a command and nothing else —
 which is a fact worth being able to watch change. `browser` registers the FIRST
@@ -537,19 +547,36 @@ mattered" is a thing to write down rather than to leave out.
 
 ```
    agent_end                loop  →  prinny
-   agent_settled            loop  →  prinny
+   agent_settled            loop  →  guard  →  prinny
+   agent_start              guard →  prinny
    context                  loop  →  guard
    message_end              loop  →  prinny
    session_before_compact   loop  →  guard
-   session_shutdown         loop  →  subag  →  prinny
+   session_compact          loop  →  guard
+   session_shutdown         loop  →  guard  →  subag  →  prinny
    session_start            loop  →  subag  →  prinny
    tool_call                subag →  prinny →  rtk
    tool_result              browser →  loop  →  guard
 ```
 
-Seven events have exactly one handler and therefore no ordering:
-`agent_start`, `before_agent_start`, `before_provider_request`,
-`message_start`, `message_update`, `session_compact`, `turn_start`.
+Five events have exactly one handler and therefore no ordering:
+`before_agent_start`, `before_provider_request`, `message_start`,
+`message_update`, `turn_start`.
+
+**Eleven, not nine, since 2026-08-23** — the guard's four late handlers turned
+`agent_start` and `session_compact` into ordered events and lengthened
+`agent_settled` and `session_shutdown`. The heading below still says nine
+because the two decisions it names are unchanged; what changed is the count, and
+`w1` is what noticed.
+
+All four of those handlers have one line in them — `releasePiCompaction()`,
+which calls `endCompaction(PI_OWNER)` and is a no-op while the loop or prinny
+holds the lock for a compaction IT asked for. So the ordering they add is
+guard-before-prinny on `agent_start` and `agent_settled`, which is the useful
+direction: prinny's handler runs with pi's hold already released rather than
+racing it. That falls out of load order (`4 guard` before `6 prinny`) rather
+than being arranged, and it is worth writing down precisely because nothing
+would have failed if it had fallen out the other way.
 
 Two of the nine are decisions rather than accidents. **prinny before rtk**, so
 the command a person is asked to approve is the command the model wrote, and a

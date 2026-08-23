@@ -134,7 +134,10 @@ manager.agents.set(ID, {
   stats: { lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 }, toolUses: 3, turnCount: 4, compactionCount: 0 },
 });
 // The one-shot background gate: this is what a real background delegation does.
-coordinator.backgroundAgentIds.add(ID);
+// AM6: `backgroundAgentIds` and `pendingNudges` were folded into a
+// `NudgeSchedule` (`src/spawn/nudge-schedule.ts`) and this probe was not
+// updated with them, so it threw on an undefined Set instead of running.
+coordinator.nudges.markBackground(ID);
 
 console.log("   pi-loop-mode takes the lock (an emergency context recovery), then the\n   background subagent settles:\n");
 loopLock.beginCompaction(loopLock.LOOP_OWNER);

@@ -68,8 +68,12 @@ console.log(`\nw4 [${MODE}] — the command a person approved, and the one that 
 
 // ── a state dir with the relay turned ON ─────────────────────────────────────
 const stateDir = mkdtempSync(join(tmpdir(), "probe-approve-"));
-mkdirSync(join(stateDir, "runtime", "dist"), { recursive: true });
-writeFileSync(join(stateDir, "runtime", "dist", "server.js"), "// stand-in\n");
+// AN2: a stand-in runtime with no `.source-stamp` reads as `stale`, and
+// `startupBlocker()` refuses to start on it — silently, from here. This probe
+// wrote `dist/server.js` alone, which was the whole check before AN2, and has
+// been starting a channel that immediately gave up ever since. See _staged.mjs.
+const { stageStandIn } = await import("./_staged.mjs");
+stageStandIn(stateDir);
 writeFileSync(
   join(stateDir, ".env"),
   "PRINNY_HOMESERVER=https://example.org\nPRINNY_USER_ID=@bot:example.org\nPRINNY_PASSWORD=x\n",

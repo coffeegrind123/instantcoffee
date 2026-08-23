@@ -55,8 +55,12 @@ console.log("\nt1 — the continuation nudge and the compaction that was already
 }
 
 const stateDir = mkdtempSync(join(tmpdir(), "probe-prinny-"));
-mkdirSync(join(stateDir, "runtime", "dist"), { recursive: true });
-writeFileSync(join(stateDir, "runtime", "dist", "server.js"), "// stand-in\n");
+// AN2: a stand-in runtime with no `.source-stamp` reads as `stale`, and
+// `startupBlocker()` refuses to start on it — silently, from here. This probe
+// wrote `dist/server.js` alone, which was the whole check before AN2, and has
+// been starting a channel that immediately gave up ever since. See _staged.mjs.
+const { stageStandIn } = await import("./_staged.mjs");
+stageStandIn(stateDir);
 writeFileSync(join(stateDir, ".env"),
   "PRINNY_HOMESERVER=https://example.org\nPRINNY_USER_ID=@bot:example.org\nPRINNY_PASSWORD=x\n", { mode: 0o600 });
 const inbox = join(stateDir, "inbox.jsonl");

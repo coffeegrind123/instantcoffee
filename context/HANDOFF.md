@@ -1,3 +1,138 @@
+# Handoff — 2026-08-23 (the AO9 sweep, first pass: the probes had rotted)
+
+Fourth session of the day, continuing the entry below. Its brief was items 2 and
+3 — the sharpened AO9 sweep, and `ab3`, which reproduced `markLive` and
+`liveRooms` because *"`extensions/index.ts` imports pi and cannot be loaded
+here"*. Driving that wiring for real found something larger on the way in, and
+**that is the entry**: the probe corpus had been rotting silently for several
+passes, and nobody had run all of it at once.
+
+```
+                                    prev       now
+   five suites, tests               1,447      1,447   (unchanged)
+   lettered probes                    124        124   (130 files, 5 helpers)
+   ab* probe modes                     40         42   (ab3 gained two)
+
+   probes failing at their default mode      3  →  0    (124 of 124 green)
+   prinny-extension probes failing          10  →  0
+```
+
+The 124/124 is a full run of the corpus at default modes, plus every mode of
+every probe touched (16 across the eight repaired multi-mode ones, 42 `ab*`).
+
+Lint 115/115. All five suites green.
+
+## The finding: AN2 stopped nine probes and nothing said so
+
+`runtimeState()` used to be `existsSync(runtime/dist/server.js)`, and nine probes
+wrote exactly that file into a throwaway `PRINNY_STATE_DIR` so they could drive
+the real extension over `_sidecar.mjs`. **AN2 (twenty-third pass) replaced it**
+with `absent | stale | current`, keyed on a `.source-stamp` fingerprint, and
+`startupBlocker()` refuses on `stale` — which is what a stand-in with no stamp
+is.
+
+Every one of them had since been starting a channel that immediately gave up:
+`sendUserMessage` never called, every scenario running against an extension that
+had done nothing, and the resulting failures reading as findings about the code.
+**The box's own staged runtime was `current` throughout** — checked before
+anything was changed, because "the probes fail" and "this checkout is unprepared"
+look identical.
+
+`_staged.mjs` now holds the one line they all needed and asks the shipped
+`runtime-stamp.mjs` for the fingerprint, so the next change to what *ready* means
+cannot land the same way. It **throws** rather than returning a state a caller
+might ignore.
+
+## Three more, and two probes that were right
+
+```
+   u5, v1   AM6 folded `backgroundAgentIds` and `pendingNudges` into a
+            `NudgeSchedule`; both still reached for the old fields. LOUD —
+            TypeError on an undefined Set. Rewritten onto markBackground/queued.
+   z4       AN5 inserted `resetPersistMemo()` between two lines z4 quoted to
+            build its BEFORE column, so it could not build one at all. LOUD, and
+            it says which file to re-read. Its patch is now addressed by SHAPE —
+            "a `runToken++; clearPendingTimer();` pair in a handler that also
+            drops the persist memo" — and asserts it found exactly two.
+   t5, w1   CORRECT. The compaction guard grew four handlers
+            (`session_compact`, `agent_start`, `agent_settled`,
+            `session_shutdown`, one `releasePiCompaction()` each) and §3 of
+            subagents-loop-verifier-proxies.md still said three.
+```
+
+§3.1's table, §3.2's orderings (nine multi-handler events → **eleven**;
+`agent_start` and `session_compact` acquired an order and had no line) and the
+load-order block are all corrected. The new guard-before-prinny ordering is
+written down with its consequence — prinny's handler runs with pi's compaction
+hold already released — because it falls out of load order rather than being
+arranged, and nothing would have failed if it had fallen out the other way.
+
+**Prefer the loud failure.** The two loud ones cost minutes. The nine silent ones
+had been reporting scenario failures as findings about the code for passes.
+
+## AO3's wiring, driven at last
+
+`ab3` gained `wired-now` and `wired-before`: the shipped extension end to end
+over `_sidecar.mjs` — real `deliverInbound`, `outstandingInjections`, `markLive`,
+`liveRooms`, `forwardToMatrix` — with **one operator swapped** on the module it
+imports.
+
+```
+   wired-now      !bob    "The nightly build finished at 03:12."
+   wired-before   !alice  "Someone else was being answered in the same turn…"
+                  !bob    "Someone else was being answered in the same turn…"
+```
+
+Bob is the only person pi ever read. Until this, nothing proved the shipped
+`deliverInbound` calls `uniqueInjection` at all — `ab11`'s gap, one package over.
+
+**jiti's namespace is write-through and read-stale**, and the first control got
+it wrong:
+
+```
+   ns.uniqueInjection = f
+   ns.uniqueInjection === f            false     ← the wrapper is stale
+   jiti(path).uniqueInjection === f    true      ← the module really is patched
+```
+
+It reported "not patched" for a run whose whole output showed it patched. **A
+control that lies in the safe direction is worth exactly as little as one that
+lies in the other.** The shipped control reads `jiti(path)`.
+
+## Next session — in this order
+
+1. **AI.2 and AI.3** still need a phone and a second Matrix account. Unchanged
+   for five sessions; both are written out in §AI.
+2. **The sweep's second question**, which this pass only sampled: 57 `describe`
+   blocks across the five suites read a source file and assert on its TEXT. Most
+   have a probe behind them; the ones named *"the wiring"* are the ones to check,
+   and `rtk-pi`'s *"the handler stands down BEFORE it decides anything else"* and
+   *"the two packages agree on the key"* are the two with text assertions and no
+   obvious probe.
+3. **Run the corpus before trusting it.** The one-liner is in
+   `probes/README.md` under *"Run them. The corpus rots"*. Worth doing at the
+   START of a pass, not the end.
+
+## Still open, carried
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. Unchanged; the repair is a lock file.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unchanged, carried for a fifth pass.
+   · `mcp-stdio.ts`'s reply path is `typeof id === 'number'`; a server echoing a
+     JSON-RPC id as a string drops the reply. Latent here — this stack's sidecar
+     always echoes numbers.
+```
+
+## Housekeeping seen but not touched
+
+A stray `node --experimental-strip-types tests/json-store.test.ts` (pid 853149)
+has been at ~95% of a core for ten hours — an abandoned run from another session,
+not this work. `/free` is the lever.
+
+---
+
 # Handoff — 2026-08-23 (the engine thread: the tape exists, and it found two things on day one)
 
 Continues the engine thread's previous section, further down this file ("the

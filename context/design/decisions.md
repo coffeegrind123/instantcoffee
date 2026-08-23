@@ -8226,3 +8226,114 @@ number checkable. Recounted against `ls`: **129 files, 124 lettered probes.**
 
 **Gates:** 1,447 tests unchanged (516 / 278 / 550 / 75 / 28), lint 115/115,
 123 → **124** lettered probes, **40 `ab*` modes** (was 35) all exiting 0.
+
+## The AO9 sweep, first pass — nine probes that had stopped starting their channel
+
+*Twenty-fifth pass, third session, 2026-08-23.*
+
+The carried brief was item 3: `ab3` reproduces `markLive` and `liveRooms` because
+*"`extensions/index.ts` imports pi and cannot be loaded here"*, and `ab9`/`ab11`
+had already shown that reason to be the SUITE's constraint rather than a probe's.
+Driving the real wiring found something bigger on the way in.
+
+### AO3's wiring, driven
+
+`ab3` gained two modes. `wired-now` and `wired-before` run the shipped extension
+end to end over `_sidecar.mjs`: the real `deliverInbound`, `outstandingInjections`,
+`markLive`, `liveRooms` and `forwardToMatrix`, with **one operator swapped** on
+the module the extension imports — `uniqueInjection` replaced by
+`renderInboundMessage`, which is what `deliverInbound` used to store.
+
+```
+   wired-now      !bob    "The nightly build finished at 03:12."
+   wired-before   !alice  "Someone else was being answered in the same turn…"
+                  !bob    "Someone else was being answered in the same turn…"
+```
+
+Bob is the only person pi ever read. Before AO3 his answer was not sent and
+Alice, whose message pi never took, was told someone else was being answered.
+Until this, nothing proved the shipped `deliverInbound` calls `uniqueInjection`
+at all — the same gap `ab11` closed one package over.
+
+### jiti's namespace: write-through, read-stale
+
+The patch works because `jiti.import()` hands back a wrapper built from the
+module's CJS exports and a write goes THROUGH to the module. A read from the same
+wrapper does not:
+
+```
+   ns.uniqueInjection = f
+   ns.uniqueInjection === f            false     ← the wrapper is stale
+   jiti(path).uniqueInjection === f    true      ← the module really is patched
+   (await jiti.import(path)) === ns    false     ← a fresh wrapper each call
+```
+
+The first draft of the control asserted on `ns` and reported "not patched" for a
+run whose entire output showed it patched. **A control that lies in the safe
+direction is worth exactly as little as one that lies in the other.** The shipped
+control reads `jiti(path)`, the live binding.
+
+### The finding: AN2 stopped nine probes and nothing said so
+
+The first wired run delivered nothing at all. `runtimeState()` used to be
+`existsSync(runtime/dist/server.js)`, and nine probes wrote exactly that file
+into a throwaway `PRINNY_STATE_DIR`. **AN2 (twenty-third pass) replaced it** with
+`absent | stale | current` keyed on a `.source-stamp` fingerprint, and
+`startupBlocker()` refuses on `stale` — which is what a stand-in with no stamp
+is.
+
+```
+   before   10 of 18 probes that load the prinny extension  FAILING
+   after     0 of 18
+```
+
+Every one of them had been starting a channel that immediately gave up:
+`sendUserMessage` never called, every scenario running against an extension that
+had done nothing, and the resulting failures reading as findings about the code.
+The box's own staged runtime was `current` throughout, so this was never an
+unprepared checkout — the honest control for that was run before anything was
+changed.
+
+`_staged.mjs` now holds the one line they all needed, and asks the shipped
+`runtime-stamp.mjs` for the fingerprint rather than writing a constant, so the
+next change to what "ready" means cannot land the same way. `stageStandIn`
+**throws** on a non-`current` state rather than returning it: the failure it
+exists to prevent is a scenario that runs against nothing and reports it as a
+finding.
+
+### Two probes that were right, and a document that had drifted
+
+`t5` and `w1` survived the repair still failing, and both were correct. The
+compaction guard grew four handlers — `session_compact`, `agent_start`,
+`agent_settled`, `session_shutdown`, one line each, all `releasePiCompaction()` —
+and §3 of `subagents-loop-verifier-proxies.md` still said it had three.
+
+```
+   §3.1 event table      four guard rows missing; handler count 3 → 7
+   §3.2 orderings        nine multi-handler events → eleven; `agent_start` and
+                         `session_compact` acquired an order and had no line
+   load-order block      guard "3 handlers" → 7
+```
+
+Both probes derive their table from the seven sources and diff it against the
+document, which is exactly why they could say so. Corrected, and the new
+guard-before-prinny ordering on `agent_start`/`agent_settled` written down with
+its consequence — prinny's handler runs with pi's compaction hold already
+released — because it falls out of load order rather than being arranged, and
+nothing would have failed if it had fallen out the other way.
+
+### What the sweep is, restated for the next pass
+
+Not *"probes whose header says this module imports pi"*. Two questions:
+
+1. **Is the fix held by anything that executes it?** A `describe` block that
+   reads a source file and asserts on its text pins a spelling, not a behaviour.
+   57 such blocks exist across the five suites; most have a probe behind them,
+   and the ones named *"the wiring"* are the ones to check first.
+2. **Does the instrument still work?** Nine probes were green when written and
+   silently stopped years-of-passes later, because the thing they faked changed
+   underneath them. A probe corpus nobody re-runs is a document, not a test.
+
+**Gates:** 1,447 tests unchanged, lint 115/115, 124 lettered probes (130 files,
+five `_` helpers), **42 `ab*` modes** — `ab3` gained two — and the whole corpus
+re-run at its default modes: **124 of 124 green**, from 121.

@@ -180,9 +180,31 @@ async function withoutTheFix(run) {
   const { readFileSync, writeFileSync } = await import("node:fs");
   const path = `${REPO}/vendor/pi-loop-mode/extensions/index.ts`;
   const original = readFileSync(path, "utf8");
-  const patched = original
-    .replace("    runToken++;\n    clearPendingTimer();\n    resetContextRecovery();\n    restoreState(ctx);", "    clearPendingTimer();\n    resetContextRecovery();\n    restoreState(ctx);")
-    .replace("    runToken++;\n    clearPendingTimer();\n    resetTurnBuffers();\n    resetContextRecovery();\n  });", "    clearPendingTimer();\n    resetTurnBuffers();\n    resetContextRecovery();\n  });");
+
+  // AM4's two lines, addressed by the SHAPE that identifies them rather than by
+  // a copy of their surroundings. The first draft quoted four consecutive lines
+  // of each handler; AN5 then inserted `resetPersistMemo()` between two of them,
+  // and this probe could no longer build its BEFORE column at all — loudly,
+  // which is the only reason that was cheap rather than a wrong answer.
+  // `resetPersistMemo()` is called from exactly the two lifecycle handlers AM4
+  // is about, so "a `runToken++; clearPendingTimer();` pair in a handler that
+  // also drops the persist memo" identifies them without quoting anything the
+  // next pass is likely to move.
+  const SITE = "    runToken++;\n    clearPendingTimer();\n";
+  const sites = [...original.matchAll(/ {4}runToken\+\+;\n {4}clearPendingTimer\(\);\n/g)].filter((match) =>
+    original.slice(match.index, match.index + 400).includes("resetPersistMemo();"),
+  );
+  if (sites.length !== 2) {
+    throw new Error(
+      `expected AM4's two session-transition sites, found ${sites.length} — the source has moved. ` +
+        "Re-read `session_start` and `session_shutdown` in vendor/pi-loop-mode/extensions/index.ts " +
+        "before trusting either column.",
+    );
+  }
+  let patched = original;
+  for (const match of [...sites].reverse()) {
+    patched = patched.slice(0, match.index) + "    clearPendingTimer();\n" + patched.slice(match.index + SITE.length);
+  }
   if (patched === original) throw new Error("could not remove the fix — the source has moved");
   const tmp = `${REPO}/vendor/pi-loop-mode/extensions/.z4-before.ts`;
   writeFileSync(tmp, patched);

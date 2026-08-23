@@ -129,7 +129,10 @@ manager.agents.set(ID, {
   result: "Three retry paths: stream-retry.ts:44, agent-runner.ts:210, verify-runner.ts:309.",
   stats: { lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 }, toolUses: 2, turnCount: 3, compactionCount: 0 },
 });
-coordinator.backgroundAgentIds.add(ID);
+// AM6: `backgroundAgentIds` and `pendingNudges` were folded into a
+// `NudgeSchedule` (`src/spawn/nudge-schedule.ts`) and this probe was not
+// updated with them, so it threw on an undefined Set instead of running.
+coordinator.nudges.markBackground(ID);
 
 console.log("   pi-loop-mode holds the lock; the background subagent settles and its\n   nudge is held (AH1). Then the session ends.\n");
 loopLock.beginCompaction(loopLock.LOOP_OWNER);
@@ -138,7 +141,7 @@ await sleep(350);
 
 const heldBefore = notices.filter((n) => /result held/.test(n)).length;
 check("the nudge is held rather than sent", heldBefore === 1);
-check("and it is still sitting in the batch set", coordinator.pendingNudges.has(ID));
+check("and it is still sitting in the batch set", coordinator.nudges.queued().includes(ID));
 
 // This is `session_shutdown`.
 coordinator.dispose();
