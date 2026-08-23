@@ -1811,6 +1811,24 @@ the recipe it was written with (a default subagent) cannot reach the path. The
 first BEFORE column produced the same answer as NOW — see §AI.7, which now
 carries the recipe that does reach it.
 
+**Measured 2026-08-23**, both columns, headless against the local model, with a
+relocated agent directory holding the skill and an agent whose frontmatter
+preloads it:
+
+```
+   NOW     MARKER-TOKEN-9F42-RELOCATED
+   BEFORE  (Skill "relocated-marker" not found in .pi/skills/, …)
+```
+
+**And the "not found" above is the mild case.** It is what a *fresh* relocation
+looks like, where the old directory is empty. Probe `ab11`'s `preload` mode puts
+a skill in each directory and shows the other half: with a skill of the same name
+still sitting in `~/.pi/agent/skills`, BEFORE does not report a miss — it loads
+the OLD file and hands the child its content, silently, with no surface anywhere
+saying which directory answered. A relocation that left the old skills behind was
+therefore not "skills missing"; it was **skills quietly out of date**, which is
+the harder of the two to notice and the one nobody would have gone looking for.
+
 **Four spellings of one variable.** All four readers of `PI_CODING_AGENT_DIR` in
 `prinny-channel` — `src/config.ts`, `server/src/state.ts`,
 `server/bin/prinny-channel.mjs` and `tests/harness.ts` — wrote
@@ -2297,6 +2315,13 @@ this pass's 118 → 126. The twenty-fourth handoff's 114 → 122 is the
 minus-helpers column. **Neither was wrong; they were unlabelled.** The number to
 quote from here on is **121 lettered probes**, and `context/testing/probes/
 README.md` is where that definition belongs.
+
+**Update, 2026-08-23.** The definition held; the number moved and one row of it
+did not. `ab9`, `ab10` and `ab11` bring it to **124 lettered probes / 129 files**.
+The all-files row in `probes/README.md` was left at `126` while the two derived
+rows were updated by hand — which is the failure mode this table was written to
+prevent. Recounted against `ls` and noted there. Quote the lettered number, and
+**recount it rather than incrementing it.**
 
 
 ### 12.6 Done on this box for the first time

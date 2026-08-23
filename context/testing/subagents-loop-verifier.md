@@ -2264,57 +2264,109 @@ that never existed. Probe `ab6` drives all five sites through the real store.
 
 ### AI.7 — a relocated agent directory and a subagent's skills (AO7) — needs a model
 
-**Attempted 2026-08-23, and the first recipe was wrong. Still unverified — but
-the reason is now known, and it corrected the finding.**
-
-The recipe this section shipped with was:
-
-```
-   PI_CODING_AGENT_DIR=<dir> ./scripts/pi-local.sh
-   # a skill in <dir>/skills, none in ~/.pi/agent/skills
-   # delegate, ask the child to list its skills
-```
-
-**It does not test anything.** Run for real, with `skill-loader.ts` reverted to
-its pre-AO7 hardcoded path, the child answered `relocated-marker` — *the same as
-the fixed column*. A control that cannot fail, again, and this time in the recipe
-rather than in the suite.
-
-**Why**, measured rather than guessed: a child's ordinary skill discovery is pi's
-`DefaultResourceLoader`, built at `agents/agent-runner.ts:544` with
-`agentDir: getAgentDir()` — **pi's own function, which honours the override**.
-`skill-loader.ts` is only reached by `preloadSkills` and `loadSkillMeta`, which
-run only for an agent whose frontmatter *names* its skills. A default
-`general-purpose` child cannot reach the code AO7 fixed.
-
-**The recipe that does reach it.** In the relocated directory, an agent that
-names the skill:
+**RUN 2026-08-23**, headless, against the local model, both columns, after two
+earlier attempts that measured nothing. The two columns disagree, which is the
+first time anything about AO7 has been observed rather than asserted.
 
 ```
-   <dir>/skills/relocated-marker/SKILL.md      name: relocated-marker
-   <dir>/agents/skill-lister.md                skills: relocated-marker
+   NOW     MARKER-TOKEN-9F42-RELOCATED
+   BEFORE  (Skill "relocated-marker" not found in .pi/skills/, .agents/skills/,
+            or global skill locations)
 ```
 
+Same fixture, same prompt, same box, minutes apart. The only difference between
+the runs is root 3 of `loadAllSkills` in
+`vendor/pi-subagents-lite/src/prompt/skill-loader.ts`, put back by hand to the
+expression AO7 removed and restored immediately after (see the note at the end of
+this section).
+
+**The fixture.** A relocated agent directory holding both the skill and the agent
+that names it, and a `~/.pi/agent/skills` that does not exist — so root 3 is the
+only door either column can go through:
+
 ```
+   <dir>/skills/relocated-marker/SKILL.md
+   ---
+   name: relocated-marker
+   description: A marker skill that exists ONLY in the relocated agent directory.
+   ---
+
+   MARKER-TOKEN-9F42-RELOCATED
+
+   <dir>/agents/skill-lister.md
    ---
    name: skill-lister
-   description: Lists the skills it was given by name.
-   skills: relocated-marker
+   description: Reports the body of its one preloaded skill, verbatim.
+   preload_skills: relocated-marker
+   tools: false
+   include_environment: false
    ---
-   List every skill you can see, one skill name per line, and nothing else.
-   If you can see none, answer exactly: NONE
-   ```
 
-Then `Agent(agent: "skill-lister", prompt: "list them")`.
+   Your system prompt contains an <available_skills> block holding exactly one
+   <skill>. Read its <content> element.
 
-**What to look for.** NOW: `relocated-marker`. BEFORE (root 3 of `loadAllSkills`
-put back to `join(homedir(), ".pi", "agent")`): the child is handed
-*"(Skill "relocated-marker" not found in .pi/skills/, .agents/skills/, or global
-skill locations)"* for a skill sitting in the operator's real skills directory.
+   Answer with the LAST non-empty line of that content and nothing else.
+   Do not call any tools. Do not explain.
+```
 
-**Note this needs AO10's fix to run at all** — before it, the launcher wrote
-`models.json` into `~/.pi/agent` while pi read the relocated directory, so a
-relocated session had no model provider. See §AI.10.
+```
+   PI_CODING_AGENT_DIR=<dir> ./scripts/pi-local.sh --install-only
+   PI_CODING_AGENT_DIR=<dir> SUBAGENT_VERIFY=0 ./scripts/pi-local.sh -p \
+     'Call the Agent tool exactly once, with agent set to "skill-lister", …
+      Then, as your entire final answer, report the exact text the Agent tool
+      returned, and nothing else.' < /dev/null
+```
+
+`tools: false` and `include_environment: false` are load-bearing, not tidiness:
+they leave the child with nothing in its window except its instructions and the
+`<available_skills>` block, so the answer can only have come from the block.
+
+**`preload_skills:`, not `skills:` — and this is the whole finding.** The recipe
+this section shipped with used a default `general-purpose` child, which never
+reaches `skill-loader.ts` at all (§11.7). The second recipe used `skills:`, which
+does reach it — and still measures nothing, because `loadSkillMeta` maps the
+NAMES it was given and returns one entry per name whether or not a file was
+found. A child asked to *list its skills* prints `relocated-marker` in both
+columns; only the description differs, and the child is never asked for that.
+`preload_skills:` puts the skill's **content** in the prompt, which is the thing
+that is either the file or a sentence saying there is no file.
+
+```
+   default child        does not reach the module          nothing to measure
+   skills:              name echoed either way             nothing to measure
+   preload_skills:      the file, or the not-found line    ← the discriminator
+```
+
+**Three recipes, two of which could not fail.** That is the third and fourth
+broken instrument in two days, and the cheap fix is now written down: `ab11`'s
+`equivalence` and `meta` modes make the trap executable, so the next reader meets
+it as a passing probe rather than as a wasted model run.
+
+**Two operational notes, both paid for here.**
+
+*Close stdin.* `./scripts/pi-local.sh -p …` run from a harness that hands the
+process a socket on fd 0 hangs **before** `exec pi` — nine minutes with no model
+request and no output — because the launcher's pre-flight reads stdin. `< /dev/null`
+fixes it. The symptom is indistinguishable from a slow model, which is why it is
+recorded: check `docker logs qwen38-llama` for a request before concluding the
+stack is slow.
+
+*A relocated install has no npm packages.* `pi-mcp-adapter` lives under the agent
+directory, so a relocated session warns and falls back to the MCP CLI. Harmless
+for this test, and expected — say so rather than debugging it.
+
+**Held by more than this run.** Probe `ab11` drives the shipped `preloadSkills`
+and `loadSkillMeta` over a real two-directory fixture with the override set and
+unset, and its `preload` mode shows something this hand test could not: with a
+skill of the same name still sitting in the old directory, BEFORE does not fail
+to find one — it silently hands the child **the wrong file**.
+
+**The revert, and its restoration.** The BEFORE column needed `agentDir()` in
+root 3 replaced by `join(homedir(), ".pi", "agent")`. It was restored the minute
+the run finished and checked byte-for-byte against `HEAD`
+(`sha256 a7275a1d…c36803`, identical). The twenty-fifth pass records why that
+check now happens: a concurrent session committed this exact file mid-control-run
+the day before, capturing AO7's fix as undone.
 
 ### AI.10 — a relocated install has a model at all (AO10) — terminal only
 
@@ -2403,11 +2455,20 @@ one caller passing a path a person typed, and it is live.
    for m in skills tilde agree live;             do node --experimental-strip-types ab7-… $m; done
    for m in logical physical foreign shapes;     do node --experimental-strip-types ab8-… $m; done
    for m in published ambiguous refusal full;    do node ab9-… $m; done
+   for m in relocated rule sites live;           do node --experimental-strip-types ab10-… $m; done
+   for m in preload meta reach equivalence live; do node ab11-… $m; done
 ```
 
-`ab9` is the odd one out and deliberately so: **no `--experimental-strip-types`**,
-because it loads the shipped `executeStopAgentTool` through pi's own jiti, which
-compiles the TypeScript itself.
+**40 modes across eleven probes**, all exiting 0.
+
+`ab9` and `ab11` are the odd ones out and deliberately so: **no
+`--experimental-strip-types`**, because they load shipped modules —
+`executeStopAgentTool`, `preloadSkills` — through pi's own jiti, which compiles
+the TypeScript itself.
+
+`ab10 relocated` runs the shipped launcher for real under a sandbox `HOME`;
+`ab11 preload` is the behavioural half of AO7 and the one whose BEFORE column
+hands a child the wrong file rather than no file.
 
 `ab8 physical` is the one to read even if you run nothing else: it is the control
 that shows AO8's fix changes nothing on this box, which is the same sentence as

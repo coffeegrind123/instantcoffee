@@ -16,16 +16,27 @@ right about different things. Settled here, once, so the next handoff can quote 
 number that means something (`…-identity.md` §12.5):
 
 ```
-   ls context/testing/probes/*.mjs                                  126
+   ls context/testing/probes/*.mjs                                  129
      minus the four shared helpers  _host  _register  _sidecar  _ts-hook
-                                                                    124
+                                                                    125
      minus one un-lettered one-off  verify-prior-fixes.mjs
-                                                                    123  ← probes
+                                                                    124  ← probes
 ```
 
+**The first row went stale and the block still subtracted correctly.** It read
+`126`, then `126 − 4 = 124` — which is not what 126 minus 4 is. `126` was exact
+when §12.5 of the identity write-up settled these three columns; `ab9` and `ab10`
+then arrived without it, and rows two and three were updated by hand from the
+tree while row one was not. So a block whose entire purpose is to make a number
+*checkable* spent a session quoting the right answer from the wrong premise, and
+the subtraction sitting between them hid it — 124 and 123 were correct, just not
+for the reason printed. Recounted against `ls`, 2026-08-23. **A count is a claim,
+and a derived count can be right while the claim it is derived from is not.**
+
 **A probe is a lettered file** — `<letter(s)><n>-<what-it-shows>.mjs` — and there
-are **123** of them, up from 113 before the twenty-fourth pass (121 after it;
-`ab9` and `ab10` were added the session after — see the AO9 addendum at the end). The four `_`
+are **124** of them, up from 113 before the twenty-fourth pass (121 after it;
+`ab9` and `ab10` were added the session after, and `ab11` the session after that
+— see the AO9 addendum at the end). The four `_`
 files are shared fixtures, not probes; `verify-prior-fixes.mjs` is a one-off
 re-check from the second audit, kept because it still runs.
 
@@ -859,7 +870,7 @@ predecessor (`json-store.ts`, `runtime-stamp.mjs`, `notice-buffer.ts`), the
 BEFORE column is the old EXPRESSION next to the new one, named and quoted, so a
 reader can check that what is being called BEFORE is what actually shipped.
 
-## The twenty-fourth pass (AO1–AO10) — `ab1`–`ab10`
+## The twenty-fourth pass (AO1–AO10) — `ab1`–`ab11`
 
 All seven defects these were written for are **fixed**. Each prints BEFORE and
 NOW, so running one is its own control. The write-up is
@@ -894,6 +905,7 @@ homeserver's clock, another build of ourselves.
 | `ab9-the-wiring-no-probe-drove.mjs` | **AO9** — AO1's fix was held by nothing: `agent-id.test.ts` and `ab1` both drive the extracted rule, and neither touches `tool-execution.ts:450`, the call that uses it | `for m in published ambiguous refusal full; do node ab9-… $m; done` | The **shipped** `executeStopAgentTool`, loaded through pi's own jiti the way `q2` does, over a real `AgentManager`. BEFORE swaps `resolveId` on the instance for the exact `getRecord` lookup the tool used to make; nothing else differs. `published`: 50 minted ids asked with the eight every surface prints — **BEFORE 0/50 stopped, NOW 50/50**, and the child's `abortController` really aborted rather than merely reported. `ambiguous`: two records sharing the published eight, and the tool names both candidates at a length that tells them apart instead of stopping one. `refusal` is the one to read — the refusal sentence is *identical* in both columns (`Agent 5e3ae827 not found. Running agents: e14e3787 (general-purpose), 06aae107 (explore)`), and each offered id is retried **through the tool**: **0 of 2 accepted BEFORE, 2 of 2 NOW.** That is the loop with no exit, executable. No `--experimental-strip-types`: jiti compiles the TypeScript. |
 
 | `ab10-the-directory-the-launcher-installed-into.mjs` | **AO10** — `scripts/pi-local.sh` asked where pi's agent directory is in four places and answered two ways; the one that ignored the override is where it writes `models.json` | `for m in relocated rule sites live; do node --experimental-strip-types ab10-… $m; done` | `relocated` runs the **shipped launcher** for real under a sandbox `HOME` and a relocated `PI_CODING_AGENT_DIR`, and checks which directory `models.json` lands in — BEFORE `$HOME/.pi/agent`, which pi does not read, NOW the relocated one, with `forge` in it. On this box before the fix, with the control in the same minute: `pi --list-models` found `forge`, and the same command with the override set found nothing — **a relocated install had no provider for the local model at all**. `rule` compares `agent_dir()` in bash against `agentDir()` in TypeScript, value for value, including `"  "`, which pi means as a *relative directory* and not as *unset* (AO7); the harness uses a sentinel rather than `.trim()`, because trimming destroys exactly the case being tested — the probe failed on it first. `sites` asserts the shipped launcher has one answer: no agent-dir path built from `$HOME`, no inline read of the override, with the helper's existence as the control so "none found" cannot mean "nothing looked". `live` prints what both languages answer here. |
+| `ab11-the-skills-a-named-list-was-handed.mjs` | **AO7** — root 3 of `loadAllSkills` hardcoded `join(homedir(), ".pi", "agent")`, so on a relocated install an agent that NAMES its skills looked them up where pi does not keep them. Held for two sessions by three assertions that only READ THE SOURCE | `for m in preload meta reach equivalence live; do node ab11-… $m; done` | The shipped `preloadSkills` / `loadSkillMeta`, through pi's jiti, over a fixture with **two real agent directories, each holding a different skill**, and an empty cwd so root 3 is the only door. BEFORE is the same function with `PI_CODING_AGENT_DIR` unset, which is what makes `agentDir()` return the pre-AO7 expression — `equivalence` asserts that identity rather than assuming it, so the column really is the removed code and not a stand-in. `preload` is the finding, and it prints more than the write-up claimed: BEFORE does not merely miss the relocated skill, it **hands the child the OLD directory's file instead, silently**. Its control is that each skill IS found in the column whose directory root 3 names, so neither absence can be a typo. `meta` is the trap — `skills:` echoes the NAME in both columns, which is why two hand-test recipes for this measured nothing (§AI.7). `reach` reads the shipped `DEFAULT_AGENTS` to show `general-purpose` declares no skills list and so never enters this module at all, with a driven control that an agent which does name one gets the file. No `--experimental-strip-types`: jiti compiles the TypeScript. |
 
 `ab1`–`ab8` need `--experimental-strip-types`: they load `.ts` modules directly.
 **`ab9` does not** — it goes through pi's own jiti, which compiles the TypeScript

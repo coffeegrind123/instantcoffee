@@ -17,14 +17,36 @@
  * CONFIG_DIR_NAME, "agent")`, and `PI_CODING_AGENT_DIR` is what a relocated
  * install sets. The twenty-third pass wrote `src/agent-dir.ts` so this question
  * has one answer, converted the two readers it had found, and did not scan for a
- * third. This was the third, and it is the one that decides which skills a
- * SUBAGENT is given: on a relocated install the parent session loads the
- * operator's skills from `$PI_CODING_AGENT_DIR/skills` and every child loads
- * them from a `~/.pi/agent/skills` that pi does not use — which for a fresh
- * relocation is not there at all.
+ * third. This was the third.
+ *
+ * ## Which children — corrected on the twenty-fifth pass, by measuring it
+ *
+ * This header used to say root 3 "decides which skills a SUBAGENT is given",
+ * full stop. It does not. A child's ORDINARY discovery is pi's own
+ * `DefaultResourceLoader`, built at `agents/agent-runner.ts:544` with
+ * `agentDir: getAgentDir()` — pi's function, which honours the override and
+ * always did. This module is reached only from `buildPrompt`, and only for an
+ * agent whose frontmatter NAMES its skills (`skills:` or `preload_skills:`).
+ * A default `general-purpose` child never comes through here, which is why the
+ * defect went unnoticed for as long as it did — and why the first two hand-test
+ * recipes for it produced the same answer in both columns.
+ *
+ * What it did cost, on a relocated install, for an agent that names its skills:
+ *
+ * ```
+ *   old dir empty        (Skill "x" not found in .pi/skills/, …)  ← visible
+ *   old dir still there  the OLD file's content, silently         ← worse
+ * ```
+ *
+ * The second row is the one to remember. Nothing prints which directory
+ * answered, so a relocation that left the old skills behind did not look like
+ * "skills missing" — it looked like nothing at all.
  *
  * `tests/agent-dir.test.ts` now carries the scan, so a fourth cannot be added
- * quietly.
+ * quietly. It is a SOURCE scan, though, and would still pass if this call asked
+ * `agentDir()` and threw the answer away — probe `ab11` is the behavioural half,
+ * and §AI.7 of `context/testing/subagents-loop-verifier.md` is the run against a
+ * real model.
  *
  * Pi's loadSkills handles: .gitignore/.ignore/.fdignore, symlinks (follow +
  * canonical-path dedup), YAML frontmatter, name validation.

@@ -8136,3 +8136,93 @@ recipe has not been run.
 `pi-subagents-lite`; `agent-dir.test.ts` 15 → 21), lint 115/115, 122 → **123**
 lettered probes. Control run: 2 of 21 in `agent-dir.test.ts`, and 2 of `ab10`'s
 4 modes exit 1.
+
+## AO7, finished — the run that finally disagreed, and a scan that could not
+
+*Twenty-fifth pass, second session, 2026-08-23.*
+
+The previous entry closed with §AI.7 marked **unverified** and a corrected recipe
+nobody had run. It has now been run, both columns, headless against the local
+model. **They disagree.**
+
+```
+   NOW     MARKER-TOKEN-9F42-RELOCATED
+   BEFORE  (Skill "relocated-marker" not found in .pi/skills/, .agents/skills/,
+            or global skill locations)
+```
+
+### The corrected recipe was still wrong, and this is the third one
+
+`skills:` reaches `skill-loader.ts` — that much was right. It still cannot
+measure anything, because `loadSkillMeta` returns **one entry per name it was
+given**, found or not. A child asked to list its skills prints
+`relocated-marker` in both columns; only the description differs, and nothing
+asks the child for a description.
+
+```
+   recipe 1   a default general-purpose child   never enters the module
+   recipe 2   skills:                           the NAME is echoed either way
+   recipe 3   preload_skills:                   the file, or the not-found line
+```
+
+Only the third puts something in the child's window that is different between the
+columns. **Three recipes for one hand test, two of which could not fail** — after
+AO9's `Map.get` test and `ab9`'s first draft, that is four broken instruments in
+two days, and the rate is the finding. The response that works is always the
+same: stop writing the test and go read which door the code goes through.
+
+### A source scan is not a behavioural test, and here is the measurement
+
+AO7 shipped with three assertions in `tests/agent-dir.test.ts`, all of which read
+`skill-loader.ts` as text. Two controls, both run and both restored:
+
+```
+   root 3 put back to join(homedir(), ".pi", "agent")
+       suite  516 tests, 2 failed          the scan catches THAT spelling
+       ab11   3 of 5 modes exit 1
+
+   agentDir() call left EXACTLY as shipped, includeDefaults: false
+       suite  516 tests, 0 failed     ←    every assertion still matches
+       ab11   3 of 3 driven modes exit 1
+```
+
+The second is the entry. Root 3 is gone, the right value is computed and thrown
+away, the defect is worse than the original — and the tests that exist to pin
+this fix all pass. **A test that reads the source cannot tell a call from a use.**
+
+### What the hand test could not see, and the probe could
+
+§11.7 recorded the cost of AO7 as a child handed *"(Skill "x" not found…)"*. That
+is the **fresh-relocation** case, where the old directory is empty. `ab11`'s
+`preload` mode populates both directories and shows the other half:
+
+```
+   NOW      relocated-marker  FOUND       home-marker  not found
+   BEFORE   relocated-marker  not found   home-marker  FOUND   ← the old file,
+                                                                 silently
+```
+
+A relocation that left its old skills behind did not present as *skills missing*.
+It presented as nothing at all, with the child quietly working from a stale copy
+and no surface anywhere naming which directory answered. §11.7 and
+`skill-loader.ts`'s header now carry both rows.
+
+### An operational note that cost nine minutes
+
+`./scripts/pi-local.sh -p …` launched from a harness that hands fd 0 a socket
+**hangs before `exec pi`** — no model request, no output, indistinguishable from
+a slow model. `< /dev/null` fixes it. Recorded in §AI.7 with the way to tell the
+two apart: look for a request in `docker logs qwen38-llama` before concluding the
+stack is slow.
+
+### The probe count was wrong, and the arithmetic under it was right
+
+`context/testing/probes/README.md` opened with `ls *.mjs → 126`, then subtracted
+four helpers to get `124`. `126` was exact when §12.5 settled those columns;
+`ab9` and `ab10` then arrived and rows two and three were updated by hand from
+the tree while row one was not. Both derived rows were therefore right and both
+were derived from a wrong premise — in a block whose entire purpose is to make a
+number checkable. Recounted against `ls`: **129 files, 124 lettered probes.**
+
+**Gates:** 1,447 tests unchanged (516 / 278 / 550 / 75 / 28), lint 115/115,
+123 → **124** lettered probes, **40 `ab*` modes** (was 35) all exiting 0.

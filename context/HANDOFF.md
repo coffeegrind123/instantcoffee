@@ -1,3 +1,137 @@
+# Handoff — 2026-08-23 (AO7 finished, and a scan that could not fail)
+
+Third session of the day, continuing the entry below. Its item 1 was **finish
+AI.7**. Done — **both columns run, and they disagree**, which is the first time
+anything about AO7 has been observed rather than asserted. The session's finding
+is not AO7 though; it is what the two control runs said about the tests that were
+already holding it.
+
+```
+                                    prev       now
+   vendor/pi-subagents-lite  tests   516        516
+   vendor/pi-loop-mode       tests   278        278
+   vendor/prinny-channel     tests   550        550
+   .pi/extensions/compaction-guard    75         75
+   vendor/rtk-pi             tests    28         28
+                                   ─────      ─────
+                                   1,447      1,447
+   lettered probes                    123        124    (ab11 is new)
+   ab* probe modes                     35         40
+```
+
+All five suites green, lint 115/115, **all 40 `ab*` modes exit 0**.
+
+## AI.7 — run, both columns, and they disagree
+
+```
+   NOW     MARKER-TOKEN-9F42-RELOCATED
+   BEFORE  (Skill "relocated-marker" not found in .pi/skills/, .agents/skills/,
+            or global skill locations)
+```
+
+Same fixture, same prompt, same box, minutes apart; the only difference is root 3
+of `loadAllSkills`, reverted by hand and **restored and checked byte-for-byte
+against `HEAD`** the minute the run finished (that check exists because a
+concurrent session committed this exact file mid-control-run yesterday).
+
+**The corrected recipe was still wrong.** `skills:` does reach the module — and
+still measures nothing, because `loadSkillMeta` returns one entry per name it was
+*given*, found or not. The name is echoed in both columns. Only
+`preload_skills:`, which puts the skill's **content** in the prompt, puts
+something in the child's window that differs.
+
+```
+   recipe 1   a default general-purpose child   never enters the module
+   recipe 2   skills:                           the NAME is echoed either way
+   recipe 3   preload_skills:                   the file, or the not-found line
+```
+
+Three recipes, two of which could not fail — after AO9's `Map.get` test and
+`ab9`'s first draft, **four broken instruments in two days**.
+
+## The finding: a source scan cannot tell a call from a use
+
+AO7 shipped held by three assertions in `tests/agent-dir.test.ts`, all of which
+read `skill-loader.ts` **as text**. Two controls, both run, both restored:
+
+```
+   root 3 back to join(homedir(), ".pi", "agent")
+       suite  516 tests, 2 failed        ← the scan catches THAT spelling
+       ab11   3 of 5 modes exit 1
+
+   the agentDir() call left EXACTLY as shipped, includeDefaults: false
+       suite  516 tests, 0 failed        ← every assertion still matches
+       ab11   3 of 3 driven modes exit 1
+```
+
+The second is the one to keep. Root 3 is gone, the right value is computed and
+discarded, the defect is *worse* than the original — and every test that exists
+to pin this fix passes. `ab11` is the behavioural half that was missing.
+
+## What the hand test could not see
+
+§11.7 recorded AO7's cost as a child handed *"(Skill "x" not found…)"*. That is
+the **fresh-relocation** case. `ab11 preload` puts a skill in *both* directories:
+
+```
+   BEFORE   relocated-marker  not found   home-marker  FOUND   ← the OLD file,
+                                                                 silently
+```
+
+A relocation that left its old skills behind did not present as *skills missing*.
+It presented as **nothing at all** — the child working from a stale copy, with no
+surface anywhere naming which directory answered. §11.7 and `skill-loader.ts`'s
+header now carry both rows, and the header's *"decides which skills a SUBAGENT is
+given"* is corrected to the narrower claim §11.7 already made.
+
+## Two things that cost time, written down so they cost nobody else any
+
+**`< /dev/null`.** `./scripts/pi-local.sh -p …` from a harness that hands fd 0 a
+socket **hangs before `exec pi`** — nine minutes, no model request, no output.
+Indistinguishable from a slow model. Check `docker logs qwen38-llama` for a
+request before concluding the stack is slow.
+
+**A relocated install has no npm packages**, so `pi-mcp-adapter` is absent and pi
+falls back to the MCP CLI with a warning. Expected; not a fault.
+
+## The probe count was wrong and the arithmetic under it was right
+
+`probes/README.md` opened with `ls *.mjs → 126`, then subtracted four helpers to
+get `124`. `126` was exact when §12.5 settled those columns; `ab9` and `ab10`
+then arrived, rows two and three were updated by hand from the tree, **row one
+was not**. Both derived rows were right and both were derived from a wrong
+premise — in a block whose entire purpose is to make a number checkable.
+Recounted against `ls`: **129 files, 124 lettered probes.** Same lesson as
+AO10's three-place sentence, one document over: **recount, do not increment.**
+
+## Next session — in this order
+
+1. **AI.2 and AI.3** still need a phone and a second Matrix account. Unchanged
+   for four sessions; both are written out in §AI.
+2. **The AO9 sweep**, still carried, and this session sharpened it: the candidate
+   set is not only *"probes whose header says this module imports pi"* but also
+   **every fix held solely by a source-text assertion**. `tests/agent-dir.test.ts`
+   was one and `ab11` closed it; grep the suites for `readFileSync(new URL(` and
+   `assert.match(code` and check each one has a probe that drives the thing.
+3. `ab3` (AO3, `markLive`/`liveRooms` in `extensions/index.ts`) is still eight
+   quoted lines with nothing executing them, and `ab9`/`ab11` both prove jiti
+   gets round it.
+
+## Still open, carried
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. Unchanged; the repair is a lock file.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unchanged, carried for a fifth pass.
+   · `mcp-stdio.ts`'s reply path is `typeof id === 'number'`; a server echoing a
+     JSON-RPC id as a string drops the reply. Latent here — this stack's sidecar
+     always echoes numbers.
+   · The AO9 sweep above.
+```
+
+---
+
 # Handoff — 2026-08-23 (AO10, and three controls that could not fail)
 
 Continuation of the entry below, same day. The brief was its item 1: **AI.7**,
