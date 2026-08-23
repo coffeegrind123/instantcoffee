@@ -9,6 +9,30 @@ own `tests/` directories; these exist because a reproduction that shows the
 They hardcode the repo path (`/home/claudeuser/qwen3.8-forge`) and pi's install
 path. Adjust the constants at the top if either moves.
 
+## How many there are, and what counts as one
+
+Two different counts have been quoted in two different documents, and both were
+right about different things. Settled here, once, so the next handoff can quote a
+number that means something (`…-identity.md` §12.5):
+
+```
+   ls context/testing/probes/*.mjs                                  126
+     minus the four shared helpers  _host  _register  _sidecar  _ts-hook
+                                                                    123
+     minus one un-lettered one-off  verify-prior-fixes.mjs
+                                                                    122  ← probes
+```
+
+**A probe is a lettered file** — `<letter(s)><n>-<what-it-shows>.mjs` — and there
+are **122** of them, up from 113 before the twenty-fourth pass (121 after it, and
+`ab9` was added the session after — see the AO9 addendum at the end). The four `_`
+files are shared fixtures, not probes; `verify-prior-fixes.mjs` is a one-off
+re-check from the second audit, kept because it still runs.
+
+Earlier numbers in `HANDOFF.md` and in the pass write-ups (111 → 118 → 126 → 127)
+are the first column, all files; 114 → 122 → 123 is the second. Neither was wrong
+and neither said which it was.
+
 | Probe | Finding | Run with | What it shows now (post-fix) |
 | --- | --- | --- | --- |
 | `g1-judge-double-turn.mjs` | **T1** — a `maxTurns: 1` run took two provider calls and returned the second one's text | `node g1-judge-double-turn.mjs` | `model calls: 1`, and the judge's real `VERDICT:` line comes back. Before the fix: `2`, and the verdict was replaced by the reply to "wrap up immediately". |
@@ -734,3 +758,209 @@ has to prove the path is its own — under `tmpdir()`, one segment, with a known
 prefix — immediately above the destructive call, not merely where the path was
 queued. `y9` and that suite both do it twice, once at queue time and once at
 delete time.
+
+## The twenty-second pass (AM1–AM6) — `z1`–`z5`
+
+All six defects these were written for are **fixed**. Each prints BEFORE and NOW,
+so running one is its own control. The write-up is
+`context/design/subagents-loop-verifier-concurrency.md`: **§10.2 is the
+interleaving ledger** — every `await` in the stack a handler, a settlement chain
+or a callback can be suspended at, with how long it can suspend for and what
+re-reads the world afterwards — §10.2.1 draws the six by DISTANCE, and §11 has the
+fix and the control-run failing count for each.
+
+The axis: **for every `await` inside a handler, a settlement chain or a callback,
+name what ELSE can run at that point — and then name what the code assumes has
+not changed by the time it resumes.**
+
+Three questions per await, and the first is what separates a finding from a
+hazard: **how long can this suspend?** Four of the six are about an await measured
+in seconds to minutes — a 120 s MCP handshake, a 120 s goal check, a 300 s
+verification deadline, a summariser call on a 27B — and the fifth is about a
+callback pi holds across a session teardown, which has no bound at all.
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `z1-the-stop-that-could-not-see-the-start.mjs` | **AM1** — `stopChannel` read `child`, which is null for the whole of a start's handshake, so a stop that landed in that window did nothing and the sidecar it could not see published itself afterwards | `for m in stop restart clean fail; do node --experimental-strip-types z1-… $m; done` | The real `ChannelLifecycle` with a fake sidecar that records whether it was stopped and whether it went on to log into Matrix. The window is 27.5 s of matrix-js-sdk import with a 120 s budget, not microseconds. `stop`: BEFORE the stopped channel came up anyway and logged in. `restart` is the one worth reading — BEFORE the stop did nothing AND the start was handed the first start's promise, so `/prinny restart` reported that one's outcome as its own; NOW two sidecars are built and only the second holds the Olm store. `clean` and `fail` are the controls. |
+| `z2-the-compaction-the-lock-could-not-see.mjs` | **AM2** — three senders ask "is somebody compacting this session right now?" and all three could only see the two EXTENSIONS that compact; the third compactor is pi | `for m in parent child extension release; do node --experimental-strip-types z2-… $m; done` | The real `compaction-guard`, read through the real `pi-subagents-lite`, `pi-loop-mode` and `prinny-channel` copies — i.e. through the three actual readers, not the writer's view of itself. `parent` prints what each sender would decide: BEFORE all three would have sent into it, NOW all three defer. `child` is the control that had to be got right — the lock is process-global and the question is per-session, so a subagent's compaction takes nothing and a child's turn ending does not release the parent's. `extension` shows the guard leaving `pi-loop-mode`'s own hold alone. `release` walks all four rungs, because `session_compact` fires only on the success path. |
+| `z3-the-teardown-that-ended-the-verifier-s-session.mjs` | **AM3** — `AgentManager.dispose()` disposed `execution.session`, which is the session a REPAIR runs in, and left the verifier running with a handle to it | `for m in order answer clear; do node --experimental-strip-types z3-… $m; done` | `order` prints what each teardown ends and in what sequence. `answer` is the one to read: it drives the real `verifyAnswer` for both orders and prints **the sentence the parent model receives**. BEFORE — *"this answer was checked against the task and did not address it … Treat it as unreliable"*, about a child that was right. NOW — *"the check did not complete, so this answer went out unchecked"*. A disposed `AgentSession` still accepts `prompt()`; it is simply no longer subscribed to its agent, so the repair spends a model call and returns `""`, which the structural gate reads as a failure. |
+| `z4-the-callback-that-outlived-its-session.mjs` | **AM4** — `runToken` is bumped by every LOOP transition and by neither SESSION transition, and a `ctx.compact()` callback is the one continuation that survives a swap | `for m in swap shutdown live; do node --experimental-strip-types z4-… $m; done` | The real loop extension through a real context-pressure cycle, holding the callbacks pi holds and firing them after a swap. Its BEFORE column is the real module loaded from a copy with the two `runToken++` lines patched out, so both columns are the shipped code. The swap is what MAKES the callback fire — `AgentSession.dispose()` calls `abortCompaction()` and pi throws "Compaction cancelled", which is not benign — and BEFORE it charged the newly restored run's cooldown ladder and then **threw out of a callback pi invokes from a `void`ed async IIFE**. The probe has to catch that to be able to print anything. `live` is the control. |
+| `z5-the-nudge-gate-dispose-cleared.mjs` | **AM5** — `dispose()` cleared the one-shot that says a background delegation's answer is owed, one statement before the settlements that needed it; **AM6** — one nudge timer served two deadlines and the first to arrive decided for both | `for m in gate deadlines oneshot; do node --experimental-strip-types z5-… $m; done` | `gate`: the coordinator retires before the manager ends the runs, so BEFORE two finished delegations' answers were dropped with nothing said — which is what AI1's `session-replaced` guard was written for and could not reach. `deadlines` prints the arithmetic: a delegation that settles 100 ms into somebody else's 5 s compaction hold waited 4,900 ms BEFORE and 200 ms NOW, 24.5× less, and the other direction is deliberately unchanged. `oneshot` is the control — it is still a one-shot, and a foreground record's first settlement still owes nothing. |
+
+All five run under plain `node --experimental-strip-types`.
+
+**Twenty-second-pass addendum, on what a BEFORE column is allowed to be.** `z4`
+does what `x4` did: it writes a copy of the real module with the fix patched out
+and imports both in one process, so the BEFORE column is the old code rather than
+a reconstruction of it. `z1`, `z3` and `z5` cannot — their fixes are new modules,
+so there is no old module to import — and each therefore reproduces the old rule
+in a named function next to the new one (`teardownBefore`, `retireBefore`, and
+z1's `disown` flag) rather than inline, so a reader can see the two rules side by
+side and check that the BEFORE one is what shipped.
+
+And one about a probe that would have been a re-implementation. The first draft of
+`z1`'s BEFORE column awaited the in-flight start before restarting, which is what
+the FIXED code does — so it built two sidecars in both columns and the "restart
+did nothing" assertion failed. The shipped behaviour is that the stop returns
+*immediately* and the restart runs *while the first start is still handshaking*,
+and the probe only reproduced it once the fake sidecar's `stop()` was made to fail
+the pending handshake the way `McpChild.stop()`'s `failPending` does. **A BEFORE
+column that awaits something the old code did not await is measuring the fix.**
+
+## The twenty-third pass (AN1–AN7) — `aa1`–`aa7`
+
+All seven defects these were written for are **fixed**. Each prints BEFORE and
+NOW, so running one is its own control. The write-up is
+`context/design/subagents-loop-verifier-round-trips.md`: **§10.2 is the
+round-trip ledger** — thirty-eight rows, every value this stack puts outside its
+own heap, with which of five gaps it crosses and what the reader does when the
+bytes are not what the writer meant — §10.2.1 draws the seven by DISTANCE, and
+§11 has the fix and the control-run failing count for each.
+
+The axis: **for every value this stack writes outside its own heap, name the
+writer, the reader, and what the reader does when the bytes are absent,
+malformed, stale, or from a different world than the writer's.**
+
+The question that separates a nuisance from a finding is the third one: **what
+does the caller do with the default the `catch` just returned?** A misread config
+that falls back to defaults is a nuisance. A misread config that falls back to
+defaults *and is then written back* is the destruction of the only copy, and that
+is two of the seven.
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `aa1-the-config-the-reader-could-not-parse.mjs` | **AN1** — one `catch` returning `{}` for both "there is no file" and "there is a file and nobody could read it", in two packages, where the next write REPLACES the file | `for m in subagents prinny absent; do node --experimental-strip-types aa1-… $m; done` | `subagents` drives the REAL `ConfigStore` against a temp agent dir, one process per column (`config-io.ts` resolves `CONFIG_PATH` at module load and jiti caches it — two columns in one process both read the first column's directory, which is how the first draft managed to show the fix failing). BEFORE: a 277-byte config with one comma missing loads as nothing, and one widget toggle leaves `{ "agent": { "showCompletionCards": false } }` on disk. NOW: the bytes are kept as `.corrupt-<time>`, unchanged, and the toggle still saves. `prinny` is the second instance and the one with teeth — both columns read `permissionMode` as `off` when the file says `all`, and only NOW keeps the file. `absent` is the control: a fresh install is not a corrupt one, and nothing is quarantined. |
+| `aa2-the-runtime-three-readers-called-built.mjs` | **AN2** — the staged sidecar runtime is keyed on a content fingerprint, and three readers plus the launch script asked `existsSync(dist/server.js)` instead | `for m in staged live absent; do node aa2-… $m; done` | `live` is the finding rather than an illustration of it: it runs both questions against THIS BOX's runtime directory and prints the stamp (`f297f2b6…`), the source's fingerprint (`53371dab…`), the verdicts (`built` / `stale`) and **the files in the checkout the staged tree has never seen** — `connect.ts`, which is AL3's fix for a connect loop that builds one matrix-js-sdk client per failed attempt. `staged` builds a fixture, stages it, adds one source file and shows the two answers diverge. `absent` is the control, and it is the one state the weaker question got right. |
+| `aa3-the-device-id-a-new-token-inherited.mjs` | **AN3** — `/prinny configure token` wrote the token and left `PRINNY_DEVICE_ID` behind, and `resolveDeviceId` reads the stored one first | `for m in rotate first switch; do node --experimental-strip-types aa3-… $m; done` | The real `credentialUpdatesForToken`, with `updateEnv`'s merge and `resolveDeviceId`'s precedence quoted from source (both pinned by `tests/token-device-id.test.ts`, so the probe and the code cannot drift). `rotate` is the case: BEFORE the new token keeps `OLDDEVICE` and the whoami lookup — which is also where a token belonging to another account is caught — never runs. `first` is the control (no stored device, both columns ask). `switch` is where the fix came from: the three-argument arm has always cleared both. |
+| `aa4-the-switches-the-launcher-never-forwarded.mjs` | **AN4** — `scripts/pi-local.sh` forwarded four of the seven `SUBAGENT_*` variables the package reads, and two of the three it missed are documented as the way to turn a feature off | `node --experimental-strip-types aa4-… table` then `… effect` | `table` scans the real sources and the real launcher and prints all seven with a ✔ or ✘ per column; the BEFORE column is the same launcher with this pass's three lines filtered out, so both columns are the shipped file. `effect` drives the real modules to print what each switch turns off and what it costs when it cannot be reached: up to 60 session entries of 4,000 characters per delegation, and one JSONL line per verifier model call. |
+| `aa5-the-state-written-thirty-three-times.mjs` | **AN5** — `persistState` appends a ~6.6 KB entry from thirty-three places and `restoreLoopState` reads exactly one back | `for m in live session swap; do node --experimental-strip-types aa5-… $m; done` | `session` is the measurement the finding came from: every session file under `~/.pi/agent/sessions`, how many loop-state entries each carries, what share of the file they are, and how many are byte-identical to the entry before them (59 / 41.3% / 24 on the largest). `live` drives the real extension — BEFORE from a copy with the memo patched out — and three `/loop end`s write three entries or one. `swap` has a **third** column, the memo kept and its reset removed, which prints `the NEW session wrote: 0` — the trap the two reset lines exist for. |
+| `aa6-the-warnings-a-failed-spawn-threw-away.mjs` | **AN6** — the setup-warning buffer was flushed after the `await` with no `finally`, and on a channel that does not exist headless | `for m in abort headless clean; do node --experimental-strip-types aa6-… $m; done` | The real `NoticeBuffer` in the real shape of `runAgentImpl`'s try/finally, against the six lines it replaced. `abort` is the case: a run that throws said **nothing at all** BEFORE, and every warning lands NOW without swallowing the throw. `headless` is the other half — pi's `noOpUIContext.notify` is a real `() => {}`, so the `else console.warn` arm was unreachable and an unattended run heard nothing. `clean` is the control: a successful run in a TUI reported them before and still does. |
+| `aa7-the-settings-path-that-ignored-the-override.mjs` | **AN7** — `pi-settings.ts` read `~/.pi/agent/settings.json` with a hardcoded join, ignoring `PI_CODING_AGENT_DIR` | `for m in relocated default live; do node --experimental-strip-types aa7-… $m; done` | `relocated` writes a settings file where pi would actually put it and prints what each reader answers: BEFORE `hideThinkingBlock: false` against a file that says `true`, NOW `true`. `verify-log.ts` is the control in every mode — it has always honoured the variable, which is what made the two readers' disagreement the finding rather than the value. `default` is why this went twenty-two passes unnoticed: with the override unset, both answers are the same string. |
+
+All seven run under plain node; `aa1 subagents` and `aa5 live`/`swap` need
+`--experimental-strip-types` because they load `.ts` modules directly, and
+`aa1 subagents` additionally uses pi's own jiti to reach `ConfigStore`.
+
+**Twenty-third-pass addendum, on measuring the box rather than a fixture.**
+Three of these read real state: `aa2 live` reads the staged runtime,
+`aa5 session` reads every session file, `aa7 live` reads the current
+environment. Each is a probe whose output changes when the box changes, which is
+the point — `aa2 live` is how AN2 was found, and it will say `current` again the
+moment somebody runs `/prinny prepare`. When it does, that is not the probe
+breaking; it is the probe reporting.
+
+And one on a BEFORE column that could not be the old module. `aa1`'s BEFORE is a
+hand-written `ConfigIO` — the eight lines the fix replaced, quoted in the probe's
+header — driving the REAL `ConfigStore`. That is defensible only because
+`ConfigIO` is an injectable port and the STORE is what does the damage: the
+merge, the defaults, the mutation and the save are all shipped code, and only the
+read and the write are the old ones. Where a fix is a new module with no
+predecessor (`json-store.ts`, `runtime-stamp.mjs`, `notice-buffer.ts`), the
+BEFORE column is the old EXPRESSION next to the new one, named and quoted, so a
+reader can check that what is being called BEFORE is what actually shipped.
+
+## The twenty-fourth pass (AO1–AO9) — `ab1`–`ab9`
+
+All seven defects these were written for are **fixed**. Each prints BEFORE and
+NOW, so running one is its own control. The write-up is
+`context/design/subagents-loop-verifier-identity.md`: **§10.2 is the identity
+ledger** — fifty-three rows, every place this stack decides two values are the
+same, with the two values, the function that decides and who supplied each side —
+§10.2.1 sorts them by **who minted the value**, and §11 has the fix and the
+control-run failing count for each.
+
+The axis: **for every place this stack decides two values are the same — a key
+lookup, a set membership, a string compare, a path, a name, an id — name the two
+values, name the function that decides, and find the pair that is
+equal-but-different or different-but-equal.**
+
+The question that separates a nuisance from a finding is **who supplied each
+side**. A comparison whose two sides were both minted by this process is nearly
+always right — twelve of the thirteen such rows in the ledger are — and every
+finding is at a boundary: a person's keyboard, a model's reply, another
+homeserver's clock, another build of ourselves.
+
+| Probe | Finding | Run with | What it shows |
+| --- | --- | --- | --- |
+| `ab1-the-id-the-model-was-shown.mjs` | **AO1** — an agent id is 17 characters, eleven surfaces publish the first 8 and four of those are read by the model, and `StopAgent` resolved it with an exact `Map.get` | `for m in published ambiguous full; do node --experimental-strip-types ab1-… $m; done` | `published` is the finding in one number: 200 freshly minted ids, asked with the form that was printed — **BEFORE 0/200, NOW 200/200**, and to the *right* record rather than merely to one. It also prints the refusal verbatim (`"Agent a0c4f005 not found. Running agents: 47a76eed (explore), 7c3385c6 (general-purpose)"` — three ids in one sentence, none of which the next call would have accepted). `ambiguous` shows the ladder refusing to pick and naming both candidates at a length that tells them apart. `full` is the control and the reason this survived twenty-three passes: the one path that carried the whole id — `run_in_background`'s `Agent ID: <id>` — always worked. |
+| `ab2-the-tool-the-gate-never-recognised.mjs` | **AO2** — `permissionTools`, the one branch of `needsApproval` that fires in *every* mode including `off`, matched case-sensitively against a list stored unvalidated | `for m in off all store; do node --experimental-strip-types ab2-… $m; done` | Both columns run the **shipped** `needsApproval`; they differ in one operator, `.includes` against `namesTool`. Tool names are read off the sources rather than remembered (pi's built-ins are lower, this repo's are not). `off` is the case with teeth — the mode is `off`, so the named tool is the *only* gate in force, and `Bash` gated nothing. `store` shows `parseSetting` de-duplicating `bash, Bash` to one entry while keeping the operator's own spelling. Every mode also checks that folding widens the case, not the set: a name that is not a registered tool still matches nothing. |
+| `ab3-two-rooms-one-sentence.mjs` | **AO3** — `markLive` matches on the whole rendered string, and `renderInboundMessage` drops the room, the event and (in a DM) the sender | `for m in collision distinct silenced; do node --experimental-strip-types ab3-… $m; done` | `collision` is the mechanism: two DMs saying `hi` render as **one** string BEFORE (`distinct injected texts: 1 of 2`) and two NOW (`[matrix] hi` / `[matrix from=bob] hi`). `silenced` is the cost, and it is the mode to read — BEFORE, one echo marks *both* rooms live, `forwardToMatrix` refuses at two, **Bob asked and was taken and gets no answer while Alice is told somebody else was being answered**; NOW exactly the room pi consumed is live. `distinct` is the control: two rooms whose words differ cost nothing extra, before or after. `markLive` and `liveRooms` are eight lines between them and are reproduced verbatim and marked, because `extensions/index.ts` imports pi and cannot be loaded here. |
+| `ab4-the-instant-that-stood-for-the-message.mjs` | **AO4** — the outbox watermark answered "have I delivered this?" with "is this from an instant I have passed?" | `for m in skew twin ancient redelivery; do node --experimental-strip-types ab4-… $m; done` | Both columns run the **staged sidecar's** `queue.js` against a real temporary state directory, so the queue file, the watermark file and the ageing rule are the shipped ones; the BEFORE column is `message.ts <= watermark.ts` against the same watermark. `skew` is the case — a message *nobody had ever seen*, stamped 1 s below the mark by another homeserver's clock, dropped BEFORE and queued NOW (and checked in the queue *file*, not merely accepted). `twin` is two events in one millisecond. `ancient` is the control that matters most: a genuinely old message is still refused, so the catch-up bound is intact. `redelivery` shows the same id refused twice. |
+| `ab5-the-program-the-suite-was-testing.mjs` | **AO5** — `loadServerModule` imports the staged *compiled* sidecar, and nothing asked whether the stage was this checkout | `for m in live stale absent; do node --experimental-strip-types ab5-… $m; done` | `live` is a **reading of this box**, not a reconstruction: it prints `.source-stamp`, the fingerprint of `server/src`, `stagedState()`'s verdict and the contents of `dist/`. When the finding was written it said `stale`, stamp `f297f2b6…` against source `94b4a2f9…`, **no `connect.js` at all**, and the suite was green — 511 tests about a program not in the tree. It now says `current`, and `connect.js` is staged, so AL3's fix is compiled in for the first time. `stale` and `absent` build fixtures and check the harness refuses with a sentence naming `--prepare`, and with a *different* sentence for each. |
+| `ab6-the-key-nobody-stored.mjs` | **AO6** — four lookups over `JSON.parse` output that answer for eight names nobody stored | `for m in pair rooms control; do node --experimental-strip-types ab6-… $m; done` | `pair` is the one with an effect: `/prinny pair constructor` replied **"paired undefined. They can now reach this session."** and left `["@real:example.org", null]` in the allowlist; NOW it refuses and the allowlist is untouched. It also runs `deny` and `removeRoom` over all eight inherited names — **BEFORE 8/8 reported success, NOW 0/8**. `rooms` is the gate whose docstring names prompt injection as the actor it exists for: ALLOW for all eight BEFORE, and the room that really is enabled still passes NOW. `control` is `hasEntry` answering the question that was meant. Not exploitable — none of the eight is a room ID and the homeserver rejects them — which is why the probe says so rather than implying otherwise. |
+| `ab7-the-directory-two-packages-disagreed-about.mjs` | **AO7** — `skill-loader.ts` hardcoded the agent directory (the third instance of AN7), and four readers in `prinny-channel` did not expand `~` | `for m in skills tilde agree live; do node --experimental-strip-types ab7-… $m; done` | `skills` is the half that decides what a SUBAGENT gets: on a relocated install the parent reads `$PI_CODING_AGENT_DIR/skills` and every child read a directory pi does not use — **and with the override unset the two agree, which is why it went unnoticed**. `tilde` is the other half: `PI_CODING_AGENT_DIR=~/pi-work` put the allowlist, the credentials and the Olm store in a directory literally named `~`, relative to the cwd; and a tilde that is not a home reference (`/tmp/~backup`) is still left alone. `agree` drives **both packages' copies** over six values and asserts one answer each. `live` prints what the two answer on this box. |
+
+| `ab8-the-worktree-that-was-its-own-repo.mjs` | **AO8** — `sameRepo` compared a realpath'd target against a parent cwd that was not, and `git rev-parse --git-common-dir` answers RELATIVE in a main worktree and ABSOLUTE in a linked one | `for m in shapes logical physical foreign; do node --experimental-strip-types ab8-… $m; done` | The fixture is **real git** — a repository, a symlink to it, a linked worktree and a second repository, built in a temp directory and removed at the end — because the finding is about what git actually prints. `shapes` prints the git version and all three answers rather than asserting them from memory. `logical` is the finding: with a symlinked parent cwd the parent side resolves to `…/link/.git` against the target's `…/real/.git`, **BEFORE `sameRepo → false`** for a worktree of the parent's own repository, NOW true. `physical` is the control and the reason this is latent — with a physical parent cwd both columns were already right, and the fix changes nothing on this platform. `foreign` checks the gate still gates: a genuinely different repository is still not the same repo, through the symlink as well as through the real path. |
+| `ab9-the-wiring-no-probe-drove.mjs` | **AO9** — AO1's fix was held by nothing: `agent-id.test.ts` and `ab1` both drive the extracted rule, and neither touches `tool-execution.ts:450`, the call that uses it | `for m in published ambiguous refusal full; do node ab9-… $m; done` | The **shipped** `executeStopAgentTool`, loaded through pi's own jiti the way `q2` does, over a real `AgentManager`. BEFORE swaps `resolveId` on the instance for the exact `getRecord` lookup the tool used to make; nothing else differs. `published`: 50 minted ids asked with the eight every surface prints — **BEFORE 0/50 stopped, NOW 50/50**, and the child's `abortController` really aborted rather than merely reported. `ambiguous`: two records sharing the published eight, and the tool names both candidates at a length that tells them apart instead of stopping one. `refusal` is the one to read — the refusal sentence is *identical* in both columns (`Agent 5e3ae827 not found. Running agents: e14e3787 (general-purpose), 06aae107 (explore)`), and each offered id is retried **through the tool**: **0 of 2 accepted BEFORE, 2 of 2 NOW.** That is the loop with no exit, executable. No `--experimental-strip-types`: jiti compiles the TypeScript. |
+
+`ab1`–`ab8` need `--experimental-strip-types`: they load `.ts` modules directly.
+**`ab9` does not** — it goes through pi's own jiti, which compiles the TypeScript
+itself, and that is the whole reason it can drive a file the others could not.
+`ab4` and `ab6` additionally load the **staged** sidecar from
+`~/.pi/agent/channels/prinny/runtime/dist`, so they report honestly if it has not
+been prepared. `ab8` shells out to `git` and needs it on the PATH; it creates and
+removes its own `mkdtemp` root and touches nothing else.
+
+**Twenty-fourth-pass addendum, on the strongest form a BEFORE column can take.**
+Three of these — `ab2`, `ab4`, `ab6` — run the **shipped module with one operator
+swapped**. The NOW column is the real exported function, unchanged; the BEFORE
+column is the single expression that function used to hold, evaluated against the
+*same* inputs and the *same* state. Nothing else differs, so the two columns
+cannot disagree for any reason except the finding. That is worth reaching for
+whenever the fix is one operator (`.includes` → a folded compare, `[k]` →
+`hasOwnProperty.call`, `ts <=` → an id check) rather than a new module.
+
+Where it is not possible, the reason is always the same and is stated in the
+probe's own header: **`extensions/index.ts`, `agent-manager.ts` and
+`tool-execution.ts` all import pi, and nothing that imports pi can be loaded by
+`node --experimental-strip-types`.** `ab1` and `ab3` therefore quote the exact
+lines they stand in for — eight lines for `markLive` and `liveRooms`, one lookup
+for `getRecord` — and mark them, so what is being called BEFORE can be checked
+against what actually shipped. A probe that paraphrases the old code is a probe
+about the paraphrase.
+
+**And the sentence that addendum stops one step short of — AO9, 2026-08-23.**
+A quoted BEFORE column proves the two expressions differ. It does **not** prove
+the shipped file still evaluates the NOW one. Measured: `tool-execution.ts:450`
+was put back to `getRecord(requestedId)` — AO1's whole defect, restored — and
+**1,434 tests and all 121 probes stayed green.** `ab1` passed. A single live
+delegation caught it on the first `StopAgent` call
+(`context/testing/subagents-loop-verifier.md` §AI.1).
+
+**The reason `ab1` quoted instead of driving does not survive being looked at.**
+Its header says `tool-execution.ts` and `agent-manager.ts` import pi, so neither
+loads under `node --experimental-strip-types`. That is true, and it is **the
+constraint the SUITE runs under**. A probe is not the suite. `q2` has driven the
+real `executeStopAgentTool` through **pi's own jiti** since the thirteenth pass —
+a probe about this same function, eight files up this directory listing. The
+constraint was inherited from the wrong place and the technique was already here.
+
+So `ab9` drives the shipped function. Both columns are the real
+`executeStopAgentTool` over a real `AgentManager`; the BEFORE column replaces
+`resolveId` **on the instance** with the exact lookup the tool used to make, and
+nothing else differs — the "one operator swapped" form, extended from a module to
+a call site. **Control run: all four modes exit 1 with the defect restored, all
+four exit 0 with it fixed.** Its `refusal` mode is the one to read: the sentence
+is *identical* in both columns, and the difference is whether the ids inside it
+are ones the same call would accept — **0 of 2 BEFORE, 2 of 2 NOW.**
+
+The suite gets a source pin too (`tests/agent-id.test.ts`, `describe("AO9 —
+StopAgent's resolution call site")`), for a different reason: it costs nothing per
+run and fails on the edit rather than on the next probe sweep.
+
+```
+   a probe through jiti        ab9-the-wiring-no-probe-drove.mjs      executes it
+   a source pin in the suite   tests/agent-id.test.ts  AO9            free per run
+   a live hand test            …/subagents-loop-verifier.md §AI.1     the operator's
+                                                                     own sentence
+```
+
+**And one thing this probe got wrong first, kept because it is the finding
+repeating inside the fix for it.** `ab9`'s `refusal` mode originally fed each
+offered id back through `manager.resolveId` — and with the defect restored in the
+source, that mode **passed**, because asking the manager tests the ladder and says
+nothing about which lookup the call site makes. It now retries through the *tool*.
+The rule to carry: **when a probe's header says "this module cannot be loaded
+here", check whether that is a fact about the module or a habit borrowed from the
+suite — and when a check feeds a value back, make sure it goes back in through the
+door it came out of.**

@@ -26,12 +26,14 @@ import {
 } from "../types.js";
 import type { SubagentType } from "./types.js";
 import { getAgentConfig } from "./agent-types.js";
+import { resolveAgentId, type AgentIdResolution } from "./agent-id.ts";
 import { addUsage, emptyUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
 import { errorMessage, toSingleLine } from "../utils.js";
 import { DEFAULT_CONCURRENCY, DEFAULT_GRACE_TURNS } from "../config/config-io.js";
 import { SlotTable, type ConcurrencyConfig, type ConcurrencySlot } from "./concurrency-slots.ts";
 import { anchorReachesATurn } from "./compaction-anchor.ts";
 import { isVerifyingRecord } from "./record-activity.ts";
+import { teardownRecord } from "./record-teardown.ts";
 import { undeliveredSteersReport } from "../ui/action-report.ts";
 
 export type { ConcurrencyConfig } from "./concurrency-slots.ts";
@@ -1221,6 +1223,18 @@ export class AgentManager {
     return this.agents.get(id);
   }
 
+  /**
+   * Which record an identifier from OUTSIDE this process names — AO1.
+   *
+   * `getRecord` above is the exact lookup, and every caller in this package but
+   * one hands it an id this package produced. The exception is `StopAgent`,
+   * whose `agent_id` comes from the model, which has only ever been SHOWN the
+   * first `SHORT_ID_LENGTH` characters. See `agent-id.ts`.
+   */
+  resolveId(requested: unknown): AgentIdResolution {
+    return resolveAgentId(requested, this.agents.keys());
+  }
+
   listAgents(): AgentRecord[] {
     return [...this.agents.values()].sort((a, b) => b.lifecycle.startedAt - a.lifecycle.startedAt);
   }
@@ -1310,10 +1324,10 @@ export class AgentManager {
   }
 
   private removeRecord(id: string, record: AgentRecord): void {
-    record.execution.transcript?.dispose();
-    record.execution.transcript = undefined;
-    record.execution.session?.dispose();
-    record.execution.session = undefined;
+    // AM3: one teardown, one order — see `record-teardown.ts`. This path and
+    // `dispose()` below had drifted: only this one cleared `execution.session`,
+    // and neither ended the verifier.
+    teardownRecord(record);
     this.detachParentBinding(record);
     // A stopped record's run can still be settling (stopAgent flips status
     // synchronously; the gate opens in .finally) — resolve so the coordinator's
@@ -1347,9 +1361,19 @@ export class AgentManager {
         record.lifecycle.completedAt = Date.now();
         this.openGate(record.id, "");
       }
-      record.execution.transcript?.dispose();
-      record.execution.transcript = undefined;
-      record.execution.session?.dispose();
+      // AM3: the verifier is ENDED before the session it is running in, and
+      // this path used to end neither.
+      //
+      // `stopAgent()` has known how to stop a record whose verifier is still
+      // working since T5, and its comment says the fix is for "the operator's
+      // Esc, for `StopAgent`, and for anything else that asked".
+      // `session_shutdown` is something else that asked: it disposed
+      // `execution.session` — the session a REPAIR runs in — and left the
+      // verifier holding a handle to it. `record-teardown.ts` has the measured
+      // consequence, which is not a crash: the child's good answer came back to
+      // the parent annotated as having failed the check, because the check was
+      // torn down.
+      teardownRecord(record);
       this.detachParentBinding(record);
     }
     // Running records' gates open when their runs settle after this synchronous

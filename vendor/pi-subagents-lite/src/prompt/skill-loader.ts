@@ -6,8 +6,25 @@
  * Roots, in precedence order (first match wins by name):
  *   1. Ancestor .agents/skills (cwd → git root, root .md files filtered out)
  *   2. ~/.agents/skills (root .md files filtered out)
- *   3. ~/.pi/agent/skills (Pi's user default)
+ *   3. <agent dir>/skills (Pi's user default — see `agentDir()`)
  *   4. <cwd>/.pi/skills (Pi's project default)
+ *
+ * ## Which `<agent dir>` — AO7, twenty-fourth pass
+ *
+ * Root 3 used to be a hardcoded `join(homedir(), ".pi", "agent")`, and it is the
+ * third instance of AN7 in the same package: pi's own `getAgentDir()` is
+ * `process.env[ENV_AGENT_DIR] ? expandTildePath(that) : join(homedir(),
+ * CONFIG_DIR_NAME, "agent")`, and `PI_CODING_AGENT_DIR` is what a relocated
+ * install sets. The twenty-third pass wrote `src/agent-dir.ts` so this question
+ * has one answer, converted the two readers it had found, and did not scan for a
+ * third. This was the third, and it is the one that decides which skills a
+ * SUBAGENT is given: on a relocated install the parent session loads the
+ * operator's skills from `$PI_CODING_AGENT_DIR/skills` and every child loads
+ * them from a `~/.pi/agent/skills` that pi does not use — which for a fresh
+ * relocation is not there at all.
+ *
+ * `tests/agent-dir.test.ts` now carries the scan, so a fourth cannot be added
+ * quietly.
  *
  * Pi's loadSkills handles: .gitignore/.ignore/.fdignore, symlinks (follow +
  * canonical-path dedup), YAML frontmatter, name validation.
@@ -21,6 +38,7 @@ import { readFileSync, realpathSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadSkills, loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
+import { agentDir } from "../agent-dir.ts";
 import { isUnsafeName } from "../utils.js";
 
 export interface PreloadedSkill {

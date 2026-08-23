@@ -2728,3 +2728,487 @@ deliberately, because between iterations that timer IS the loop.
 ## Twenty-first pass — the tests
 
 **411, up from 405. Lint 99/99 files.**
+
+## Twenty-second pass (AM3) — the teardown that ended the verifier's session
+
+`src/agents/record-teardown.ts` is new; `AgentManager.dispose()` and
+`removeRecord()` both go through it.
+
+A record owns three things that have to be ended. `dispose()` ended two:
+
+```js
+   record.execution.transcript?.dispose();
+   record.execution.transcript = undefined;
+   record.execution.session?.dispose();      // ← the session a REPAIR runs in
+   this.detachParentBinding(record);
+```
+
+`stopAgent()` has known how to end a record whose verifier is still working since
+T5, and its comment says the abort is for *"the operator's Esc, for `StopAgent`,
+and for anything else that asked"*. `session_shutdown` is something else that
+asked.
+
+**It is not a crash, and that is why it needed writing down.**
+`AgentSession.dispose()` aborts the agent and calls `_disconnectFromAgent()`, so
+a `prompt()` afterwards still reaches the provider and its events reach nobody:
+
+```
+   dispose() disposes the session
+   → the repair's continueAgentSession() prompts it anyway
+   → one model call on the one llama slot, during a session teardown
+   → collectResponseText sees no message_end                  → ""
+   → structuralVerdict("")                                    → ok: false
+   → the child's perfectly good ORIGINAL answer goes back annotated
+     "this answer was checked against the task and did not address it …
+      Treat it as unreliable."
+```
+
+The check being torn down is reported to the parent model as the **child** having
+failed — the inversion `verifyAnswer`'s "never throws" contract exists to
+prevent, arriving from the outside.
+
+And the two teardowns had already drifted: `removeRecord` cleared
+`execution.session` and `dispose()` did not; neither ended the verifier. Two
+teardowns for one construct is how that happens, and it is invisible because each
+is individually reasonable. The module is one order — transcript → verifier →
+session — with every step guarded on its own. `verifyAbort` is deliberately NOT
+cleared there: `runVerification`'s `finally` owns that field.
+
+**Tests.** `tests/record-teardown.test.ts`, 9 tests — 7 on the order, 2 driving
+the real `verifyAnswer` for both outcomes. **5 of 9 fail with the fix reverted.**
+Probe `z3-the-teardown-that-ended-the-verifier-s-session.mjs`, three modes; its
+`answer` mode prints the two sentences the parent model actually receives.
+
+## Twenty-second pass (AM5, AM6) — the nudge gate, and one timer for two deadlines
+
+`src/spawn/nudge-schedule.ts` is new and owns both rules;
+`SpawnCoordinator` keeps the timer.
+
+**AM5.** `dispose()` cleared `backgroundAgentIds` — the one-shot that says a
+background delegation's answer is owed — and it runs at `session_shutdown`
+BEFORE `AgentManager.dispose()`, which is what actually ends the runs. So every
+background delegation still running was stripped of the flag and then settled
+into an `onAgentComplete` that scheduled nothing: no delivery, and no report of
+one.
+
+AI1 fixed the ids that were already queued and named the half that was left. Its
+own note says the `session-replaced` guard *"can only fire for a record that
+settles AFTER the dispose"* — those records are what the guard is FOR, and the
+clear one statement above was the reason none could reach it. The set costs three
+short strings and the coordinator is dropped whole at `setCoordinator(null)`, so
+the clear was never reclaiming anything.
+
+**AM6.** One timer, two deadlines. `if (this.nudgeTimer) return` gave the whole
+batch whichever delay arrived first, and since AH1 there are two: 200 ms to
+coalesce completions and 5,000 ms to re-ask after a nudge was held for somebody
+else's compaction. A delegation that settled inside that window waited out the
+remainder of a hold that was not about it — up to 25× its own delay, for nothing.
+The schedule keeps the earliest due time and re-arms when a shorter delay
+arrives; the other direction is left alone, because a re-ask that fires early
+asks the lock again and defers again for one map read.
+
+**Tests.** `tests/nudge-schedule.test.ts`, 13 tests. **3 of 13 fail with the
+fixes reverted.** Probe `z5-the-nudge-gate-dispose-cleared.mjs`, three modes.
+
+One existing test moved with the code: AI1's regression test pinned the ORDER of
+two source-text fragments (`[...this.pendingNudges]` before
+`this.pendingNudges.clear()`). The invariant is right and the pin was to an
+expression; it now asserts the half that stayed in the coordinator, with the
+ordering itself asserted in the new module's suite where it can be driven.
+
+## Twenty-second pass — the tests
+
+**433, up from 411. Lint 103/103 files.**
+
+---
+
+# Twenty-third pass (2026-08-23) — what we wrote down, and who reads it back
+
+Full write-up: `context/design/subagents-loop-verifier-round-trips.md`. The axis:
+**for every value this package puts outside its own heap — a file, another
+process's environment, a buffer held for later — name the writer, the reader, and
+what the reader does when the bytes are absent, malformed, stale or from a
+different world than the writer's.** Four of the pass's seven findings are here.
+
+## AN1 — the read that could not parse, and the write that finished it off
+
+`readGlobalRaw()` was one `try`/`catch` returning `{}`:
+
+```js
+   try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")); }
+   catch { return {}; }
+```
+
+One catch, two facts. **Absent** is a fresh install and reads correctly.
+**Malformed** is a file with content in it, and reading it as empty says the
+operator has no settings when what is true is that nobody could read them.
+
+The damage is the next paragraph. `ConfigStore` holds that `{}` as its global
+layer, and the first `/agents` toggle calls `saveGlobal(this.globalRaw)`, which
+writes the `{}` plus the one changed key through a tmp file and a rename over the
+only copy. Driven through the real store with one comma removed from a realistic
+config:
+
+```
+   on disk BEFORE                       277 bytes, 6 agent keys, 2 concurrency
+   effective default model after load   null            (was forge/qwen3.8-27b)
+   effective concurrency after load     {"default":1}   (was 2, providers too)
+   on disk AFTER one widget toggle      { "agent": { "showCompletionCards": false } }
+```
+
+**The control is nine lines below in the same file.** `readProjectRaw` returns
+the literal string `"malformed"`, `layerFor` refuses to hand the layer out, and
+`config-io.ts`'s own header says *"a malformed project file is never
+overwritten"* (ADR-0008). The global layer had neither the distinction nor the
+sentence.
+
+**The fix.** `src/config/json-store.ts` — `readJsonObject` (absent | loaded |
+malformed, with the parser's own words), `quarantine` (rename to
+`<file>.corrupt-<ISO>`), `writeJsonAtomic` (tmp + rename, reports rather than
+throws). `saveGlobal` quarantines before its first write over a file it could not
+read, once, and names the file it kept. `ConfigStore` exposes
+`globalConfigUnreadable` and `events.ts` says it at `session_start`, because
+`console.warn` is the record and a TUI operator does not read stderr.
+
+Quarantine rather than refusal, deliberately: refusing is right for a shared,
+checked-in project file and wrong for one that exists only to hold what the
+operator just typed into a menu, because the menu would then silently stop
+working. The reasoning is the sidecar's, for `access.json`, word for word:
+*"it may be a hand-edit the user wants back, and starting from defaults beats
+refusing to run."*
+
+An empty file is `absent`, not `malformed`: a truncated write leaves nothing to
+keep.
+
+`vendor/prinny-channel/src/json-store.ts` is the same three functions for
+`pi.json`, and `prinny-channel/tests/json-store.test.ts` drives both copies over
+the same cases — the compaction lock's arrangement, one boundary over.
+
+**Tests.** `tests/json-store.test.ts`, 16 tests. **Control runs: 3 of 16 fail
+with the read's distinction removed, 1 of 16 with the quarantine removed.** Probe
+`aa1-the-config-the-reader-could-not-parse.mjs`, three modes.
+
+## AN4 — the switches the launcher never forwarded
+
+`scripts/pi-local.sh` states the rule in the comment above the block that broke
+it — *"a value that only ever lives in .env is a knob that silently does
+nothing"* — and forwarded four of the seven `SUBAGENT_*` variables this package
+reads. The three it did not: `SUBAGENT_TRANSCRIPT`, `SUBAGENT_VERIFY_LOG`,
+`SUBAGENT_VERIFY_LOG_FILE`. The first two are documented as the way to turn each
+feature off; both default ON; both write per delegation — up to sixty session
+entries of four thousand characters, and one JSONL line per verifier model call.
+
+`env_get` reads an already-exported variable first, so
+`SUBAGENT_TRANSCRIPT=0 ./scripts/pi-local.sh` worked and the documented spelling
+did not.
+
+**The fix is a scan.** The three exports, the two keys in `.env` with their
+reasoning, and `tests/env-switches.test.ts`, which walks this package's own
+sources for every `env.SUBAGENT_*` and fails when one is not both `env_get`-read
+and `export`ed by the launcher. Its `INLINE_ONLY` map is empty on purpose: a name
+in it is a decision somebody has to write down. It carries its own control,
+because a scan that finds nothing passes every assertion after it.
+
+**Tests.** 4 tests. **Control run: 3 of 4 fail with one export removed.** Probe
+`aa4-the-switches-the-launcher-never-forwarded.mjs`, two modes.
+
+## AN6 — the warnings a failed spawn threw away
+
+`runAgentImpl` buffers five kinds of setup warning rather than notifying, because
+a notification between `tool_use` and `tool_result` in the session tree is a 400.
+Every one of them is a sentence about the agent file the operator just edited.
+They were lost two ways.
+
+**The run threw.** The flush was a bare loop after the `await`, with no
+`finally`, so `ABORTED_BEFORE_START`, a provider fault on the first call or a
+session that would not bind took the whole buffer with it. The run most likely to
+have been *caused* by a misconfiguration is the one whose misconfiguration
+warning was dropped.
+
+**There was no UI.** It read `ctx.ui?.notify ? notify : console.warn`, and pi's
+`noOpUIContext.notify` is `() => {}` — a real function — so the `else` was
+unreachable and an unattended run heard nothing. `reportDrop` in
+`src/spawn/spawn-coordinator.ts` gets this right thirty lines away: console
+first, unconditionally, then the UI.
+
+**The fix.** `src/agents/notice-buffer.ts` — no imports, so the suite can drive
+it — with `add` bound (all five writers take it as a bare function), a
+`flush(target, log)` that speaks on both channels and empties itself, and every
+path guarded. `runAgentImpl`'s `try` opens ABOVE the setup, because four of the
+five writers are setup checks; releasing there cannot reopen the ordering problem
+the buffer exists for, since `ui.notify` renders into the TUI's chat container
+and appends no session entry.
+
+**Tests.** `tests/notice-buffer.test.ts`, 8 tests, and
+`tests/agent-runner-flush.test.ts`, 5 source pins. **Control run: 1 of 13 fails
+with the flush moved out of the `finally`** — and the pin's first form did not
+fail, because it asserted "after `} finally {`" rather than "inside it". It now
+brace-matches. Probe `aa6-the-warnings-a-failed-spawn-threw-away.mjs`.
+
+## AN7 — the settings path that ignored the override
+
+`pi-settings.ts` read `~/.pi/agent/settings.json` with a hardcoded join. Every
+other reader of pi's agent directory in this stack honours `PI_CODING_AGENT_DIR`
+— pi's own `getAgentDir()`, the launcher in two places, `prinny-channel`, and
+this package's own `verify-log.ts`. On a relocated install `getHideThinkingBlock`
+reads a path pi never writes and returns `false`, so the conversation viewer
+opens with thinking blocks shown to an operator who turned them off.
+
+**The fix.** `src/agent-dir.ts` — one answer, with the tilde rule read out of
+pi's `normalizePath` rather than guessed (`~` and `~/…`, and `~\` only on win32),
+used by both readers. An exported-but-empty value reads as absent rather than as
+the root directory.
+
+**Tests.** `tests/agent-dir.test.ts`, 11 tests, one of which reads pi's installed
+`dist/config.js` so a rename of `ENV_AGENT_DIR` upstream is a failing test rather
+than a silent divergence. **Control run: 2 of 11 fail with the hardcoded path
+restored.** Probe `aa7-the-settings-path-that-ignored-the-override.mjs`.
+
+## Twenty-third pass — the tests
+
+**477, up from 433. Lint 111/111 files.**
+
+## AO1 — the id the model is shown is not the id `StopAgent` accepts
+
+An agent id is `randomUUID().slice(0, AGENT_ID_PREFIX_LENGTH)` — seventeen
+characters. **Eleven places in this package print `id.slice(0,
+SHORT_ID_LENGTH)`**, and `SHORT_ID_LENGTH` is 8. Four of the eleven are read by
+the model:
+
+```
+   agent-status.ts:33        AgentStatus — the tool whose whole job is
+                             "which agents exist"
+   spawn-coordinator.ts:493  the `subagent-result` message, i.e. the background
+                             completion the model actually reads
+   tool-execution.ts:426     the "Running agents:" list INSIDE StopAgent's own
+                             refusal
+   tool-execution.ts:484     StopAgent's own success lines
+```
+
+and `executeStopAgentTool` resolved `params.agent_id` with
+`manager.getRecord(requestedId)` — `this.agents.get(id)`, an exact `Map` lookup
+on the seventeen. **Measured: 0 of 200 freshly minted ids resolved by the form
+that was published.**
+
+The refusal is the part with teeth. `Agent 70acbd91 not found. Running agents:
+aa5d3df1 (explore), 2ab84098 (general-purpose)` hands back more ids in the same
+unusable spelling, under a helper whose docstring says the list is *"one line,
+easy for LLM to parse"*. A model that reads it and retries gets the identical
+answer, forever — on the one tool whose purpose is stopping a run that holds the
+single llama slot its own next call is queued behind.
+
+Only `run_in_background`'s `Agent ID: ${agentId}` ever carried the full one,
+which is why this survived twenty-three passes: the one path with a good
+identifier worked.
+
+**The fix moves the LOOKUP, not the printers.** Printing seventeen characters
+everywhere would cost the tokens the short form exists to save, on every listing,
+forever, in eleven places — and the twelfth would still get it wrong.
+`src/agents/agent-id.ts` imports nothing (same constraint as
+`record-activity.ts`, `status-listing.ts`, `turn-tracking.ts` and
+`git-failure.ts`: `agent-manager.ts` and `tool-execution.ts` both import pi, and
+a rule the suite cannot drive is a rule with no control run) and answers
+
+```
+   exact ▸ unique case-fold ▸ unique prefix ▸ ambiguous ▸ not-found
+```
+
+which is `resolveType`'s ladder one field over, including its rule that
+ambiguity is reported and never picked — *"Never a silent pick (US-2)"*. Exact
+comes before prefix deliberately: an id is a prefix of itself, and a truncated id
+could in principle be a prefix of two records.
+
+`AgentManager.resolveId` is the entry point; `getRecord` is untouched and still
+exact, because every other caller in this package hands it an id this package
+produced. `StopAgent` now prints the short form in **every** sentence it writes,
+so a reply never identifies a record in a spelling the next call rejects.
+`ambiguousAgentIdMessage` widens the candidates to `distinguishingLength` — the
+candidates of an ambiguity are by construction identical at the length that was
+asked, and printing them there would say `abcdefgh, abcdefgh. Use more of the
+id.`, which is the same defect with the volume up.
+
+**Tests.** `tests/agent-id.test.ts`, 12 tests. **Control run: 5 of 12 fail with
+the ladder replaced by an exact `Map.get`.** Probe
+`ab1-the-id-the-model-was-shown.mjs`, three modes.
+
+## AO7 — the third reader AN7's fix did not reach, and a guard that was better than pi's
+
+Two things, and the second is a correction to AN7 above.
+
+**The third reader.** `src/prompt/skill-loader.ts` passed `loadSkills({ agentDir:
+join(homedir(), ".pi", "agent") })` as root 3 of four. AN7 found two readers that
+hardcoded that path, wrote `src/agent-dir.ts` so the question has one answer,
+converted both, and **did not scan for a third**. This was the third — and it is
+the reader that decides which skills a SUBAGENT is given. On a relocated install
+the parent session loads the operator's skills from `$PI_CODING_AGENT_DIR/skills`
+and every child loads them from a `~/.pi/agent/skills` that pi does not use,
+which for a fresh relocation is not there at all.
+
+**The guard.** AN7's entry above ends *"An exported-but-empty value reads as
+absent rather than as the root directory"* — that was `override && override.trim()
+!== ""`, and it is **a better rule than pi's and a different one**. pi's
+`getAgentDir()` is `if (envDir) return expandTildePath(envDir)`, so a value of
+`"   "` is a relative directory to pi and was "unset" here. The whole promise of
+this module is that it answers the way pi answers; where the two disagree, pi is
+right by definition, because pi is the one that writes the files. The guard now
+matches pi character for character.
+
+**The scan, not the third fix.** `tests/agent-dir.test.ts` now walks every `.ts`
+under `src/` with comments stripped and fails if any file but `agent-dir.ts`
+builds `join(homedir(), ".pi", …)` itself or names `PI_CODING_AGENT_DIR`. The
+match is deliberately **not** on the string `.pi/agent`: `<cwd>/.pi/agents` is
+the project agents directory, a different thing, correctly built in four files.
+
+**Tests.** `tests/agent-dir.test.ts`, 15 tests, one of them rewritten to say
+which rule it holds and why pi is right by definition — its previous form pinned
+the `.trim()` guard, i.e. it pinned the defect. **Control run: 2 of 15 fail with
+the tilde expansion removed.** Probe
+`ab7-the-directory-two-packages-disagreed-about.mjs`, four modes.
+
+## AO8 — the worktree that was its own repository
+
+Recorded first as a latent and left, then closed a few hours later. Both halves
+are worth keeping.
+
+`sameRepo` in `worktree-validator.ts` decides whether a `worktree_path` is a
+worktree of the PARENT's repository or of a different one, and the caller applies
+the cross-repo trust gate when it is different. It was
+
+```js
+   normalizeGitPath(parentResult.commonDir, parentCwd) ===
+   normalizeGitPath(targetResult.commonDir, realPath)
+```
+
+with `realPath` through `realpathSync` and `parentCwd` not — so it asks *"are
+these the same repository?"* and answers *"are these the same string?"*.
+
+**The premise nobody had checked** is that `git rev-parse --git-common-dir`
+answers in one shape. Measured here, git 2.39.5:
+
+```
+   in the MAIN worktree     ".git"                  ← RELATIVE
+   through a SYMLINK to it  ".git"                  ← RELATIVE
+   in a LINKED worktree     "/abs/…/real/.git"      ← ABSOLUTE
+```
+
+The relative answer is resolved against the directory it was asked in, so a
+logical parent cwd gives `<symlink>/.git` against the target's `<real>/.git`, and
+**a worktree of the parent's own repository reads as cross-repo.**
+
+**Latent, and the record of that was right.** `parentCwd` is
+`getSessionCtx()?.cwd ?? ctx.cwd`; pi builds that from `process.cwd()`
+(`dist/cli/startup-ui.js:47`) through `resolvePath`, which normalises and
+absolutises but does not canonicalise (`dist/utils/paths.js:82`); and on Linux
+`process.cwd()` is physical. One `--cwd`-style option, one platform, or one
+caller passing a path a person typed, and it is live.
+
+**Why it was nearly left, and why that reasoning was wrong.** The twenty-fourth
+pass recorded it with the note *"the case that would prove it is not reachable on
+this box"*. That conflated the CASE with the ABILITY TO DRIVE IT. The case is a
+parameter — reaching it costs one `symlinkSync`. What was blocked was loading the
+module: `worktree-validator.ts` uses a `.js` specifier for `../utils.ts`, and its
+own header says so. **"I cannot reach this" and "I cannot drive this" are
+different sentences, and only the second was true.**
+
+**The fix.** `src/spawn/same-repo.ts` — the sixth extraction of this kind in this
+package, after `git-failure.ts`, `record-activity.ts`, `status-listing.ts`,
+`turn-tracking.ts` and `agent-id.ts`. It holds `normalizeGitPath` (moved
+unchanged, win32 folding and all) and `isSameRepo`, which canonicalises **both**
+cwds before resolving either side. `canonicalise` is a parameter defaulting to a
+`realpathSync` that falls back to its input, so a test can drive a platform whose
+cwd is logical without running on one, and a cwd deleted under a running session
+compares as the string it was given — which is what this code did before the fix.
+
+**Tests.** `tests/same-repo.test.ts`, 10 tests, on a fixture of **real git** — a
+repository, a symlink to it, a linked worktree and a second repository — because
+the finding is about what git actually prints and a fake would be a test of the
+fake. One of the ten pins the two shapes, so a change upstream is a failing test.
+**Control run: 2 of 10 fail with the canonicalisation removed.** Probe
+`ab8-the-worktree-that-was-its-own-repo.mjs`, four modes — and its `physical`
+mode is the control that shows the fix changes nothing on this platform, which is
+the same sentence as "this is why it was latent".
+
+## AO9 — the control run that was never a control over the wiring
+
+Added the session after the twenty-fourth pass, and it is a finding about that
+pass's evidence rather than about this package's behaviour.
+
+AO1's fix moved `StopAgent`'s lookup from an exact `getRecord(requestedId)` to
+`AgentManager.resolveId`, and it was recorded with *"12 tests. Control run: with
+the ladder replaced by `Map.get`, 5 of 12 fail"* plus probe `ab1`. Both hold, and
+neither is about the **call**. `tests/agent-id.test.ts` drives `resolveAgentId`
+directly; `ab1` drives that module beside a quoted copy of the old expression, and
+its own header says neither `tool-execution.ts` nor `agent-manager.ts` can be
+loaded under `node --experimental-strip-types`.
+
+**Measured.** `tool-execution.ts:450` was put back to `getRecord(requestedId)`:
+
+```
+   1,434 tests   0 failed      the suites did not notice
+     121 probes  all exit 0    the probes did not notice
+     115/115     lint clean
+```
+
+A live delegation caught it on the first `StopAgent` call
+(`context/testing/subagents-loop-verifier.md` §AI.1): `AgentStatus` printed
+`cbc6575f`, `StopAgent` was called with `cbc6575f`, and the answer was
+`Agent cbc6575f not found. Running agents: cbc6575f (general-purpose)` — the
+refusal listing the id it had just rejected, exactly as AO1 described it, printed
+by the real stack for the first time.
+
+**The last test in that file is named "control".** It asserts
+`new Map(ids…).get(short) === undefined`, which is a true statement about `Map`
+whether or not this package still evaluates it, under a comment reading *"stated
+as a test so the fix cannot be reverted quietly"*. It was then reverted quietly,
+in one edit. **A control has to be able to fail.**
+
+**Why `ab1` quoted the old expression instead of driving the function** is the
+part worth reading. Its header says `tool-execution.ts` and `agent-manager.ts`
+import pi and will not load under `node --experimental-strip-types` — true, and it
+is **the constraint the suite runs under, not one on probes**. `q2` has driven the
+real `executeStopAgentTool` through **pi's own jiti** since the thirteenth pass,
+and its header already says the rule: *"a fix whose test cannot execute the
+function it changed is pinned against editing, not against breaking"*. AO1 shipped
+pinned against neither.
+
+**The fix is two instruments.**
+
+**Probe `ab9`**, four modes, driving the shipped function through jiti over a real
+`AgentManager`, with `resolveId` replaced **on the instance** for the BEFORE
+column and nothing else different. **All four modes exit 1 with the defect
+restored and 0 with it fixed.** `published` is 50 minted ids asked with the
+published eight — 0/50 stopped BEFORE, 50/50 NOW, `abortController` really
+aborted. `refusal` is the one to read: the sentence is identical in both columns
+and each id it offers is retried **through the tool** — 0 of 2 accepted BEFORE, 2
+of 2 NOW.
+
+**And a source pin in the suite**, for the different reason that it costs nothing
+per run and fails on the edit: `describe("AO9 — StopAgent's resolution call
+site")`, 7 tests, in the AO1 file so the rule and its wiring are read together —
+the shape this package already uses in `tests/action-report.test.ts`'s
+`describe("AF2 — the wiring")` and `tests/background-delivery.test.ts`, in a
+package where twenty-one test files already read `src/` as text. It slices
+`executeStopAgentTool`'s body out of a **comment-stripped** source — the defect is
+quoted verbatim in the fix's own comment there, which would make a naive search
+pass on the comment — and pins the slice bounds first, as the control for every
+assertion after it.
+
+**Control runs: 2 of 19** with the lookup put back, **1 of 19** with the reply
+changed to name the resolved seventeen. The absence assertion never fires alone;
+the positive assertion beside it fails in the same run.
+
+**`ab9`'s first draft made the same mistake it exists to catch.** Its `refusal`
+mode fed each offered id back through `manager.resolveId` and **passed with the
+defect in the source** — asking the manager tests the ladder, not the call site.
+It now retries through the tool.
+
+**Same shape as AO8, one level up.** AO8 was the pass's recorded *decision* not
+surviving contact; AO9 is its recorded *evidence* not surviving contact. Both were
+found by doing the cheap thing a document said was not worth doing. **When a pass
+reports a control run, ask what the control was over.**
+
+## Twenty-fourth pass — the tests
+
+**510, up from 477. Lint 115/115 files.** (493 for AO1–AO7, 503 with AO8, then
+510 with AO9's wiring block — a source pin adds no file to `src/`, so lint is
+unchanged.)

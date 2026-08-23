@@ -2122,3 +2122,192 @@ arrived before testing anything) and `y8-the-footer-that-outlived-the-loop.mjs`
 `agent_end`'s ladder has a rung for an ABORTED turn and a helper that could only
 build `"stop"` could not reach it, so `y2`'s `rung5` mode originally drove rung 7
 under the wrong label. Default unchanged, so every existing probe is byte-identical.
+
+## Twenty-second pass (AM4) — `runToken` and the two session transitions
+
+Two lines: `runToken++` at the top of `session_start` and of `session_shutdown`,
+next to the `clearPendingTimer()` already there.
+
+`runToken`'s own docstring says it is *"incremented on every
+start/resume/stop/end"* so that *"all async continuations (timers, `agent_end`
+tails after awaits, compaction callbacks) capture it and bail out when it
+changed"*. Eleven places move it. **The two SESSION transitions did not** — and a
+session swap is the transition that invalidates the most: it replaces `state`
+wholesale via `restoreState`, and it makes the `pi` and `ctx` every surviving
+continuation captured stale, because pi calls `_extensionRunner.invalidate()` on
+the old one.
+
+**Exactly one continuation survives a swap**, which is why this took twenty-two
+passes to notice. `session_start` clears `pendingTimer` and drops the turn
+buffers, so timers and per-turn state are already handled. A `ctx.compact()`
+callback is not reachable from this module at all — pi holds it:
+
+```js
+   compact: (options) => { void (async () => {
+       try { const result = await this.compact(…); options?.onComplete?.(result) }
+       catch (error) { options?.onError?.(err) }
+   })(); },                                          agent-session.js:1911
+```
+
+and there are two: `requestEmergencyCompaction`, and `interveneStuck`'s
+compaction rung.
+
+**And the swap is what MAKES it fire.** `AgentSession.dispose()` calls
+`abortCompaction()`, so replacing the session aborts an in-flight compaction and
+pi throws `"Compaction cancelled"` — which `isBenignCompactionError` correctly
+does not swallow. So the callback runs, on the ordinary path, at the exact moment
+everything it captured has gone stale. What it then did:
+
+1. charged the NEWLY RESTORED run's context-cooldown ladder for a compaction that
+   belonged to the previous one (`contextCooldownCount++` and
+   `tightenEmergencySummary()` both run before anything else);
+2. called `persistState(pi)` on the previous session's `pi`, whose `appendEntry`
+   is `runtime.assertActive(); runtime.appendEntry(…)`.
+
+That throw leaves through pi's `catch (error) { options?.onError?.(err) }`, i.e.
+out of a `void`ed async IIFE: **an unhandled rejection, not a caught error.**
+
+**Tests.** `tests/session-swap-token.test.ts`, 6 tests. **3 of 6 fail with the
+fix reverted**, and the three that pass are the controls. Probe
+`z4-the-callback-that-outlived-its-session.mjs`, three modes — its BEFORE column
+is this module, loaded from a copy with the two lines patched out, so both
+columns are the shipped code.
+
+## Twenty-second pass — the compaction lock has a fourth implementation
+
+`.pi/extensions/compaction-guard/src/compaction-lock.ts` now takes the lock on
+**pi's own** behalf, under the owner name `"pi"` (AM2). Nothing in this package
+changed for it, and this package's own two call sites are unaffected —
+`beginCompaction` is re-entrant for the same owner and `endCompaction` only
+releases its own — but `sendLoopTurn` now defers for pi's compactions as well as
+for prinny's, which is what AG2 was always trying to do.
+
+`tests/compaction-lock.test.ts` grew two cases: the four copies agree on the key
+and the bound, the owner names are four distinct strings, and the guard's hold
+for pi is seen by every reader and releasable by none of them.
+
+## Twenty-second pass — the tests
+
+**272, up from 264.**
+
+---
+
+# Twenty-third pass (2026-08-23) — what we wrote down, and who reads it back
+
+Full write-up: `context/design/subagents-loop-verifier-round-trips.md`. The axis:
+**for every value this package puts outside its own heap, name the writer, the
+reader, and what the reader does when the bytes are absent, malformed, stale or
+from a different world than the writer's.** One finding here.
+
+## AN5 — the state written thirty-three times and read once
+
+`persistState` appends a `loop-state` custom entry through `pi.appendEntry`, from
+thirty-three places in `extensions/index.ts`. `restoreLoopState` reads exactly
+ONE of them back: the last on the branch. Every other entry is carried for its
+own sake, which is the design and is fine.
+
+What was not fine is how many of them said nothing. Measured on a real session
+file under `~/.pi/agent/sessions` rather than reasoned about:
+
+```
+   session file                                   948,959 bytes
+   loop-state entries                          59
+   bytes they account for                     392,245   41.3% of the file
+   mean entry                                   6,648
+   byte-identical to the entry before it           24   41% of the entries
+```
+
+Twenty-four of fifty-nine carried no information at all. They come from the
+ordinary shape of this file: several rungs of `agent_end` set a field and persist
+next to a rung that just did, `session_compact`'s handler persists straight after
+pi finishes compacting (with `contextCompressionLevel = 0` that was already 0),
+and `/loop end` writes `defaultState()` however many times it is run.
+
+They are not free. Each is ~6.6 KB appended to the session file, one more node on
+the chain `getBranch()` walks and `restoreLoopState` reverses a copy of, and one
+more `custom` entry for `branchEndsInCompaction` to step over — a function that
+exists *because* this module appends on thirty-three paths.
+
+**The fix.** A memo of the last payload this session actually wrote, and a string
+compare per persist. Set AFTER the append, never before: `appendEntry` is
+`runtime.assertActive(); runtime.appendEntry(…)` and throws on a stale ctx, and a
+memo set for a write that did not happen would suppress the retry.
+
+**The trap, which is the whole reason this is a finding rather than a tidy-up.**
+The memo is per SESSION and this module is per PROCESS — the same split AM4 fell
+into one field over. A new session starts with an empty branch, so `restoreState`
+hands back `defaultState()`; if the previous session's last write was also
+`defaultState()` — `/loop end` does exactly that — the first write in the NEW
+session would match the memo, be skipped, and leave that session's file with no
+loop-state entry at all. A later restore would then find nothing and the loop
+would be gone.
+
+So `resetPersistMemo()` is called in `session_start` and `session_shutdown`, next
+to the `clearPendingTimer()` and the `runToken++` that are already there for the
+same reason.
+
+**Tests.** `tests/persist-dedupe.test.ts`, 6 tests. **Control runs: 1 of 6 fail
+with the dedupe removed; 3 of 6 with the memo reset removed.** Probe
+`aa5-the-state-written-thirty-three-times.mjs`, three modes — `session` re-runs
+the measurement above against this box, and `swap` has a third column (the memo
+kept, its reset removed) which prints `the NEW session wrote: 0`.
+
+**Recorded and left open:** `/loop resume` is the one lifecycle transition of
+nine that does not call `resetTurnBuffers()`, `clearPendingTimer()` or clear
+`degenerateAbortPending`. Unreachable as a defect today — every path that can
+leave a buffer filled goes through `agent_end`'s drain or through a stop that
+clears them — and it is the same argument the `finish` idle branch already
+carries in a comment. Written down so the next per-turn field is added to nine
+places rather than eight.
+
+## Twenty-third pass — the tests
+
+**278, up from 272.**
+
+## Twenty-fourth pass (AO1–AO7) — nothing changed here, and why that is worth recording
+
+The twenty-fourth pass asked one question of every surface in the stack:
+
+> For every place this stack decides two values are the same — a key lookup, a
+> set membership, a string compare, a path, a name, an id — name the two values,
+> name the function that decides, and find the pair that is
+> equal-but-different or different-but-equal.
+
+Seven findings, none of them in this package. **No file here changed and the test
+count is unmoved at 278.** That is not an absence of evidence: this package makes
+four identity decisions and each was examined, and two of them are the controls
+the write-up uses to explain why the other packages' were wrong
+(`context/design/subagents-loop-verifier-identity.md` §4, §13.2).
+
+- **`WRITER_TOOLS` / `CAN_CHANGE_TOOLS`** — a tool name against a `Set`, compared
+  exactly, with two lower-case names and one capitalised one (`bash`, `Agent`) in
+  the same set. Correct, because **both sides of that compare are pi's own
+  spelling**: `toolName` arrives on a `tool_result` event exactly as registered,
+  and the sets were written by reading the registry. The identical shape in
+  `prinny-channel` — a tool name against a list — is AO2, and the whole
+  difference is that an operator types into that one.
+- **`resolveModel`** — the stack's third resolution ladder, and the only one that
+  ends in a silent first match: two substring hits take whichever the registry
+  yields first. Correct, and deliberately left alone, because `switchModel`
+  answers `Loop: model set to <provider>/<id>` in the operator's own terminal on
+  the next line. The pick is visible at the moment it is made. `resolveType` and
+  the new `resolveAgentId` report ambiguity instead because **their caller is a
+  model, which gets a tool result and no notice** — that is the rule the pass
+  extracted, and this function is the reason it is a rule about the caller rather
+  than about consistency.
+- **The goal check's `__PI_LOOP_CHECK_COMPLETED__` marker** — a fixed string this
+  package wrote, compared on both sides, with its VALUE deliberately never read
+  (AB1, AC3). An identity decision across a process boundary, done the way the
+  pass would recommend copying.
+- **The turn signature and the repetition window** — identity by a digest of part
+  of a turn. Correct because nothing downstream treats two equal signatures as
+  *the same turn*; it treats them as evidence of a loop, which is what a digest
+  can support. AO4 is the same construction — a timestamp standing in for a
+  message — used as identity and acted on.
+
+**Still open, unchanged and carried for a third pass:** `/loop resume` is the one
+lifecycle transition of nine that does not clear the turn buffers.
+
+## Twenty-fourth pass — the tests
+
+**278, unchanged.**

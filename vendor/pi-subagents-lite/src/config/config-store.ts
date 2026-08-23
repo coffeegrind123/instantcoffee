@@ -37,6 +37,7 @@ import {
   type RawConfig,
   type RawConcurrency,
 } from "./config-io.js";
+import type { LayerStatus } from "./json-store.ts";
 
 export type { ConfigIO, ConfigTarget, ProjectLayerStatus, RawConfig, RawConcurrency } from "./config-io.js";
 
@@ -117,6 +118,9 @@ export class ConfigStore {
   private globalRaw: RawConfig;
   private projectRaw: RawConfig | null;
   private projectStatus: ProjectLayerStatus;
+  /** AN1: what the last load found on disk for the GLOBAL layer. */
+  private globalLayerStatus: LayerStatus = "absent";
+  private globalLayerError?: string;
   private config: SubagentsConfig;
   private io: ConfigIO;
   private sessionOverrides: SessionModelOverrides = { default: null };
@@ -133,6 +137,8 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
+    this.globalLayerStatus = loaded.globalStatus;
+    this.globalLayerError = loaded.globalError;
     this.config = mergeDefaults(mergeLayers(this.globalRaw, this.projectRaw));
   }
 
@@ -149,6 +155,18 @@ export class ConfigStore {
   /** True when the project layer may be written: trusted project, valid or absent file. */
   get projectTargetOffered(): boolean {
     return this.projectStatus === "loaded" || this.projectStatus === "absent";
+  }
+
+  /**
+   * AN1: the global file exists and could not be parsed, so every setting below
+   * is a default rather than the operator's.
+   *
+   * Read at `session_start` (`events.ts`) so it is said ONCE, on the channel an
+   * operator is actually looking at — `console.warn` from `config-io.ts` runs
+   * headless and is the record, but a TUI operator does not read stderr.
+   */
+  get globalConfigUnreadable(): { error?: string } | undefined {
+    return this.globalLayerStatus === "malformed" ? { error: this.globalLayerError } : undefined;
   }
 
   get hasSessionShowCost(): boolean {
@@ -491,6 +509,8 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
+    this.globalLayerStatus = loaded.globalStatus;
+    this.globalLayerError = loaded.globalError;
     this.rebuildEffective();
     this.sessionOverrides = { default: null };
     this.sessionConcurrencyLayer = {};

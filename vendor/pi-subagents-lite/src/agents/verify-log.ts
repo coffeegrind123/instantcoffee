@@ -46,8 +46,9 @@
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+
+import { agentDirFile } from "../agent-dir.ts";
 
 /**
  * Where the log lives.
@@ -61,8 +62,10 @@ import { dirname, join } from "node:path";
  */
 export function verifyLogFile(env: NodeJS.ProcessEnv = process.env): string {
   if (env.SUBAGENT_VERIFY_LOG_FILE) return env.SUBAGENT_VERIFY_LOG_FILE;
-  const agentDir = env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-  return join(agentDir, "subagent-verify.jsonl");
+  // AN7: through `agent-dir.ts`, which is where this rule now lives. It was
+  // written out here first and `pi-settings.ts` had a different answer to the
+  // same question; one module, so a third reader cannot invent a third.
+  return agentDirFile("subagent-verify.jsonl", env);
 }
 
 /** How much of a prompt or a reply is kept. Enough to read; not enough to be a transcript. */

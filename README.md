@@ -797,7 +797,11 @@ file can widen it back, and `SUBAGENT_EXTRA_EXTENSIONS` cannot be used to smuggl
 it in. Every subagent also has a turn ceiling — `DEFAULT_MAX_TURNS = 40`, which
 steers "wrap up immediately" at the limit and hard-aborts only after the grace
 turns, so hitting it produces an answer rather than a severed run. `StopAgent` is
-the parent's kill switch.
+the parent's kill switch, and it takes the **short** id — the eight characters
+`AgentStatus`, the background result and its own messages all print. Until the
+twenty-fourth pass it resolved that with an exact lookup on the full
+seventeen-character id, so it refused every identifier the model had ever been
+shown; see AO1 in `context/design/subagents-loop-verifier-identity.md`.
 
 **A subagent's own turns are in the session transcript.** Twentieth pass, and it
 is the answer to *"a delegation just ran; where is the record of what it did?"*.
@@ -819,7 +823,9 @@ It costs the model nothing, ever: pi's `sessionEntryToContextMessages` returns
 `[]` for a `type: "custom"` entry, so it persists and renders and is never
 context — measured against pi's own `SessionManager`, across two compactions and
 a re-open from disk, before the code was written. Bounded at 60 entries per
-delegation and 4,000 characters each; `SUBAGENT_TRANSCRIPT=0` turns it off. See
+delegation and 4,000 characters each; `SUBAGENT_TRANSCRIPT=0` in `.env` turns it
+off — and it reaches the process from there since the twenty-third pass, which is
+also when it started to. See
 §5.7 of `context/design/subagents-loop-verifier-proxies.md`.
 
 **`/loop` was put back, and then taken out again**, which is worth a paragraph
@@ -878,6 +884,14 @@ parent would have received with the verifier off, and a retry from a child
 that has just been told twice it is wrong is not an upgrade.
 `SUBAGENT_VERIFY=0` turns the whole thing off.
 
+Every model call the verifier makes is written to
+`~/.pi/agent/subagent-verify.jsonl` — the prompt, the raw reply, and the parse
+the stack acted on, because a reply and a verdict side by side is the only thing
+that can show the parser was wrong, and four findings in this series each needed
+exactly that. Bounded at 2,000 lines with 4,000 characters per field;
+`SUBAGENT_VERIFY_LOG=0` in `.env` turns it off and `SUBAGENT_VERIFY_LOG_FILE`
+moves it. Both reach the process from `.env` since the twenty-third pass.
+
 The answer **text** is only annotated when something went wrong — a note there
 is text the parent model reads and quotes, so a pass must not carry one. The
 verdict instead shows as a marker on the result line and in the agent list: dim
@@ -929,6 +943,25 @@ matrix-js-sdk plus its Rust crypto blocks the event loop for ~15 seconds and
 writes to stdout on the way up; in-process that is a frozen TUI drawn over with
 library chatter. Its ~105MB of dependencies are installed outside the repo, at
 `~/.pi/agent/channels/prinny/runtime`, by `/prinny prepare`.
+
+That runtime is a **compiled copy** of `vendor/prinny-channel/server/src`, keyed
+on a content fingerprint of the source. So it can be out of date, and since the
+twenty-third pass everything that asks says which of three states it is in:
+
+```
+   node vendor/prinny-channel/server/bin/prinny-channel.mjs --staged
+     current   exit 0    the build matches the source
+     stale     exit 1    it does not — run /prinny prepare
+     absent    exit 2    nothing compiled — run /prinny prepare
+```
+
+`/prinny status` prints the same three, the launch banner says
+`/prinny (runtime stale)`, and `/prinny start` **refuses** on `stale` rather than
+starting. That refusal is the point: a stale runtime re-stages on the next start,
+inside a 120-second connect budget that already spends a measured 27.5 seconds
+importing the Matrix stack, and it fails as `initialize timed out` — which reads
+as a broken channel rather than a rebuild. Before this, three readers and the
+banner all said "built" for a runtime whose source had moved on.
 
 **The answer is forwarded, not requested.** Upstream made a `reply` tool the
 only way out, which holds at frontier scale and does not at 27B: the model
@@ -1078,7 +1111,8 @@ is shadowing it);
 `/stack` means the stack extension loaded. If `/stack` is absent from the
 banner, the command will not exist in that session. `/prinny` means the Matrix
 channel loaded — and it says so with a qualifier when it will not work yet:
-`/prinny (runtime not built)` or `/prinny (not configured)`.
+`/prinny (runtime not built)`, `/prinny (runtime stale)` or
+`/prinny (not configured)`.
 
 ### Keeping pi current
 

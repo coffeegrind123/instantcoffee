@@ -12,11 +12,17 @@
  * warning (and preserved for write-back); a malformed project file is never
  * overwritten. See docs/adr/0008-project-config-as-override-layer.md.
  */
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { SubagentsConfig } from "../models/model-precedence.js";
 import { CONFIG_AGENT_NON_MODEL_KEYS } from "./types.js";
+import {
+  isPlainObject,
+  quarantine,
+  readJsonObject,
+  writeJsonAtomic,
+  type LayerStatus,
+} from "./json-store.ts";
 
 /** File name of the config in both the global agent dir and a project's .pi dir. */
 const CONFIG_FILE_NAME = "subagents-lite.json";
@@ -103,11 +109,19 @@ export interface RawConfig {
   concurrency?: RawConcurrency;
 }
 
-/** Result of a load: the two raw layers plus the project layer's status. */
+/** Result of a load: the two raw layers plus each layer's status. */
 export interface LoadedConfig {
   global: RawConfig;
   project: RawConfig | null;
   projectStatus: ProjectLayerStatus;
+  /**
+   * AN1. `absent` is a fresh install and `malformed` is a file nobody could
+   * read — one `catch` used to return `{}` for both, and the next menu toggle
+   * wrote that `{}` back over the operator's settings. See `json-store.ts`.
+   */
+  globalStatus: LayerStatus;
+  /** The parser's own words, when the global layer is malformed. */
+  globalError?: string;
 }
 
 /** Persistence port consumed by ConfigStore. */
@@ -139,10 +153,20 @@ export function createConfigIO(projectDir?: string): ConfigIO {
   let projectStatus: ProjectLayerStatus = projectDir ? "absent" : "untrusted";
   let projectRaw: RawConfig | null = null;
   let unknownKeysWarned = false;
+  /** AN1: what the last load found on disk, which is what a save has to respect. */
+  let globalStatus: LayerStatus = "absent";
 
   return {
     load: () => {
-      const global = readGlobalRaw();
+      const globalRead = readGlobalLayer();
+      const global = globalRead.raw;
+      globalStatus = globalRead.status;
+      if (globalStatus === "malformed") {
+        console.warn(
+          `[subagents] Could not read ${CONFIG_PATH}: ${globalRead.error}. ` +
+            "Running on defaults; the file will be moved aside if anything is saved.",
+        );
+      }
       // Legacy key never written back: drop it from the raw global layer.
       if (global.agent) delete global.agent.finishedEvictTurns;
       if (projectPath) {
@@ -167,17 +191,41 @@ export function createConfigIO(projectDir?: string): ConfigIO {
         projectRaw = null;
         projectStatus = "untrusted";
       }
-      return { global, project: projectRaw, projectStatus };
+      return {
+        global,
+        project: projectRaw,
+        projectStatus,
+        globalStatus,
+        ...(globalRead.error ? { globalError: globalRead.error } : {}),
+      };
     },
     saveGlobal: (config) => {
-      writeJsonAtomic(CONFIG_PATH, config);
+      // AN1: the bytes nobody could read are moved aside BEFORE they are
+      // replaced. Once, because after the rename the file is absent — a state
+      // everything here already handles.
+      if (globalStatus === "malformed") {
+        const moved = quarantine(CONFIG_PATH);
+        globalStatus = "absent";
+        console.warn(
+          moved
+            ? `[subagents] ${CONFIG_PATH} could not be parsed; kept it as ${moved} and started fresh.`
+            : `[subagents] ${CONFIG_PATH} could not be parsed and could not be moved aside; overwriting it.`,
+        );
+      }
+      const written = writeJsonAtomic(CONFIG_PATH, config);
+      if (!written.ok) console.error(`[subagents] Failed to save config: ${written.error}`);
     },
     saveProject: (config) => {
+      // Deliberately NOT the quarantine the global layer takes. A project file
+      // is shared, checked in and somebody else's to fix; a global one exists
+      // only to hold what this operator just typed into a menu. See ADR-0008
+      // and `json-store.ts`.
       if (!projectPath || projectStatus === "malformed" || projectStatus === "untrusted") {
         console.warn(`[subagents] Refusing to write project config (${projectStatus}); change not saved`);
         return;
       }
-      writeJsonAtomic(projectPath, config);
+      const written = writeJsonAtomic(projectPath, config);
+      if (!written.ok) console.error(`[subagents] Failed to save config: ${written.error}`);
     },
   };
 }
@@ -188,7 +236,7 @@ export function createConfigIO(projectDir?: string): ConfigIO {
  * the store (events.ts); the store loads both layers via ConfigIO.
  */
 export function loadConfig(): SubagentsConfig {
-  return mergeDefaults(readGlobalRaw());
+  return mergeDefaults(readGlobalLayer().raw);
 }
 
 /**
@@ -247,30 +295,31 @@ export function mergeDefaults(raw: RawConfig): SubagentsConfig {
 
 // ── Load ─────────────────────────────────────────────────────────────
 
-/** Read the global file; any failure (missing, malformed) reads as {} — as today. */
-function readGlobalRaw(): RawConfig {
-  try {
-    return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")) as RawConfig;
-  } catch {
-    return {};
-  }
+/**
+ * Read the global file, saying WHICH kind of nothing it found.
+ *
+ * AN1: this used to be one `try`/`catch` returning `{}`, so a file with a
+ * missing comma in it was indistinguishable from no file at all — and the
+ * difference decides whether the next write may replace it. See
+ * `json-store.ts` for the measured consequence.
+ */
+function readGlobalLayer(): { raw: RawConfig; status: LayerStatus; error?: string } {
+  const read = readJsonObject(CONFIG_PATH);
+  if (read.status !== "loaded") return { raw: {}, status: read.status, error: read.error };
+  return { raw: read.value as RawConfig, status: "loaded" };
 }
 
 /** Read the project file; missing = absent, unreadable/invalid = malformed + warning. */
 function readProjectRaw(projectPath: string): ProjectRead {
-  if (!fs.existsSync(projectPath)) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(projectPath, "utf-8"));
-  } catch (err) {
-    console.warn(`[subagents] Ignoring malformed project config ${projectPath}: ${err}`);
+  // AN1: the same reader as the global layer, so "absent" and "malformed" are
+  // the same two facts on both. The DECISION they feed is what differs.
+  const read = readJsonObject(projectPath);
+  if (read.status === "absent") return null;
+  if (read.status === "malformed") {
+    console.warn(`[subagents] Ignoring malformed project config ${projectPath}: ${read.error}`);
     return "malformed";
   }
-  if (!isPlainObject(parsed)) {
-    console.warn(`[subagents] Ignoring malformed project config ${projectPath}: not a JSON object`);
-    return "malformed";
-  }
-  const raw = parsed as RawConfig;
+  const raw = read.value as RawConfig;
   if (raw.agent !== undefined && !isPlainObject(raw.agent)) return malformedSection(projectPath, "agent");
   if (raw.concurrency !== undefined && !isPlainObject(raw.concurrency)) {
     return malformedSection(projectPath, "concurrency");
@@ -290,20 +339,6 @@ function malformedSection(projectPath: string, section: string): "malformed" {
   return "malformed";
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 // ── Save ─────────────────────────────────────────────────────────────
-
-/** Write JSON atomically: tmp file in the same directory, then rename. */
-function writeJsonAtomic(filePath: string, config: unknown): void {
-  const tmpPath = filePath + ".tmp";
-  try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
-    fs.renameSync(tmpPath, filePath);
-  } catch (err) {
-    console.error(`[subagents] Failed to save config: ${err}`);
-  }
-}
+// `writeJsonAtomic` lives in `json-store.ts` with the read and the quarantine,
+// because the three are one rule and the rule is what AN1 was about.

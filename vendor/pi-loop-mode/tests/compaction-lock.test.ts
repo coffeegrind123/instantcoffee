@@ -39,6 +39,8 @@ import {
   resetCompactionLock,
 } from "../src/compaction-lock.ts";
 import * as prinny from "../../prinny-channel/src/compaction-lock.ts";
+import * as subagents from "../../pi-subagents-lite/src/spawn/compaction-lock.ts";
+import * as guard from "../../../.pi/extensions/compaction-guard/src/compaction-lock.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -101,14 +103,43 @@ describe("the compaction lock", () => {
   });
 });
 
-describe("the two implementations agree", () => {
+describe("the four implementations agree", () => {
   beforeEach(() => {
     resetCompactionLock();
   });
 
   it("on the key and the bound", () => {
-    assert.equal(prinny.COMPACTION_LOCK_KEY, COMPACTION_LOCK_KEY);
-    assert.equal(prinny.STALE_MS, STALE_MS);
+    // Four copies since AM2: this one, prinny's, the READ-ONLY one in
+    // pi-subagents-lite, and compaction-guard's — which is the only one that
+    // takes the lock on pi's OWN behalf. A protocol with four implementations is
+    // worth exactly as much as the assertion that they agree.
+    for (const other of [prinny, subagents, guard]) {
+      assert.equal(other.COMPACTION_LOCK_KEY, COMPACTION_LOCK_KEY);
+      assert.equal(other.STALE_MS, STALE_MS);
+    }
+  });
+
+  it("and the owner names are four different strings", () => {
+    const owners = [LOOP_OWNER, prinny.PRINNY_OWNER, guard.PI_OWNER];
+    assert.equal(new Set(owners).size, owners.length, "an owner name that collides cannot be released safely");
+    // The guard's is the HOST's name, not the extension's: every reader prints
+    // `${holder.owner} is compacting`, and the compaction really is pi's.
+    assert.equal(guard.PI_OWNER, "pi");
+    // pi-subagents-lite deliberately has no owner and no writers — see its header.
+    assert.equal((subagents as Record<string, unknown>).beginCompaction, undefined);
+    assert.equal((subagents as Record<string, unknown>).endCompaction, undefined);
+  });
+
+  it("so the guard's hold for pi is seen by every reader, and released by none of them", () => {
+    assert.equal(guard.beginCompaction(guard.PI_OWNER), true);
+    assert.equal(compactionInFlight()?.owner, "pi", "the loop's sendLoopTurn sees it");
+    assert.equal(prinny.compactionInFlight()?.owner, "pi", "prinny's continuation sees it");
+    assert.equal(subagents.compactionInFlight()?.owner, "pi", "the nudge sees it");
+    endCompaction(LOOP_OWNER);
+    prinny.endCompaction(prinny.PRINNY_OWNER);
+    assert.equal(compactionInFlight()?.owner, "pi", "and neither can release it");
+    guard.endCompaction(guard.PI_OWNER);
+    assert.equal(compactionInFlight(), undefined);
   });
 
   it("and are genuinely two modules, not one import", () => {

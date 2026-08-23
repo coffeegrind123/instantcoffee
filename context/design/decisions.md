@@ -7324,6 +7324,127 @@ reason than the one written down.
 
 ---
 
+## 2026-08-23 — Twenty-third pass over subagents, the loop and the verifier: what we wrote down, and who reads it back
+
+Full write-up: `context/design/subagents-loop-verifier-round-trips.md`
+(self-contained; §1 is the machine in seven panels, §10.2 is the artefact, §11 is
+the findings). This entry records the decisions, so they are not reopened.
+
+**The axis.** For every value this stack puts outside its own heap — a file, a
+child process's stdio, another session's context, another process's environment,
+a buffer held for later — name the writer, the reader, and what the reader does
+when the bytes are **absent, malformed, stale, or from a different world than the
+writer's**. Thirty-eight rows in §10.2's ledger; nine carried a defect and seven
+of those are findings.
+
+**Gates.** 1,281 → 1,369 tests, 111 → 118 probes, lint 111/111 in
+`pi-subagents-lite` and clean everywhere else. The *before* column was measured
+before anything was written.
+
+### The decisions
+
+**A file this stack could not parse is QUARANTINED, not refused, and not
+replaced.** Three options were on the table and all three exist in this tree
+already: replace it (what the two defective readers did), refuse to write (what
+the project config layer does, per ADR-0008), and rename it aside (what the
+sidecar does for `access.json`). Refusing is right for a file that is shared,
+checked in and somebody else's to fix. It is wrong for a file that exists only to
+hold what the operator just typed into a menu, because the menu then silently
+stops working — a toggle that flips back is a worse mystery than a file that
+moved. So: `<file>.corrupt-<ISO timestamp>`, once per bad file, with the new name
+in the notice. **An empty file is `absent`, not `malformed`** — a truncated write
+leaves nothing to keep, and quarantining zero bytes only makes a second file for
+the operator to delete.
+
+**Nothing removes a `.corrupt-` file.** A quarantine is a deliberate keep. If
+that ever changes, the bound belongs beside `MAX_SPILL_FILES`, not in the writer.
+
+**The config rule is written TWICE, once per package, with a cross-package
+test.** Vendor packages in this tree do not import each other (invariant 5), and
+the precedent is the compaction lock's four copies plus
+`tests/compaction-lock.test.ts`. `vendor/prinny-channel/tests/json-store.test.ts`
+imports both copies and drives them over the same cases.
+
+**A stale staged runtime BLOCKS a start rather than warning.** The alternative —
+warn and proceed — was rejected because the proceed path is the failure:
+`npm install` plus `tsc` inside a 120 s connect budget that already spends a
+measured 27.5 s importing the Matrix stack, reported as `initialize timed out`,
+which reads as a broken channel rather than a rebuild. `/prinny prepare` exists
+for exactly this and `/prinny configure` now runs it automatically for a stale
+runtime as well as an absent one.
+
+**A staged build with NO stamp reads as `stale`, not `current`.** There is no
+evidence it matches the source, and guessing that it does is the failure this
+whole finding is about.
+
+**`--staged` is a flag on the bootstrap rather than a second implementation in
+the shell.** One node start and a sha256 over ~140 KB, only when the channel is
+enabled. A bash reimplementation of the fingerprint would be a third answer to a
+question that already had two too many.
+
+**`/prinny configure token` clears `PRINNY_DEVICE_ID`.** A token belongs to a
+device; the three-argument arm has always cleared both keys when the account
+changes, and this is the same sentence for the token-only arm. The alternative —
+having `resolveDeviceId` verify the stored id against `/account/whoami` — was
+rejected as the wrong layer: it would pay for a network round trip on every
+start to repair a value that should not have survived the write.
+
+**The two unforwarded switches are fixed with a SCAN, not two exports.**
+`tests/env-switches.test.ts` walks the package's own sources for every
+`env.SUBAGENT_*` and fails when one is not both `env_get`-read and `export`ed by
+`scripts/pi-local.sh`. Its `INLINE_ONLY` map is empty on purpose: a name in it is
+a decision somebody has to write down. The test carries its own control, because
+a scan that finds nothing passes every assertion after it.
+
+**The loop's persist memo is per SESSION and is cleared at both transitions.**
+Skipping a byte-identical write is safe because `restoreLoopState` reads only the
+last matching entry — but a new session starting with an empty branch restores
+`defaultState()`, which is exactly what `/loop end` writes, so without the reset
+the new session's file could hold no loop state at all. The memo is set AFTER the
+append, never before: `appendEntry` throws on a stale ctx, and a memo set for a
+write that did not happen would suppress the retry.
+
+**The setup-warning buffer speaks on BOTH channels.** `console.warn`
+unconditionally and then the UI, which is what `reportDrop` in the same package
+already does — because pi's headless `notify` is a real `() => {}` and a
+`notify ? notify : console` ternary picks the arm that says nothing. And its
+`try` opens above the SETUP, not just around the run: `ui.notify` renders into
+the TUI's chat container and appends no session entry, so releasing there cannot
+reopen the tool_use/tool_result ordering problem the buffer exists for.
+
+**There is one answer to "where is pi's agent directory".** `src/agent-dir.ts`,
+with the tilde rule read out of pi's `normalizePath` rather than guessed, and a
+test that reads pi's installed `dist/config.js` so a rename upstream is a failing
+test rather than a silent divergence.
+
+### Left open, deliberately
+
+- **`access.json` and `.env` each have two writers in two processes**, both
+  read-modify-write. The windows are microseconds inside synchronous functions;
+  the repair would be a lock file, and the honest position is to notice a lost
+  token rather than to prevent it.
+- **`/loop resume` does not clear the turn buffers**, where the other eight
+  lifecycle transitions do. Unreachable as a defect today, and the `finish` idle
+  branch already carries the same argument in a comment. Written down so the next
+  per-turn field is added to nine places rather than eight.
+- **The session file has no bound.** The duplicate entries are gone; the file
+  still grows, and pi loads it whole at `/resume`.
+
+### The lesson, for the next pass
+
+**Six of seven findings are distance zero, and in five the correct version is
+literally adjacent** — nine lines below, forty lines below, in the sibling
+module, in the comment directly above. Nobody wrote the wrong thing; somebody
+wrote the right thing twice and only one copy got the hard case. This class is
+not found by reading one place harder. It is found by putting the two places side
+by side.
+
+And: **a `catch` is where two facts become one.** The question is not "did I
+handle the error?" but "what does the caller do with the default I just
+returned?" — because twice, the answer was "writes it back over the file".
+
+---
+
 ## 2026-08-23 — Twenty-second pass over subagents, the loop and the verifier: what happens while we are waiting
 
 Full write-up: `context/design/subagents-loop-verifier-concurrency.md`
@@ -7636,3 +7757,311 @@ tokens, not a fraction of one. It now calibrates against the server's own
 `/tokenize` and iterates to within 1%, printing each step. A generator that
 cannot hit its own target does not test a context limit; it tests the limit's
 error message.
+
+## 2026-08-23 — Twenty-fourth pass over subagents, the loop and the verifier: what counts as the same thing
+
+Full write-up: `context/design/subagents-loop-verifier-identity.md`
+(self-contained; §1 is the machine in seven panels, §10.2 is the artefact, §11 is
+the findings). This entry records the decisions, so they are not reopened.
+
+**The axis.** For every place this stack decides two values are the same — a key
+lookup, a set membership, a string compare, a path, a name, an id — name the two
+values, name the function that decides, and find the pair that is
+**equal-but-different** or **different-but-equal**. Fifty-three rows in §10.2's
+ledger; ten carried a defect and they are the seven findings.
+
+**Gates.** 1,369 → 1,424 tests, 113 → 120 lettered probes, lint 113/113 in
+`pi-subagents-lite` and clean everywhere else. The *before* column was measured
+before anything was written; the *after* column was re-run from scratch when the
+write-up was produced.
+
+### The decisions
+
+**The fix goes at the LOOKUP, not at the printer.** AO1, AO2 and AO6 are each one
+operator — `Map.get` → a resolution ladder, `.includes` → a folded compare, `[k]`
+→ `hasOwnProperty.call` — and in every one of them the alternative was to change
+the *publishers*. For AO1 that would have meant printing seventeen characters in
+eleven places, spending on every listing forever the tokens the short form exists
+to save, and leaving the twelfth printer to get it wrong. The published form is
+the operator-visible contract; the lookup is the implementation detail, and the
+implementation detail is the one that should learn.
+
+**Ambiguity is reported when the caller cannot see what you picked — otherwise a
+first match is fine, provided the pick is named.** This is the rule that came out
+of putting the stack's three resolution ladders side by side (§1.6).
+`resolveType` and the new `resolveAgentId` answer a MODEL, which receives a tool
+result and no notice, so both report `ambiguous` with the candidates. The loop's
+`resolveModel` takes a silent first match on a substring, and is left exactly as
+it is, because `switchModel` answers `Loop: model set to <provider>/<id>` in the
+operator's own terminal on the next line. **The rule is about the caller, not
+about consistency**, and `resolveModel` is why it is phrased that way.
+
+**An ambiguity message names its candidates at a length that tells them apart.**
+The candidates of an ambiguity are by construction identical at the length that
+was asked, so printing them there says `abcdefgh, abcdefgh. Use more of the id.`
+`distinguishingLength` widens to the shortest prefix at which they differ. Naming
+two things in one spelling is the same defect as naming one thing in a spelling
+the next call rejects.
+
+**`agent-id.ts` imports nothing, deliberately.** `agent-manager.ts` and
+`tool-execution.ts` both import pi, so neither can be loaded by `node
+--experimental-strip-types --test`. The rule was extracted into a module with no
+imports for the same reason `record-activity.ts`, `status-listing.ts`,
+`turn-tracking.ts` and `git-failure.ts` were: **a rule that cannot be driven by
+the suite is a rule with no control run.** This is now the fifth instance and it
+is the standing shape for any new decision procedure in that package.
+
+**Fold, rather than validate, when there is nothing to validate against.** For
+AO2 the obvious repair was to check `permissionTools` entries at write time — and
+there is no tool registry on `ExtensionContext` to check them against. pi exposes
+`ui`, `mode`, `cwd`, `sessionManager`, `modelRegistry`, `model`, `scopedModels`,
+`thinkingLevel` and the lifecycle calls, and nothing that lists tools. So the
+repair is at the comparison, folded, in the `ask` direction that
+`permission-gate.ts`'s own header commits to. `parseSetting` de-duplicates by the
+same question the gate asks, and keeps the operator's spelling: the stored list's
+length has to stay a true claim about how many tools are gated.
+
+**Every fold in the stack is on a value a human or a model produced; every
+refusal to fold is on a value a machine produced** (§10.4). MXIDs and room IDs
+are case-significant protocol values and are compared exactly. `mergeAgents` keys
+on the exact frontmatter name, because folding at the STORE silently picks one
+file's contents over another's — `resolveType` answers the case question
+separately, at lookup, where it can report ambiguity instead. **Two questions,
+two places, one deliberate asymmetry**, and it is the general shape: fold at the
+lookup, never at the store.
+
+**A widening costs nothing until it is needed.** AO3's `uniqueInjection` adds
+`from=` only when another outstanding room would render identically, and an
+opaque `#n` only if that still collides. The rejected alternative was to put the
+room or event id back into every rendering, which is the ~55 tokens per message
+the `[matrix]` marker was introduced to remove. The first widening is deliberately
+the sender's name rather than a token: it is information the model can use.
+
+**Identity above a clock-skew horizon, time below it.** AO4's watermark keeps its
+timestamp, because bounding the catch-up is the job it was written for, and asks
+the event id inside the last five minutes. `MAX_REMEMBERED_IDS` is 200 — far more
+than five minutes of one conversation, a few kilobytes in a file that is
+rewritten on every delivery. `catchUpFrom` is lowered by the same horizon,
+because an event the floor excludes never reaches the id check at all. **A
+pre-pass `{ ts }` file reads as a mark with no ids**, which is the old behaviour
+below the horizon and the new one above it, so no migration exists or is needed.
+
+**The test harness REFUSES a stale runtime rather than skipping or rebuilding.**
+Skipping would report a suite as passing that never ran — which is precisely the
+condition AO5 found, 511 green tests about a program not in the tree. Rebuilding
+would need the staged `node_modules` and would turn `npm test` into a build with
+an `npm install` in it. So it throws, names `--prepare`, and says which of
+`stale` or `absent` it saw. The check runs from **every** `loadServerModule`
+rather than once at load, because a `--prepare` in another terminal is exactly
+the thing that changes the answer mid-run.
+
+**`hasOwnProperty.call`, not `Object.hasOwn`.** The modern spelling is available
+on the Node this runs on and is better. The `.call` form was kept so that both
+halves of `prinny-channel` say it identically and one grep finds all five sites —
+the same reasoning that keeps the four compaction-lock copies textually aligned.
+
+**`server/src/state.ts` keeps a deliberate duplicate of the agent-dir rule.** It
+is compiled with `rootDir: src` into a runtime outside the repo and cannot import
+`server/bin/agent-dir.mjs`. Two copies of a rule is a bug waiting for a quiet
+afternoon, so the copies are compared by a test — the arrangement the compaction
+lock and `json-store.ts` already use here.
+
+**Where a fix is one operator, the finding gets a SCAN, not a second fix.** AO7
+is AN7's third instance, found because AN7 wrote the shared module and did not
+look for the next reader. Both packages now carry a scan over their own sources —
+comments stripped, because prose is not a reader — so a fourth reader is a
+failing test. The `pi-subagents-lite` scan deliberately does **not** match the
+string `.pi/agent`: `<cwd>/.pi/agents` is the project agents directory, a
+different thing, correctly built in four files.
+
+**`agent-dir.ts`'s guard is pi's, not a better one.** It was `override &&
+override.trim() !== ""`, which is a better rule and a *different* one: `"   "` is
+a relative directory to pi and was "unset" here. Where the two disagree pi is
+right by definition, because pi is the one that writes the files. The test that
+pinned the old guard was rewritten to say which rule it holds and why.
+
+### Recorded and left open
+
+- ~~**`worktree-validator.ts` compares one realpath'd path against one that is
+  not.**~~ **Reversed the same day — see the entry below.**
+- **`mcp-stdio.ts` dispatches a reply on `typeof id === 'number'`.** A server
+  echoing a JSON-RPC id as a string drops the reply and the call times out.
+  Latent: this stack's sidecar always echoes numbers. Same shape as AK3.
+- **The probe count now has a definition** (`context/testing/probes/README.md`):
+  a probe is a lettered file, there are 120, and the four `_` helpers and
+  `verify-prior-fixes.mjs` are not probes. Two earlier numbers were both right
+  about different things and neither said which.
+
+## 2026-08-23 (later) — AO8, and a decision reversed within the hour
+
+The entry above recorded `worktree-validator.ts`'s realpath asymmetry as latent
+and left it, on the grounds that *"the fix is one call, and the case that would
+prove it is not reachable on this box"*. **That reason was wrong, and this
+records the reversal rather than quietly editing the earlier decision.**
+
+**What was actually measured, before anything was built.** `git rev-parse
+--git-common-dir` does not answer in one shape (git 2.39.5, this container):
+
+```
+   in the MAIN worktree     ".git"                  RELATIVE
+   through a SYMLINK to it  ".git"                  RELATIVE
+   in a LINKED worktree     "/abs/…/real/.git"      ABSOLUTE
+```
+
+The relative answer is resolved against the directory it was asked in. The
+validator realpath's the TARGET's directory and not the PARENT's, so a logical
+parent cwd yields `<symlink>/.git` against `<real>/.git`, and a worktree of the
+parent's own repository reads as cross-repo — which the caller then gates.
+
+### The decisions
+
+**The reason for leaving it conflated two different sentences.** "The case is not
+reachable on this box" and "I cannot drive this code" are not the same claim, and
+only the second was true. `parentCwd` is a **parameter** of
+`validateWorktreePath`, so reaching the case costs one `symlinkSync`; what was
+blocked was loading the module at all, because `worktree-validator.ts` uses a
+`.js` specifier for `../utils.ts` that plain node will not resolve. **When the
+stated reason for leaving something is an inability, check which inability it
+is.**
+
+**The answer was the one this package has already given five times: extract the
+rule.** `src/spawn/same-repo.ts` is the sixth module lifted out of an
+un-loadable file so the suite can drive it, after `git-failure.ts`,
+`record-activity.ts`, `status-listing.ts`, `turn-tracking.ts` and `agent-id.ts`.
+This is now a standing move rather than a series of one-offs: **if a rule cannot
+be tested where it lives, that is a fact about where it lives.**
+
+**Both sides are canonicalised in one place, not one side at the call site.** The
+caller no longer performs the comparison, so it cannot get it half-right again.
+Canonicalising an already-canonical path returns it unchanged, so the target
+side — already realpath'd by the validator — is unaffected.
+
+**`canonicalise` is a parameter, not an import.** A test can drive a platform
+whose `process.cwd()` is logical without running on one, and the dependence is
+visible in the signature. The default falls back to its input when the path
+cannot be resolved, which is exactly what the comparison did before the fix and
+is never worse than it.
+
+**The fixture is real git, not a fake.** The whole finding is about what git
+actually prints in two situations; a fake would be a test of the fake. Ten tests
+build a repository, a symlink, a linked worktree and a second repository in a
+temp directory, and **one of them pins the two shapes** so a change upstream is a
+failing test rather than a rule resting on a stale observation.
+
+**It is still latent, and the write-up says so in the same breath as the fix.**
+pi builds `ctx.cwd` from `process.cwd()` (`dist/cli/startup-ui.js:47`) through
+`resolvePath`, which normalises without canonicalising
+(`dist/utils/paths.js:82`), and Linux `process.cwd()` is physical. The probe's
+`physical` mode is the control that shows the fix changes nothing here — which is
+the same sentence as "this is why nobody noticed for twenty-four passes".
+
+**Gates after it:** 1,424 → **1,434** tests, lint 113/113 → **115/115**, 120 →
+**121** lettered probes. Control run: 2 of 10.
+
+## 2026-08-23 (later still) — AO9, and a control run that could not fail
+
+The session after the one above ran the twenty-fourth pass's cheapest unrun hand
+test — `AgentStatus`, then `StopAgent` with the eight characters it printed — and
+in setting up its BEFORE column found that AO1's fix was held by nothing.
+
+### What was measured
+
+The live NOW column, headless against the local model on the one llama slot:
+
+```
+   Agent          → "Agent ID: 3ced427a-8a6c-41b"       the full seventeen
+   AgentStatus    → "3ced427a (general-purpose) running"
+   StopAgent {agent_id: "3ced427a"}   → "Stopped agent 3ced427a"
+```
+
+The live BEFORE column, with `tool-execution.ts:450` put back to its pre-AO1
+`getRecord(requestedId)`:
+
+```
+   StopAgent {agent_id: "cbc6575f"}
+     → "Agent cbc6575f not found. Running agents: cbc6575f (general-purpose)"
+   StopAgent {agent_id: "cbc6575f"}          the model retried the identical id
+     → the same sentence
+   StopAgent {agent_id: "cbc6575f-2265-4d7"} it fell back to the seventeen
+     → "Stopped agent cbc6575f"
+```
+
+**And with that revert in place the whole tree stayed green: 1,434 tests, 121
+probes, lint 115/115.** Nothing in the repository noticed that AO1 had been
+undone.
+
+### The decisions
+
+**A control run is only a control over what it can change.** AO1 was recorded
+with *"control run: 5 of 12 fail"*, and that is a control over `resolveAgentId`,
+which is a pure module the suite loads directly. The **call** —
+`executeStopAgentTool` asking `resolveId` instead of `getRecord` — was touched by
+nothing. The rule to carry: **when a pass reports a control run, ask what the
+control was over.**
+
+**And the reason given for not driving the call was a habit, not a fact.** `ab1`'s
+header says `tool-execution.ts` imports pi and will not load under `node
+--experimental-strip-types` — true, and it is **the constraint the suite runs
+under**. A probe is not the suite: `q2` has driven that exact function through
+**pi's own jiti** since the thirteenth pass, and `q2`'s own header states the rule
+this pass needed — *"a fix whose test cannot execute the function it changed is
+pinned against editing, not against breaking"*. So the second decision is that
+**AO9 gets a probe as well as a pin**: `ab9`, four modes, the shipped function
+over a real manager with `resolveId` swapped on the instance for the BEFORE
+column. All four exit 1 with the defect restored. **Before accepting "this cannot
+be driven", check whether the constraint belongs to the tool you are holding or to
+a different one.**
+
+**A test named `control` that asserts a fact about `Map` is not a control.**
+`agent-id.test.ts` ended with *"control — the exact lookup StopAgent used to make
+still misses the short form"*, asserting `new Map(ids…).get(short) === undefined`
+under a comment reading *"stated as a test so the fix cannot be reverted
+quietly"*. That assertion is true whether or not this package still evaluates it,
+and the fix was then reverted quietly in one edit. **A control has to be able to
+fail.**
+
+**The instrument is a source pin, and it was already in this package twice.**
+`tests/action-report.test.ts` has `describe("AF2 — the wiring")` and
+`tests/background-delivery.test.ts` pins a source line beside the routing fact it
+rests on; twenty-one of this package's test files already read `src/` as text.
+Extracting further would not have helped — the thing to hold is not a rule, it is
+a call. So `describe("AO9 — StopAgent's resolution call site")` went into the AO1
+file, so the rule and its wiring are read together.
+
+**The source is comment-stripped before it is searched.** The defect is quoted
+verbatim in the fix's own comment (*"Not `getRecord(requestedId)`, which is an
+exact `Map` lookup…"*), so a naive search for the defective form would have
+passed vacuously — on the comment. This is the same trap
+`background-delivery.test.ts` documents, and the same helper.
+
+**The slice bounds are asserted first, as the control for the absence
+assertion.** An absence assertion over an empty string passes. So the block
+begins by asserting `executeStopAgentTool` is still found and the body is longer
+than 500 characters, and every positive assertion sits beside the negative one it
+protects — the thirteenth pass's rule about absence assertions, applied to a
+source pin. **Control runs: 2 of 19** with the lookup put back, **1 of 19** with
+the reply changed to name the resolved seventeen.
+
+**§AI of the hand-testing script was written, because it did not exist.** The
+write-up's §13.3 and `HANDOFF.md` — two documents, three places — referenced "§AI
+of the hand-testing script" as a place to go, and the script stopped at §AH. That
+is this pass's own axis one level up: three readers of a fact that was never
+written down. Nine items now, four terminal-only, each
+labelled with what was actually run rather than what was planned.
+
+**Recorded as a general fact while it was in front of us: a `pi -p` run prints no
+slash-command result and writes no session file.** So no slash command's
+operator-facing sentence can be hand-tested headlessly — `/prinny pair`,
+`/prinny set`, `/prinny status`. What is testable headlessly is the *effect*
+(`access.json`, `.env`, the queue file), and that is what §AI.6 checks.
+
+**And `ab9`'s first draft made this finding's own mistake, which is why it is
+recorded rather than quietly fixed.** Its `refusal` mode fed each id the refusal
+offered back through `manager.resolveId`, and with the defect restored in the
+source **that mode passed** — asking the manager tests the ladder and says nothing
+about which lookup the call site makes. It now retries through the tool. **When a
+check feeds a value back, it has to go back in through the door it came out of.**
+
+**Gates after it:** 1,434 → **1,441** tests (503 → **510** in
+`pi-subagents-lite`), lint **115/115** unchanged — neither a source pin nor a
+probe adds a file to `src/` — and 121 → **122** lettered probes.

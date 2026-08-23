@@ -40,7 +40,12 @@ PORT="$(env_get FORGE_PORT)"
 [[ -f /.dockerenv ]] && HOST="host.docker.internal" || HOST="localhost"
 BASE="http://${HOST}:${PORT}"
 
-PI_DIR="${HOME}/.pi/agent"
+# AO10: `agent_dir` in lib.sh, not `${HOME}/.pi/agent`. This is where pi reads
+# models.json and settings.json from, and it moves with PI_CODING_AGENT_DIR —
+# two other sites in this file already knew that and this one did not, so on a
+# relocated install the provider this script installs was written where pi does
+# not look and `pi --list-models` showed no `forge` at all.
+PI_DIR="$(agent_dir)"
 MODELS_JSON="${PI_DIR}/models.json"
 
 # --- generate models.json ----------------------------------------------------
@@ -350,6 +355,39 @@ if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
 
     SUBAGENT_EXTRAS_VALUE="$(env_get SUBAGENT_EXTRA_EXTENSIONS)"
     [[ -n "$SUBAGENT_EXTRAS_VALUE" ]] && export SUBAGENT_EXTRA_EXTENSIONS="$SUBAGENT_EXTRAS_VALUE"
+
+    # AN4 (twenty-third pass). The two switches this block did not forward.
+    #
+    # The comment at the top of it states the rule they broke — "a value that
+    # only ever lives in .env is a knob that silently does nothing" — and both
+    # are documented as .env knobs where every one of their siblings lives:
+    #
+    #   SUBAGENT_TRANSCRIPT     agents/transcript-entry.ts   README.md:811
+    #                           "…4,000 characters each; SUBAGENT_TRANSCRIPT=0
+    #                            turns it off"
+    #   SUBAGENT_VERIFY_LOG     agents/verify-log.ts         HANDOFF, 20th pass
+    #                           "SUBAGENT_TRANSCRIPT=0 turns it off, as
+    #                            SUBAGENT_VERIFY_LOG=0 does"
+    #
+    # Neither reached the process. Both defaults are ON and both write per
+    # delegation — up to 60 session entries of 4,000 characters, and one JSONL
+    # line per verifier model call — so the operator who went looking for the
+    # switch is the operator who had a reason to.
+    #
+    # `SUBAGENT_VERIFY_LOG_FILE` comes with it: it is the other half of the same
+    # module's contract and useless without a way to set it.
+    #
+    # `tests/env-switches.test.ts` in the package now scans its own sources for
+    # `env.SUBAGENT_*` reads and fails when one of them is not named here, so
+    # the third one cannot arrive the same way.
+    SUBAGENT_TRANSCRIPT_VALUE="$(env_get SUBAGENT_TRANSCRIPT)"
+    [[ -n "$SUBAGENT_TRANSCRIPT_VALUE" ]] && export SUBAGENT_TRANSCRIPT="$SUBAGENT_TRANSCRIPT_VALUE"
+
+    SUBAGENT_VERIFY_LOG_VALUE="$(env_get SUBAGENT_VERIFY_LOG)"
+    [[ -n "$SUBAGENT_VERIFY_LOG_VALUE" ]] && export SUBAGENT_VERIFY_LOG="$SUBAGENT_VERIFY_LOG_VALUE"
+
+    SUBAGENT_VERIFY_LOG_FILE_VALUE="$(env_get SUBAGENT_VERIFY_LOG_FILE)"
+    [[ -n "$SUBAGENT_VERIFY_LOG_FILE_VALUE" ]] && export SUBAGENT_VERIFY_LOG_FILE="$SUBAGENT_VERIFY_LOG_FILE_VALUE"
   fi
 fi
 
@@ -381,10 +419,28 @@ if [[ "$(env_get PRINNY_ENABLED)" == "1" ]]; then
     # Said now rather than mid-session. An unbuilt runtime means the channel
     # never comes up, and the only clue is a line in a log file the operator has
     # no reason to open.
-    PRINNY_STATE="${PRINNY_STATE_DIR:-${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/channels/prinny}"
-    if [[ ! -f "$PRINNY_STATE/runtime/dist/server.js" ]]; then
+    #
+    # AN2 (twenty-third pass): ASK THE BOOTSTRAP, do not stat the entry. This
+    # line used to test `runtime/dist/server.js` alone, which is true of a
+    # runtime compiled from sources this checkout no longer has — measured on
+    # this box at the time: the staged tree was missing `server/src/connect.ts`
+    # entirely, the stamp was eight days behind the source, and this line said
+    # nothing. The next start would then re-stage inside the connect budget
+    # (about a minute of `npm install` and `tsc` against a 120s handshake that
+    # already spends 27.5s importing the Matrix stack), which is the confusing
+    # loop of timeouts `/prinny prepare` exists to prevent.
+    #
+    # `--staged` prints one word and exits 0 current / 1 stale / 2 absent. It
+    # costs a node start and a sha256 over ~140KB, once, only with the channel
+    # enabled.
+    PRINNY_STATE="${PRINNY_STATE_DIR:-$(agent_dir)/channels/prinny}"
+    PRINNY_STAGED="$(node "$PRINNY_DIR/server/bin/prinny-channel.mjs" --staged 2>/dev/null || true)"
+    if [[ "$PRINNY_STAGED" == "absent" || -z "$PRINNY_STAGED" ]]; then
       dim "The prinny channel runtime is not built — run /prinny prepare once (~1 min)."
       PRINNY_NOTE=", /prinny (runtime not built)"
+    elif [[ "$PRINNY_STAGED" == "stale" ]]; then
+      dim "The prinny channel runtime was built from different sources — run /prinny prepare (~1 min)."
+      PRINNY_NOTE=", /prinny (runtime stale)"
     elif [[ ! -f "$PRINNY_STATE/.env" ]]; then
       dim "The prinny channel has no credentials — run /prinny configure."
       PRINNY_NOTE=", /prinny (not configured)"
@@ -526,7 +582,7 @@ if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
   if [[ "$(env_get MCP_ADAPTER_ENABLED)" == "1" ]]; then
     # --mcp-config is a flag the ADAPTER registers, so passing it without the
     # package installed makes pi reject the whole command line. Check first.
-    ADAPTER_PKG="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm/node_modules/pi-mcp-adapter/package.json"
+    ADAPTER_PKG="$(agent_dir)/npm/node_modules/pi-mcp-adapter/package.json"
     WANT_VER="$(env_get MCP_ADAPTER_VERSION)"
     if [[ -r "$ADAPTER_PKG" ]]; then
       USE_ADAPTER=1

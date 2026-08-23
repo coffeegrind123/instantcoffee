@@ -8,6 +8,7 @@ import { buildAgentDetails, formatResultContent } from "../agents/tool-execution
 import { capBackgroundResult } from "./result-cap.js";
 import { describeNudgeDrop, describeNudgeHold, RECOVERY_ADVICE, type NudgeDropReason } from "./nudge-drop.js";
 import { compactionInFlight } from "./compaction-lock.ts";
+import { NudgeSchedule } from "./nudge-schedule.ts";
 
 /**
  * spawn-coordinator.ts — Spawn-and-track coordination for subagents.
@@ -63,11 +64,16 @@ const COMPACTION_WAIT_MS = 5_000;
 // --- SpawnCoordinator ---
 
 export class SpawnCoordinator {
-  /** Agent IDs spawned as background — the one-shot first-settlement nudge gate; also backs isBackground(). */
-  private backgroundAgentIds = new Set<string>();
-
-  /** Pending nudge agent IDs, batched within the delay window. */
-  private pendingNudges = new Set<string>();
+  /**
+   * Who is owed a nudge and when the batch fires — `./nudge-schedule.ts`.
+   *
+   * Extracted in the twenty-second pass because both of its rules are about
+   * ORDER and neither could be tested here: the one-shot background gate that
+   * `dispose()` used to clear one statement before the settlements that needed
+   * it (AM5), and the single timer whose delay was decided by whichever caller
+   * happened to be first (AM6).
+   */
+  private nudges = new NudgeSchedule();
 
   private nudgeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -123,7 +129,7 @@ export class SpawnCoordinator {
     }
 
     if (intent.runInBackground) {
-      this.backgroundAgentIds.add(agentId);
+      this.nudges.markBackground(agentId);
     } else {
       await record.execution.promise;
     }
@@ -137,7 +143,7 @@ export class SpawnCoordinator {
   }
 
   isBackground(agentId: string): boolean {
-    return this.backgroundAgentIds.has(agentId);
+    return this.nudges.isBackground(agentId);
   }
 
   /**
@@ -158,19 +164,22 @@ export class SpawnCoordinator {
    * and is the behaviour a batch wants.
    */
   private scheduleNudgeIn(agentId: string, delayMs: number): void {
-    this.pendingNudges.add(agentId);
-
-    if (this.nudgeTimer) return;
+    // AM6: the EARLIEST due time wins. This used to be `if (this.nudgeTimer)
+    // return`, so a record held for somebody else's compaction re-armed the one
+    // timer at five seconds and every delegation that settled inside that window
+    // waited it out — twenty-five times its own delay, for a hold that was not
+    // about it. A batch window should widen because more work arrived, not
+    // because unrelated work is blocked.
+    const plan = this.nudges.add(agentId, delayMs);
+    if (plan.armInMs === null) return;
+    if (this.nudgeTimer) clearTimeout(this.nudgeTimer);
 
     this.nudgeTimer = setTimeout(() => {
       this.nudgeTimer = null;
-      const batch = [...this.pendingNudges];
-      this.pendingNudges.clear();
-
-      for (const id of batch) {
+      for (const id of this.nudges.drain()) {
         this.emitIndividualNudge(id);
       }
-    }, delayMs);
+    }, plan.armInMs);
   }
 
   /**
@@ -183,7 +192,7 @@ export class SpawnCoordinator {
     // nudges and consumes the set entry. Continuation settlements (ordinal
     // >= 2, written by the manager before this callback fires) nudge for both
     // spawn classes — the coordinator never observes steers itself.
-    if (this.backgroundAgentIds.delete(record.id) || record.execution.settlementCount >= 2) {
+    if (this.nudges.owes(record.id, record.execution.settlementCount)) {
       this.scheduleNudge(record.id);
     }
   }
@@ -232,9 +241,17 @@ export class SpawnCoordinator {
       clearTimeout(this.nudgeTimer);
       this.nudgeTimer = null;
     }
-    const undelivered = [...this.pendingNudges];
-    this.pendingNudges.clear();
-    this.backgroundAgentIds.clear();
+    // AM5: `retire()` drops the BATCH and leaves the background one-shot alone.
+    //
+    // It used to clear `backgroundAgentIds` too, and this runs at
+    // `session_shutdown` BEFORE `AgentManager.dispose()` — which is what
+    // actually ends the runs. So every background delegation still running was
+    // stripped of the flag that says its answer is owed, and then settled into
+    // an `onAgentComplete` that scheduled nothing: no delivery, and no report of
+    // one. The `session-replaced` guard below was written for exactly those
+    // records ("`session_shutdown`, or a session replaced under it") and this
+    // line was the reason nothing could reach it. See `./nudge-schedule.ts`.
+    const undelivered = this.nudges.retire();
     this.heldForCompaction.clear();
     this.disposed = true;
     // The manager is disposed AFTER the coordinator (`events.ts`'s

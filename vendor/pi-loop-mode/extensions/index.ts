@@ -540,8 +540,65 @@ function restoreState(ctx: ExtensionContext): void {
   state = restoreLoopState(ctx.sessionManager.getBranch());
 }
 
+/**
+ * The payload of the last entry this session actually wrote.
+ *
+ * Forge fork, twenty-third pass (AN5). `persistState` is called from
+ * thirty-three places and `restoreLoopState` reads exactly ONE entry back — the
+ * last one on the branch — so every write but the last is carried for its own
+ * sake. That is the design and it is fine; what was not fine is how many of them
+ * said nothing.
+ *
+ * Measured on a real session file under `~/.pi/agent/sessions` rather than
+ * reasoned about:
+ *
+ * ```
+ *   session file                                   948,959 bytes
+ *   loop-state entries                          59
+ *   bytes they account for                     392,245   41.3% of the file
+ *   mean entry                                   6,648
+ *   byte-identical to the entry before it           24   41% of the entries
+ * ```
+ *
+ * Twenty-four of fifty-nine carried no information at all. They are produced by
+ * the ordinary shape of this file: several rungs of `agent_end` set a field and
+ * persist, `session_compact`'s handler persists immediately after pi finishes
+ * compacting (`contextCompressionLevel = 0`, which is usually already 0), and
+ * `/loop end` writes `defaultState()` however many times it is run.
+ *
+ * They are not free. Each is ~6.6 KB appended to the session file, one more
+ * entry on the chain `getBranch()` walks and `restoreLoopState` reverses a copy
+ * of, and one more `custom` entry for `branchEndsInCompaction` to step over —
+ * that function exists *because* this module appends on thirty-three paths.
+ *
+ * So an identical payload is not written twice in a row. The memo is a string
+ * compare per persist and nothing else.
+ *
+ * **It is per SESSION, and this module is per PROCESS.** That is the whole trap,
+ * and it is the same one AM4 fell into one field over: a new session starts with
+ * an empty branch, so `restoreState` hands back `defaultState()` — and if the
+ * previous session's last write was also `defaultState()` (`/loop end` does
+ * exactly that), the first write in the NEW session would match the memo and be
+ * skipped, leaving that session's file with no loop-state entry at all. Cleared
+ * in `session_start` and `session_shutdown`, next to the `clearPendingTimer()`
+ * and `runToken++` that are already there for the same reason.
+ */
+let lastPersisted: string | undefined;
+
+/** Drop the memo. Every session transition, for the reason in {@link lastPersisted}. */
+function resetPersistMemo(): void {
+  lastPersisted = undefined;
+}
+
 function persistState(pi: ExtensionAPI): void {
-  pi.appendEntry(STATE_ENTRY_TYPE, persistedLoopState(state));
+  const payload = persistedLoopState(state);
+  const encoded = JSON.stringify(payload);
+  if (encoded === lastPersisted) return;
+  // AFTER the append, never before: `appendEntry` is
+  // `runtime.assertActive(); runtime.appendEntry(…)` and throws on a stale ctx,
+  // and a memo set for a write that did not happen would suppress the retry.
+  pi.appendEntry(STATE_ENTRY_TYPE, payload);
+  lastPersisted = encoded;
 }
 
 /**
@@ -2704,7 +2761,35 @@ export default function (pi: ExtensionAPI) {
     // The guard is now at the top of the factory and covers every handler, not
     // just this one; the note stays because this is the failure that found the
     // whole class.
+    //
+    // AM4: `runToken++`, and it belongs here for the reason it belongs on every
+    // other transition. Its own docstring says it is "incremented on every
+    // start/resume/stop/end" so that "all async continuations … capture it and
+    // bail out when it changed" — and a SESSION swap is the transition that
+    // invalidates more than any of those: it replaces `state` wholesale
+    // (`restoreState` three lines down), and it makes the `pi` and `ctx` every
+    // surviving continuation captured stale, because pi calls
+    // `_extensionRunner.invalidate()` on the old one.
+    //
+    // One continuation survives a swap, and only one: a `ctx.compact()` callback
+    // (`requestEmergencyCompaction`, and `interveneStuck`'s compaction rung).
+    // `pendingTimer` is cleared on the next line and the turn buffers are
+    // dropped below, but pi's compaction wrapper holds those two callbacks and
+    // nothing here can reach them. `AgentSession.dispose()` calls
+    // `abortCompaction()`, so the swap ITSELF makes the compaction throw
+    // "Compaction cancelled" — which is not benign — and the callback then ran
+    // `enterContextCooldown(pi, ctx, …)` against the NEWLY RESTORED state with
+    // the PREVIOUS session's handles: it charged this run's cooldown counter for
+    // a compaction that belonged to the last one, and `persistState(pi)` threw
+    // `assertActive` out of a callback pi invokes from a `void`ed async IIFE,
+    // i.e. as an unhandled rejection rather than a caught error.
+    runToken++;
     clearPendingTimer();
+    // AN5: the write memo is per SESSION and this module is per PROCESS. See
+    // `lastPersisted` — a new session whose restored state happens to equal the
+    // previous session's last write would otherwise never write an entry of its
+    // own, and a later restore would find nothing.
+    resetPersistMemo();
     resetContextRecovery();
     restoreState(ctx);
     // AFTER the restore, not before it. `resetTurnBuffers` now also drops
@@ -2747,7 +2832,17 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     // Same reasoning as session_start: a child session ending is not a reason
     // to cancel the parent's pending iteration, and these are shared timers.
+    //
+    // AM4, and the same argument as `session_start`'s: this is a lifecycle
+    // transition, and every other one bumps the token. It is the earlier of the
+    // two — pi tears the old session down before it builds the new one — so a
+    // compaction callback that fires between shutdown and start is invalidated
+    // here rather than a moment later.
+    runToken++;
     clearPendingTimer();
+    // AN5, and the same argument as `session_start`'s: this is the earlier of
+    // the two transitions, so the memo is dropped before anything can be built.
+    resetPersistMemo();
     resetTurnBuffers();
     resetContextRecovery();
   });

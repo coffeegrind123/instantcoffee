@@ -95,6 +95,19 @@ export async function loadConfigAndRegisterAgents(ctx: ExtensionContext): Promis
   // ConfigStore is authoritative for config + session overrides + widget/manager
   // side effects.
   getStore().reload();
+  // AN1: said once, here, because this is the only moment the answer changes and
+  // the only channel a TUI operator reads. `config-io.ts` has already written the
+  // same fact to the console for a headless run. The next save moves the file
+  // aside rather than replacing it — which is worth saying now, not afterwards.
+  const unreadable = getStore().globalConfigUnreadable;
+  if (unreadable && ctx.ui?.notify) {
+    ctx.ui.notify(
+      `[subagents] The global config could not be read (${unreadable.error ?? "unreadable"}) — ` +
+        "running on defaults. Fix it before changing anything in /agents: the next save keeps the " +
+        "old file as <name>.corrupt-<time> and starts fresh.",
+      "warning",
+    );
+  }
   ensureManagerAndWidget();
   await scanAndRegisterAgents(ctx);
 }

@@ -73,6 +73,7 @@ import { createSpillWriter } from "./src/spill.ts";
 import { capSummary, summaryCapChars } from "./src/summary-budget.ts";
 import { allowanceChars, planOutputCap } from "./src/output-cap.ts";
 import { type ContextUsageLike, contextNoticeMessage, hasBudgetMessage } from "./src/context-notice.ts";
+import { PI_OWNER, beginCompaction, endCompaction } from "./src/compaction-lock.ts";
 
 /**
  * Context usage for the active model, with the window filled in from the model
@@ -115,13 +116,73 @@ function spill(toolName: string, callId: string, text: string): string | undefin
   return spillFile(toolName, callId, text);
 }
 
+/**
+ * Is this factory being run for a SUBAGENT's session?
+ *
+ * Forge fork, twenty-second pass (AM2). Everything else in this file is
+ * deliberately the same in a child as in a parent — capping a child's own tool
+ * output is why `.pi/extensions/**` is on a child's discovery route at all — and
+ * the compaction lock is the one thing that is not, because it is a
+ * process-global answering a per-session question. A child's compaction must not
+ * hold back the PARENT's loop turns and delegation results.
+ *
+ * The same question, asked the same way, that `vendor/pi-loop-mode` and
+ * `.pi/extensions/stack.ts` ask before registering anything at all;
+ * `vendor/pi-subagents-lite/src/shell.ts` publishes the depth for exactly this.
+ * Read at FACTORY time, which is inside the spawn bracket
+ * (`buildSubagentSession` wraps `reloadAndMap()`, which calls every factory).
+ *
+ * One consequence, stated rather than guarded: an operator `/reload` that lands
+ * inside a child's session BUILD would make the parent's own instance read as a
+ * child's and never take the lock again for that session. That is a return to
+ * the behaviour of every pass before this one, not a new failure.
+ */
+function bornInsideSubagentSpawn(): boolean {
+  const depth = (globalThis as unknown as Record<string, unknown>)["__PI_SUBAGENT_SPAWN_DEPTH__"];
+  return typeof depth === "number" && depth > 0;
+}
+
 export default function (pi: ExtensionAPI) {
+  // AM2: captured once, at factory time. See bornInsideSubagentSpawn.
+  const inChildSession = bornInsideSubagentSpawn();
+
+  /**
+   * Release pi's hold, if pi has one.
+   *
+   * `endCompaction` only releases an owner's own lock, so this is a no-op while
+   * `pi-loop-mode` or `prinny-channel` holds it for a compaction IT asked for —
+   * which is the case `session_before_compact` also fires for.
+   */
+  const releasePiCompaction = () => {
+    if (inChildSession) return;
+    try {
+      endCompaction(PI_OWNER);
+    } catch {
+      // A lock that cannot be released is not worth an extension error; STALE_MS
+      // is the backstop behind this one.
+    }
+  };
+
   // --- 1. Bound the summary pi carries from one compaction into the next. -----
   //
   // Returns undefined in every path: pi keeps ownership of the compaction and
   // still writes the model summary. The only change is how much previous summary
   // it is allowed to feed itself.
   pi.on("session_before_compact", async (event, ctx) => {
+    // AM2: FIRST, and outside the try that owns the summary cap. pi is
+    // compacting from this line until one of the three releases below,
+    // whatever this handler goes on to decide about the summary — and the three
+    // senders that read this lock are the reason it has to be said out loud.
+    // See src/compaction-lock.ts for which of pi's two compaction call sites is
+    // the dangerous one and why.
+    if (!inChildSession) {
+      try {
+        beginCompaction(PI_OWNER);
+      } catch {
+        // A lock that cannot be taken leaves the stack exactly as it was before
+        // this pass. It is never a reason to skip the trim below.
+      }
+    }
     try {
       const preparation = (event as { preparation?: { previousSummary?: string } }).preparation;
       const previous = preparation?.previousSummary;
@@ -262,5 +323,34 @@ export default function (pi: ExtensionAPI) {
     } catch {
       return undefined;
     }
+  });
+
+  // --- 4. Say when pi has FINISHED compacting (AM2). --------------------------
+  //
+  // Three events, because `session_compact` is not enough on its own: pi emits
+  // it only on the success path, so a compaction the operator cancelled with Esc
+  // (`interactive-mode.js:2703` → `session.abortCompaction()`) or one whose
+  // summariser failed has no closing extension event at all. Left at that, the
+  // hold would run to STALE_MS — five minutes of an unattended loop deferring
+  // every turn because one compaction was cancelled, which is worse than the
+  // collision the lock prevents.
+  //
+  // `agent_start` and `agent_settled` are both strictly after any compaction pi
+  // can run: the post-run one completes inside `_runAgentPrompt`'s `while`
+  // before `_emitAgentSettled`, and the pre-prompt one completes before
+  // `agent.prompt()` emits `agent_start`. `session_shutdown` is there so a hold
+  // cannot outlive the session that took it — the lock is process-global and the
+  // session is not.
+  pi.on("session_compact", async () => {
+    releasePiCompaction();
+  });
+  pi.on("agent_start", async () => {
+    releasePiCompaction();
+  });
+  pi.on("agent_settled", async () => {
+    releasePiCompaction();
+  });
+  pi.on("session_shutdown", async () => {
+    releasePiCompaction();
   });
 }

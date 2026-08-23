@@ -10,6 +10,12 @@
  * paths. The parent is not required to be in a git repo; when it isn't (or
  * the target lives in a different repo), the result flags `sameRepo: false`
  * so the caller can apply the cross-repo trust gate.
+ *
+ * That comparison lives in `same-repo.ts` (AO8), which canonicalises BOTH cwds
+ * before it resolves either side. It used to be done here with a realpath on the
+ * target side only, and `--git-common-dir` answers relative in a main worktree
+ * and absolute in a linked one — so a logical parent cwd made a worktree of the
+ * parent's own repository read as cross-repo.
  */
 
 import * as path from "node:path";
@@ -22,6 +28,12 @@ import { GIT_EXEC_TIMEOUT_MS } from "../utils.js";
 // existing importer keeps the name it had.
 import { classifyGitFailure, WORKTREE_VALIDATION_ERRORS } from "./git-failure.js";
 export { classifyGitFailure, WORKTREE_VALIDATION_ERRORS } from "./git-failure.js";
+
+// AO8: and the same move for the same-repo comparison, which had a realpath on
+// one side of it only. `same-repo.ts` imports `node:path` and `node:fs` and
+// takes its filesystem call as a parameter, so the suite can drive a logical
+// cwd without running on a platform that produces one.
+import { isSameRepo } from "./same-repo.js";
 
 export interface WorktreeValidationSuccess {
   ok: true;
@@ -92,17 +104,6 @@ async function getGitCommonDir(
   }
 }
 
-/** Resolve a git path and normalize it for reliable cross-platform comparison. */
-function normalizeGitPath(gitPath: string, cwd: string): string {
-  const isWindowsStyle =
-    /^[A-Za-z]:[\\/]/.test(gitPath) || /^[A-Za-z]:[\\/]/.test(cwd) || /^\\\\/.test(gitPath) || /^\\\\/.test(cwd);
-  const pathApi = isWindowsStyle ? path.win32 : path;
-  const absolutePath = pathApi.isAbsolute(gitPath) ? gitPath : pathApi.resolve(cwd, gitPath);
-  const normalizedPath = pathApi.normalize(absolutePath).replace(/\\/g, "/");
-
-  return isWindowsStyle ? normalizedPath.toLowerCase() : normalizedPath;
-}
-
 /**
  * Validate a worktree path against the git repository it must live in.
  * Empty/whitespace is treated as omitted (ok with no path). Returns the
@@ -150,9 +151,15 @@ export async function validateWorktreePath(
   // failed parent probe just means the target is cross-repo and the trust
   // gate may apply.
   const parentResult = await getGitCommonDir(pi, parentCwd, onWarning);
-  const sameRepo =
-    parentResult.ok &&
-    normalizeGitPath(parentResult.commonDir, parentCwd) === normalizeGitPath(targetResult.commonDir, realPath);
+  // AO8: both cwds are canonicalised inside `isSameRepo`, because
+  // `--git-common-dir` answers RELATIVE in a main worktree and ABSOLUTE in a
+  // linked one — so the relative answer is resolved against the cwd, and a
+  // logical `parentCwd` against a realpath'd target made a worktree of the
+  // parent's OWN repository read as cross-repo.
+  const sameRepo = isSameRepo(
+    parentResult.ok ? { commonDir: parentResult.commonDir, cwd: parentCwd } : undefined,
+    { commonDir: targetResult.commonDir, cwd: realPath },
+  );
 
   // Step 7: Get the worktree root via git rev-parse --show-toplevel
   let worktreeRoot: string;

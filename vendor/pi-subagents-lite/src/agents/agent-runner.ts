@@ -39,6 +39,7 @@ import { subagentExtraExtensionPaths, withExtensionDenial, withSkillDenial } fro
 import { classifyGitFailure } from "../spawn/git-failure.ts";
 import { declaredPromptSources, declaredResources } from "./declared-resources.ts";
 import { collectResponseText } from "./run-answer.ts";
+import { NoticeBuffer } from "./notice-buffer.ts";
 import { wireTurnTracking } from "./turn-tracking.ts";
 
 // Cache: extension path → unscoped package name (lowercased), or undefined if not found
@@ -829,11 +830,11 @@ async function runAgentImpl(
 
   // Buffer warnings during setup to avoid inserting custom_message entries
   // between tool_use and tool_result in the session tree (causes Anthropic 400).
-  // Flushed after runTurnLoop completes.
-  const warnings: string[] = [];
-  const bufferNotify = (msg: string) => {
-    warnings.push(msg);
-  };
+  // Flushed in the `finally` below — AN6, and see `notice-buffer.ts` for the two
+  // ways they used to be lost: a run that threw took the whole buffer with it,
+  // and headless there was nothing to take it to.
+  const warnings = new NoticeBuffer();
+  const bufferNotify = warnings.add;
   if (agentConfig?.excludeTools && Array.isArray(agentConfig.tools)) {
     bufferNotify(`agent "${type}": both tools and exclude_tools set — tools (whitelist) wins`);
   }
@@ -843,58 +844,66 @@ async function runAgentImpl(
 
   const effectiveCwd = options.cwd ?? ctx.cwd;
 
-  // One SettingsManager for the whole spawn: its trust state gates both the
-  // resource loader (project extensions/skills/prompts/themes/system prompt
-  // files) and the session context (ctx.isProjectTrusted).
-  const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir(), {
-    projectTrusted: options.projectTrusted !== false,
-  });
+  // AN6: the try opens HERE, above the setup, not just around the run. Four of
+  // the five writers above and below are setup checks, and a setup that throws —
+  // an agent file that names an extension that will not load, a resource loader
+  // that cannot reach a project directory — is the case where the sentence is
+  // worth most. `ui.notify` renders into the TUI's chat container
+  // (`interactive-mode.js` → `showExtensionNotify` → `showWarning`); it appends
+  // no session entry, so releasing them here cannot reopen the tool_use /
+  // tool_result ordering problem the buffer exists for.
+  try {
+    // One SettingsManager for the whole spawn: its trust state gates both the
+    // resource loader (project extensions/skills/prompts/themes/system prompt
+    // files) and the session context (ctx.isProjectTrusted).
+    const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir(), {
+      projectTrusted: options.projectTrusted !== false,
+    });
 
-  const { mode, includeEnvironment, extras: promptExtras } = resolveSystemPromptSources(
-    ctx,
-    effectiveCwd,
-    bufferNotify,
-    agentConfig,
-  );
-
-  // Two git subprocesses, ~100 ms on this box's 9p mount, per spawn — and the
-  // verifier's judge, which runs once per verified delegation on the slot the
-  // parent is blocked on, has no working tree to describe. Detected only when
-  // the prompt is actually going to say so.
-  const env = includeEnvironment ? await detectEnv(options.pi, effectiveCwd) : undefined;
-
-  const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
-  const { loader, reloadAndMap } = createResourceLoader(
-    config,
-    agentConfig,
-    effectiveCwd,
-    systemPrompt,
-    settingsManager,
-    bufferNotify,
-  );
-  const session = await buildSubagentSession(reloadAndMap, (extToolMap) =>
-    createAndConfigureSession(
+    const { mode, includeEnvironment, extras: promptExtras } = resolveSystemPromptSources(
       ctx,
-      options,
-      agentConfig,
-      type,
       effectiveCwd,
-      loader,
-      extToolMap,
+      bufferNotify,
+      agentConfig,
+    );
+
+    // Two git subprocesses, ~100 ms on this box's 9p mount, per spawn — and the
+    // verifier's judge, which runs once per verified delegation on the slot the
+    // parent is blocked on, has no working tree to describe. Detected only when
+    // the prompt is actually going to say so.
+    const env = includeEnvironment ? await detectEnv(options.pi, effectiveCwd) : undefined;
+
+    const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
+    const { loader, reloadAndMap } = createResourceLoader(
+      config,
+      agentConfig,
+      effectiveCwd,
+      systemPrompt,
       settingsManager,
       bufferNotify,
-    ),
-  );
-  const result = await runSessionPrompt(session, prompt, {
-    ...options,
-    maxTurns: options.maxTurns ?? agentConfig?.maxTurns,
-  });
-
-  // Flush buffered warnings now that tool_result is in the session tree.
-  for (const msg of warnings) {
-    if (ctx.ui?.notify) ctx.ui.notify(`[pi-subagents-lite] ${msg}`, "warning");
-    else console.warn(`[pi-subagents-lite] ${msg}`);
+    );
+    const session = await buildSubagentSession(reloadAndMap, (extToolMap) =>
+      createAndConfigureSession(
+        ctx,
+        options,
+        agentConfig,
+        type,
+        effectiveCwd,
+        loader,
+        extToolMap,
+        settingsManager,
+        bufferNotify,
+      ),
+    );
+      return await runSessionPrompt(session, prompt, {
+        ...options,
+        maxTurns: options.maxTurns ?? agentConfig?.maxTurns,
+      });
+  } finally {
+    // AN6: a `finally`, so the run that FAILED — which is the run most likely to
+    // have been caused by the misconfiguration these lines describe — still says
+    // what was wrong with it. The buffer is emptied by the flush, so this cannot
+    // report twice.
+    warnings.flush(ctx);
   }
-
-  return result;
 }

@@ -85,6 +85,38 @@ think_prompt_path() {
   printf '%s' "$p"
 }
 
+# --- pi's agent directory ----------------------------------------------------
+# AO10, twenty-fifth pass. Where pi keeps models.json, settings.json, sessions/
+# and channels/. `pi-local.sh` asked this question in FOUR places and answered it
+# two ways: `PI_DIR` at the top ignored the override while the prinny state path
+# and the MCP adapter path honoured it. On a relocated install the launcher then
+# wrote `models.json` and `settings.json` into a directory pi does not read, so
+# pi started with **no `forge` provider at all** — the local model unreachable,
+# which is the one thing this script exists to arrange.
+#
+# The rule is pi's own `getAgentDir()` (`dist/config.js`), and it is the same
+# rule `vendor/pi-subagents-lite/src/agent-dir.ts` writes for the TypeScript
+# side, kept in step deliberately — see AN7 and AO7. Note the guard is a bare
+# truthiness test, not `-n` after trimming: a value of "  " is a relative
+# directory to pi, and where the two disagree pi is right by definition, because
+# pi is the one that writes the files.
+agent_dir() {
+  local override="${PI_CODING_AGENT_DIR:-}"
+  if [[ -n "$override" ]]; then
+    # pi runs the value through `expandTildePath`, so a value that works for pi
+    # has to work here. `~` and `~/…` only; anything else is left alone.
+    if [[ "$override" == "~" ]]; then
+      printf '%s' "$HOME"
+    elif [[ "$override" == "~/"* ]]; then
+      printf '%s/%s' "$HOME" "${override#\~/}"
+    else
+      printf '%s' "$override"
+    fi
+    return 0
+  fi
+  printf '%s/.pi/agent' "$HOME"
+}
+
 # --- json --------------------------------------------------------------------
 # Prefer host python3; fall back to a throwaway container so the scripts work on
 # a machine that has Docker but no Python.

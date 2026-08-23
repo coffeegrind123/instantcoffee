@@ -1738,3 +1738,629 @@ periodic activity after the message is answered.
 **The real test of the sweep is still §O**, and it is unchanged: send a message
 while pi is compacting, and check you are told it could not be handed over. AL4
 must not have broken that, and the suite says it has not.
+
+---
+
+## §AG — the twenty-second pass (AM1–AM6): what happens while we are waiting
+
+Six items. **Three need only a terminal**, one needs Matrix, one needs a
+saturated context, and one is ten seconds with no model at all.
+
+The axis is "what else can run at this `await`", so every item here is a matter of
+doing two things at once on purpose — which is what makes them hand-testable and
+what makes them the ones a suite cannot reach.
+
+### AG.1 — `/prinny restart` while the channel is still starting (AM1) — terminal only
+
+This is the cheapest of the six and the one most likely to have bitten somebody
+already.
+
+1. Start a session with prinny configured, so `session_start` fires
+   `void startChannel()`.
+2. **Within the first ~30 seconds**, before `/prinny status` says `connected`,
+   run `/prinny restart`.
+
+**What to look for.**
+
+- `/prinny status` during step 2 should say **`starting (sidecar handshake in
+  progress)`**. Before AM1 it said `not running`, which is the honest-looking
+  answer at exactly the moment you are most likely to ask.
+- `/prinny log` after the restart should contain **`stopping a sidecar that was
+  still starting`**, and then a *second* `sidecar handshake complete`. Before
+  AM1 the stop did nothing and the restart was handed the first start's promise,
+  so it reported that one's outcome as its own and no second sidecar was ever
+  built.
+
+**Cost of getting it wrong.** Two sidecars on one Olm crypto store, which
+`server/src/state.ts` says must never happen — and a `/prinny configure` in that
+window that reports success while the channel keeps using the old credentials.
+
+The same shape with `/prinny stop`: run it during the handshake, then
+`/prinny status`. It must stay stopped.
+
+### AG.2 — the compaction lock covers pi now (AM2) — needs a saturated context
+
+The most interesting unrun item in this section, and the one nobody has watched.
+
+1. Get a session over pi's compaction threshold — an hour of real work, or
+   `/stack set CTX_SIZE …` down and a few large `read`s.
+2. Start a background delegation:
+   `Agent(prompt: "…", run_in_background: true)`.
+3. While it is running, **type something into the terminal** — anything. That is
+   `prompt()`, which runs `_checkCompaction` BEFORE the run, with the session
+   reading as idle.
+
+**What to look for.** If the delegation settles inside that window you should see
+one of:
+
+```
+   [subagents] holding <id> (<type>) — pi is compacting
+   Loop: pi is compacting — holding iteration N until it finishes
+```
+
+Before AM2 neither could happen: the lock had two writers and pi was not one of
+them, so the nudge went into the compaction and started a whole agent run built
+from a copy of the pre-compaction context.
+
+**The control, and it matters more than the finding**: a `/loop` running while a
+SUBAGENT compacts must NOT defer. A child's compaction is not the parent's
+business, and the lock is process-global — that is the one thing AM2 had to get
+right. Watch a long delegation compact (its record's `compactions` count in
+`/agents`) and check the loop keeps iterating.
+
+### AG.3 — a session swap during a compaction (AM4) — terminal only
+
+1. Start a loop on a saturated context, so it enters its context ladder:
+   `/loop start <goal> --until-done`.
+2. Wait for *"Loop: pi did not recover the context itself — running emergency
+   compaction."*
+3. **While the compaction is running**, press `Esc` — or run `/new`.
+
+**What to look for.** Nothing at all from the loop afterwards. Specifically, no
+
+```
+   Loop: context recovery stalled (…) — cooling down 60s
+```
+
+for a run that has been replaced. Before AM4 the callback fired — a session swap
+CANCELS the compaction, which is what makes pi throw — and it charged the newly
+restored run's cooldown ladder before throwing `assertActive` out of a callback
+pi invokes from a `void`ed async IIFE.
+
+**How you would know it went wrong**: an unhandled rejection in the terminal, or
+a fresh loop that reports `cooldown 1/3` on its first iteration.
+
+### AG.4 — a delegation's answer at `session_shutdown` (AM5) — terminal only
+
+1. `Agent(prompt: "sleep for a bit then answer", run_in_background: true)`.
+2. Before it settles, `/new`.
+
+**What to look for.** A warning naming the agent:
+
+```
+   [Subagent "<type>" completed] result NOT delivered to the model (…)
+```
+
+Before AM5 you got **silence**: `dispose()` cleared the one-shot that says the
+answer is owed, one statement before `AgentManager.dispose()` ended the run that
+would have reported it.
+
+### AG.5 — the verifier at `session_shutdown` (AM3) — needs a model, ~1 minute
+
+1. `Agent(prompt: "answer in one sentence: what does decodeFrame do?")` in the
+   FOREGROUND, with `SUBAGENT_VERIFY_ROUNDS=1`.
+2. The moment the child finishes and the widget row says **`checking`**, run
+   `/new`.
+
+**What to look for.** The tool result, if you can still see it, or the transcript
+entry. It should carry
+
+```
+   [verification: the check did not complete, so this answer went out unchecked.]
+```
+
+and **not**
+
+```
+   [verification: this answer was checked against the task and did not address
+    it … Treat it as unreliable.]
+```
+
+That second sentence is what a torn-down check used to produce, and it is a claim
+about the CHILD rather than about the check. A disposed `AgentSession` still
+accepts `prompt()`; it is simply no longer subscribed to its agent, so the repair
+spent a model call and came back with nothing.
+
+Timing is tight. `z3 answer` prints both sentences without a model if you only
+want to see the difference.
+
+### AG.6 — ten seconds, no model, no Matrix
+
+```
+   cd context/testing/probes
+   for m in stop restart clean fail;        do node --experimental-strip-types z1-… $m; done
+   for m in parent child extension release; do node --experimental-strip-types z2-… $m; done
+   for m in order answer clear;             do node --experimental-strip-types z3-… $m; done
+   for m in swap shutdown live;             do node --experimental-strip-types z4-… $m; done
+   for m in gate deadlines oneshot;         do node --experimental-strip-types z5-… $m; done
+```
+
+Seventeen runs, all under a second each. `z3 answer` and `z5 deadlines` are the
+two worth reading even if you run nothing else: the first prints the two
+sentences a parent model receives, the second prints 4,900 ms against 200 ms.
+
+---
+
+## §AH — the twenty-third pass (AN1–AN7)
+
+Seven items. Four need only a terminal; two need a model; one needs a Matrix
+account and is the most interesting unrun thing on this list.
+
+### AH.1 — break a config on purpose (AN1) — terminal only, 2 minutes
+
+The one to do first, because it is the finding with the widest blast radius and
+the operator-facing half has only been read, never seen.
+
+```
+   cp ~/.pi/agent/subagents-lite.json /tmp/keep.json     # you will want this
+   # delete ONE comma with an editor, or:
+   python3 - <<'P'
+   import io; p="/home/claudeuser/.pi/agent/subagents-lite.json"
+   s=io.open(p).read(); io.open(p,"w").write(s.replace('",\n', '"\n', 1))
+   P
+   ./scripts/pi-local.sh
+```
+
+**What to look for, in order.**
+
+1. At startup, a **warning notice**:
+   `[subagents] The global config could not be read (…) — running on defaults.
+   Fix it before changing anything in /agents: the next save keeps the old file
+   as <name>.corrupt-<time> and starts fresh.`
+2. `/agents` → any toggle. Then, in another terminal:
+   `ls ~/.pi/agent/subagents-lite.json*` — there must be a
+   `.corrupt-<timestamp>` sibling, and `diff` it against `/tmp/keep.json`: it is
+   the broken file, byte for byte.
+3. The live file now holds the defaults plus the one key you toggled. That is
+   correct and is why the quarantine exists.
+
+Before AN1 step 1 printed nothing and step 2 left no sibling: the only copy of
+your settings was gone.
+
+**The prinny half**, if the channel is configured: break
+`~/.pi/agent/channels/prinny/pi.json` the same way and run `/prinny status`. The
+line to look for is
+
+```
+   settings:     UNREADABLE (…) — running on DEFAULTS, permissionMode off. …
+```
+
+and the thing to notice is that `permissionMode off` means the Matrix approval
+relay is not running, whatever the file says.
+
+### AH.2 — `/prinny prepare`, which is now a blocker (AN2) — needs a working npm
+
+This is the item that changed state this pass. Before it, a stale runtime was
+invisible; now it refuses.
+
+```
+   node vendor/prinny-channel/server/bin/prinny-channel.mjs --staged ; echo "exit=$?"
+```
+
+On this box, today, that prints `stale` and exits 1. Then:
+
+1. `/prinny status` → `runtime:      STALE — built from different sources; run
+   /prinny prepare`.
+2. `/prinny start` → refuses, with *"the channel runtime was built from a
+   different version of the sources"* rather than starting and timing out.
+3. `/prinny prepare` → about a minute. **It has not been run since AL3 and this
+   box has no answer from `npm ping`, so it may fail** — and if it does, the
+   error and how far it got are the useful part.
+4. `--staged` again → `current`, exit 0. `/prinny status` → `built, current`.
+
+**What this is really testing** is the thing nobody has seen: the sidecar
+running AL3's `connect.ts`, i.e. a connect loop that discards the client it
+built when an attempt fails. To see it, stop the homeserver (or point
+`PRINNY_HOMESERVER` at a dead host) and watch `/prinny log`: the retries should
+say `could not stop the client from attempt N` or nothing at all, and the
+process should not grow one Matrix client per attempt.
+
+### AH.3 — rotate a token by hand (AN3) — needs a Matrix account
+
+The only item here that touches a real homeserver, and the one that would have
+caught AN3 in the wild.
+
+1. `/prinny status` — note the device the bot is on (or read `PRINNY_DEVICE_ID`
+   in `~/.pi/agent/channels/prinny/.env`).
+2. Mint a **new** access token for the same account from a Matrix client, on a
+   NEW device.
+3. `/prinny configure token <the new token>`.
+4. `grep PRINNY_DEVICE_ID ~/.pi/agent/channels/prinny/.env` — **there must be no
+   line**. That is the fix.
+5. `/prinny restart`, then `/prinny log`: look for
+   `resolved device <ID> from the access token`, and check the ID is the new
+   device rather than the one from step 1.
+6. Message the bot from an encrypted room. It should answer.
+
+Before AN3, step 4 left the old device id, step 5 printed nothing (the lookup was
+skipped), and step 6 was where it went wrong — with nothing in the log, which is
+the symptom `server/src/state.ts` warns about in its own words.
+
+### AH.4 — a switch that now works (AN4) — terminal only
+
+```
+   echo 'SUBAGENT_TRANSCRIPT=0' >> .env
+   ./scripts/pi-local.sh
+```
+
+Delegate anything, then scroll the transcript: there should be **no**
+`subagent <id> <type> · turn N` entries. Remove the line, restart, delegate
+again: they come back.
+
+Before AN4 the line in `.env` did nothing at all, and the only spelling that
+worked was `SUBAGENT_TRANSCRIPT=0 ./scripts/pi-local.sh` — which works because
+`env_get` reads an exported variable before it reads the file, not because
+anything forwarded it.
+
+The same check for `SUBAGENT_VERIFY_LOG=0`: `wc -l
+~/.pi/agent/subagent-verify.jsonl` before and after a verified delegation.
+
+### AH.5 — the session file stops growing as fast (AN5) — needs a loop
+
+```
+   wc -c ~/.pi/agent/sessions/--$(pwd | sed 's|^/||; s|[/:]|-|g')--/*.jsonl
+```
+
+Run a short `/loop start … --max 5`, then measure again, then:
+
+```
+   node --experimental-strip-types context/testing/probes/aa5-…mjs session
+```
+
+The `identical` column for the session you just ran should be **0**. Before AN5
+it was two of every five entries on a real run, and each is ~6.6 KB.
+
+### AH.6 — a spawn that fails, and says why (AN6) — needs a model, 1 minute
+
+1. Write `~/.pi/agent/agents/broken.md` with frontmatter that names an extension
+   that does not exist:
+
+   ```
+   ---
+   name: broken
+   description: for testing
+   extensions: not-a-real-extension
+   ---
+   Answer in one word.
+   ```
+2. `Agent(agent: "broken", prompt: "hello")`, and press **Esc** while it is
+   still setting up (or set a parent turn to abort).
+
+**What to look for.** The warning still arrives:
+`[pi-subagents-lite] extension "not-a-real-extension" not found in loaded
+extensions`, on the console and in the TUI. Before AN6 a spawn that ended in a
+throw discarded it, which is the run most likely to have been caused by the
+thing the warning is about.
+
+Headless is the other half: `pi -p` the same delegation and look at stderr.
+Before AN6 there was nothing there either, because pi's headless `notify` is a
+real function and the `console.warn` arm was unreachable.
+
+### AH.7 — twenty-one runs, no model, no Matrix
+
+```
+   cd context/testing/probes
+   for m in subagents prinny absent;  do node --experimental-strip-types aa1-… $m; done
+   for m in staged live absent;       do node aa2-… $m; done
+   for m in rotate first switch;      do node --experimental-strip-types aa3-… $m; done
+   for m in table effect;             do node --experimental-strip-types aa4-… $m; done
+   for m in live session swap;        do node --experimental-strip-types aa5-… $m; done
+   for m in abort headless clean;     do node --experimental-strip-types aa6-… $m; done
+   for m in relocated default live;   do node --experimental-strip-types aa7-… $m; done
+```
+
+Twenty runs, all under a second except `aa1 subagents` (three node processes).
+`aa2 live` and `aa5 session` are the two worth reading even if you run nothing
+else: the first tells you whether this box's sidecar is running the code in this
+checkout, and the second tells you how much of your session files is loop state
+that said nothing.
+
+---
+
+## §AI — the twenty-fourth pass (AO1–AO9)
+
+Nine items. **Four need only a terminal**, one needs a live model turn, one needs
+a phone, one needs a second Matrix account, and two are the operator-facing
+halves of findings whose sentence only exists in the TUI.
+
+Written 2026-08-23, after the fact: §13.3 of
+`design/subagents-loop-verifier-identity.md` and `HANDOFF.md` — two documents, in
+three places — referenced "§AI of the hand-testing script" as though it existed,
+and it did not. **That is this series' own shape one level up**: three readers of
+a fact, and the fact was never written. The items below carry what was
+actually run rather than what was planned, and each says which.
+
+The axis is sameness: two values in one function, and an operator that has to say
+whether they are the same thing. So every item here is *say the same thing twice,
+in two spellings, and see whether the stack agrees with itself.*
+
+### AI.1 — the id `AgentStatus` printed, handed to `StopAgent` (AO1) — needs a live model turn
+
+**RUN 2026-08-23**, headless, against the local model on the one llama slot, with
+a real control run. This is the item the twenty-fourth pass called the cheapest
+of its three unseen ones and it is the one that mattered most, because AO1 is on
+the tool that stops a run holding the slot the parent's own next call is queued
+behind.
+
+```
+   ./scripts/pi-local.sh -p "$(cat <<'P'
+   Do these four steps in order, using tools. Do not skip any.
+
+   1. Call the Agent tool with run_in_background set to true, description
+      "slow counter", and prompt: "Run exactly this one bash command and report
+      its output: for i in $(seq 1 400); do echo $i; sleep 1; done"
+   2. Call AgentStatus. It prints one line per running agent, and each line
+      starts with a short agent id.
+   3. Call StopAgent with agent_id set to EXACTLY the short id that AgentStatus
+      printed in step 2. Use that short string verbatim. Do NOT use the longer
+      id that the Agent tool returned in step 1.
+   4. In your final answer report, on separate lines: the exact agent_id string
+      you passed to StopAgent, its character count, and the first line of the
+      text StopAgent returned.
+   P
+   )"
+```
+
+The child spends its whole life inside one `bash` call, so it does **not** hold
+the model slot and the parent's `AgentStatus` and `StopAgent` turns run
+immediately. A child that counted in the model would make this a ten-minute test
+instead of a ninety-second one.
+
+**NOW — what happened**, from the session transcript
+(`~/.pi/agent/sessions/--home-claudeuser-qwen3.8-forge--/*.jsonl`, which records
+every tool call with its arguments and is the evidence here, not the final text):
+
+```
+   Agent          → "Agent ID: 3ced427a-8a6c-41b"      ← the full seventeen,
+                                                          the one surface that
+                                                          always carried it
+   AgentStatus    → "3ced427a (general-purpose) running"
+   StopAgent {agent_id: "3ced427a"}
+                  → "Stopped agent 3ced427a"
+```
+
+Eight characters in, resolved, and the answer names the agent in the same eight
+it accepts. One `StopAgent` call, no retry.
+
+**BEFORE — the control run, on the same box, same prompt.**
+`executeStopAgentTool`'s one resolution line was put back to its pre-AO1 form
+(`getRecord(requestedId)`, an exact `Map` lookup on the seventeen) and the
+delegation was run again:
+
+```
+   AgentStatus    → "cbc6575f (general-purpose) running"
+   StopAgent {agent_id: "cbc6575f"}
+                  → "Agent cbc6575f not found. Running agents: cbc6575f (general-purpose)"
+   StopAgent {agent_id: "cbc6575f"}      ← the model retried the identical id
+                  → "Agent cbc6575f not found. Running agents: cbc6575f (general-purpose)"
+   StopAgent {agent_id: "cbc6575f-2265-4d7"}
+                  → "Stopped agent cbc6575f"
+```
+
+**Read the refusal twice.** It rejects `cbc6575f` and then lists `cbc6575f` as a
+running agent, in the same sentence. The model's own recorded reasoning was *"the
+short ID is not being accepted… maybe I'll retry the short ID once more — it
+might be temporary"*, and it retried before falling back. It escaped only because
+pi's `Agent` result had carried the full seventeen **in the same conversation** —
+which is exactly why every hand test of `StopAgent` before this one passed, and
+why a model that is handed a session, or reads the id off `AgentStatus` after a
+compaction, has no way out at all.
+
+Restore the line afterwards and check the hash, not the diff:
+`sha256sum src/agents/tool-execution.ts`.
+
+### AI.2 — a named tool, a mode that is off, and the wrong case (AO2) — needs a phone
+
+**Unseen.** The one branch of `needsApproval` that can be the only gate in force.
+
+```
+   /prinny set permissionMode off
+   /prinny set permissionTools bash,Read
+```
+
+then make the model run a `bash` call. The relay must fire on the phone even
+though the mode is `off`, because naming a tool is the more specific instruction.
+
+The case is the finding: pi's built-ins are lower-case and this repo's own tools
+are not, and `permissionTools` was matched with an exact `includes`. So the
+second half is the test — set it to `BASH,read` (or `Bash`), and the relay must
+still fire. Before AO2 an operator who typed the tool name the way the README
+prints it got silence and no way to tell silence from *approved*.
+
+**The half that needs no phone**, in a TUI (a `-p` run prints no slash-command
+result at all — see AI.6):
+
+```
+   /prinny set permissionTools bash,Bash,BASH
+```
+
+must echo **one** entry, plus the sentence *"Matched ignoring case, so `Bash`
+and `bash` are the same tool."* The de-duplication is `parseSetting` asking the
+same question the gate asks; without it the operator is shown a list whose
+length is a false claim about how many tools are gated, and without the sentence
+there is no way to see the matching rule from outside.
+
+### AI.3 — two allowlisted senders, one turn, one word (AO3) — needs a second Matrix account
+
+**Unseen**, and it is the finding the ledger calls the instructive one: both sides
+of the compare are ours, and the CONTENT is chosen by a stranger.
+
+Two allowlisted senders DM the bot the same short word — `hi` — inside one turn.
+**Both must be answered.** `markLive` matches pi's echo against
+`entry.injected.trim()`, the whole rendered string, and `renderInboundMessage`
+drops `room_id`, `message_id` and `user_id`; in a DM it drops `from=` too. So two
+people who type the same word render to the same string, and the first entry in
+`awaitingReply` is marked live for a message it did not send.
+
+The proxy is not injective. Nothing fails; one person is simply answered twice
+and the other never.
+
+### AI.4 — two messages in one millisecond (AO4) — needs a second sender or a clock
+
+**Unseen live.** The outbox watermark answered *"have I delivered this?"* with
+*"is this from an instant I have already passed?"*, and `origin_server_ts` is set
+by the **sender's** homeserver. Two events in the same millisecond, or a room on a
+homeserver whose clock is behind ours, and the second one is dropped with no
+error anywhere.
+
+Probe `ab4` drives all three shapes with no Matrix at all, and it is the honest
+substitute — the live form needs two federated homeservers with disagreeing
+clocks, which this box does not have.
+
+### AI.5 — hand-edit the sidecar's sources and run its suite (AO5) — terminal only
+
+**RUN 2026-08-23.** The first time AO5's guard was seen firing against a real
+hand-edit rather than a fixture.
+
+```
+   edit          MAX_REMEMBERED_IDS 200 → 300 in server/src/queue.ts
+   fingerprint   d4ba6997… → 51bf8894…, stamp unchanged   → `stale`
+   npm test      exit 1 · 508 tests · 432 pass · 76 FAIL
+   revert        the same bytes back → `current`, WITHOUT a --prepare
+   npm test      550 · 550 pass · 0 fail
+```
+
+**76 of 508, not all of them** — only the suites that call `loadServerModule`,
+which is the honest blast radius. And an edit plus its revert costs no
+`--prepare`: the stamp is a content hash, so putting the bytes back restores
+`current`. That is the difference between this and an mtime, and it is why an
+experiment in the sidecar is cheap as long as it ends where it started.
+
+### AI.6 — pair a code that is a property of every object (AO6) — terminal only, TUI for the sentence
+
+**Half-run 2026-08-23.** With `PRINNY_ENABLED=1`:
+
+```
+   /prinny pair constructor
+```
+
+**What to look for, and where.** The sentence is a notice, and pi's notice sink
+is `() => {}` headless — a `-p` run prints nothing and writes no session file, so
+the sentence itself needs a TUI. What *is* observable from a terminal is the
+effect, and it is the half with teeth:
+
+```
+   cat ~/.pi/agent/channels/prinny/access.json
+```
+
+`allowFrom` must be **unchanged**. Measured here: unchanged. Before AO6, `pair`
+found an "entry" on the prototype, read `undefined` off it for `senderId`, found
+`undefined < now` false so not expired, pushed `undefined` onto the allowlist —
+where it serialises as a JSON `null` — deleted nothing, and reported *"paired
+undefined. They can now reach this session."*
+
+The same shape for `/prinny deny toString`, which reported removing a pairing
+that never existed. Probe `ab6` drives all five sites through the real store.
+
+### AI.7 — a relocated agent directory and a subagent's skills (AO7) — needs a model
+
+**Unseen.** `PI_CODING_AGENT_DIR` pointed somewhere other than `~/.pi/agent`:
+
+```
+   PI_CODING_AGENT_DIR=/tmp/pi-elsewhere ./scripts/pi-local.sh
+```
+
+with a skill placed in `/tmp/pi-elsewhere/skills` and **not** in
+`~/.pi/agent/skills`. Delegate, and ask the child to list the skills it can see.
+It must see the relocated one. Before AO7 `skill-loader.ts` was the third reader
+AN7's fix did not reach: the parent loaded the operator's skills from the
+relocated directory and every child loaded them from a `~/.pi/agent/skills` that
+pi does not use — which on a fresh relocation is empty.
+
+### AI.8 — a worktree of your own repository, reached through a symlink (AO8) — terminal only
+
+**RUN 2026-08-23**, on real git (2.39.5, this container). The load-bearing fact
+is what git actually prints, so the fixture is a real repository and not a fake:
+
+```
+   mkdir gitfix && cd gitfix
+   mkdir real && cd real && git init -q . && echo x > f && git add f && git commit -qm init
+   cd .. && ln -s real link
+   cd real && git worktree add -q ../wt -b wtbranch
+
+   for d in real link wt; do printf '%-6s ' "$d"; (cd ../$d && git rev-parse --git-common-dir); done
+```
+
+```
+   main worktree      .git                          ← RELATIVE
+   through a symlink  .git                          ← RELATIVE
+   linked worktree    /abs/…/gitfix/real/.git       ← ABSOLUTE
+```
+
+The relative answer is resolved against the directory it was asked in. Driving
+the shipped `isSameRepo` over that fixture, with `canonicalise` swapped for the
+identity function to get the BEFORE column:
+
+```
+   parentCwd (symlink)     …/gitfix/link   --git-common-dir ".git"
+   target    (realpath'd)  …/gitfix/wt     --git-common-dir "…/gitfix/real/.git"
+
+   BEFORE  identity canonicalise : false     ← own repo reads as cross-repo
+   NOW     real canonicalise     : true
+```
+
+`resolveSubagentTrust` gates on that answer, so before AO8 a worktree of the
+parent's own repository got the cross-repo trust gate.
+
+**Still latent in production on this box, and that is the point of the
+`physical` mode of probe `ab8`** — Linux `process.cwd()` is physical, so the two
+sides agree today. One `--cwd`-style option, one platform with a logical cwd, or
+one caller passing a path a person typed, and it is live.
+
+### AI.9 — the probes, no model, no Matrix
+
+```
+   cd context/testing/probes
+   for m in published ambiguous full;            do node --experimental-strip-types ab1-… $m; done
+   for m in off all store;                       do node --experimental-strip-types ab2-… $m; done
+   for m in collision distinct silenced;         do node --experimental-strip-types ab3-… $m; done
+   for m in skew twin ancient redelivery;        do node --experimental-strip-types ab4-… $m; done
+   for m in live stale absent;                   do node --experimental-strip-types ab5-… $m; done
+   for m in pair rooms control;                  do node --experimental-strip-types ab6-… $m; done
+   for m in skills tilde agree live;             do node --experimental-strip-types ab7-… $m; done
+   for m in logical physical foreign shapes;     do node --experimental-strip-types ab8-… $m; done
+   for m in published ambiguous refusal full;    do node ab9-… $m; done
+```
+
+`ab9` is the odd one out and deliberately so: **no `--experimental-strip-types`**,
+because it loads the shipped `executeStopAgentTool` through pi's own jiti, which
+compiles the TypeScript itself.
+
+`ab8 physical` is the one to read even if you run nothing else: it is the control
+that shows AO8's fix changes nothing on this box, which is the same sentence as
+*"this is why nobody noticed for twenty-four passes."*
+
+**What the probes did not reach, and AI.1 did.** `ab1` drives `resolveAgentId`
+beside a *quoted* copy of the old `Map.get`, on the grounds that
+`tool-execution.ts` imports pi and will not load under
+`--experimental-strip-types`. So nothing anywhere touched the one line that makes
+AO1's fix reach a caller: putting it back left **1,434 tests and all 121 probes
+green**, and AI.1 caught it on the first `StopAgent` call. That gap is **AO9**.
+
+The reason `ab1` gave was the *suite's* constraint, and a probe is not the suite —
+`q2` has driven this same function through pi's jiti since the thirteenth pass. So
+AO9 got two instruments:
+
+```
+   ab9-the-wiring-no-probe-drove.mjs   the shipped executeStopAgentTool through
+                                       jiti; all four modes exit 1 with the
+                                       defect restored
+   tests/agent-id.test.ts              describe("AO9 — StopAgent's resolution
+                                       call site"), 7 tests; control runs 2 of 19
+                                       for the lookup, 1 of 19 for the reply
+```
+
+**Run `ab9 refusal` if you run one thing.** The refusal sentence is identical in
+both columns, and the difference is whether the ids inside it are ones the same
+call would accept — **0 of 2 BEFORE, 2 of 2 NOW**. That is what AI.1's live model
+walked into, made executable and free.

@@ -239,10 +239,18 @@ describe("AI1 — a queued nudge at session_shutdown", () => {
     const end = body.slice(0, body.indexOf("\n  }"));
     assert.match(end, /this\.reportDrop\("session-ending"/, "the drop has to be spoken");
     // The defect is an ORDER as much as a call: the ids have to be read before
-    // the set is cleared, or there is nothing left to report about.
-    const read = end.indexOf("[...this.pendingNudges]");
-    const cleared = end.indexOf("this.pendingNudges.clear()");
-    assert.ok(read >= 0 && read < cleared, "read the queue before clearing it");
+    // the set is emptied, or there is nothing left to report about.
+    //
+    // Twenty-second pass: the set moved into `./nudge-schedule.ts` (AM5/AM6), so
+    // the order is now `retire()`'s — which HANDS BACK what it drops, and is
+    // tested for exactly that in `nudge-schedule.test.ts`. What this asserts is
+    // the half that stayed here: dispose reads the return value and reports it.
+    const read = end.indexOf("this.nudges.retire()");
+    const reported = end.indexOf('this.reportDrop("session-ending"');
+    assert.ok(read >= 0, "the batch is retired through the schedule");
+    assert.ok(read < reported, "and its ids are read before they are reported");
+    assert.match(end, /const undelivered = this\.nudges\.retire\(\);/);
+    assert.match(end, /for \(const agentId of undelivered\)/);
   });
 
   it("the control: AgentManager.dispose already fails its queued records loudly", () => {

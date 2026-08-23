@@ -11,6 +11,7 @@ import { getAgentDir, type ExtensionContext, type ToolCallEvent } from "@earendi
 
 import type { AgentRecord } from "../types.js";
 import { SHORT_ID_LENGTH } from "../types.js";
+import { ambiguousAgentIdMessage } from "./agent-id.ts";
 import { resolveType, getAgentConfig, discoverNewAgents, type TypeResolution } from "./agent-types.js";
 import { getSessionContextPercent } from "./usage.js";
 import { validateWorktreePath } from "../spawn/worktree-validator.js";
@@ -434,17 +435,29 @@ export async function executeStopAgentTool(
   _onUpdate: ((update: any) => void) | undefined,
   _ctx: ExtensionContext,
 ): Promise<any> {
-  const agentId = params.agent_id as string | undefined;
+  const requestedId = params.agent_id as string | undefined;
 
-  if (!agentId) {
+  if (!requestedId) {
     return errorResult("agent_id is required");
   }
 
-  const record = getManager()!.getRecord(agentId);
+  // Forge fork, twenty-fourth pass (AO1). Not `getRecord(requestedId)`, which is
+  // an exact `Map` lookup on the full seventeen-character id — while every
+  // model-facing surface in this package publishes the first eight, including
+  // the "Running agents:" list in the refusal below. The model was handed a
+  // spelling this call rejected, and told to try again with it. See
+  // `agent-id.ts` for the ladder, which is `resolveType`'s one field over.
+  const resolution = getManager()!.resolveId(requestedId);
 
-  if (!record) {
-    return errorResult(`Agent ${agentId} not found. Running agents: ${formatRunningAgents()}`);
+  if (resolution.kind === "ambiguous") {
+    return errorResult(ambiguousAgentIdMessage(requestedId, resolution.candidates, SHORT_ID_LENGTH));
   }
+  if (resolution.kind === "not-found") {
+    return errorResult(`Agent ${requestedId} not found. Running agents: ${formatRunningAgents()}`);
+  }
+
+  const agentId = resolution.id;
+  const record = getManager()!.getRecord(agentId)!;
 
   // Forge fork, thirteenth pass (AD2): a record whose ANSWER is still being
   // checked is stoppable, and this precondition was what made it unreachable.
@@ -464,9 +477,15 @@ export async function executeStopAgentTool(
   // finished, and "Stopped agent X" alone would be a claim about that one.
   //
   // Measured: `context/testing/probes/q2-the-stop-the-tool-cannot-reach.mjs`.
+  // AO1: the SHORT id here too. Every sentence this tool writes now names an
+  // agent in the one spelling every other surface publishes and this call
+  // accepts — a reply that identifies a record in a form the next call rejects
+  // is what the finding was.
+  const shortId = agentId.slice(0, SHORT_ID_LENGTH);
+
   if (!isBusyRecord(record)) {
     return successResult(
-      `Agent ${agentId} is already ${record.lifecycle.status}. Running agents: ${formatRunningAgents()}`,
+      `Agent ${shortId} is already ${record.lifecycle.status}. Running agents: ${formatRunningAgents()}`,
     );
   }
 
@@ -475,12 +494,12 @@ export async function executeStopAgentTool(
   if (getManager()!.abort(agentId, "agent")) {
     return successResult(
       verifying
-        ? `Stopped the answer check on agent ${agentId.slice(0, SHORT_ID_LENGTH)}. Its own run had already finished; the answer goes back unchecked.`
-        : `Stopped agent ${agentId.slice(0, SHORT_ID_LENGTH)}`,
+        ? `Stopped the answer check on agent ${shortId}. Its own run had already finished; the answer goes back unchecked.`
+        : `Stopped agent ${shortId}`,
     );
   }
 
-  return errorResult(`Failed to stop agent ${agentId}`);
+  return errorResult(`Failed to stop agent ${shortId}`);
 }
 
 // --- Tool_call listener — inject model into Agent tool calls ---

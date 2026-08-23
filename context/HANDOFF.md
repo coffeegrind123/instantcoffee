@@ -1,3 +1,774 @@
+# Handoff — 2026-08-23 (the hand-test session: the unrun test run, and what setting up its control found)
+
+The brief was item 1 of the entry below: the three unseen hand tests, cheapest
+first. **The cheapest one is now run, against the live stack, with a real control
+run — and building that control run found AO9, which is that AO1's fix was held
+by nothing.** §AI of the hand-testing script, which two documents referenced in
+three places and which did not exist, is now written.
+
+```
+                                    after AO8      now
+   vendor/pi-subagents-lite  tests       503        510    lint 115/115 unchanged
+   vendor/pi-loop-mode       tests       278        278
+   vendor/prinny-channel     tests       550        550
+   .pi/extensions/compaction-guard        75         75
+   vendor/rtk-pi             tests        28         28
+                                       ─────      ─────
+                                       1,434      1,441
+   lettered probes                        121        122    (ab9 is new)
+```
+
+All five suites green, 0 failed, 0 skipped. All **thirty-one** `ab*` probe modes
+exit 0 (twenty-seven, plus `ab9`'s four) — re-run this session, and that run is
+what verified §AI.9's recipe, whose first draft had four wrong mode names in it
+because they were written from memory rather than read off the probes.
+
+## AI.1 — the test, and it passes
+
+Headless against the local model, child parked in one `bash` call so it does not
+hold the llama slot. The evidence is the session transcript
+(`~/.pi/agent/sessions/--home-claudeuser-qwen3.8-forge--/*.jsonl`), which records
+every tool call with its arguments — not the final answer text.
+
+```
+   Agent          → "Agent ID: 3ced427a-8a6c-41b"        the full seventeen
+   AgentStatus    → "3ced427a (general-purpose) running"
+   StopAgent {agent_id: "3ced427a"}
+                  → "Stopped agent 3ced427a"
+```
+
+One call, resolved, and the reply names the agent in the same eight it accepts.
+
+**The BEFORE column, same box, same prompt**, with `tool-execution.ts:450` put
+back to its pre-AO1 `getRecord(requestedId)`:
+
+```
+   StopAgent {agent_id: "cbc6575f"}
+     → "Agent cbc6575f not found. Running agents: cbc6575f (general-purpose)"
+   StopAgent {agent_id: "cbc6575f"}           ← retried the identical id
+     → the same sentence
+   StopAgent {agent_id: "cbc6575f-2265-4d7"}  ← fell back to the seventeen
+     → "Stopped agent cbc6575f"
+```
+
+**Read the refusal twice.** It rejects `cbc6575f` and lists `cbc6575f` as running,
+in one sentence. The model's recorded reasoning was *"maybe I'll retry the short
+ID once more — it might be temporary"*. It escaped only because pi's `Agent`
+result carried the full seventeen **in the same conversation** — which is exactly
+why every hand test of `StopAgent` before this one passed.
+
+## AO9 — the finding, which is about our own evidence
+
+**With that revert in place the whole tree stayed green.** 1,434 tests, all 121
+probes exit 0, lint 115/115. Nothing in the repository noticed that AO1 had been
+undone.
+
+`agent-id.test.ts` drives `resolveAgentId` directly; `ab1` drives the same module
+beside a quoted copy of the old expression, and its header says why —
+`tool-execution.ts` and `agent-manager.ts` import pi and cannot be loaded under
+`node --experimental-strip-types`. So AO1's recorded **control run: 5 of 12** was
+a control over the rule and never over the call using it.
+
+**And the test named `control` in that file could not fail.** It asserts
+`new Map(ids…).get(short) === undefined` — true of `Map` whether or not this
+package still evaluates it — under a comment reading *"stated as a test so the fix
+cannot be reverted quietly"*. It was then reverted quietly, in one edit.
+
+**And the reason `ab1` did not drive the call was a habit, not a fact — this is
+the part to carry.** `ab1`'s header says `tool-execution.ts` and `agent-manager.ts`
+import pi and will not load under `node --experimental-strip-types`. True, and it
+is **the constraint the SUITE runs under**. A probe is not the suite: **`q2` has
+driven the real `executeStopAgentTool` through pi's own jiti since the thirteenth
+pass**, eight files up the same directory listing, and `q2`'s own header states
+the rule this pass needed —
+
+> *"a fix whose test cannot execute the function it changed is pinned against
+> editing, not against breaking."*
+
+AO1 shipped pinned against neither.
+
+**So AO9 got two instruments, because they fail at different times.**
+
+**Probe `ab9`**, four modes, driving the shipped function through jiti over a real
+`AgentManager`, `resolveId` swapped **on the instance** for the BEFORE column and
+nothing else different. **All four modes exit 1 with the defect restored, 0 with
+it fixed.**
+
+```
+   published  50 minted ids asked with the published eight
+              BEFORE 0/50 stopped   NOW 50/50, abortController really aborted
+   ambiguous  two records sharing the eight — named, not picked
+   refusal    the sentence is IDENTICAL in both columns; each id it offers is
+              retried THROUGH THE TOOL — 0 of 2 accepted BEFORE, 2 of 2 NOW
+```
+
+`refusal` is the artefact: AI.1's live model walked into that loop and retried,
+and this makes it executable and free.
+
+**And a source pin in the suite**, for the different reason that it costs nothing
+per run and fails on the edit — `describe("AO9 — StopAgent's resolution call
+site")`, 7 tests, in the AO1 file so the rule and its wiring are read together.
+The package already had two of these (`action-report.test.ts`'s `describe("AF2 —
+the wiring")`, `background-delivery.test.ts`) and twenty-one of its test files
+already read `src/` as text. Three details are load-bearing:
+
+- **The source is comment-stripped**, because the defect is quoted verbatim in the
+  fix's own comment there and a naive search would have passed on the comment.
+- **The slice bounds are asserted first** — an absence assertion over an empty
+  string passes — and every negative sits beside a positive that fails with it.
+- **Two control runs**: **2 of 19** with the lookup put back, **1 of 19** with the
+  reply changed to name the resolved seventeen.
+
+**`ab9`'s first draft made this finding's own mistake, and it is recorded rather
+than quietly fixed.** Its `refusal` mode fed each offered id back through
+`manager.resolveId`, and with the defect restored in the source **that mode
+passed** — asking the manager tests the ladder and says nothing about which lookup
+the call site makes. It now retries through the tool. **When a check feeds a value
+back, it has to go back in through the door it came out of.**
+
+**Same shape as AO8, one level up.** AO8 was the twenty-fourth pass's recorded
+*decision* not surviving contact; AO9 is its recorded *evidence* not surviving
+contact. Both were found by doing the cheap thing a document said was not worth
+doing, and in both cases the document's reason was a sentence nobody had tested.
+**When a pass reports a control run, ask what the control was over — and before
+accepting "this cannot be driven", check whether the constraint belongs to the
+tool you are holding or to a different one.**
+
+## §AI, written because it was not there
+
+`design/…-identity.md` §13.3 and `HANDOFF.md` — two documents, three places —
+pointed at "§AI of the hand-testing script", and the script stopped at §AH. Nine
+items now, each labelled with what was actually **run** rather than what was
+planned:
+
+```
+   AI.1  AO1  StopAgent takes the eight it was shown      RUN, with a control
+   AI.2  AO2  a named tool, mode off, the wrong case      unseen (phone) — but the
+                                                          de-dup + "matched
+                                                          ignoring case" needs no
+                                                          phone, only a TUI
+   AI.3  AO3  two senders, one turn, one word             unseen (2nd account)
+   AI.4  AO4  two messages in one millisecond             unseen live; ab4 is the
+                                                          honest substitute
+   AI.5  AO5  hand-edit the sidecar, read the refusal     RUN (previous session)
+   AI.6  AO6  /prinny pair constructor                    HALF-RUN — see below
+   AI.7  AO7  relocated agent dir, a child's skills       unseen (model) ← cheapest
+                                                          of the three that remain
+   AI.8  AO8  own repo through a symlink                  RUN, real git fixture
+   AI.9       the probe modes (27, now 31 with ab9)        RUN, all exit 0
+```
+
+**AI.8 re-measured from a terminal**, git 2.39.5, on a fixture built for it:
+`--git-common-dir` prints `.git` in the main worktree and through a symlink, and
+an absolute path in a linked worktree. Driving the shipped `isSameRepo` over it —
+`canonicalise` swapped for identity gives `false`, the real one gives `true`.
+
+**A general fact worth carrying, found in AI.6.** `/prinny pair constructor` ran
+and `access.json` was untouched, which is the half with teeth and is correct
+post-AO6. But **a `pi -p` run prints no slash-command result and writes no session
+file at all** — pi's notice sink is `() => {}` headless. So no slash command's
+operator-facing *sentence* can be hand-tested headlessly; only its *effect* can.
+That applies to `/prinny set`, `/prinny status` and `/prinny pair` alike, and it
+is why three items above are marked unseen rather than run.
+
+## Next session — in this order
+
+1. **AI.7**, the cheapest unseen item and the only remaining one that needs
+   nothing but a model: `PI_CODING_AGENT_DIR=/tmp/pi-elsewhere`, a skill in
+   `/tmp/pi-elsewhere/skills` and none in `~/.pi/agent/skills`, then delegate and
+   ask the child which skills it can see.
+2. **The two that need hardware.** AI.2 needs a phone; AI.3 needs a second Matrix
+   account. Both are written out and neither has moved for two sessions.
+3. **Consider committing.** The tree carries the fourth through twenty-fourth
+   passes plus the last two sessions. Said once, not as a gate.
+4. **A nineteenth axis, if one is wanted.** The honest position is unchanged and
+   is now better evidenced: two of the last three findings (AO8, AO9) came from
+   re-reading what this series had already written down, not from new code. The
+   axis that keeps paying is *check the sentence that says why something was left
+   alone*.
+
+## Still open, carried
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. Unchanged; the repair is a lock file.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unchanged, carried for a fourth pass.
+   · `mcp-stdio.ts`'s reply path is `typeof id === 'number'`, so a server that
+     echoes a JSON-RPC id as a string drops the reply and the call times out.
+     Latent: this stack's sidecar always echoes numbers. Same shape as AK3.
+   · NEW, and it is AO9 generalised: **every probe whose header says "this
+     module imports pi and cannot be loaded here" is a candidate for the same
+     gap.** `ab1` and `ab3` say it explicitly; `q2` and now `ab9` show the way
+     round it (jiti). Not audited: whether the findings behind `ab3`
+     (`extensions/index.ts` — `markLive`, `liveRooms`) and the older passes'
+     pins are held by anything that would fail if the call site were reverted.
+     `tool-execution.ts` is now held twice.
+```
+
+## What changed on disk
+
+```
+   NEW   context/testing/probes/ab9-the-wiring-no-probe-drove.mjs  AO9, 4 modes
+         vendor/pi-subagents-lite/tests/agent-id.test.ts   AO9, +7 tests, 12 → 19
+         context/testing/subagents-loop-verifier.md        §AI, nine items
+         context/design/subagents-loop-verifier-identity.md §11.10 AO9, §11 intro,
+                                                           §12.1 (+column, and a
+                                                           `113/113` bullet that
+                                                           contradicted its own
+                                                           table two paragraphs
+                                                           up), §12.2, §12.3,
+                                                           §12.6, §13.3, the TOC
+         vendor/pi-subagents-lite/FORK.md                  AO9, and 503 → 510
+         context/design/decisions.md                       the AO9 entry
+         context/testing/probes/README.md                  the AO9 addendum, the
+                                                           ab9 row, the count
+                                                           121 → 122, and a
+                                                           section header reading
+                                                           AO1–AO7 / ab1–ab7
+                                                           while listing ab8
+         context/README.md                                 three rows
+         context/HANDOFF.md                                this entry
+```
+
+**One new file, and no source file changed.** `tool-execution.ts` was edited four
+times for control runs and restored each time **by hash, not by diff** —
+`65b785a919c04bc3eb47d53535c6668e5e5b72978c10c35636f0280bf8e749cb`. That is the
+cheap habit AO5 taught: a content hash means an edit and its revert cost nothing,
+so an experiment is free as long as it ends where it started.
+
+**The working tree still carries the fourth through twenty-fourth passes
+uncommitted, plus the last two sessions.**
+
+---
+
+# Handoff — 2026-08-23 (the write-up session: the twenty-fourth pass documented, and one of its own decisions reversed)
+
+No new axis this session. The brief was the list the entry below left behind:
+write the twenty-fourth pass up, propagate it, and settle the probe count.
+**Items 1–4 are done, item 5 is done as far as a keyboard can take it, and the
+pass grew an eighth finding on the way — AO8, which is the write-up's own
+recorded decision being reversed within the hour of recording it.**
+
+```
+                                    after AO1–AO7    now
+   vendor/pi-subagents-lite  tests       493         503    lint 113/113 → 115/115
+   vendor/pi-loop-mode       tests       278         278
+   vendor/prinny-channel     tests       550         550
+   .pi/extensions/compaction-guard        75          75
+   vendor/rtk-pi             tests        28          28
+                                       ─────       ─────
+                                       1,424       1,434
+   lettered probes                        120         121    (ab8 is new)
+```
+
+All five suites green, 0 failed, 0 skipped. All twenty-seven `ab*` probe modes
+exit 0. **Every number in the write-up was re-measured while it was being
+written**, so its *after* column is a reading of the tree as it stands rather
+than a note from the session that changed it.
+
+## The document
+
+`context/design/subagents-loop-verifier-identity.md`, 2,421 lines, self-contained
+in the shape of the twenty-three before it. Three panels are new and §1.6 is the
+one to read first — the stack's three resolution ladders side by side, and the
+rule that separates them. **§10.2 is the artefact: fifty-three rows**, each
+naming the two values, the function that decides and who supplied each side.
+
+**§10.2.1 is the statistic, and it did not come out where the brief guessed.**
+The brief asked for the ledger sorted so the seven findings fall out of it.
+Sorting by *who minted the value* rather than by distance:
+
+```
+   this process, both sides                      7 rows   0 findings
+   pi (the host's own registry or echo)          6        1   AO3
+   a person (operator, file author, an env var) 11        2   AO2, AO7
+   a MODEL                                      12        2   AO1, AO6
+   another machine (a homeserver, a phone)       8        1   AO4
+   a child process, the OS, the filesystem       7        1   AO8 (+1 latent)
+   another BUILD of ourselves                    2        1   AO5
+```
+
+Thirteen rows have both sides minted in-process or by pi, and twelve are
+correct — including two that look alarming out of context (a mixed-case tool
+set, an `in` over a parsed object). **The two exceptions are the instructive
+part**, and they are why the rule is not "audit your boundaries":
+
+- **AO3** — both sides ours, and the CONTENT chosen by a stranger. The compare
+  never fails; the proxy is simply not injective, because two people can type
+  the same word.
+- **AO8** — both sides produced by the same program, which answers the same
+  question in **two shapes**. One supplier is not one spelling.
+
+So: **name the two values, then ask who could have chosen them — and in how many
+spellings they could have said it.**
+
+## AO8, and the part worth carrying
+
+The write-up recorded `worktree-validator.ts`'s realpath asymmetry as a latent
+and left it, with the reason written down: *"the fix is one call, and the case
+that would prove it is not reachable on this box."* **That reason was wrong, and
+it took four minutes with real git to disprove.**
+
+Measured first, before anything was built (git 2.39.5, this container):
+
+```
+   git rev-parse --git-common-dir
+     in the MAIN worktree      ".git"                 ← RELATIVE
+     through a SYMLINK to it   ".git"                 ← RELATIVE
+     in a LINKED worktree      "/abs/…/real/.git"     ← ABSOLUTE
+```
+
+The relative answer is resolved against the directory it was asked in, and
+`sameRepo` realpath'd the TARGET's directory and not the PARENT's. So:
+
+```
+   parentCwd (a symlink)   …/link          parent side BEFORE  …/link/.git
+   target    (realpath'd)  …/wt            parent side NOW     …/real/.git
+                                           target side         …/real/.git
+
+   BEFORE  sameRepo → false        NOW  sameRepo → true
+```
+
+A worktree of the parent's **own** repository read as cross-repo, and
+`resolveSubagentTrust` gates on that.
+
+**Still latent in production, and that half of the record was right.**
+`parentCwd` is `getSessionCtx()?.cwd ?? ctx.cwd`; pi builds it from
+`process.cwd()` (`dist/cli/startup-ui.js:47`) through `resolvePath`, which
+normalises and absolutises but does **not** canonicalise
+(`dist/utils/paths.js:82`); Linux `process.cwd()` is physical. One `--cwd`-style
+option, one platform, or one caller passing a path a person typed, and it is
+live.
+
+**The transferable mistake is the reason, not the bug.** "The case is not
+reachable on this box" and "I cannot drive this code" are different sentences,
+and only the second was true — `parentCwd` is a **parameter**, so reaching the
+case costs one `symlinkSync`. What was blocked was loading the module:
+`worktree-validator.ts` uses a `.js` specifier for `../utils.ts` and its own
+header says so. **When the stated reason for leaving something open is an
+inability, check which inability it is.**
+
+The fix is the answer this package has already given five times — extract the
+rule. `src/spawn/same-repo.ts` is the sixth, after `git-failure.ts`,
+`record-activity.ts`, `status-listing.ts`, `turn-tracking.ts` and `agent-id.ts`.
+`isSameRepo` canonicalises **both** cwds in one place, with `canonicalise` as a
+parameter so a test can drive a logical-cwd platform without running on one.
+Tests are on a real git fixture — repository, symlink, linked worktree, second
+repository — because the finding is about what git actually prints and a fake
+would be a test of the fake; one of the ten pins those two shapes so an upstream
+change is a failing test. **Control run: 2 of 10.** Probe `ab8`, four modes, and
+its `physical` mode is the control that shows the fix changes nothing here —
+which is the same sentence as "this is why nobody noticed for twenty-four
+passes".
+
+## AO5's operator-facing half, seen for the first time
+
+The one bullet of §AI that needs only a terminal. Hand-edited
+`server/src/queue.ts` the way an operator would and ran the suite:
+
+```
+   edit          MAX_REMEMBERED_IDS 200 → 300
+   fingerprint   d4ba6997… → 51bf8894…, stamp unchanged  → `stale`
+   npm test      exit 1 · 508 tests · 432 pass · 76 FAIL
+   the message   "the staged channel runtime at …/runtime is stale: it was
+                  compiled from different sources than this checkout, so these
+                  tests would pass or fail about a program that is not in the
+                  tree.  Re-stage it with: … --prepare"
+   revert        the same bytes back → `current` again, WITHOUT a --prepare
+   npm test      550 · 550 pass · 0 fail
+```
+
+Two things worth keeping. **76 of 508 fail, not all of them** — only the suites
+that call `loadServerModule`, which is the honest blast radius. And **an edit and
+its revert cost nothing**: the stamp is a content hash, so putting the bytes back
+restores `current` with no re-stage. A quick experiment in the sidecar is cheap
+as long as it ends where it started.
+
+## The probe count, settled
+
+Two numbers had been carried in two documents and neither said what it counted.
+Both were right:
+
+```
+   ls context/testing/probes/*.mjs                                  126
+     minus the four shared helpers  _host _register _sidecar _ts-hook
+                                                                    122
+     minus one un-lettered one-off  verify-prior-fixes.mjs
+                                                                    121  ← probes
+```
+
+**121 lettered probes** is the number to quote (113 before the twenty-fourth
+pass). The definition now lives at the top of
+`context/testing/probes/README.md`, so it does not get settled twice.
+
+## What the list did not predict
+
+Three things this session found that nothing had asked it to look for. Recorded
+because in each case the list was a hypothesis and the hypothesis was wrong.
+
+- **Two of the root `README.md`'s three "stale passages" do not exist.** It never
+  documented `/prinny set permissionTools`, and never named the channel's state
+  directory beyond the `runtime/` path. The third was not stale either —
+  `StopAgent` was described only as "the parent's kill switch", with no claim
+  about its argument. One sentence was ADDED there rather than corrected.
+- **Three rows of `context/README.md` still ended with a "Start here for that
+  subsystem" claim they had been demoted out of at the front.** Each demotion had
+  edited the opening of the row and left the closing sentence. That is the same
+  two-readers-of-one-fact shape this whole series keeps finding, in the file
+  whose job is telling the next reader where to start. All three trimmed; exactly
+  one row claims it now.
+- **`pi-subagents-lite/FORK.md`'s AN7 entry recorded the `.trim()` guard as a
+  feature** — *"An exported-but-empty value reads as absent rather than as the
+  root directory"* — which AO7 removed as a divergence from pi. Corrected in
+  place, in the AO7 entry, rather than leaving two entries that disagree.
+
+## Three things worth reading before the next change
+
+- **§1.6 of the write-up, then §10.3.** The rule that came out of this pass is
+  *report ambiguity when the caller cannot see what you picked* — which is why
+  `resolveType` and `resolveAgentId` name their candidates and the loop's
+  `resolveModel` is correct to take a silent first match. It is a rule about the
+  caller, not about consistency.
+- **`context/testing/probes/README.md`'s twenty-fourth-pass addendum.** Three of
+  the eight probes run the **shipped module with one operator swapped**, which is
+  the strongest form a BEFORE column can take: the two columns cannot disagree
+  for any reason except the finding. Reach for it whenever a fix is one operator.
+- **Any edit under `vendor/prinny-channel/server/src/` still needs a `--prepare`
+  before its tests mean anything** (~45 s). Since AO5 the suite refuses rather
+  than passing quietly, and the refusal names the command — do not debug a
+  phantom.
+
+## Next session — in this order
+
+1. **The three unseen hand tests.** They are the only part of the twenty-fourth
+   pass that a keyboard cannot reach, and each needs something this session did
+   not have:
+   - `/prinny set permissionTools Bash`, then make the model run a `bash` call
+     with `permissionMode off` — **needs a phone** to watch the relay fire.
+   - Two allowlisted senders DM `hi` within one turn; both must be answered —
+     **needs a second Matrix account.**
+   - `AgentStatus`, then `StopAgent` with the eight characters it printed —
+     **needs a live delegation** on the one llama slot. This is AO1's whole point
+     and the cheapest of the three; the stack is up and healthy.
+2. **Consider committing.** The working tree carries the fourth through
+   twenty-fourth passes plus this session. Said once, not as a gate.
+3. **The next axis, if one is wanted.** Eighteen are recorded in §0 of the
+   write-up. Nothing about the current tree demands a nineteenth; the honest
+   position is that the list of unwatched operator-facing behaviour (§13.3) is
+   now longer than the list of unexamined code.
+
+## Still open, carried
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. Unchanged; the repair is a lock file.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unchanged, carried for a third pass.
+   · `mcp-stdio.ts`'s reply path is `typeof id === 'number'`, so a server that
+     echoes a JSON-RPC id as a string drops the reply and the call times out.
+     Latent: this stack's sidecar always echoes numbers. Same shape as AK3, and
+     now the only latent left on the identity axis.
+```
+
+## What changed on disk
+
+```
+   NEW   vendor/pi-subagents-lite/src/spawn/same-repo.ts          AO8
+   NEW   vendor/pi-subagents-lite/tests/same-repo.test.ts         AO8, 10 tests
+   NEW   context/testing/probes/ab8-the-worktree-…-own-repo.mjs   AO8, 4 modes
+   NEW   context/design/subagents-loop-verifier-identity.md       2,421 lines
+   DEL   context/design/subagents-loop-verifier-identity-NOTES.md carried into it
+         vendor/pi-subagents-lite/src/spawn/worktree-validator.ts asks isSameRepo
+         vendor/pi-subagents-lite/FORK.md                         AO1, AO7, AO8
+         vendor/prinny-channel/FORK.md                            AO2–AO7
+         vendor/pi-loop-mode/FORK.md                              nothing changed,
+                                                                  and why that is
+                                                                  worth recording
+         context/design/decisions.md                              14 decisions +
+                                                                  the AO8 reversal
+         context/testing/probes/README.md                         ab8 table, the
+                                                                  count definition
+         context/README.md                                        start-here row
+         README.md                                                StopAgent's id
+         context/HANDOFF.md                                       this entry
+```
+
+**The working tree still carries the fourth through twenty-fourth passes
+uncommitted, plus this session.**
+
+---
+
+# Handoff — 2026-08-23 (twenty-fourth pass: what counts as the same thing)
+
+The brief was the usual one: evaluate subagents, the loop and the verifier
+comprehensively, write it up in detail with an ASCII graph, and fix what turns
+up. **All three are done.** The write-up is
+`context/design/subagents-loop-verifier-identity.md` (2,257 lines) — §1 the
+machine in seven panels, §10.2 the identity ledger with fifty-three rows, §11
+AO1–AO7 with the control counts, §12 the evidence. The working notes it was
+built from have been deleted, as planned; nothing in them is unrepresented.
+
+- **Seven findings, AO1–AO7, all fixed** — and an eighth, **AO8**, which the
+  write-up first recorded as an open latent and then closed (§11.9). Each has a
+  regression test that fails
+  when the fix is removed — the control-run failing counts are in §12.2 of the
+  write-up — and a probe that prints BEFORE and NOW so it is its own control.
+- **Two of them are live on this box**, not reconstructions: the prinny suite
+  was green against a staged build whose sources no longer exist in the tree
+  (AO5), and `--prepare` — carried by the last handoff as never-exercised and
+  possibly broken — works here (four clean runs, ~45 s each).
+- **The gates were re-run before anything was written**, so the *before* column
+  is a measurement of the tree as this pass found it.
+
+```
+                                      before    after    +AO8
+   vendor/pi-subagents-lite  tests     477       493      503   lint 115/115
+   vendor/pi-loop-mode       tests     278       278      278
+   vendor/prinny-channel     tests     511       550      550
+   .pi/extensions/compaction-guard      75        75       75
+   vendor/rtk-pi             tests      28        28       28
+                                      ─────     ─────    ─────
+                                      1,369     1,424    1,434
+   lettered probes                      113       120      121   (ab1–ab8; §12.5)
+```
+
+## The axis, and why it is a new one
+
+Seventeen axes have each taken one question and asked it of every surface. This
+is the eighteenth:
+
+> **WHAT COUNTS AS THE SAME THING.** For every place this stack decides two
+> values are the same — a key lookup, a set membership, a string compare, a
+> path, a name, an id — name the two values, name the function that decides,
+> and find the pair that is **equal-but-different** or **different-but-equal**.
+
+Four shapes, and every finding is one of them:
+
+```
+   ── 1. A LOOKUP THAT ANSWERS FOR A KEY NOBODY STORED ────────────────────────
+      `obj[k]` and `k in obj` reach the prototype. Over JSON.parse output that
+      is eight names, all truthy.                                        AO6
+
+   ── 2. TWO SPELLINGS OF ONE PATH ────────────────────────────────────────────
+      One directory, five readers, and they do not agree what the value of
+      PI_CODING_AGENT_DIR means.                                         AO7
+
+   ── 3. TWO NAMES FOR ONE THING ──────────────────────────────────────────────
+      What is PUBLISHED is not what the lookup ACCEPTS — an id truncated for
+      display, a tool name in the wrong case, a rendering two rooms produce.
+                                                                AO1, AO2, AO3
+
+   ── 4. IDENTITY BY A DIGEST OF PART OF THE THING ────────────────────────────
+      A timestamp standing in for a message; a compiled artefact standing in
+      for its source.                                              AO4, AO5
+```
+
+## The one that matters most
+
+**AO1 — the id the model is shown is not the id `StopAgent` accepts.** An agent
+id is `randomUUID().slice(0, 17)`. Four model-facing surfaces publish the first
+**eight**:
+
+```
+   agent-status.ts:33        AgentStatus — the tool whose whole job is
+                             "which agents exist"
+   spawn-coordinator.ts:493  the background completion the model actually reads
+   tool-execution.ts:425     the "Running agents:" list INSIDE StopAgent's own
+                             refusal
+   tool-execution.ts:478-9   StopAgent's own success message
+```
+
+and `executeStopAgentTool` resolved it with `manager.getRecord(agentId)`, which
+is `this.agents.get(id)` — an exact `Map` lookup on the seventeen. Measured over
+200 freshly minted ids (probe `ab1`, mode `published`): **0/200 resolved**. Only
+`run_in_background`'s own `Agent ID: <id>` ever carried the full one, which is
+why this survived twenty-three passes — the one path that had a good identifier
+worked.
+
+The refusal is the part with teeth. A model told *"Agent 70acbd91 not found.
+Running agents: aa5d3df1 (explore), 2ab84098 (general-purpose)"* retries with one
+of those and gets the identical answer, forever, on the tool that exists to stop
+a run holding the single llama slot. `formatRunningAgents`' docstring says the
+list is *"one line, easy for LLM to parse"* — it is easy to parse and impossible
+to use.
+
+The fix moves the LOOKUP, not the printers: `src/agents/agent-id.ts` imports
+nothing and answers exact ▸ unique case-fold ▸ unique prefix ▸ ambiguous ▸
+not-found, which is `resolveType`'s ladder one field over, including its rule
+that ambiguity is reported and never picked. The ambiguity sentence widens the
+candidates to `distinguishingLength` — printing them at the length that was
+asked would say `abcdefgh, abcdefgh. Use more of the id.`, which is the same
+mistake with the volume up.
+
+## The other six
+
+| # | What | Fix |
+| --- | --- | --- |
+| AO2 | `permissionTools` — the always-ask list — was matched with `.includes(toolName)`, an exact compare, against a list `parseSetting` stores unvalidated. It is the ONE branch of `needsApproval` that fires in every mode **including `off`**, so for an operator who relies on it there is no other gate. pi's built-ins are lower case (`bash`, `edit`, `write`); this repo's own are not (`Agent`, `StopAgent`, `AgentStatus`). `/prinny set permissionTools Bash` is stored, echoed back, and gates nothing. Every other setting in that switch is checked against its enum, and every other allowlist in the package validates its entries with a sentence saying why (`MXID_RE`, `ROOM_ID_RE`) | `namesTool()` folds case and trims; `parseSetting` de-dupes by the same question so the stored list is one entry per tool; `/prinny set` says the matching ignores case. There is no tool registry on `ExtensionContext` — pi exposes `ui`, `mode`, `cwd`, `sessionManager`, `modelRegistry`, `model`, `scopedModels`, `thinkingLevel` and the lifecycle calls and nothing that lists tools — so the repair is at the comparison, in the `ask` direction the module already states |
+| AO3 | `markLive`'s docstring said *"Matching is on the Matrix event ID, which is unique"*. It has not been true since the `<channel …>` block became the `[matrix]` marker: `blockMatches` compares the whole rendered string and `renderInboundMessage` drops `room_id`, `message_id`, `user_id` and — in a DM — `from=` as well. **Two DMs saying `hi` both render `[matrix] hi`.** One echo then marks BOTH rooms live (the loop has no `break`), `liveRooms().length === 2`, and `forwardToMatrix` refuses — so the person pi actually took a message from gets no answer, and both are told somebody else was being answered | `uniqueInjection()` in `inbound.ts`: plain ▸ name the sender ▸ `#n`, against the other outstanding non-live entries. Zero tokens unless a collision was about to happen, and the first widening is `from=`, which is information the model can use rather than a disambiguator it cannot. `markLive`'s docstring now says what it matches on |
+| AO4 | `enqueue` dropped any message with `ts <= watermark`, under a docstring reading *"Everything at or below this has been seen"* — a claim about IDENTITY made out of a claim about TIME. `origin_server_ts` is the SENDER's homeserver clock: two rooms are two clocks, federation delivers out of order, and two events share a millisecond freely. `handleInbound` reads that `false` as *"Already delivered on an earlier run"* and returns — **after** the ack reaction has been sent. The bot reacts and then never answers | `Watermark = { ts, ids }`; `alreadyDelivered()` is identity above a `CLOCK_SKEW_MS` (5 min) horizon and time below it; `MAX_REMEMBERED_IDS` 200; `catchUpFrom` is lowered by the horizon so a skewed event reaches `enqueue` at all rather than being filtered out one layer up. A pre-pass `{ ts }` file reads as a mark with no ids, which is the old behaviour below the horizon and the new one above it |
+| AO5 | **The prinny suite was green about a program not in the tree.** `loadServerModule` imports the staged COMPILED sidecar and calls that a benefit — *"testing the artifact that actually ships rather than a re-compile of it"* — which is true only while the stage IS this checkout. AN2 built `stagedState()` for exactly this question and converted four readers; the harness is the fifth, and the only one whose wrong answer is silent. **Measured live: stamp `f297f2b6…`, `server/src` hashing to `94b4a2f9…`, no `connect.js` in `dist/` at all, and 511 tests passing** — 116 suites against a build without AL3's connect-loop fix | `assertRuntimeMatchesSource()` in `harness.ts`, called from every `loadServerModule` (not once at load: a `--prepare` in another terminal changes the answer mid-run). Hard failure naming the command, with a different sentence for `stale` and `absent` |
+| AO6 | Four lookups over `JSON.parse` output that answer for keys nobody stored — `access.pending[code]` in `pair` and `deny`, `access.rooms[roomId]` in `removeRoom`, and `roomId in access.rooms` in `assertAllowedRoom`. Eight inherited names are all reachable and all truthy. `/prinny pair constructor` replied **"paired undefined. They can now reach this session."** and wrote `null` into the allowlist; `deny` and `removeRoom` each reported removing all eight; the outbound room gate — whose docstring names prompt injection as the actor it exists for — returned ALLOW for all eight. Not exploitable: none of them is a room ID and the homeserver rejects them | `hasEntry()` in `access-store.ts`, and `hasOwnProperty.call` in the sidecar's `assertAllowedRoom` and in `gate()`'s room lookup so the inbound and outbound gates cannot disagree about which rooms exist. `command-routing.ts`, nine files over, already writes the correct form over two tables of its own — the same distance-zero shape as every AN finding |
+| AO7 | `prompt/skill-loader.ts` passed `loadSkills({ agentDir: join(homedir(), ".pi", "agent") })` — the third instance of AN7 in the same package, and the reader that decides which skills a SUBAGENT is given. Separately, all four readers of `PI_CODING_AGENT_DIR` in `prinny-channel` wrote `env.X ?? join(homedir(), '.pi', 'agent')` while pi's own `getAgentDir()` runs the value through `expandTildePath` first — so `PI_CODING_AGENT_DIR=~/pi-work` in an `.env` (which no shell expands) puts the allowlist, the credentials and the Olm store in a directory literally named `~`, relative to whatever the cwd was | `skill-loader.ts` asks `agentDir()`. `agent-dir.ts`'s guard now matches pi's `if (envDir)` exactly — it was `.trim() !== ""`, a better rule and a **different** one. New `server/bin/agent-dir.mjs` for the extension, the bootstrap and the harness; `server/src/state.ts` keeps a deliberate duplicate (it is compiled with `rootDir: src` and cannot reach it) with an agreement test. **Two scans, one per package**, so a fourth reader is a failing test rather than a fourth finding |
+
+## Three things worth reading before the next change
+
+- **Six of seven are "what we publish is not what we accept".** An id truncated
+  for display, a tool name in a case pi does not use, a rendering two rooms
+  produce, a timestamp standing in for a message, a compiled artefact standing
+  in for its source. In every one the two halves are written by the same author
+  in the same file, and the mismatch is invisible because the *common* case
+  agrees — a full id resolves, a lower-case `bash` gates, two different
+  sentences do not collide, an un-relocated install has one agent dir.
+- **The fix belongs at the LOOKUP, not at the printer.** AO1, AO2 and AO6 are
+  each one operator: `get` → a resolution ladder, `.includes` → a folded
+  compare, `[k]` → `hasOwnProperty.call`. Changing the publishers would have
+  cost tokens on every listing forever and would have had to be done in four
+  places each time.
+- **A test that runs the wrong program is worse than a missing test** (AO5), and
+  **a test can pin the defect** (§below). Both showed up in this pass, in the
+  same package.
+
+## Two tests were found pinning the wrong thing
+
+- `tests/queue.test.ts` — *"refuses anything already delivered, which is what
+  stops a re-answer"* asserted that a message **nobody had ever delivered** is
+  refused, because it carried an earlier timestamp than one that was. It passed
+  for exactly the reason the code was wrong. Split into four tests that name the
+  rule instead of its consequence.
+- `tests/agent-dir.test.ts` — *"treats an empty override as absent"* asserted
+  `agentDir({ PI_CODING_AGENT_DIR: "   " }) === DEFAULT`, on a `.trim()` guard
+  pi does not have. Rewritten to say which rule it holds and why pi is right by
+  definition: pi is the one that writes the files.
+
+## Done on this box for the first time
+
+**`--prepare` works here.** The last handoff carried it as blocking, never
+exercised, and possibly broken because `npm ping` does not answer. It ran four
+times during this pass, ~45 s each, including the local `@prinny/bot` link from
+`~/prinny-mono/prinny-bot`. The staged runtime is **current** as of the end of
+this session, and `connect.js` — AL3's fix for a connect loop that builds one
+matrix-js-sdk client per failed attempt and stops none of them — is compiled in
+for the first time.
+
+**Any change to `vendor/prinny-channel/server/src/**` now needs a `--prepare`
+before its tests mean anything**, and since AO5 the suite says so rather than
+passing quietly. Budget ~45 s per edit-test cycle on the sidecar.
+
+## Next session — in this order
+
+**This list is history — the operative one is in the entry above.** Items 1–4
+were done in the session after the one that found these, and one of item 5's four
+bullets with them. Everything below is kept rather than deleted because each
+entry now records what was actually found, and two of them found something the
+list did not predict.
+
+1. ~~**Write the pass document.**~~ **Done**, 2026-08-23:
+   `context/design/subagents-loop-verifier-identity.md`, self-contained in the
+   shape of the twenty-three before it. The panel this axis wanted is §1.2
+   (every name the stack carries and who spells it which way) and the ledger is
+   §10.2, fifty-three rows sorted in §10.2.1 by **who minted the value** — which
+   is the statistic this axis produces. `…-identity-NOTES.md` has been deleted.
+   The gates and all twenty-three probe modes were re-run before it was written,
+   so its *after* column is a reading of the tree as it stands, not a note from
+   the session that changed it.
+2. ~~**Propagate.**~~ **Done**, 2026-08-23. `HANDOFF.md`, `context/README.md`
+   (the identity document is now the start-here row — and three older rows still
+   ended with a start-here claim they had been demoted out of at the front, which
+   is the same "two readers of one fact" shape this series keeps finding, in the
+   file whose job is telling the next reader where to start; all three trimmed),
+   the three `FORK.md`s (`pi-subagents-lite`: AO1, AO7, **and a correction to
+   AN7's own entry**, which recorded the `.trim()` guard as a feature;
+   `prinny-channel`: AO2–AO7; `pi-loop-mode`: nothing changed, and the entry says
+   why that is worth recording — two of its four identity decisions are the
+   controls the write-up uses), `context/design/decisions.md` (fourteen decisions
+   and three left open), and the probes `README.md` (the ab1–ab7 table, the
+   count definition, and the rule about what a BEFORE column may be).
+3. ~~**Reconcile the probe count.**~~ **Settled**, in §12.5 of the write-up:
+   neither number was wrong, they counted different things and neither said so.
+   `ls *.mjs` is 126; minus the four `_` helpers, 122; minus
+   `verify-prior-fixes.mjs`, an un-lettered one-off, **121 lettered probes**
+   (113 before this pass). The twenty-third pass's "111 → 118" and this pass's
+   "114 → 122" are the first two columns. **121 is the number to quote**, and
+   the definition is now written down at the top of
+   `context/testing/probes/README.md` so it does not have to be settled twice.
+4. ~~**Root `README.md`.**~~ **Checked**, 2026-08-23, and it was very nearly a
+   false alarm: of the three passages predicted stale, **two do not exist**. The
+   root README never documented `/prinny set permissionTools` (it documents
+   `permissionMode` and `permissionTimeoutSeconds` only), and it never named the
+   channel's state directory except the `runtime/` path, which is unchanged. The
+   third was not stale either — `StopAgent` was described only as "the parent's
+   kill switch", with no claim about its argument. One sentence was ADDED there
+   rather than corrected, because after AO1 the short id is a fact a reader
+   wants. **Worth noting for the next pass that writes one of these lists: a
+   predicted-stale passage is a hypothesis, and two of these three were wrong.**
+
+5. **§AI of the hand-testing script** — the operator-facing halves. **One of the
+   four is now done; the other three need a phone or a second Matrix sender or a
+   live model turn, and cannot be done from a keyboard alone.**
+   - `/prinny set permissionTools Bash`, then make the model run a `bash` call
+     with `permissionMode off`, and watch the phone. **Still unseen.**
+   - Two allowlisted senders DM `hi` within one turn; both must be answered.
+     **Still unseen.**
+   - `AgentStatus`, then `StopAgent` with the eight characters it printed.
+     **Still unseen** — it needs a live delegation on the one llama slot.
+   - ~~Hand-edit `server/src/queue.ts`, run `npm test`, read the refusal.~~
+     **DONE**, 2026-08-23, and it is the first time AO5's guard has been seen
+     firing against a real hand-edit rather than a fixture:
+
+     ```
+       edit          MAX_REMEMBERED_IDS 200 → 300 in server/src/queue.ts
+       fingerprint   d4ba6997… → 51bf8894…, stamp unchanged → `stale`
+       npm test      exit 1 · 508 tests · 432 pass · 76 FAIL
+       the message   "the staged channel runtime at …/runtime is stale: it was
+                      compiled from different sources than this checkout, so
+                      these tests would pass or fail about a program that is not
+                      in the tree.  Re-stage it with: … --prepare"
+       revert        the same bytes back → `current` again, WITHOUT a --prepare
+       npm test      550 · 550 pass · 0 fail
+     ```
+
+     Two things worth carrying from it. **76 of 508 fail, not all of them** —
+     only the suites that call `loadServerModule`, which is the honest blast
+     radius. And **an edit and its revert cost nothing**: the stamp is a content
+     hash, so putting the bytes back restores `current` with no re-stage. That is
+     the difference between this and an mtime, and it is why a quick experiment
+     in the sidecar is cheap as long as it ends where it started.
+
+## Still open, carried
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. Unchanged; the repair is a lock file.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unchanged.
+   · CLOSED — `worktree-validator.ts`'s realpath asymmetry is AO8, fixed the
+     same day in `src/spawn/same-repo.ts`. It is still LATENT in production
+     (pi's `ctx.cwd` comes from `process.cwd()`, physical on Linux), and the
+     reason it was nearly left — "the case is not reachable on this box" — was
+     wrong: `parentCwd` is a parameter. See §11.9 of the write-up.
+   · `mcp-stdio.ts`'s reply path is `typeof id === 'number'`, so a server that
+     echoes a JSON-RPC id as a string drops the reply and the call times out.
+     Latent: this stack's sidecar always echoes numbers. Same shape as AK3.
+```
+
+**Checked this axis and found already correct** — worth more than the open list,
+because it is what stops these being relitigated: `resolveType`'s case ladder
+and its refusal to pick; `SentRegistry`'s whitespace-and-case fold;
+`concurrency-slots`' `key in config` (the keys are its own, not JSON's); the two
+`hasOwnProperty.call`s in `command-routing.ts`; the compaction lock's four
+copies of `__PI_COMPACTION_IN_FLIGHT__`, which still agree; `mergeAgents` keying
+on the exact frontmatter name, because `resolveType` answers the case question
+separately and deliberately; and `Object.entries` in the sidecar's own pairing
+loop, which is own-keys-only and is why AO6's symptom only ever showed on the
+extension side.
+
+**The working tree still carries the fourth through twenty-fourth passes
+uncommitted.**
+
+---
+
 # Handoff — next session: the engine thread has no open questions left
 
 All three jobs from the quiet-box handoff are answered, and so are the two
@@ -454,6 +1225,202 @@ Smoke is 11/11 across five consecutive runs, including the canonical path.
   provenance, and `check_plain_completion`/`check_openai_tool_call` on the
   repeat detector. It is not found by looking harder at one place. It is found
   by putting the two callers side by side.
+
+---
+
+# Handoff — 2026-08-23 (twenty-third pass: what we wrote down, and who reads it back)
+
+The brief was the same as every pass: evaluate subagents, the loop and the
+verifier comprehensively, write it up in detail with an ASCII graph, and fix what
+turns up. All of it is done. The write-up is
+`context/design/subagents-loop-verifier-round-trips.md`, self-contained in the
+same way the seven before it: §1 is the whole machine in seven drawings, §2 is pi
+itself, §3 is the event bus, §4–§9 are the seven packages, assuming none of the
+twenty-two documents before it.
+
+- **Seven findings, AN1–AN7, all fixed**, each with a regression test that fails
+  when the fix is removed and a probe that prints BEFORE and NOW so it is its own
+  control. §11 has the change and the control-run failing count for each.
+- **Two of them are live on this box right now**, not reconstructions: the staged
+  prinny runtime is a build from before AL3 and three readers called it "built"
+  (AN2), and 41% of a real session file is loop state, two of every five entries
+  byte-identical to the one before (AN5).
+- **The gates were re-run BEFORE anything was written**, so the *before* column is
+  a measurement of the tree as this pass found it: 1,281 tests, 111 probes, lint
+  clean everywhere.
+- **The axis:** *for every value this stack puts outside its own heap, name the
+  writer, the reader, and what the reader does when the bytes are absent,
+  malformed, stale, or from a different world than the writer's.*
+- **§10.2 of the write-up is the artefact:** the round-trip ledger. Thirty-eight
+  rows — every file, pipe, session entry, environment variable and in-memory
+  buffer that crosses a gap — with which of five gaps it crosses and what happens
+  when it is not what the writer meant. Nine carried a ✘.
+
+```
+                                      before    after
+   vendor/pi-subagents-lite  tests     433       477    lint 111/111 files
+   vendor/pi-loop-mode       tests     272       278
+   vendor/prinny-channel     tests     473       511
+   .pi/extensions/compaction-guard      75        75
+   vendor/rtk-pi             tests      28        28
+                                      ─────     ─────
+                                      1,281     1,369
+   probes                               111       118
+```
+
+## The one that matters most
+
+**AN1 — the read that could not parse, and the write that finished it off.** Two
+config files in two packages share one shape:
+
+```js
+   try { return JSON.parse(readFileSync(file)) } catch { return {} }
+```
+
+One `catch`, two facts. *Absent* is a fresh install and reads correctly. *Malformed*
+is a file with content in it, and reading it as empty says the operator has no
+settings when what is true is that nobody could read them — and then the next
+write REPLACES it. Driven through the real `ConfigStore` with one comma removed
+from a realistic config:
+
+```
+   on disk BEFORE                       277 bytes, 6 agent keys, 2 concurrency
+   effective default model after load   null            (was forge/qwen3.8-27b)
+   effective concurrency after load     {"default":1}   (was 2, providers too)
+   on disk AFTER one widget toggle      { "agent": { "showCompletionCards": false } }
+```
+
+**The prinny instance is the one with teeth.** `readSettings`' own docstring
+promises that "a typo in one setting must not silently reset the rest, **because
+the rest includes the permission mode**" — true of a bad VALUE, false of a bad
+FILE. A missing comma takes `permissionMode` from `all` to `off`: the Matrix
+approval relay, off, silently. Then `/prinny set` writes the defaults over it.
+
+**Both controls are in this tree**, and both are the files somebody had written a
+sentence about: the project config layer refuses to write a malformed file
+(ADR-0008), and the sidecar quarantines `access.json` — *"it may be a hand-edit
+the user wants back, and starting from defaults beats refusing to run."* The two
+that were wrong are the two whose failure path had no sentence at all.
+
+The fix quarantines rather than refuses — a menu that silently stops working is a
+worse mystery than a file that moved — and it is two `json-store.ts` modules,
+one per package, with a cross-package test that drives both, exactly as the
+compaction lock's four copies are handled.
+
+## The other six
+
+| # | What | Fix |
+| --- | --- | --- |
+| AN2 | The prinny sidecar runs from a staged, compiled copy of `server/src`, keyed on a content fingerprint. The bootstrap decides "prepared" as `existsSync(ENTRY) && stampMatches(fingerprint)`; `startupBlocker()`, `/prinny status`, `/prinny configure` and `scripts/pi-local.sh` each asked `existsSync(dist/server.js)` alone — and those four are the ones that talk to the operator. **Measured on this box: the stamp is `f297f2b6…`, the source hashes to `53371dab…`, and the staged tree is missing `connect.ts` entirely** — AL3's fix for a connect loop that builds one matrix-js-sdk client per failed attempt and stops none of them has never run. The next start re-stages inside a 120 s connect budget that already spends 27.5 s importing the Matrix stack, which is the timeout loop `--prepare` exists to prevent | `server/bin/runtime-stamp.mjs`: the fingerprint in a module with no side effects, so every reader can ask the same question. The bootstrap imports it and drops its own copies, gains a `--staged` flag (0 current / 1 stale / 2 absent) for the shell; the extension blocks a start on `stale` with its own sentence, prints three states in `/prinny status`, and prepares for `configure` |
+| AN3 | `/prinny configure token <t>` wrote the token and left `PRINNY_DEVICE_ID` behind. A token belongs to a DEVICE, and `resolveDeviceId` reads the stored id FIRST and never asks — so the command's own reply ("the channel resolves the matching device ID from /account/whoami on its next start") is false in the normal case, and the bot builds a crypto client claiming to be the old device. `server/src/state.ts`'s own warning is the symptom: a bot that "will appear to ignore people in encrypted rooms", with nothing in the log. The skipped whoami is also where a token belonging to a *different account* is caught | `credentialUpdatesForToken()` in `src/config.ts` returns `{PRINNY_ACCESS_TOKEN: token, PRINNY_DEVICE_ID: null}`, which is the same thing the three-argument `configure` arm forty lines below has always done for an account switch |
+| AN4 | `scripts/pi-local.sh` states the rule in the comment above the block that broke it — *"a value that only ever lives in .env is a knob that silently does nothing"* — and forwarded four of the seven `SUBAGENT_*` variables the package reads. `SUBAGENT_TRANSCRIPT` and `SUBAGENT_VERIFY_LOG` are documented as the way to turn each feature off, both default ON, and both write per delegation | The three exports, the two keys in `.env` with their reasoning — and `tests/env-switches.test.ts`, which scans the package's own sources for every `env.SUBAGENT_*` and fails when one is not forwarded. Write the scan, not the third fix |
+| AN5 | `persistState` appends a ~6.6 KB `loop-state` entry from thirty-three places and `restoreLoopState` reads exactly ONE back. **Measured on a real session file: 59 entries, 392,245 bytes, 41.3% of the file — and 24 of them byte-identical to the entry before them** | A memo of the last payload written, set AFTER the append (a stale ctx makes `appendEntry` throw). **The trap is the fix:** the memo is per SESSION and the module is per PROCESS, so it is dropped in `session_start` and `session_shutdown` — without that a new session whose restored state equals the previous session's last write would never write an entry at all, and a later restore would find nothing |
+| AN6 | `runAgentImpl` buffers five kinds of setup warning — every one a sentence about the agent file the operator just edited — and flushed them in a bare loop after the `await`, with no `finally`. A run that threw took the buffer with it, which is the run most likely to have been *caused* by the misconfiguration. And the flush was `ctx.ui?.notify ? notify : console.warn`, where pi's headless `notify` is a real `() => {}` — so under `pi -p`, cron or an unattended `/loop` nobody heard them either way | `src/agents/notice-buffer.ts`, flushed in a `finally` whose `try` opens ABOVE the setup, and speaking on BOTH channels the way `reportDrop` thirty lines away already does |
+| AN7 | `pi-settings.ts` read `~/.pi/agent/settings.json` with a hardcoded join, ignoring `PI_CODING_AGENT_DIR` — the one reader of pi's own directory in this stack that did not honour pi's own override for it. On a relocated install the viewer opens with thinking blocks shown to an operator who turned them off | `src/agent-dir.ts`: one answer, the tilde rule read out of pi's `normalizePath` rather than guessed, used by `pi-settings.ts` and `verify-log.ts`, with a test that reads pi's installed `dist/config.js` so a rename upstream fails a test |
+
+## Three things worth reading before the next change
+
+- **Six of seven findings are distance zero, and in five the correct version is
+  literally adjacent.** `readProjectRaw` is nine lines below `readGlobalRaw`; the
+  account-switch arm is forty lines below the token arm; the rule AN4 breaks is
+  in the comment directly above the block. Nobody wrote the wrong thing —
+  somebody wrote the right thing twice and only one copy got the hard case. This
+  class is not found by looking harder at one place; it is found by putting the
+  two places side by side.
+- **A `catch` is where two facts become one.** Every read in this stack is inside
+  one, and the question that matters is not "did I handle the error?" but "what
+  does the caller do with the default I just returned?" — because in two cases
+  the answer was "writes it back over the file".
+- **Five of the seven fixes are an extraction, and two of them are deliberate
+  duplicates with a cross-package test.** Vendor packages here do not import each
+  other, so the compaction lock's shape — write it twice, assert they agree —
+  is now the shape of the config reader too.
+
+## The homework this pass leaves
+
+The checklist is now seventeen surfaces:
+
+```
+   1. what we RETURN from a handler          X5
+   2. what we PASS to a call                 Z1–Z4, AA4
+   3. which events REACH us at all           AA1
+   4. what a host function's answer CAN say  AA2, AB1, AB3
+   5. WHEN it can say it, and how long the   AB1–AB4
+      answer stays true
+   6. WHO RECEIVES IT, and what they see     AC1–AC5
+      when nobody does
+   7. WHO OBEYS IT — and does the code that  AD1–AD7
+      obeys ever see the instruction
+   8. WHAT WE BELIEVE ABOUT OURSELVES        AE1–AE7
+   9. WHAT WE DECIDED NOT TO DO              AF1–AF6
+  10. WHAT WE NAMED — then go and open it    AG1–AG6
+  11. WHERE ELSE IT BELONGS — write the      AH1–AH6
+      scan, not the third fix
+  12. WHAT WE PROMISED — quote the sentence  AI1–AI5
+      and find the path where it is false
+  13. WHO IS ALLOWED TO ASK — name every     AJ1–AJ5
+      actor that reaches the decision
+  14. WHAT THE TEST IS A PROXY FOR — write   AK1–AK5
+      the set down twice and enumerate the
+      difference
+  15. WHAT WE START AND NEVER FINISH — name  AL1–AL9
+      the ONE place that ends it, then the
+      paths that miss it
+  16. WHAT HAPPENS WHILE WE ARE WAITING —    AM1–AM6
+      name what else runs at this await
+  17. WHAT WE WROTE DOWN, AND WHO READS IT   AN1–AN7  ← this pass
+      BACK — name the reader, then break the
+      bytes
+```
+
+§13.1 of the write-up is what this pass left open on purpose. The two worth
+naming here:
+
+```
+   · `access.json` and `.env` each have two writers in two processes, both
+     read-modify-write. The windows are microseconds and the repair would be a
+     lock file; recorded rather than fixed.
+   · `/loop resume` is the one lifecycle transition of nine that does not clear
+     the turn buffers. Unreachable as a defect today for the same reason the
+     `finish` idle branch documents — written down so the next per-turn field is
+     added to nine places rather than eight.
+```
+
+§13.2 is the other half, and is worth more than the open list: **eight things
+this axis looked at and found already correct**, each with the reason. The best
+of them is that the tool arguments `pi-subagents-lite` mutates from its
+`tool_call` handler are a `structuredClone` — `validateToolArguments` deep-copies
+before `beforeToolCall` sees them and pi persists the ORIGINAL — so the injected
+`model`, `thinking` and `_resolvedAgent` never reach the session file and are
+never replayed to the model.
+
+Two tests were found pinning the wrong thing, both by this pass's own control
+runs, and both are §11.7 of the twenty-second pass arriving again: an AK1
+assertion that measured a BYTE DISTANCE between two statements (five lines of
+new comment broke it), and this pass's own flush pin, which a control satisfied
+by moving the flush one line below an empty `finally {}`. Both now assert the
+invariant instead of its neighbourhood. §11.8.
+
+## Next session
+
+1. **`/prinny prepare` is now BLOCKING rather than merely stale.** `--staged`
+   says `stale`, so `/prinny start` refuses with a sentence instead of timing
+   out. Running it is the first thing to do, and the restage has never been
+   exercised on this box — `npm ping` does not answer here, so it may fail, which
+   is itself worth knowing.
+2. **Nobody has watched a quarantine happen.** Hand-break
+   `~/.pi/agent/subagents-lite.json`, start a session, and read the
+   `session_start` notice; then toggle something in `/agents` and look for the
+   `.corrupt-<time>` file. `/prinny status` has the same line for `pi.json`.
+3. **Watch the transcript in a live TUI.** `renderSubagentEntry` has still never
+   been drawn. Unchanged for three passes and still the cheapest unrun thing.
+4. **§AD.2 of the hand-testing script is still the most interesting unrun item**:
+   ask the model, in prose from Matrix, to start a loop with a goal check.
+5. **The rescue turn has still never met a real llama-server with an unloaded
+   rescue model** (AL2's rung 3).
+
+**The working tree still carries the fourth through twenty-third passes
+uncommitted.**
 
 ---
 
