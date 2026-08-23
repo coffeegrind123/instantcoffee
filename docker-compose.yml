@@ -263,6 +263,41 @@ services:
       MODEL_ALIAS: ${MODEL_ALIAS}
       AB_TIMEOUT: ${AB_TIMEOUT:-900}
 
+  # ---------------------------------------------------------------------------
+  # Literal fidelity at depth: do exact operational literals survive from deep
+  # context into a TOOL-CALL ARGUMENT? Runs INSIDE the compose network.
+  #   ./scripts/bench-literal.sh                     (90k, both records, control)
+  #   ./scripts/bench-literal.sh --sweep 2000,16000,48000,90000 --repeat 3
+  #
+  # Talks to FORGE by default, not to llama: the failure this measures lands in
+  # a tool call, and the tool path this stack actually uses goes through the
+  # proxy. --via llama takes the proxy out of the comparison.
+  #
+  # LLAMA_URL is here as well, and is NOT redundant: /tokenize is a llama-server
+  # endpoint that forge does not expose, and the document builder calibrates
+  # against the real tokenizer rather than a words-per-token constant.
+  #
+  # CTX_SIZE is forwarded WITHOUT a default on purpose. bench_literal.py uses it
+  # to refuse to build a prompt that would not fit, and a container-side default
+  # would let the probe score an over-window refusal as a fidelity failure —
+  # which is the exact mistake smoke_test.py's CTX_SIZE comment above records.
+  # ---------------------------------------------------------------------------
+  literal:
+    profiles: ["tools"]
+    image: qwen38-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/bench_literal.py"]
+    environment:
+      LLAMA_URL: http://llama:8080
+      FORGE_URL: http://forge:8081
+      MODEL_ALIAS: ${MODEL_ALIAS}
+      CTX_SIZE: ${CTX_SIZE}
+      LITERAL_TIMEOUT: ${LITERAL_TIMEOUT:-900}
+
 # ---------------------------------------------------------------------------
 # Named volumes
 # ---------------------------------------------------------------------------

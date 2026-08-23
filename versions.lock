@@ -75,8 +75,26 @@ reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget)
 spec_config         = ngram-simple,draft-mtp at n-max 4 / p-min 0.40 — the
                       measured optimum of a full 2x6 grid, adopted 2026-08-17.
                       Replaces the inherited 3.6 values (draft-mtp / 2 / 0.75).
-                      Output is unchanged: every draft is verified against the
-                      target model, so this is decode speed only.
+                      Output is unchanged AS A SAMPLING DISTRIBUTION: every
+                      draft is verified against the target model and the token
+                      emitted is the target's own, so this is decode speed only.
+                      SCOPE CORRECTED 2026-08-23 — the old wording was the flat
+                      claim "output is unchanged", and two things it was read as
+                      guaranteeing are NOT true:
+                      (1) BIT-IDENTICAL LOGITS ARE NOT CLAIMED. The verify batch
+                      is 1+n_max, and .env's own b10573 justification records
+                      that Q4_K crosses MMVQ -> MMQ at ne11 > 7 on this card. So
+                      which CUDA GEMM computes the logits depends on how many
+                      tokens the drafter proposed. Measured on the live server:
+                      `docker logs qwen38-llama | grep 'draft acceptance'` gives
+                      mean len 3.70-4.75 (verify batch 5-6, MMVQ) for ordinary
+                      work, while bench_repeat.py's file-rewrite shape drafts
+                      21-25 per cycle (MMQ). The kernel therefore switches
+                      exactly when the model emits long verbatim copies. Nobody
+                      has measured whether that moves any logit; the point is
+                      only that "unchanged" never covered it.
+                      (2) PER-TOKEN LOGPROBS ARE UNAVAILABLE, AND FAIL SILENTLY.
+                      See spec_logprobs_note.
 verified            = 2026-08-22, b10573 / q8_0-q8_0 / 65536, pre-V3 weights:
                       smoke test 11/11 including a real tool call through forge
                       (n_ctx reported 65536, matches .env).
@@ -276,6 +294,107 @@ spec_verdict        = 2026-08-22 re-sweep on b10573 / q8_0 / 65536 / V3 weights:
                       mean, and synthetic within-config spread reaches 17.3
                       tok/s -- wider than the gaps between the top four. Use the
                       repeat workload and draft/cycle to decide, not synthetic.
+spec_logprobs_note  = SPECULATIVE DECODING SILENTLY DISABLES PER-TOKEN
+                      LOGPROBS ON THIS STACK, and reports the missing values as
+                      CERTAINTY. Found 2026-08-23 while checking whether the
+                      Level1Techs top-1-flip method could run against the live
+                      server without downtime. It cannot.
+                      MEASURED, on the running b10573 server, four arms:
+                        OpenAI /v1/chat/completions, tool call, temp 0.0
+                        OpenAI /v1/chat/completions, plain text, temp 0.0
+                        OpenAI /v1/chat/completions, plain text, temp 1.0
+                        native /completion with n_probs 3, temp 0.0
+                      All four: exactly ONE token of the response carries
+                      top_logprobs — the first. Every other token reports
+                      `logprob: 0.0` with an empty top_logprobs list. 1 of 26,
+                      1 of 19, 1 of 9, 1 of 12.
+                      CONFIRMED AT THE SOURCE, at the pinned tag, not inferred
+                      from the symptom. tools/server/server-context.cpp @ b10573:
+                      the non-speculative sampling path calls
+                      populate_token_probs(); the speculative accept branch
+                      builds each emitted token with
+                          result.prob = 1.0f;   // set later
+                          // TODO: set result.probs
+                      and never calls it. The first token of a response predates
+                      the first draft, which is why exactly one survives.
+                      WHY THIS IS WORSE THAN A MISSING FEATURE: logprob 0.0 is
+                      p = 1.0. The API does not report "not computed", it
+                      reports "the model was certain" — for every token after
+                      the first. Any confidence analysis run against this stack
+                      would conclude the model is maximally confident about
+                      everything, which is a plausible-looking wrong answer, not
+                      an error.
+                      NOT FIXABLE PER REQUEST. slot.can_speculate() is
+                      `return !!spec;` — a server-level object. The
+                      `speculative.types` key in /props' default_generation_
+                      settings is informational; sending "speculative.types":
+                      "none" in a request changed nothing (measured, same 1-of-N
+                      result). Any logprob-based measurement needs a restart
+                      with SPEC_TYPE empty, i.e. a ~20 min cold load.
+                      NO DECISION CHANGES. spec_config stays; nothing in this
+                      stack's production path reads logprobs. This exists so the
+                      next session does not build an instrument on top of it.
+literal_fidelity    = MEASURED 2026-08-23, and it is a CLEAN NEGATIVE. New
+                      probe scripts/bench_literal.py (`literal` compose
+                      service, ./scripts/bench-literal.sh) asks whether exact
+                      operational literals survive from deep context into a
+                      TOOL-CALL ARGUMENT — the failure the Level1Techs
+                      divergence experiments actually found, and the one this
+                      stack had no gate for. Eight literal shapes, one per
+                      observed failure surface: a dotted hostname, a Cisco
+                      interface, a UUID, a 40-hex commit, page_size=NNN, a
+                      filesystem path, a 28-char mixed-case token, a service
+                      name. Generated per run, so neither memorisation nor the
+                      prefix cache can manufacture a pass.
+                      STACK: b10573 / Dynamic V3 UD-Q4_K_XL / q8_0-q8_0 KV /
+                      96K / spec on / effort none / through forge.
+                        run  depths (tok)         calls  literals  non-exact
+                        A    2000c, 4000              4        32          0
+                        B    2000c, 16k/48k/90k x2   14       112          0
+                        C    90000 x3, TEMP 1.0       6        48          0
+                        D    2000c, 8000              4        32          0
+                      224 field comparisons, ZERO corrupted. Run C is the
+                      PRODUCTION sampler (temp 1.0 / top-p 0.95 / top-k 20);
+                      A, B and D are greedy, which is the article's own argmax
+                      framing.
+                      THE NEGATIVE HAS ITS CONTROLS, both of them, because a
+                      probe that scored everything `exact` unconditionally would
+                      print exactly this output:
+                      (1) SHALLOW CONTROL, on by default — the identical request
+                      at ~2k tokens. A failure there is the prompt or the schema,
+                      not depth. Clean in every run.
+                      (2) DETECTION CONTROL — the real tool call from (1) is
+                      re-scored against DELIBERATELY WRONG expectations, which
+                      is symmetric with the model having made that mistake and
+                      costs no extra call. All four corruption classes were
+                      correctly flagged on live output (tail_swap, dropped_head,
+                      truncated, case) while the same response still scored
+                      exact against the true record.
+                      WHAT IT DOES AND DOES NOT SAY. It says: on THIS stack, at
+                      up to 90k, greedy and sampled, literals reach a tool
+                      argument intact, and the q8_0 KV exposure discussed in
+                      context/design/inference-divergence-and-this-stack.md §4
+                      is not manifesting on this failure mode. It does NOT say
+                      q8_0 KV is free — that needs the f16 arm, which does not
+                      fit at 96K — and it does not measure prose or reasoning
+                      quality at depth. It also cannot see structural envelope
+                      failures the way the article did, because llama.cpp
+                      grammar-constrains native tool calls once one is detected;
+                      that is why every field here is a free-form STRING, which
+                      is the part a grammar cannot protect.
+                      RE-RUN IT after any change to CACHE_TYPE_K/V, CTX_SIZE,
+                      the weights, or the spec config. It is cheap: the 90k arm
+                      is ~55 s of prefill per unique document and the second
+                      record on the same document is a cache hit at ~5 s.
+ctx_needle_reverify = 2026-08-23, after the probe_lib.py extraction. The filler,
+                      the nonce and the tokenizer-calibrated document builder
+                      moved out of ctx_needle.py so bench_literal.py could share
+                      them rather than carry a second calibrator. Re-ran the
+                      documented command afterwards and it reproduced the
+                      recorded result TO THE TOKEN: prompt_tokens 90055, both
+                      needles returned, and the 105,025-token control refused by
+                      name with exceed_context_size_error. The CTX_SIZE evidence
+                      is unchanged by the refactor.
 spec_measured       = full grid in context/bench/spec-sweep/ and the 2026-08-16
                       and 2026-08-17 entries in context/design/decisions.md.
                       Since 2026-08-22 every result file carries the pin set

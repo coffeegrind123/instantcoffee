@@ -30,84 +30,25 @@ The needles are nonce-based so a prompt-cache hit cannot manufacture a pass.
 """
 
 from __future__ import annotations
-import json, os, random, string, sys, urllib.request
+import json, os, sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from probe_lib import TokenCounter, build_document, nonce, post  # noqa: E402
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080")
 MODEL     = os.environ.get("MODEL_ALIAS", "qwen3.8-27b")
 
-
-def nonce(n: int = 8) -> str:
-    return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
-
-
-def post(path: str, payload: dict, timeout: int = 900):
-    req = urllib.request.Request(
-        LLAMA_URL + path,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()[:600]
-
-
-def tokenize(text: str) -> int:
-    """Token count from the SERVER's tokenizer, not an estimate."""
-    status, body = post("/tokenize", {"content": text}, timeout=300)
-    if status != 200 or not isinstance(body, dict):
-        raise RuntimeError(f"/tokenize failed: {status} {body}")
-    return len(body["tokens"])
-
-
-VOCAB = ["ledger", "turbine", "meridian", "basalt", "quorum", "tessellate",
-         "harbor", "cinder", "valence", "ripcord", "alcove", "gantry",
-         "fathom", "kindling"]
-
-
-def filler(n_words: int) -> str:
-    # Varied rather than one repeated phrase: a repeated phrase is exactly what
-    # ngram-simple drafts straight through, and a prompt the drafter can predict
-    # is not a test of the CACHE.
-    rng = random.Random(1234)
-    out = []
-    for i in range(n_words):
-        out.append(f"{rng.choice(VOCAB)}{i % 97}")
-        if i % 24 == 23:
-            out.append("\n")
-    return " ".join(out)
+# The filler generator, the tokenizer-calibrated document builder and the nonce
+# moved to probe_lib.py on 2026-08-23 so bench_literal.py could use the same
+# calibrator instead of a second copy of it. Behaviour here is unchanged; the
+# 90,055-token result recorded in versions.lock was re-verified after the move.
+_count = TokenCounter(LLAMA_URL)
 
 
 def build(tokens: int, a: str, b: str) -> str:
-    """A document of ~`tokens` tokens with a fact at each end.
-
-    The word count is CALIBRATED against the server's tokenizer instead of
-    assumed. The first version of this used a fixed 1.35 words-per-token and
-    produced 452,701 tokens for a 90,000 target — a 5x overshoot, because filler
-    like "ledger42" is three tokens (word + digits), not the fraction of one the
-    constant implied. A generator that cannot hit its own target cannot test a
-    context limit; it just tests the limit's error message.
-    """
     head = f"FACT ALPHA: the alpha access code is {a}.\n"
     tail = f"FACT OMEGA: the omega access code is {b}.\n"
-    overhead = tokenize(head + tail)
-
-    per_word = tokenize(filler(200)) / 200.0
-    n_words = max(1, int((tokens - overhead) / per_word))
-
-    # One correction pass: the rate from a 200-word sample is close but not
-    # exact over 30,000 words, and being 2% over a context limit is a refusal
-    # rather than a slightly short prompt.
-    for _ in range(3):
-        body = filler(n_words)
-        total = tokenize(head + body + "\n" + tail)
-        err = (total - tokens) / float(tokens)
-        print(f"  calibrating: {n_words} words -> {total} tokens ({err:+.1%})")
-        if abs(err) <= 0.01:
-            break
-        n_words = max(1, int(n_words * (tokens - overhead) / max(1, total - overhead)))
-    return head + body + "\n" + tail
+    return build_document(_count, tokens, head, tail)
 
 
 def main() -> int:
@@ -132,7 +73,7 @@ def main() -> int:
     print(f"ctx-needle — {MODEL} via {LLAMA_URL}")
     print(f"  target ~{tokens} tokens, alpha={a} omega={b}\n")
 
-    status, body = post("/v1/chat/completions", {
+    status, body = post(LLAMA_URL, "/v1/chat/completions", {
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt + question}],
         "max_tokens": 128, "temperature": 0.0,
@@ -164,7 +105,7 @@ def main() -> int:
 
     if control:
         print(f"\n  negative control — {control} tokens, PAST the window")
-        c_status, c_body = post("/v1/chat/completions", {
+        c_status, c_body = post(LLAMA_URL, "/v1/chat/completions", {
             "model": MODEL,
             "messages": [{"role": "user", "content": build(control, nonce(), nonce()) + question}],
             "max_tokens": 16, "temperature": 0.0, "reasoning_effort": "none",

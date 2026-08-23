@@ -186,6 +186,8 @@ cd ~/my-project && qpi
 | `./scripts/vram-floor.sh --label active` | Capture under a name of its own, so an idle capture and a busy-desktop one can be compared instead of overwriting each other |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --control` | Prove the quality harness before trusting it: reference implementations must score 5/5 or the grid refuses to run |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000 --control 105000` | Prove a context window is real: a nonce at each end of the document must come back, and a prompt past the limit must be refused by name |
+| `./scripts/bench-literal.sh` | Do exact operational literals — a UUID, a commit hash, `GigabitEthernet0/0/1.201`, `page_size=112` — survive from deep context into a TOOL-CALL ARGUMENT? Two controls run first: the identical request at ~2k, so a failure at depth can be told apart from a probe that never worked, and a detection control that re-scores that real response against deliberately wrong expectations, so a clean result cannot come from a probe that is simply blind |
+| `./scripts/bench-literal.sh --sweep 2000,16000,48000,90000 --repeat 3` | The same probe as a depth sweep. Reports per-field exact-match rates and classifies each miss — `tail_swap` and `dropped_head` are flipped tokens, `truncated` and `missing` are usually the model declining to copy |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --only eval_expr --level xhigh --repeat 4 --show-code` | Re-run one grid cell several times and print what a failing run wrote — the task set is not deterministic, so one cell is one sample |
@@ -2002,6 +2004,19 @@ scripts/
                         a distinct nonce at EACH END of the document must come
                         back, plus a negative control past the limit. Sizes the
                         prompt from the server's /tokenize, not an estimate
+  bench_literal.py      do exact literals survive from deep context into a
+                        TOOL-CALL ARGUMENT? The failure the Level1Techs
+                        divergence experiments actually found is not worse
+                        prose, it is a corrupted port, hostname, interface or
+                        kwarg inside a structured call. Eight literal shapes,
+                        one per observed failure surface, at both ends of the
+                        document. The shallow control is on by default and is
+                        what makes a deep failure interpretable
+  probe_lib.py          shared by ctx_needle.py and bench_literal.py: the nonce,
+                        the varied filler, and the document builder that
+                        CALIBRATES its length against the server's tokenizer.
+                        Not an entrypoint — it is imported, which is why it is
+                        easy to forget in Dockerfile.forge's COPY list
   vram-floor.sh         what the WINDOWS DESKTOP holds on the shared GPU,
                         sampled over a period and WITHOUT stopping llama.
                         Decomposes the device with Windows' own GPU perf
