@@ -28,3 +28,8 @@ results/
 # Whole-file .env backup held by scripts/capacity-probe.sh for the length of a
 # probe run. Same reasoning as .env.spec-sweep-backup above.
 .env.capacity-probe-backup
+
+# Raw llama-perplexity output from scripts/kld-run.sh. The numbers that matter
+# land in context/design/; these are the transcripts behind them, and one run
+# is a few hundred KB of progress bars.
+.kld-logs/

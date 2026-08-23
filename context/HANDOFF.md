@@ -1,3 +1,217 @@
+# Handoff — 2026-08-23 (the engine thread: the corpus exists, and the KLD run is half a result)
+
+Continues the engine thread's section below ("the tape exists, and it changed
+the production path", `585af44`). Its item 1 said **`capture.sh on` before a
+real pi session is the only route to the corpus everything else needs.** That is
+done — the corpus exists, it passes its control at delta +0, and it is the first
+thing on this stack that can feed a fidelity measurement.
+
+The measurement it feeds ran at three depths. **Two of them produced numbers and
+one failed**, and the numbers are *not yet believable* because the one control
+that would make them believable has not been run. Read §"What is NOT established"
+before quoting anything here.
+
+Nothing is committed beyond `scripts/kld-run.sh` and a `.gitignore` line; the
+write-up into `context/design/` and `versions.lock` is not written.
+
+## The corpus, which is the part that is finished
+
+```
+   ./scripts/capture.sh on
+   …12 pi turns, real tool work over a copy of this repo, one session…
+   ./scripts/capture.sh off
+   ./scripts/capture.sh export s26b5bb --out /captures/corpus/deep-s26b5bb.txt
+```
+
+```
+   s26b5bb   29 turns   61 msgs   16 tools   19 calls   68,225 prompt_max   3 rewrites
+
+   wrote /captures/corpus/deep-s26b5bb.txt   259,616 chars, 69,440 tokens
+   CONTROL: server reported 69440, the corpus tokenizes to 69440 (delta +0) -> OK
+```
+
+**Delta +0, tool block intact, no declared gaps.** Compare the transcript-import
+route, which fires the same control at −5,979 (6.3%, and it is the tool block).
+The corpus and its sidecar are at `//d/llm-captures/corpus/deep-s26b5bb.txt`.
+
+How it was driven, because "a real workstream" needed an operator and there was
+not one: `scripts/pi-local.sh --session-id corpus-kld -p '<task>'` in a loop, in
+a **copy** of this repo under the scratchpad, so a stray write could not touch
+the real tree. Twelve tasks, each requiring real file reads (the capture proxy's
+streaming path, the session-chaining algorithm, both forge patches, the compose
+file, the VRAM document…). Depth grew ~5K tokens a turn and the driver stopped
+itself at 68,225, short of pi's compaction threshold (98,304 − 16,384). The
+whole thing chained on the tape as **one** session, which is the content-LCP
+join classifier doing its job across twelve separate `pi` invocations.
+
+`.env.local` was diffed against a copy taken before `capture.sh on` and is
+**byte-identical** after `off`.
+
+## Three limits that retire the standing plan for this measurement
+
+All three were read out of `tools/perplexity/perplexity.cpp` at the pinned tag,
+not inferred from a failure. Each one invalidates part of §6 of
+`inference-divergence-and-this-stack.md`, which had priced this run on VRAM.
+
+```
+   (1)  if (int(tokens.size()) < 2*n_ctx) { error; return; }
+
+        The run scores only the SECOND half of each chunk (`first = n_ctx/2`)
+        and uses the first half as context, so it refuses a corpus shorter than
+        2*n_ctx. CONSEQUENCE, and it is structural: a server with a CTX_SIZE
+        window can only ever emit a captured prompt of CTX_SIZE tokens, so the
+        deepest arm a REAL workstream can support is CTX_SIZE/2 — 49,152 here.
+        The 64K the document asks for is not reachable from real traffic at all.
+        It would need a corpus twice this server's own context window.
+
+   (2)  logits.reserve(size_t(n_ctx) * n_vocab)      4 B per entry
+        log_probs.resize(size_t(n_ctx) * nv)         2 B per entry
+
+        ~0.87 GiB of ordinary HOST memory per 1,024 tokens of n_ctx. 64K would
+        want ~56 GiB against this box's 22. VRAM was never the binding
+        constraint; the document's "~20.8 GiB at 64K fits" is true and
+        irrelevant.
+
+   (3)  common_tokenize(ctx, params.prompt, true)    parse_special defaults false
+
+        perplexity tokenizes `<|im_start|>` as ORDINARY TEXT. There is no flag —
+        the whole argument list was checked. Both arms see the identical
+        sequence so the COMPARISON is unaffected, but the sequence is not the
+        one the model saw. Bracketed by the chunk counts: llama's own /tokenize
+        says 69,440; perplexity's count is between 69,632 and 73,727. Not
+        narrowed further, because perplexity only prints its token count on the
+        error path.
+```
+
+`scripts/kld-run.sh` refuses on (1) and (2) in preflight and reports (3), with
+the source lines in comments.
+
+## What ran, and what it says
+
+Six passes inside one llama stop. Base arm = f16 KV writes the logits; test arm
+= q8_0 KV reads them and reports. Same corpus, same flags, only `-ctk/-ctv`
+differ.
+
+```
+   n_ctx    chunks   PPL(base)   PPL(Q)    ratio    mean KLD   median KLD   95% KLD   same top-1
+    4096       17      9.9165    11.5513   1.1649    0.13697     0.00101     0.1083    95.284%
+    8192        8     12.9246    16.0893   1.2449    0.21802     0.00108     0.2377    94.087%
+   16384        4        —          —        —          —           —           —         —
+```
+
+The **shape** is the article's, and it is the part worth carrying: the median
+token is untouched (KLD 0.001) while the tail is violent — 99th percentile 3.23
+at 4096 and 7.11 at 8192, maximum 31.7 and 33.8. Mean Δp is −0.014% and +0.008%,
+i.e. unbiased, with RMS Δp 5.1% and 5.7%. Most tokens do not care and a few
+diverge hard, which is exactly "prompt-dependent, clusters on content".
+
+Both aggregate numbers move the wrong way between the two depths — divergence up,
+top-1 agreement down. **Two points is not a trend**, and see below.
+
+## What is NOT established, and why nobody should quote the table yet
+
+- **The null control has not been run.** f16 base against an f16 test arm must
+  return KLD ≈ 0 and same-top-1 ≈ 100%. Until it does, a 4.7% top-1 flip rate is
+  equally consistent with a broken comparison, and this repo's own rule is that
+  a result is worth what its control is worth. **This is item 1 below and
+  nothing else should happen first.**
+- **PPL(base) itself rises with n_ctx** — 9.92 at 4096, 12.92 at 8192 — which is
+  backwards for more context and is unexplained. It may be an artefact of how
+  the corpus partitions into chunks at each depth (different token sets are
+  scored), or it may be the same defect that broke 16384. Either way it is a
+  reason to distrust cross-depth comparison specifically.
+- **`Final estimate` and `Mean PPL(base)` disagree by design** and this is NOT a
+  defect: `perplexity()` scores from `first = min(512, n_ctx/2)` while
+  `kl_divergence()` scores from `first = n_ctx/2`. Different windows, so 11.6055
+  vs 9.9165 at 4096 is expected. Checked in source before it cost anyone an hour.
+- **16384 failed.** Base PPL came out at 94.0 with a per-chunk sequence of
+  653.5 / 226.9 / 153.0 / 94.0, and the test arm died on
+  `kl_divergence: failed reading log-probs for chunk 0` — a truncated logits
+  file. perplexity.cpp **never checks the ofstream state after a write**, so a
+  short write is silent at the producing end and only surfaces as a read failure
+  in the next process. Re-run it with `--keep-logits` so the file can be sized
+  and inspected rather than guessed at. The 14 GiB of host RAM that depth needs
+  against ~10.6 GiB free is the first suspect.
+
+## Method notes paid for this session
+
+- **`--load-mode none` is not optional for any direct `docker run` of the llama
+  image here, and leaving it off does not fail — it HANGS.** Demand-paging the
+  GGUF through the 9p bind mount ran at 6.4 MB/s of resident growth: 31 minutes
+  in, 12.5 of 17.9 GB resident, no output past the tensor warnings, and
+  indistinguishable from a stuck process. With the flag the same load takes ~3
+  minutes. `.env` says this about the *server* (`LLAMA_EXTRA_FLAGS`); anything
+  that bypasses compose has to say it again. Cost 45 minutes.
+- **Read the tool's source before pricing the experiment on the hardware.** The
+  three limits above are all in one 2,000-line file, and the one the design
+  document had reasoned carefully about — VRAM — is the one that never binds.
+- **A long-running measurement must be detached from the session.** Two attempts
+  died when the harness tore down their background task, one of them 2 minutes
+  into a 3-minute model load. `setsid nohup … & disown` survived.
+- **The deepest-record picker and the driver both needed a stop rule in the same
+  unit as the thing being measured.** The driver polls the tape for `prompt_max`
+  among records with `n_tools == 16` and stops at a target, because the number
+  that matters is tokens the server counted, not turns taken.
+
+## Next session — in this order
+
+1. **The f16-vs-f16 null control.** Add it to `kld-run.sh` as a first-class arm
+   (`--null-control`, or a `--test-kv` flag defaulting to q8_0) so it can never
+   be forgotten again, and run it at 4096. It is one extra pass inside a stop
+   that has to happen anyway. Everything in the table above is provisional until
+   this returns ~0.
+2. **Re-run 16384 with `--keep-logits`**, and size the logits file against the
+   9.95 GiB it should be. If it is short, the finding is about perplexity's
+   unchecked writes and the fix is to run it against a local filesystem rather
+   than the D: bind mount.
+3. **Then, and only then, the write-up**: `context/design/` (a new document, or
+   §4 of `inference-divergence-and-this-stack.md` amended) and a
+   `versions.lock:kv_cache_fidelity` entry. §7 item 4 of the divergence document
+   should be rewritten — "just needs a reload" was wrong, and the three limits
+   are why.
+4. **The prefix-cache question at real depth is now answerable and was not
+   answered.** `s26b5bb` has `cache_n` on all 29 turns with both forge patches
+   live. §4 of `forge-on-the-tool-call-path.md` is still three turns at ~700
+   tokens. This costs no GPU time at all — it is a read of the tape.
+5. **The three `rewrite` joins in `s26b5bb`** were not looked at. With patch 5
+   live the history should not be being rewritten, so either they are pi's own
+   editing or the patch has a gap. `capture.sh show s26b5bb` names them.
+
+## Still open, carried
+
+```
+   · The four records of a real pi session on the tape (`s735f17`, 21,329
+     prompt tokens, 16 tools) are UNTOUCHED and still need their operator's
+     decision. They were not used for this corpus and were not deleted.
+   · A GPU-heavy foreground VRAM floor is still unmeasured.
+   · `eval_expr` still needs `--only eval_expr --repeat 20` at two levels.
+   · `forge/proxy/convert_anthropic.py` still has patch 4's hole in a starker
+     form. Off this stack's path; needs a `thinking` block shape decided.
+   · `access.json` / `.env` two-writer race; `/loop resume` not clearing turn
+     buffers; `mcp-stdio.ts`'s numeric-id reply path. All unchanged.
+```
+
+## Housekeeping, and one thing that was not us
+
+**The whole stack was taken down externally at 21:08 local** — SIGTERM then
+SIGKILL on llama, forge and capture, with the network disconnects that make it a
+`compose down` rather than an OOM. It landed mid-turn 12 of the corpus run,
+which is why the driver's last three turns report "forge is not answering". The
+corpus had already reached 68,225 tokens by then and was unaffected. It was not
+this session, and the concurrent session whose handoff commit (`1182773`) landed
+in the same window describes reaping a stray process, not stopping containers.
+**If that was deliberate, say so somewhere** — from here it is indistinguishable
+from an accident, and the next person to lose two hours of a GPU run to it will
+have no way to tell either.
+
+`qwen38-llama` was then down for ~2 hours: the failed no-mmap load, the KLD run
+itself, and the reload after. It is back, and `smoke-test.sh` is **11/11** on the
+restored stack. No throwaway containers left; `capture.sh status` reports the
+recorder out of the path; `//d/llm-captures/kld/` is empty because the runner
+deletes the logits files (tens of GB) unless `--keep-logits` is passed.
+
+---
+
 # Handoff — 2026-08-23 (the AO9 sweep, first pass: the probes had rotted)
 
 Fourth session of the day, continuing the entry below. Its brief was items 2 and
