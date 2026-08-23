@@ -2,7 +2,9 @@
 
 *2026-08-23. Supersedes the "other tenants" language in `versions.lock`'s
 `vram_note` and closes the decisive unknown that job 3 of the quiet-box handoff
-was waiting on.*
+was waiting on. Extended the same afternoon with §5a, the in-use floor — which
+is what finally closes 128K, on the very terms the follow-up handoff set for
+re-opening it.*
 
 Every context-window decision this repo has made was made against a number
 nobody had measured. `nvidia-smi` reports the **device**, and something on this
@@ -197,6 +199,51 @@ does and does not cover.
 is remarkably stable *while nothing is happening*; it does not repeal the 2,027
 MiB seen across an active morning. Both ends matter below.
 
+## 5a. The same measurement on a WORKING desktop, 2026-08-23 afternoon
+
+The section above ends by saying the idle capture covers one end of the range and
+the other end is what decisions are refused against. So the other end was
+measured, with the same instrument and llama untouched:
+
+```
+   ./scripts/vram-floor.sh --label active --samples 90 --interval 20
+
+                                  min     median        max
+   device total (MiB)         23155.3          -    23194.9
+   llama, via vmwp (MiB)      21677.4          -    21677.4
+   WINDOWS HOST FLOOR (MiB)    1477.9     1500.8     1517.5
+```
+
+`--label` exists because a capture overwrites its CSV and the whole point of the
+second one is to sit beside the first. Both are checked in:
+`vram-floor.csv` (idle, 47 samples) and `vram-floor-active.csv` (90 samples).
+
+**The two captures do not overlap.** The active minimum, 1,477.9, is 42 MiB above
+the idle maximum, 1,435.4. There is clear air between them, so the difference is
+the desktop being used and not sampling noise — and `vmwp` again read exactly
+21,677.4 in all 90 samples, so none of it is llama.
+
+**What the desktop was actually doing, so this is interpretable later.** Taken
+from the same perf counters at the end of the capture, biggest first, `dwm`
+excluded because it maps every other window's surface and double-counts:
+
+```
+   explorer 195, WindowsTerminal 172, chrome 169, Discord 161, brave 138,
+   csrss 125, Docker Desktop 75, claude 75, steamwebhelper 65, VSCodium 55,
+   msedgewebview2 44, TextInputHost 31, Voicemod 31, SearchHost 26, ...
+```
+
+That is a **normally-populated working desktop** — browsers, chat, a terminal, an
+editor, Steam signed in — with **nothing GPU-heavy in the foreground**. The floor
+moved only 39.6 MiB across the whole half hour, which is the signature of a
+steady set of open windows rather than of applications being launched and closed.
+
+**So this is the ORDINARY case, not the worst one.** The 2,027 MiB the old method
+once recorded is still the worst observed and is still unexplained by anything
+here; a game or a video call would plausibly reach it. What this capture settles
+is the far more common question — what the floor is while the box is simply being
+used — and the answer is **~1,500 MiB, about 95 MiB above idle**.
+
 ## 6. The 128K arithmetic, and why it is now a refusal on evidence
 
 The engine's own `-lv 5` table gives the 96K -> 128K delta as **+1,408 MiB**
@@ -212,6 +259,9 @@ comparison wrong by 1,163 MiB. So:
 | idle, median of 47 samples | 1,406 | **72 MiB** |
 | idle, best single sample | 1,373 | 106 MiB |
 | idle, worst single sample | 1,435 | 43 MiB |
+| **in use, median of 90 samples** | **1,501** | **-22 MiB** |
+| in use, best single sample | 1,478 | 1 MiB |
+| in use, worst single sample | 1,518 | -39 MiB |
 | active, worst ever observed | 2,027 | **-548 MiB** |
 
 **There is no draft-KV rescue column, and the handoff's version of this table
@@ -223,11 +273,29 @@ net **cost** of ~284 MiB. At 128K that takes the idle case from 72 MiB to about
 quantising the MTP head's KV drops the draft context off its small specialised
 graph onto a workspace exactly the size of the main context's.
 
-The last row is the one that settles it. At the worst desktop state this box has
-actually been in, **128K does not fit at all** — it would fail to allocate, not
-merely run thin. And the idle case leaves 72 MiB, which is one allocation from an
-OOM mid-request. Note that the whole idle spread, best sample to worst, is
-43-106 MiB: every point of it is inside the noise of a single allocation.
+**The in-use rows are the ones that settle it, and they were added on 2026-08-23
+precisely to test the escape hatch the previous handoff left open.** That handoff
+said: if the active floor turns out to be ~1.5 GiB rather than the 2,027 MiB
+worst case, 128K is worth one more look. The active floor was then measured and
+it *is* ~1.5 GiB — 1,500.8 MiB median. So the look happened, on the terms it was
+asked for, and the answer is still no: at that floor 128K is **-22 MiB**. It does
+not fit while the box is merely being used, let alone at the worst case.
+
+That is a stronger refusal than the one it replaces. 128K was previously refused
+against 2,027 MiB — a single value from the old one-sample method that nothing
+since has reproduced, and which an optimist could dismiss as unrepresentative.
+It is now refused against the ORDINARY state of the machine, sampled 90 times,
+by an instrument whose agreement with two others is shown in §3.
+
+The idle row is what makes this worth spelling out: 128K "fits" at idle with
+72 MiB to spare, and that 72 MiB is entirely consumed by opening the windows the
+operator normally has open. A configuration that fits only while nobody is using
+the computer does not fit.
+
+The remaining rows still hold. At the worst desktop state this box has actually
+been in, **128K does not fit at all** — it would fail to allocate, not merely run
+thin. Note that the whole idle spread, best sample to worst, is 43-106 MiB: every
+point of it is inside the noise of a single allocation.
 
 **128K got further away today, not closer.** The handoff's third scenario had
 draft-KV q8_0 plus a lower floor arriving at ~1,860 MiB free. Both halves of it
@@ -241,8 +309,10 @@ whose worst observed value makes the configuration impossible. The handoff's
 third scenario — "floor at ~500 MiB with draft q8_0 gives ~1,860 MiB free" —
 requires a floor this box has never been near.
 
-96K keeps ~1,480 MiB free at the measured idle floor, and survives the 2,027
-case with ~860 MiB. That is the window this stack should stay on.
+96K keeps ~1,480 MiB free at the measured idle floor, ~1,386 MiB free at the
+measured in-use floor, and survives the 2,027 case with ~860 MiB. It has real
+headroom in every state this box has been observed in, which is exactly what
+128K does not have in any of them. That is the window this stack should stay on.
 
 ## 7. The lever that was not a lever, and how it hid
 
@@ -307,10 +377,18 @@ coverage of the ways the thing can be wrong.
 
 ## 8. What to do with this next
 
-- `./scripts/vram-floor.sh` — 15 minutes, no reload, no llama restart.
-- Run it **while the desktop is being used**, not only idle. The idle number is
-  now well established; the active distribution is not, and it is the half that
-  decides anything.
+- `./scripts/vram-floor.sh` — 15 minutes, no reload, no llama restart. Use
+  `--label <name>` for anything you want to keep beside an existing capture; a
+  run without one overwrites `vram-floor.csv`.
+- **The idle and in-use floors are now both measured** (§5, §5a) and they do not
+  overlap: 1,373-1,435 idle, 1,478-1,518 in use. 128K is refused against the
+  second, which is the ordinary state of the machine.
+- **What is still unmeasured is a GPU-HEAVY foreground** — a game, a video call,
+  anything that puts a real renderer on the card. The 2,027 MiB the old method
+  recorded once has never been reproduced, and until something does reproduce it
+  the top of the range rests on a single sample from the method this document
+  exists to replace. It changes no decision — 128K is already refused 95 MiB
+  lower down — so this is provenance, not a blocker.
 - The bridge must be running. `~/.claude-host-bridge-token` **existing does not
   mean the bridge is up** — that assumption cost a session. The script probes
   port 6799 and treats a 401 as healthy (a running bridge refusing an

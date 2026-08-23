@@ -1,179 +1,172 @@
-# Handoff — next session: commit the engine work, then measure the floor under load
+# Handoff — next session: the engine thread has no open questions left
 
-The three jobs from the last handoff are all answered and every config question
-they touched is CLOSED. Nothing here is blocked, and nothing needs a decision
-from anyone before it can start.
+All three jobs from the quiet-box handoff are answered, and so are the two
+follow-ups that handoff itself created. **Nothing on the engine/bench side is
+blocked, unmeasured, or waiting on a decision.** This section exists mostly to
+say what is CLOSED and why re-opening it costs more than it can return.
 
-**The stack is on 96K and correct.** `.env` byte-identical to HEAD, smoke 11/11
-on five consecutive runs including the canonical `./scripts/smoke-test.sh`,
-llama and forge both healthy. No experimental value is left anywhere.
-
-Do these in order. Job 1 is the only one with a deadline attached to it — the
-work is uncommitted and shares two files with another session.
+The stack is on 96K and correct: `.env` byte-identical to HEAD, smoke 11/11 on
+six consecutive runs including the canonical `./scripts/smoke-test.sh`.
 
 ---
 
-## 1. FIRST: commit, and mind the two shared files
+## What got answered this session
 
-**This is the only urgent item.** The engine/bench work from the last session is
-finished and verified but **entirely uncommitted**, and another agent is working
-in this repo concurrently.
-
-Cleanly mine, safe to stage as a unit:
+**Job 1 — commit.** Done, in two commits, pushed to `main`:
 
 ```
-   scripts/vram-floor.sh                                   (new)
-   scripts/smoke_test.py  scripts/bench_quality.py
-   scripts/capacity-probe.sh  scripts/spec-sweep.sh  scripts/lib.sh
-   docker-compose.yml
-   versions.lock
-   context/design/vram-floor-and-the-shared-desktop.md      (new)
-   context/bench/capacity/                                  (results + vram-floor.csv)
+   f901d07  feat(engine,bench): attribute the VRAM floor, reject the draft-KV
+            lever, measure V3 answer quality
+   94603cd  docs(engine,bench): the vram-floor tooling in the README, and the
+            quiet-box handoff
 ```
 
-**`README.md` and `context/HANDOFF.md` are SHARED.** Both carry the other
-session's uncommitted twenty-third/twenty-fourth-pass work interleaved with
-mine. `git add` on either stages their work too. Either split the hunks, or
-agree with them who lands those two files. Do NOT commit them blind — the last
-session deliberately staged one file for exactly this reason and said so.
+`README.md` and `context/HANDOFF.md` are shared with the delegation-stack
+session, so their hunks were split rather than swept in — `git apply --cached`
+with a hand-built patch containing only the engine hunks. Their twenty-third
+and twenty-fourth pass work was left unstaged and untouched. **Do the same if
+you touch either file**; the split takes about two minutes and staging blind
+takes someone else's work hostage.
 
-Check `git status` before AND after. The other session was writing to `vendor/`
-and `.pi/` with mtimes seconds old.
-
-Suggested commit scope for the engine half:
+**Job 2 — the floor while the desktop is in use. MEASURED, and it closes 128K.**
 
 ```
-   feat(engine,bench): attribute the VRAM floor, reject the draft-KV lever,
-                       measure V3 answer quality
+   ./scripts/vram-floor.sh --label active --samples 90 --interval 20
+
+                   min      median    max
+   FLOOR (MiB)    1477.9    1500.8    1517.5
 ```
+
+The idle capture was 1372.6 / 1406.3 / 1435.4. **The two do not overlap** — 42
+MiB of clear air — and `vmwp` read exactly 21677.4 in all 137 samples across
+both, so the ~95 MiB difference is the desktop and not noise.
+
+That resolves the escape hatch the last handoff left open, on its own terms. It
+said: if the active floor is ~1.5 GiB rather than 2,027, 128K is worth one more
+look. The active floor **is** ~1.5 GiB, and at 1,500.8 MiB **128K is -22 MiB**.
+The look happened; the answer is still no. See §5a and §6 of
+`context/design/vram-floor-and-the-shared-desktop.md`.
+
+It is a better refusal than the one it replaces: 2,027 was a single sample from
+the old stop-llama method that nothing has reproduced, and an optimist could
+call it unrepresentative. 1,500.8 is the *ordinary* state of the box — browsers,
+Discord, a terminal, an editor, Steam signed in — sampled 90 times.
+
+**Job 3 — harder bench tasks. Done, and they immediately found something.**
+`eval_expr`, `overlap_minutes`, `parse_csv_line`, each with its reference in the
+same commit, each chosen so the obvious shortcut fails the assertion carrying
+the contract — verified by writing the shortcut and scoring it, not by assuming
+it would fail.
+
+The ceiling is gone: `xhigh` is now 36/40 while every other level is 40/40. But
+read `quality_8task` in `versions.lock` before quoting that, because the more
+important finding is that **the new set is not deterministic** and one grid cell
+is one sample. `--only/--level/--repeat/--show-code` were added for exactly this.
 
 ---
 
-## 2. Measure the floor WHILE THE DESKTOP IS IN USE
+## Two things worth doing next, neither urgent
 
-This is the one measurement left that could still move a decision, and it is now
-a 15-minute job that does not touch llama:
+**1. A GPU-heavy foreground is still unmeasured.** Both captures are of a
+desktop with nothing real on the card. The 2,027 MiB the old method recorded
+once has never been reproduced, so the TOP of the floor range still rests on a
+single sample from the method the new tooling exists to replace. Run
+`./scripts/vram-floor.sh --label gaming` during an actual game or video call and
+the range is fully characterised.
 
-```sh
-./scripts/vram-floor.sh              # 60 samples, 15 s apart
-./scripts/vram-floor.sh --report     # re-read without re-sampling
-```
+**It changes no decision** — 128K is already refused 95 MiB below that — so this
+is provenance, not a blocker. Do not let it hold anything up.
 
-**Why it matters.** The 47-sample capture is IDLE-DESKTOP only, and its median
-(1,406 MiB) is almost exactly the LOWEST of the six values the old stop-llama
-method ever recorded (1,405 / 1,536 / 1,881 / 1,905 / 1,961 / 2,027). So the
-capture establishes the good end of the range and says nothing about the bad
-end — and the bad end is what every window decision is refused against.
-
-**Run it while actually using the machine**: browsing, a video call, a game,
-whatever the box really does. Then compare against `context/bench/capacity/
-vram-floor.csv`. If the active floor turns out to be ~1.5 GiB rather than the
-2,027 MiB worst case, 128K is worth ONE more look. If it confirms 2,027+, 128K
-is closed permanently and should be recorded as such.
-
-**The bridge must be running.** `~/.claude-host-bridge-token` EXISTING DOES NOT
-MEAN THE BRIDGE IS UP — it was present all last session while nothing listened
-on 6799. The script probes the port and treats HTTP 401 as healthy. If it is
-down, ask the user to run
-`C:\Users\User\Downloads\as\data\claude-host-bridge\start-bridge.bat`; only they
-can start it.
-
----
-
-## 3. `bench_quality.py` is at its ceiling and needs harder tasks
-
-V3 scores **100% at every effort level**, so the task set can no longer separate
-`none` from `xhigh` on correctness — it now discriminates only on LOC and wall.
-Anyone re-running it to re-decide `REASONING_EFFORT` will learn nothing.
-
-Add 2-3 harder tasks. Good candidates are ones where over-engineering actually
-costs correctness rather than only lines: a parser with precedence, an
-interval/date-arithmetic problem with timezone edges, a small state machine with
-an explicit error contract.
-
-**Write the reference implementation in the same commit.** You will not be able
-to skip it — `main()` now refuses to run the grid unless every reference scores
-5/5, and `--control` runs just that check. That is deliberate; it is what turned
-"a human verified this once in August" into something enforced.
-
-Keep in mind when reading results: **`pass%` and `LOC` are contention-proof and
-`wall` is not.** The current V3 `wall` column was taken on a box at load 20 and
-is not comparable with the 2026-08-17 figures.
+**2. `eval_expr` needs more samples than anyone has time for interactively.**
+medium is 5 clean of 6, xhigh 3 clean of 5. That is the direction the bench is
+built to detect and it is not separable at n=5. If the effort question is ever
+re-opened, `--only eval_expr --repeat 20` at two levels is ~40 model calls and
+about an hour, and it is the only thing that would actually settle it. Nothing
+currently depends on the answer: `medium` is at 100% on the harder set and
+writes the least code of any level that passes.
 
 ---
 
 ## What is CLOSED — do not re-litigate any of these
 
-Each is recorded with its measurement in `versions.lock`, and re-opening one
-costs a 15-20 minute cold load to learn something already known.
+Each is recorded with its measurement in `versions.lock`.
 
 ```
-   CTX_SIZE          98304. Proven by ctx_needle.py both-ends retrieval at
-                     90,055 tokens with a 105,026-token control refused by name.
-   128K              REFUSED on measurement. 72 MiB free at the idle floor,
-                     -548 MiB at the worst observed floor — it would fail to
-                     ALLOCATE. Reopen ONLY if job 2 above finds a much lower
-                     active floor. It is NOT broken: it loads and serves a
+   CTX_SIZE          98304. ctx_needle.py both-ends retrieval at 90,055 tokens
+                     with a 105,026-token control refused by name.
+   128K              CLOSED PERMANENTLY. -22 MiB at the measured IN-USE floor,
+                     -548 at the worst observed. It would fail to ALLOCATE.
+                     The one condition set for re-opening it was tested and did
+                     not hold. It is NOT broken — it loads and serves a
                      120,029-token prompt at 1,726 tok/s. Headroom, not function.
-   draft-KV q8_0     REJECTED. -ctkd/-ctvd q8_0 COSTS +216 MiB at 96K. It saves
-                     180 MiB of draft KV and spends 396 MiB of draft compute
+   draft-KV q8_0     REJECTED. -ctkd/-ctvd q8_0 COSTS +216 MiB at 96K: saves
+                     180 MiB of draft KV, spends 396 MiB of draft compute
                      buffer. Do not put "~180 MiB sitting there" back into any
-                     VRAM arithmetic.
+                     VRAM arithmetic — 128K's last rescue was this, and it is
+                     a cost.
    size_m            48. VRAM flat within 6 MiB across 48/32/24/16 while
                      draft/cycle falls 24.98 -> 11.60.
-   REASONING_EFFORT  medium. Re-confirmed on V3 — and read the ceiling caveat
-                     in job 3 before re-running the bench to re-decide it.
-   V3 weights        adopted, quality-verified. The 17.9 GB
+   REASONING_EFFORT  medium, re-confirmed on the HARDER task set.
+   V3 weights        adopted and quality-verified. The 17.9 GB
                      Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded rollback is not
                      needed and can be deleted whenever the disk is wanted.
    spec config       ngram-simple,draft-mtp at n-max 4 / p-min 0.40.
+   smoke_test.py     BOTH bugs fixed. The repeat detector was fed the JSON
+                     envelope and tripped on `}}}` — real on every path. The
+                     CTX_SIZE default was NOT the scope a first pass claimed:
+                     the `smoketest` service always forwarded it, so the
+                     documented path always compared correctly and the 64K/96K
+                     adoptions stand. That claim is retracted in versions.lock,
+                     in smoke_test.py's own comment, and in docker-compose.yml.
 ```
 
 ---
 
 ## Method notes that were paid for, and will bite again
 
+- **A capture overwrites its CSV.** `vram-floor.sh --label <name>` exists
+  because the second capture's whole purpose is to sit beside the first, and
+  without a label it destroys it. Both are checked in: `vram-floor.csv` (idle)
+  and `vram-floor-active.csv` (in use).
+- **One grid cell is one sample.** The five-task bench was deterministic and
+  taught everyone the opposite habit. `xhigh` scoring 1/5 on `eval_expr` looked
+  like a level regression until `medium` did the same thing on the next run.
+  Re-run before reporting.
+- **Read the code, not the score.** `--show-code` turned "xhigh failed 4 of 5"
+  into "a 99-line shunting-yard raises ValueError on valid input, and the only
+  assertion it passes is the error contract". The second is a finding; the first
+  is a number.
 - **Read the WHOLE `-lv 5` table, not the line you came for.** The draft-KV
   lever was "engine-confirmed" from the KV line while the compute line directly
-  beneath it more than cancelled it. The refuting evidence sat in a log on disk
-  from the day the lever was proposed.
-- **`SPREAD%` before `DEC-MEAN`.** `capacity-probe.sh --list` now prints
-  DEC-MEAN, SPREAD, SPREAD% and DRAFT/CYCLE. Reject any decode comparison above
-  ~15%. `DRAFT/CYCLE` survives contention when decode does not; when they
-  disagree, believe DRAFT/CYCLE.
+  beneath it more than cancelled it.
+- **`SPREAD%` before `DEC-MEAN`.** Reject any decode comparison above ~15%.
+  `DRAFT/CYCLE` survives contention when decode does not; believe it when they
+  disagree.
 - **Compare only WITHIN one probe invocation.** Separate invocations each
-  measure their own idle floor while the desktop moves underneath — that is how
-  96K->128K was once reported as +245 MiB when the engine said +1,408.
+  measure their own idle floor while the desktop moves underneath.
 - **Before reporting an absence, run the control.** The one wrong finding of the
-  last session came from running `smoke_test.py` a way nobody runs it and
-  generalising to the tool. `./scripts/smoke-test.sh` — the documented command,
-  three lines away in the README — would have refuted it in 90 seconds.
+  previous session came from running `smoke_test.py` a way nobody runs it and
+  generalising to the tool. The same rule caught it a second time this session:
+  the retraction had reached `versions.lock` but not the two code comments,
+  which were still asserting the overstated scope when they were about to be
+  committed.
 - **A tunable may default; a fact must not.** A container variable used as a
-  FACT ABOUT THE STACK IT IS VERIFYING must be forwarded explicitly, because its
-  default silently turns a failing check into a passing weaker one.
+  FACT ABOUT THE STACK IT IS VERIFYING must be forwarded explicitly.
 - **`label` is a jq keyword.** `--arg label X` is a compile error no matter how
-  the key is quoted. Use `lbl`. It cost a 15-minute cold load once and it bit
-  again interactively last session.
-- **`.env` is committed**, so `git checkout -- .env` is always a clean restore,
-  and both probe scripts verify their backup against `git show HEAD:.env`.
+  the key is quoted. Use `lbl`.
+- **`.env` is committed**, so `git checkout -- .env` is always a clean restore.
 - **Eleven capacity rows are UNSTAMPED and cannot be fixed.** `b10573` appears
-  in zero capacity logs, so the engine build was never recorded for them.
-  `--list` warns that the table mixes stacks; that warning is correct and should
-  stay until those rows are re-run or moved aside. Provenance is the one thing
-  that cannot be added in hindsight.
+  in zero capacity logs. `--list` warns that the table mixes stacks; that
+  warning is correct and should stay.
 
 ---
 
 ## Not mine, but noted
 
 - **The delegation-stack thread has its own open list** — see the twenty-third
-  and twenty-fourth pass sections and their own "Next session" items (`/prinny
-  prepare` is BLOCKING rather than merely stale, nobody has watched a quarantine
-  happen, `renderSubagentEntry` has still never been drawn in a live TUI). That
-  work is a different agent's and is not covered here.
-- **A hung test.** `tests/json-store.test.ts` (PID 853149, under claude PID
-  625055) sat at 100% of one core for over an hour. It is the other session's
-  AN1 test. Worth telling them; a 60-minute unit test is hung, not slow.
+  and twenty-fourth pass sections and their own "Next session" items. That work
+  is a different agent's and is not covered here. Both of the files this section
+  shares with it were hunk-split, not swept.
 - **`monero-wallet-rpc` is crashlooping** on this box. Unrelated to this repo.
 
 ---

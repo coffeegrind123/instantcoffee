@@ -183,10 +183,12 @@ cd ~/my-project && qpi
 | `./scripts/capacity-probe.sh --list` | Re-print the capacity table without running anything — now with within-config SPREAD, SPREAD% and DRAFT/CYCLE, and a provenance footer |
 | `./scripts/vram-floor.sh` | How much VRAM the Windows desktop is holding, sampled over 15 minutes without stopping llama, and what that leaves for a bigger context window |
 | `./scripts/vram-floor.sh --report` | Re-print the last floor capture without re-sampling |
+| `./scripts/vram-floor.sh --label active` | Capture under a name of its own, so an idle capture and a busy-desktop one can be compared instead of overwriting each other |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --control` | Prove the quality harness before trusting it: reference implementations must score 5/5 or the grid refuses to run |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000 --control 105000` | Prove a context window is real: a nonce at each end of the document must come back, and a prompt past the limit must be refused by name |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
+| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --only eval_expr --level xhigh --repeat 4 --show-code` | Re-run one grid cell several times and print what a failing run wrote — the task set is not deterministic, so one cell is one sample |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
 | `./scripts/rtk.sh --install` | One-time: install the pinned rtk that filters bash output |
 | `./scripts/rtk.sh --status` | What is being filtered, and whether the pin matches |
@@ -1713,24 +1715,48 @@ at the top level; `low`/`medium`/`xhigh` must go via `chat_template_kwargs`.
 
 ### Which level is actually worth it
 
-Measured with `bench_quality.py` — 5 coding tasks, 5 hidden edge-case assertions
+Measured with `bench_quality.py` — 8 coding tasks, 5 hidden edge-case assertions
 each, the model's code **executed**, LOC standing in for over-engineering:
 
 | effort | pass% | LOC | reason chars | wall |
 | --- | --- | --- | --- | --- |
-| `none` | 84.0 | **164** | 0 | 23.3s |
-| `low` | 96.0 | **63** | 9,007 | 48.3s |
-| `medium` | **100.0** | 71 | 13,876 | 59.9s |
-| `xhigh` | **100.0** | 99 | 41,489 | 244.4s |
+| `none` | **100.0** | 283 | 0 | 36.3s |
+| `low` | **100.0** | 205 | 30,235 | 136.9s |
+| `medium` | **100.0** | **198** | 40,319 | 189.8s |
+| `xhigh` | 90.0 | 254 | 83,868 | 495.7s |
 
-`xhigh` ties `medium` on correctness while writing 40% more code and costing 4×
-the wall clock — 39 lines for `roman_to_int` where `low` used 13. It buys
-nothing. `none` is worst on both axes at once: fewest passes *and* the most
-sprawling code, because with no planning phase it rambles.
+`medium` stays the default: it is at 100% while writing the least code of any
+level that passes, and the one level that loses assertions is the one writing
+28% more.
 
-`medium` stays the default because it is the only level at 100%, and a coding
-agent's failure mode is a wrong function rather than a verbose one. `low` writes
-the leanest correct code and is a fair choice if terseness is worth 4 points.
+**Three of those eight tasks were added on 2026-08-23 because the other five had
+stopped discriminating.** On the five-task set every level scored 100% and the
+bench could only compare verbosity. The new tasks — an arithmetic parser, an
+interval overlap across mixed UTC offsets, and an RFC-4180 line parser — were
+each chosen so the *obvious shortcut* fails the assertion carrying the contract.
+That was verified by writing the shortcut and scoring it, not by assuming:
+`float(eval(s))` gets 4/5 because it raises `SyntaxError` rather than
+`ValueError`; `next(csv.reader([s]))` gets 4/5 because it accepts an
+unterminated quote.
+
+**Do not read the `xhigh` row as a regression.** The new set is not
+deterministic the way the old one was, so a single grid cell is one sample. On
+repeats, `medium` was clean in 5 of 6 and `xhigh` in 3 of 5 — the direction the
+bench is built to detect, and not separable at that sample size. Re-check a
+surprising cell with `--only <task> --level <level> --repeat <n>` before
+believing it.
+
+What the failures actually are is worth knowing, because it is the whole
+argument against a high effort setting: a 99-line shunting-yard with a
+nested-closure precedence table that **raises `ValueError` on valid input**. It
+passes exactly one assertion — the one checking that malformed input raises —
+and fails all four that ask it to compute something. A validator strict enough
+to reject everything looks careful and does no work.
+
+Historical, on the five-task set and **not comparable** with the table above
+(denominator 25 rather than 40) — kept because it is what the `medium` decision
+was originally made on: pre-V3 weights scored `none` 84.0 / `low` 96.0 /
+`medium` 100.0 / `xhigh` 100.0, and the V3 weights took all four to 100.0.
 
 Measure quality, not length: an earlier pass here compared output *size* and got
 the answer backwards, because the whole complaint about `xhigh` is that it
@@ -1738,7 +1764,8 @@ produces **more** output, not less.
 
 Raising it is a two-key change, not one: `xhigh` without a matching increase to
 `REASONING_BUDGET` (and the context to hold it) just moves where the truncation
-lands. On a 32K window on one 4090 there is not much room to give it.
+lands — and on this box the context cannot grow to make room, because 128K does
+not fit at the measured desktop floor.
 
 ## Thinking in another language
 
@@ -1959,9 +1986,14 @@ scripts/
                         nonce defeats ngram-simple as well as the prefix cache.
                         Reports "echo" so a flat result can be told apart from
                         a workload that failed to repeat
-  bench_quality.py      reasoning effort vs ANSWER QUALITY: hidden edge-case
-                        assertions, model code executed, LOC as the
-                        over-engineering proxy. Length is not quality
+  bench_quality.py      reasoning effort vs ANSWER QUALITY: 8 tasks x 5 hidden
+                        edge-case assertions, model code executed, LOC as the
+                        over-engineering proxy. Length is not quality.
+                        --control scores a known-correct reference for every
+                        task and the grid refuses to start unless all pass;
+                        --only/--level/--repeat re-run one cell, because the
+                        set is not deterministic and one cell is one sample;
+                        --show-code prints what a failing cell wrote
   capacity-probe.sh     does a launch flag FIT and what does it cost — context
                         window, ngram size_m, draft KV type. Records VRAM
                         against a stack-down idle floor and llama's own -lv 5

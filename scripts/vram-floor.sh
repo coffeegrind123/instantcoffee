@@ -4,7 +4,9 @@
 #
 #   ./scripts/vram-floor.sh                    # 60 samples, 15 s apart (15 min)
 #   ./scripts/vram-floor.sh --samples 20 --interval 30
+#   ./scripts/vram-floor.sh --label active     # keep a capture beside another
 #   ./scripts/vram-floor.sh --report           # re-read the last capture
+#   ./scripts/vram-floor.sh --report --label active
 #
 # WHY THIS EXISTS
 #
@@ -59,22 +61,30 @@ HOSTEXEC="${HOSTEXEC:-$HOME/claude-host-bridge/hostexec}"
 # The bridge writes to the Windows side of the 9p mount; we read it back here.
 HOST_DIR_WIN='C:\Users\User\Downloads\as\data\claude-host-bridge'
 HOST_DIR_WSL="$HOME/claude-host-bridge"
-CSV_NAME="vram-floor-paired.csv"
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/context/bench/capacity}"
 
 SAMPLES=60
 INTERVAL=15
 REPORT_ONLY=0
+# A capture OVERWRITES its csv, and the whole point of a second capture is to
+# compare it against the first. --label keeps them apart on both sides of the
+# bridge; no label reproduces the original file names exactly.
+LABEL=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --samples)  SAMPLES="$2"; shift 2 ;;
     --interval) INTERVAL="$2"; shift 2 ;;
+    --label)    LABEL="$2"; shift 2 ;;
     --report)   REPORT_ONLY=1; shift ;;
     -h|--help)  sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)          die "unknown argument '$1'" ;;
   esac
 done
+
+[[ "$LABEL" =~ ^[a-z0-9-]*$ ]] || die "--label must be [a-z0-9-]; got '$LABEL'"
+CSV_NAME="vram-floor-paired${LABEL:+-$LABEL}.csv"
+OUT_CSV="$RESULTS_DIR/vram-floor${LABEL:+-$LABEL}.csv"
 
 # The token file is not the bridge. Probe the port: a 401 is a RUNNING bridge
 # refusing an unauthenticated request, which is exactly what we want to see.
@@ -141,13 +151,14 @@ if ($best) { $best.P }' 2>/dev/null | tr -d '\r' | grep -oE '^[0-9]+$' | head -1
   (( n >= want )) || warn "captured $n of $want samples before the budget ran out"
 
   mkdir -p "$RESULTS_DIR"
-  read_host_csv > "$RESULTS_DIR/vram-floor.csv"
-  ok "  $n samples -> $RESULTS_DIR/vram-floor.csv"
+  read_host_csv > "$OUT_CSV"
+  ok "  $n samples -> $OUT_CSV"
 }
 
 report() {
-  local f="$RESULTS_DIR/vram-floor.csv"
+  local f="$OUT_CSV"
   [[ -s "$f" ]] || die "no capture at $f — run without --report first"
+  info "reading $f"
 
   # The engine's own -lv 5 delta, not a sampled one. 96K CUDA0 total is 20426
   # MiB and 128K is 21834; sampled deltas got this wrong by 1163 MiB once.

@@ -199,12 +199,14 @@ quality_on_v3       = YES, 2026-08-23, and the last open question about the V3
                       needed and can be deleted whenever the disk is wanted.
                       REASONING_EFFORT stays at medium: xhigh ties on
                       correctness, writes 24% more code and costs 3.9x the wall.
-                      CAVEAT 1 — THE BENCH IS NOW AT ITS CEILING. 100% at all
-                      four levels means the task set can no longer tell them
-                      apart on correctness; it now discriminates only on LOC and
-                      wall. Anyone re-running it to answer "which effort?" will
-                      learn nothing new until harder tasks are added, and adding
-                      one means writing its reference implementation FIRST.
+                      CAVEAT 1 — THAT CEILING WAS LIFTED THE SAME DAY. 100% at
+                      all four levels meant the FIVE-task set could no longer
+                      tell them apart on correctness, so three harder tasks were
+                      added 2026-08-23 PM: eval_expr, overlap_minutes,
+                      parse_csv_line. See quality_8task below. THE ROWS ABOVE
+                      ARE ON A DENOMINATOR OF 25 AND THE ONES BELOW ON 40 — they
+                      are not comparable, and the rows above are kept only
+                      because they are what the `medium` decision was made on.
                       CAVEAT 2 — the wall column was measured on a box at load
                       20 and is not comparable with the 2026-08-17 figures. Only
                       pass% and LOC are contention-proof, which is why this
@@ -216,6 +218,50 @@ quality_on_v3       = YES, 2026-08-23, and the last open question about the V3
                       through, main() refuses to run the grid if it fails, and
                       it was itself controlled by breaking one assertion and
                       watching word_wrap drop to 4/5.
+quality_8task       = THE FIVE-TASK CEILING IS GONE, 2026-08-23 PM. Three tasks
+                      added — eval_expr (arithmetic parser: precedence, left
+                      associativity, unary minus, ValueError on malformed),
+                      overlap_minutes (two ISO-8601 intervals, mixed and absent
+                      UTC offsets, half-open so touching is 0, ValueError if an
+                      interval ends before it starts), parse_csv_line (RFC-4180
+                      one line: quoted fields, doubled quotes, ValueError on an
+                      unterminated quote). Denominator 40, not 25.
+                      Each was chosen so the OBVIOUS SHORTCUT fails the
+                      assertion carrying the contract, and that was VERIFIED by
+                      writing and scoring the shortcut rather than asserting it:
+                        eval_expr       float(eval(s))         4/5 (SyntaxError,
+                                                                   not ValueError)
+                        overlap_minutes fromisoformat, no tz   3/5 (naive vs
+                                                                   aware TypeError)
+                        parse_csv_line  next(csv.reader([s]))  4/5 (accepts an
+                                                                   unterminated quote)
+                      First grid on the new set (V3 / b10573 / q8_0 / 96K):
+                        effort   pass%    LOC   reason_chars     wall
+                        none     100.0    283              0     36.3s
+                        low      100.0    205         30,235    136.9s
+                        medium   100.0    198         40,319    189.8s
+                        xhigh     90.0    254         83,868    495.7s
+                      xhigh is the only level below 100% and all four lost
+                      assertions are eval_expr.
+                      DO NOT READ THAT AS "xhigh REGRESSED". The new set is NOT
+                      DETERMINISTIC the way the old one was, so one grid cell is
+                      ONE SAMPLE. Re-run with --only/--level/--repeat, added for
+                      this: medium 6 samples 5 clean (one 3/5 at 89 LOC), xhigh
+                      5 samples 3 clean (two 1/5 at 99 LOC). Directionally what
+                      the bench is built to detect; NOT separable at n=5.
+                      The failure mode, read with --show-code and not guessed: a
+                      99-line shunting-yard with a nested-closure precedence
+                      table that raises ValueError on VALID input. Per-assertion
+                      [F,F,F,F,T] — every evaluation wrong, and the one thing it
+                      gets right is the error contract. A validator strict
+                      enough to reject everything scores like a careful one on
+                      the raise test and fails all the work. That is
+                      over-engineering costing CORRECTNESS, which is what the
+                      five-task set could never show.
+                      REASONING_EFFORT STAYS AT medium. Nothing here argues for
+                      a change: medium is at 100% on the harder set, writes the
+                      least code of any level that passes, and the one level
+                      that lost assertions is the one that writes 28% more.
 spec_verdict        = 2026-08-22 re-sweep on b10573 / q8_0 / 65536 / V3 weights:
                       KEEP ngram-simple,draft-mtp at n-max 4 / p-min 0.40. It is
                       in the top group on both workloads and nothing beats it.
@@ -357,10 +403,29 @@ host_floor_note     = THE FLOOR IS THE WINDOWS DESKTOP, ATTRIBUTED 2026-08-23.
                       values the old stop-llama method ever recorded
                       (1405/1536/1881/1905/1961/2027), so an idle desktop sits
                       at the bottom of the historical range.
-                      READ THAT AS IDLE ONLY. It does not repeal the 2027 MiB
-                      seen across an active morning, and the active distribution
-                      is still unmeasured — that is the half that decides
-                      anything. Run vram-floor.sh WHILE USING the desktop next.
+                      READ THAT AS IDLE ONLY.
+                      THE IN-USE FLOOR IS NOW MEASURED TOO, same afternoon:
+                      90 paired samples, 20 s apart, floor
+                      1477.9 / 1500.8 / 1517.5 (min/median/max), vmwp again
+                      EXACTLY 21677.4 in all 90. Kept as vram-floor-active.csv
+                      beside the idle vram-floor.csv; use
+                      `vram-floor.sh --label <name>` or a capture overwrites the
+                      other one.
+                      THE TWO CAPTURES DO NOT OVERLAP — 1373-1435 idle vs
+                      1478-1518 in use, 42 MiB of clear air — so the ~95 MiB
+                      difference is the desktop being used and not sampling
+                      noise. Desktop state at capture, dwm excluded because it
+                      double-counts: explorer 195, WindowsTerminal 172, chrome
+                      169, Discord 161, brave 138, csrss 125, Docker Desktop 75,
+                      claude 75, steamwebhelper 65, VSCodium 55. A normally
+                      populated working desktop with NOTHING GPU-HEAVY in the
+                      foreground, and the floor moved only 39.6 MiB over the
+                      half hour — the signature of a steady set of open windows.
+                      So 1501 is the ORDINARY case, not the worst one. A
+                      GPU-heavy foreground (game, video call) is still
+                      unmeasured and 2027 remains the worst ever observed,
+                      unreproduced since. It changes no decision — see
+                      ctx_128k_verdict, which 1501 alone already closes.
 ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
                       free at 128K = 24564 - (device total at 96K + 1408), where
                       +1408 is the engine's own -lv 5 delta (20426 -> 21834) and
@@ -368,14 +433,40 @@ ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
                       comparison wrong by 1163 MiB once.
                         desktop idle  (floor 1406)      72 MiB free
                           best/worst idle sample     106 / 43 MiB
+                        desktop IN USE (floor 1501)    -22 MiB — DOES NOT FIT
+                          best/worst in-use sample     +1 / -39 MiB
                         desktop worst (floor 2027)    -548 MiB — DOES NOT FIT
-                      The worst row is the one that settles it: at the worst
-                      desktop state this box has actually been in, 128K fails to
-                      allocate rather than merely running thin. Even with the
-                      draft-KV q8_0 lever spent on it (~+240 MiB at 128K) the
-                      idle case is ~306 MiB and the worst is still negative.
-                      96K by contrast keeps ~1480 MiB free idle and ~860 MiB at
-                      the worst observed floor. STAY ON 96K.
+                      CLOSED PERMANENTLY 2026-08-23 PM, on the exact terms the
+                      handoff set for re-opening it. That handoff said: if the
+                      ACTIVE floor turns out to be ~1.5 GiB rather than the 2027
+                      worst case, 128K is worth one more look. It was then
+                      measured — 90 samples, 20 s apart, llama untouched — and it
+                      IS ~1.5 GiB: 1477.9 / 1500.8 / 1517.5 min/median/max. So
+                      the look happened and the answer is still no: -22 MiB at
+                      the median. See vram-floor-active.csv and §5a of
+                      context/design/vram-floor-and-the-shared-desktop.md.
+                      This is a STRONGER refusal than the one it replaces. 2027
+                      was a single sample from the old stop-llama method and
+                      nothing has reproduced it; 1501 is the ORDINARY state of
+                      the machine — browsers, chat, terminal, editor, Steam
+                      signed in, nothing GPU-heavy in the foreground — sampled
+                      90 times by an instrument that agrees with two others.
+                      The idle and in-use captures DO NOT OVERLAP: 1373-1435 vs
+                      1478-1518, 42 MiB of clear air, and vmwp read exactly
+                      21677.4 in all 137 samples across both. The difference is
+                      the desktop, not noise.
+                      Read the idle row with that in mind: 128K "fits" at idle
+                      with 72 MiB spare, and opening the windows the operator
+                      normally has open consumes all 72. A window that fits only
+                      while nobody is using the computer does not fit.
+                      There is no draft-KV rescue; that lever costs VRAM (see
+                      draft_kv_note). 96K by contrast keeps ~1480 MiB free idle,
+                      ~1386 MiB in use, and ~860 MiB at the worst observed
+                      floor. STAY ON 96K.
+                      STILL UNMEASURED, and it changes nothing: a GPU-heavy
+                      foreground (a game, a video call). 128K is already refused
+                      95 MiB below that, so this is provenance for the top of
+                      the range, not a reason to revisit.
                       NOTE 128K is not BROKEN — it loads, serves and answers a
                       120,029-token prompt at 1726/1720/1705 tok/s prefill. This
                       is a headroom refusal, not a function one, so do not go

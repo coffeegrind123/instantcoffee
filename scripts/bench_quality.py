@@ -24,7 +24,8 @@ This measures two things a length comparison cannot:
                 over-engineering proxy. This is the axis actually in dispute.
 
 Measured 2026-08-17 on Qwen3.8-27B-UD-Q4_K_XL (PRE-V3 weights), 5 tasks x 5
-assertions:
+assertions — see the note below the second table before comparing anything to
+these:
 
     effort   pass%    LOC   reason_chars     wall
     none      84.0    164              0    23.3s
@@ -40,10 +41,63 @@ Re-measured 2026-08-23 on the Dynamic V3 weights, b10573, q8_0/q8_0, 96K:
     medium   100.0     68         15,103    71.1s
     xhigh    100.0     84         43,582   274.1s
 
-THIS BENCH IS NOW AT ITS CEILING. 100% at all four levels means the task set
-can no longer tell them apart on CORRECTNESS; it discriminates only on LOC and
-wall. Re-running it to re-decide REASONING_EFFORT will teach you nothing until
-harder tasks are added — and adding one means writing its reference first.
+BOTH ROWS ABOVE ARE ON THE FIVE-TASK SET, AND THAT SET HIT ITS CEILING. 100%
+at all four levels means it could no longer tell them apart on CORRECTNESS —
+only on LOC and wall — so re-running it to re-decide REASONING_EFFORT would
+have taught nothing.
+
+THREE HARDER TASKS WERE ADDED 2026-08-23: eval_expr, overlap_minutes,
+parse_csv_line. The denominator is therefore 40, not 25, and NEITHER ROW ABOVE
+IS COMPARABLE WITH ANY ROW MEASURED AFTER THAT DATE. They are kept because
+they are what the `medium` decision was actually made on; do not read them
+against a new run.
+
+The three were chosen so that the OBVIOUS SHORTCUT passes most assertions and
+fails the one that carries the contract — under-thinking and over-engineering
+both have to cost correctness, or the task only measures verbosity. That claim
+is not a guess; each shortcut was written and scored, 2026-08-23:
+
+    eval_expr        `return float(eval(s))`        4/5  SyntaxError, not ValueError
+    overlap_minutes  fromisoformat, no tz handling  3/5  naive vs aware TypeError,
+                                                         and no start/end check
+    parse_csv_line   `next(csv.reader([s]))`        4/5  accepts an unterminated quote
+
+Adding a task still means writing its reference in the same commit. You will
+not be able to skip it — the grid will not start.
+
+FIRST RUN ON THE EIGHT-TASK SET, 2026-08-23 PM, V3 / b10573 / q8_0 / 96K:
+
+    effort   pass%    LOC   reason_chars     wall
+    none     100.0    283              0     36.3s
+    low      100.0    205         30,235    136.9s
+    medium   100.0    198         40,319    189.8s
+    xhigh     90.0    254         83,868    495.7s
+
+The tie is broken, and `xhigh` is the level that broke it — 36/40, the only
+level below 100%, and simultaneously the second-most verbose. Every one of the
+four lost assertions is eval_expr.
+
+AND THEN THE PART THAT MATTERS MORE: THIS TASK SET IS NOT DETERMINISTIC.
+The five-task set scored identically on every re-run; eval_expr does not, so a
+single grid cell is ONE SAMPLE and must not be read as a level difference.
+Re-run with --only eval_expr --level X --repeat N, which is what those flags
+are for:
+
+    medium   6 samples, 5 clean, one 3/5 at 89 LOC
+    xhigh    5 samples, 3 clean, two 1/5 at 99 LOC
+
+Directionally that is what the bench was built to detect and it is NOT
+separable at n=5. Do not report "xhigh regressed" from one grid; report that
+eval_expr fails sometimes at every level and somewhat more often at xhigh.
+
+WHAT THE FAILURES ACTUALLY ARE, read with --show-code rather than guessed: a
+99-line shunting-yard with a nested-closure precedence table that raises
+ValueError on VALID input. Its per-assertion vector is [F,F,F,F,T] — all four
+evaluations wrong, and the only assertion it passes is the one checking that
+malformed input raises. A validator strict enough to reject everything scores
+exactly like a careful implementation on the error contract and fails all the
+work. That is over-engineering costing correctness rather than only lines,
+which is the thing the five-task set could not show.
 
 The wall column of the V3 row was taken on a box at load 20 and is not
 comparable with the 2026-08-17 figures. pass% and LOC are contention-proof,
@@ -150,6 +204,66 @@ TASKS = [
             ("flatten_dict({'a':{'b':{'c':2}},'d':3})", "{'a.b.c':2,'d':3}"),
         ],
     ),
+    # --- ADDED 2026-08-23, because the five above all scored 100% at every
+    # effort level and a bench that cannot separate its levels is not measuring
+    # anything. Each of these three has a SHORTCUT that passes most assertions
+    # and fails the one that matters, so over-engineering and under-thinking
+    # both cost correctness rather than only lines:
+    #   eval_expr        `eval()` passes 4/5 and raises SyntaxError, not ValueError
+    #   overlap_minutes  ignoring offsets, or mixing naive with aware, is a
+    #                    TypeError at the subtraction rather than a wrong number
+    #   parse_csv_line   `csv.reader` passes 4/5 and accepts an unterminated quote
+    (
+        "eval_expr",
+        "Write a Python function eval_expr(s) that parses and evaluates an arithmetic "
+        "expression string containing integers, + - * /, parentheses and unary minus, and "
+        "returns a float. / is true division. * and / bind tighter than + and -; - and / are "
+        "LEFT-associative. Raise ValueError for any malformed input, including unbalanced "
+        "parentheses and a trailing operator. Do not use eval or exec.",
+        [
+            ("eval_expr('2+3*4')", "14.0"),
+            ("eval_expr('(2+3)*4')", "20.0"),
+            ("eval_expr('10-2-3')", "5.0"),
+            ("eval_expr('-2*3+7/2')", "-2.5"),
+            ("_raises(lambda: eval_expr('2*(3+4'))", "True"),
+        ],
+    ),
+    (
+        "overlap_minutes",
+        "Write a Python function overlap_minutes(a_start, a_end, b_start, b_end) taking four "
+        "ISO-8601 timestamp strings and returning the number of whole minutes the two intervals "
+        "overlap, as an int. Intervals are half-open, so touching intervals overlap by 0. A "
+        "timestamp may carry a UTC offset such as +02:00; one with NO offset is UTC. Compare in "
+        "UTC, not in local wall-clock time. Raise ValueError if either interval ends before it "
+        "starts.",
+        [
+            ("overlap_minutes('2026-01-01T10:00+00:00','2026-01-01T12:00+00:00',"
+             "'2026-01-01T11:00+00:00','2026-01-01T13:00+00:00')", "60"),
+            ("overlap_minutes('2026-01-01T10:00','2026-01-01T12:00',"
+             "'2026-01-01T12:30+01:00','2026-01-01T14:00+01:00')", "30"),
+            ("overlap_minutes('2026-01-01T10:00+00:00','2026-01-01T11:00+00:00',"
+             "'2026-01-01T11:00+00:00','2026-01-01T12:00+00:00')", "0"),
+            ("overlap_minutes('2026-03-28T22:00+00:00','2026-03-29T02:00+00:00',"
+             "'2026-03-29T00:30+02:00','2026-03-29T04:00+02:00')", "210"),
+            ("_raises(lambda: overlap_minutes('2026-01-01T12:00+00:00','2026-01-01T10:00+00:00',"
+             "'2026-01-01T11:00+00:00','2026-01-01T13:00+00:00'))", "True"),
+        ],
+    ),
+    (
+        "parse_csv_line",
+        "Write a Python function parse_csv_line(s) that splits ONE line of RFC-4180 CSV into a "
+        "list of field strings. Fields are comma-separated. A field may be wrapped in double "
+        "quotes, in which case it may contain commas, and a literal double quote inside it is "
+        "written as two double quotes. Empty fields are empty strings. Raise ValueError if a "
+        "quoted field is never closed. Do not use the csv module.",
+        [
+            ("parse_csv_line('a,b,c')", "['a','b','c']"),
+            ("parse_csv_line('a,\"b,c\",d')", "['a','b,c','d']"),
+            ("parse_csv_line('a,\"b\"\"c\",d')", "['a','b\"c','d']"),
+            ("parse_csv_line('a,,')", "['a','','']"),
+            ("_raises(lambda: parse_csv_line('a,\"b'))", "True"),
+        ],
+    ),
     (
         "next_permutation",
         "Write a Python function next_permutation(nums) that rearranges the list IN PLACE to the "
@@ -242,6 +356,137 @@ def flatten_dict(d, sep="."):
         else:
             out[k] = v
     return out
+''',
+    "eval_expr": '''
+import re as _re_expr
+
+_TOK = _re_expr.compile(r"\s*(\d+|[()+\-*/])")
+
+def _tokenize(s):
+    pos, out = 0, []
+    while pos < len(s):
+        m = _TOK.match(s, pos)
+        if not m:
+            raise ValueError("bad character at %d" % pos)
+        out.append(m.group(1))
+        pos = m.end()
+    if not out:
+        raise ValueError("empty expression")
+    return out
+
+def eval_expr(s):
+    if not isinstance(s, str):
+        raise ValueError("not a string")
+    toks = _tokenize(s)
+    i = 0
+
+    def peek():
+        return toks[i] if i < len(toks) else None
+
+    def take():
+        nonlocal i
+        if i >= len(toks):
+            raise ValueError("unexpected end of expression")
+        t = toks[i]
+        i += 1
+        return t
+
+    def atom():
+        t = take()
+        if t == "-":
+            return -atom()
+        if t == "+":
+            return atom()
+        if t == "(":
+            v = expr()
+            if peek() != ")":
+                raise ValueError("unbalanced parenthesis")
+            take()
+            return v
+        if t.isdigit():
+            return float(t)
+        raise ValueError("unexpected token %r" % t)
+
+    def term():
+        v = atom()
+        while peek() in ("*", "/"):
+            op = take()
+            r = atom()
+            if op == "*":
+                v = v * r
+            else:
+                if r == 0:
+                    raise ValueError("division by zero")
+                v = v / r
+        return v
+
+    def expr():
+        v = term()
+        while peek() in ("+", "-"):
+            op = take()
+            r = term()
+            v = v + r if op == "+" else v - r
+        return v
+
+    v = expr()
+    if i != len(toks):
+        raise ValueError("trailing token %r" % toks[i])
+    return float(v)
+''',
+    "overlap_minutes": '''
+from datetime import datetime as _dt, timezone as _tz
+
+def _to_utc(s):
+    if not isinstance(s, str):
+        raise ValueError("not a timestamp string")
+    try:
+        d = _dt.fromisoformat(s)
+    except Exception:
+        raise ValueError("not ISO-8601: %r" % (s,))
+    # No offset means UTC. Attaching it is what keeps the comparison below from
+    # being a naive-vs-aware TypeError.
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=_tz.utc)
+    return d.astimezone(_tz.utc)
+
+def overlap_minutes(a_start, a_end, b_start, b_end):
+    a0, a1, b0, b1 = (_to_utc(x) for x in (a_start, a_end, b_start, b_end))
+    if a1 < a0 or b1 < b0:
+        raise ValueError("interval ends before it starts")
+    lo = max(a0, b0)
+    hi = min(a1, b1)
+    if hi <= lo:
+        return 0
+    return int((hi - lo).total_seconds() // 60)
+''',
+    "parse_csv_line": '''
+def parse_csv_line(s):
+    if not isinstance(s, str):
+        raise ValueError("not a string")
+    fields, cur, i, n = [], [], 0, len(s)
+    while True:
+        if i < n and s[i] == '"':
+            i += 1
+            while True:
+                if i >= n:
+                    raise ValueError("unterminated quoted field")
+                if s[i] == '"':
+                    if i + 1 < n and s[i + 1] == '"':
+                        cur.append('"')
+                        i += 2
+                        continue
+                    i += 1
+                    break
+                cur.append(s[i])
+                i += 1
+        while i < n and s[i] != ",":
+            cur.append(s[i])
+            i += 1
+        fields.append("".join(cur))
+        cur = []
+        if i >= n:
+            return fields
+        i += 1
 ''',
     "next_permutation": '''
 def next_permutation(nums):
@@ -348,12 +593,24 @@ def ask(prompt: str, extra: dict):
     )
 
 
+def _opt(flag: str, default=None):
+    """--flag VALUE, without pulling argparse into a script run by hand."""
+    if flag in sys.argv:
+        i = sys.argv.index(flag)
+        if i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("--"):
+            return sys.argv[i + 1]
+        raise SystemExit(f"{flag} needs a value")
+    return default
+
+
 def main() -> int:
     print(f"\nbench-quality — {MODEL} via {LLAMA}")
     print("pass rate is executed, not judged; LOC is the over-engineering proxy\n")
 
     # Never score a model against assertions that have not been shown to pass a
     # correct answer. A failing control makes every number below meaningless.
+    # The control always covers EVERY task, even when --only narrows the grid:
+    # it is local, it is cheap, and a harness is either sound or it is not.
     control_ok = run_control()
     if "--control" in sys.argv:
         return 0 if control_ok else 1
@@ -361,39 +618,85 @@ def main() -> int:
         print("refusing to run the grid on a broken harness (--force to override)")
         return 1
 
+    # --only / --level / --repeat exist because a single grid cell is ONE SAMPLE
+    # from a sampled process, and the first thing to do with a surprising cell is
+    # ask whether it reproduces. --show-code prints what a failing cell actually
+    # wrote, because "it scored 1/5" is an interpretation and the code is the
+    # evidence.
+    only = _opt("--only")
+    level = _opt("--level")
+    repeat = int(_opt("--repeat", "1"))
+    show_code = "--show-code" in sys.argv
+
+    tasks = [t for t in TASKS if only is None or t[0] == only]
+    levels = [l for l in LEVELS if level is None or l[0] == level]
+    if not tasks:
+        print(f"no task named {only!r}; have: {', '.join(t[0] for t in TASKS)}")
+        return 1
+    if not levels:
+        print(f"no level named {level!r}; have: {', '.join(l[0] for l in LEVELS)}")
+        return 1
+    if repeat < 1:
+        print("--repeat must be >= 1")
+        return 1
+    if (only, level, repeat) != (None, None, 1):
+        print(
+            f"running {len(levels)} level(s) x {len(tasks)} task(s) x {repeat} "
+            f"repeat(s) — NOT the full grid, do not table this against one\n"
+        )
+
     agg = {}
-    for name, extra in LEVELS:
+    runs: dict[tuple[str, str], list[int]] = {}
+    for name, extra in levels:
         passed = total = loc = reason = empty = 0
         secs = 0.0
-        for tname, spec, tests in TASKS:
-            try:
-                content, rchars, wall = ask(spec, extra)
-            except Exception as exc:  # noqa: BLE001 - report, never abort the grid
-                print(f"  {name:7} {tname:17} ERROR {type(exc).__name__}: {exc}")
-                total += len(tests)
-                continue
-            if not content.strip():
-                empty += 1
-            code = extract_code(content)
-            res = run_tests(code, tests)
-            nloc = len([ln for ln in code.splitlines() if ln.strip()])
-            passed += sum(res)
-            total += len(res)
-            loc += nloc
-            secs += wall
-            reason += rchars
-            print(
-                f"  {name:7} {tname:17} {sum(res)}/{len(res)}  loc={nloc:>3}  "
-                f"wall={wall:5.1f}s"
-            )
+        for tname, spec, tests in tasks:
+            for rep in range(repeat):
+                try:
+                    content, rchars, wall = ask(spec, extra)
+                except Exception as exc:  # noqa: BLE001 - report, never abort the grid
+                    print(f"  {name:7} {tname:17} ERROR {type(exc).__name__}: {exc}")
+                    total += len(tests)
+                    runs.setdefault((name, tname), []).append(0)
+                    continue
+                if not content.strip():
+                    empty += 1
+                code = extract_code(content)
+                res = run_tests(code, tests)
+                nloc = len([ln for ln in code.splitlines() if ln.strip()])
+                passed += sum(res)
+                total += len(res)
+                loc += nloc
+                secs += wall
+                reason += rchars
+                runs.setdefault((name, tname), []).append(sum(res))
+                tag = f" #{rep + 1}" if repeat > 1 else ""
+                print(
+                    f"  {name:7} {tname:17}{tag} {sum(res)}/{len(res)}  loc={nloc:>3}  "
+                    f"wall={wall:5.1f}s"
+                )
+                if show_code and sum(res) != len(res):
+                    print(f"  --- what {name} wrote for {tname} ({sum(res)}/{len(res)}) ---")
+                    for ln in code.splitlines():
+                        print(f"  | {ln}")
+                    print(f"  --- per-assertion: {res}")
         agg[name] = (passed, total, loc, secs, reason, empty)
+
+    if repeat > 1:
+        print("\n=== REPRODUCIBILITY (per-run scores) ===")
+        for (lname, tname), scores in runs.items():
+            n = len(tasks[0][2])
+            print(
+                f"  {lname:7} {tname:17} {scores}   "
+                f"{sum(1 for x in scores if x == n)}/{len(scores)} runs at {n}/{n}"
+            )
 
     print("\n=== EFFORT vs QUALITY ===")
     print(
         f"{'effort':8} {'tests passed':>14} {'pass%':>7} {'LOC':>6} "
         f"{'reason_ch':>10} {'total s':>9} {'empty':>6}"
     )
-    for name, _ in LEVELS:
+    for name, _ in levels:
         p, t, loc, secs, reason, empty = agg[name]
         print(
             f"{name:8} {f'{p}/{t}':>14} {100 * p / max(t, 1):>6.1f}% {loc:>6} "
