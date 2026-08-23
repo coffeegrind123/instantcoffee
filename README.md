@@ -2101,6 +2101,18 @@ patches/
   forge_reasoning_passthrough.py  build-time fix for forge destroying a
                         reasoning-only turn and hardcoding finish_reason;
                         fails the build if forge changes
+  forge_toolcall_content.py  build-time fix for the same class of loss on the
+                        TOOL-CALL path: a forge ToolCall has a `reasoning` field
+                        and no content field, so the model's own sentence has
+                        nowhere to live and the response builder fills `content`
+                        with the reasoning instead. Restores both, each in its
+                        own field
+  forge_merge_across_tools.py  build-time fix for _merge_consecutive folding
+                        every user turn into the FIRST user message — upstream's
+                        workaround for a MISTRAL template's parity checker,
+                        which rewrites the prompt PREFIX every agentic turn and
+                        pins the KV cache on a template that never needed it.
+                        FORGE_MERGE_ACROSS_TOOLS=1 restores the old behaviour
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction

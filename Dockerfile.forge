@@ -57,12 +57,41 @@ RUN pip install --no-cache-dir \
 # reasoning_content, never merged into content, so a harness sees it as thinking
 # and a chat channel that relays assistant text does not relay it.
 # See patches/forge_reasoning_passthrough.py.
+#
+# The fourth patch stops forge destroying the model's own words on a TOOL-CALL
+# turn. A forge ToolCall carries `reasoning` and has NO content field, so the
+# assistant text that came with the call has nowhere to live, and
+# tool_calls_to_openai fills `content` with the reasoning instead. Matched pair,
+# identical request: llama returned content "I'm going to look up the current
+# weather in Paris for you." plus separate reasoning; forge returned the
+# REASONING as content, no reasoning_content key, and the sentence gone. With
+# FORGE_REASONING_REPLAY=full that reasoning is a text block — which is exactly
+# what the third patch's docstring says must not happen, on the path it does not
+# cover. The replay policy itself is untouched: it is really implemented inbound
+# by filter_openai_reasoning_messages. See patches/forge_toolcall_content.py and
+# context/design/forge-on-the-tool-call-path.md.
+#
+# The fifth patch stops _merge_consecutive folding every user turn into the
+# FIRST user message. That merge is upstream's workaround for llama-server's
+# MISTRAL template parity checker, which counts only plain user/assistant
+# messages; on Qwen3.8's template — which renders a tool result as its own turn
+# and has no such constraint, verified against the live /apply-template — it
+# rewrites the prompt PREFIX every agentic turn and pins the KV cache. Measured:
+# without forge the reused prefix grows 391 -> 513 across three turns, through
+# forge it is flat at 352 -> 352. Adjacent same-role merges (the retry nudge)
+# still happen; the cross-tool case is opt-in via FORGE_MERGE_ACROSS_TOOLS=1.
+# Applied AFTER forge_merge_consecutive.py, which patches a different line of
+# the same function. See patches/forge_merge_across_tools.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
-     patches/forge_reasoning_passthrough.py /tmp/patches/
+     patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
+     patches/forge_merge_across_tools.py \
+     /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
     && python /tmp/patches/forge_cached_tokens.py "$SITE" \
     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE" \
+    && python /tmp/patches/forge_toolcall_content.py "$SITE" \
+    && python /tmp/patches/forge_merge_across_tools.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"

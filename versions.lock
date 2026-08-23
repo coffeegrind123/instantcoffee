@@ -702,10 +702,12 @@ workstream_capture  = BUILT 2026-08-23. scripts/capture_proxy.py (a transparent
                       which is the guarantee it is built around.
 
 forge_tool_call_path = MEASURED 2026-08-23, two defects and a cost, all from
-                      matched pairs. Full account:
-                      context/design/forge-on-the-tool-call-path.md. NOTHING
-                      HAS BEEN CHANGED IN RESPONSE — this is the record, not a
-                      decision.
+                      matched pairs, and BOTH FIXED the same day by build-time
+                      patches 4 and 5. Full account:
+                      context/design/forge-on-the-tool-call-path.md.
+                      NOT LIVE UNTIL A REBUILD: patches apply at image build
+                      time, so the running containers keep the old behaviour
+                      until `docker compose build forge`.
                       (1) ON A TOOL-CALL TURN THE MODEL'S TEXT NEVER REACHES THE
                       CLIENT. llama returned content "I'm going to look up the
                       current weather in Paris for you." plus reasoning plus the
@@ -751,3 +753,47 @@ forge_tool_call_path = MEASURED 2026-08-23, two defects and a cost, all from
                       does not see. The same measurement on a real captured
                       session is now one command away, and cache_n is on every
                       record.
+                      THE FIXES, each measured against a SEPARATELY TAGGED test
+                      image and a throwaway container, running stack untouched:
+                      patches/forge_toolcall_content.py gives ToolCall a
+                      `content` field, populates it at both native-mode client
+                      sites through a helper that mirrors _resolve_reasoning's
+                      priority order (so the text cannot be claimed twice), and
+                      has both response builders emit content as `content` and
+                      reasoning as `reasoning_content`. Matched triple: llama
+                      "I'm going to look up the current weather in Paris.",
+                      unpatched forge the REASONING, patched forge "I'll check
+                      the current weather in Paris for you." plus the reasoning
+                      in its own field. Streaming builder tested separately.
+                      The replay policy survives and improves: the assistant
+                      history message now reaches llama with BOTH content and
+                      reasoning_content, so the replayed thinking renders inside
+                      <think> where the model emitted it, instead of after
+                      </think> as answer text — which is the first time the
+                      preserve_thinking/KV-prefix argument is structurally
+                      possible at all.
+                      patches/forge_merge_across_tools.py restricts
+                      _merge_consecutive to TRULY ADJACENT same-role messages
+                      and puts the cross-tool case behind
+                      FORGE_MERGE_ACROSS_TOOLS=1 (.env, default 0). That merge
+                      is upstream's workaround for llama-server's MISTRAL
+                      template parity checker; Qwen3.8's template has no such
+                      constraint, verified against the live /apply-template.
+                        arm                        turn1      turn2     msgs
+                        direct (no forge)        391/517    513/702        8
+                        forge, unpatched         349/582    349/754        6
+                        forge, patched           392/518    514/703        8
+                        forge, patched, flag ON      ...    350/697        6
+                      The patched default reproduces the no-forge baseline to
+                      within one token, and the flag brings the pinning straight
+                      back, which is what makes that row a measurement. `full`
+                      was also inflating the prompt (754 vs 703) by replaying
+                      reasoning as content; patch 4 removes that for free.
+                      smoke_test.py 11/11 against the patched build.
+                      STILL NOT TOUCHED, knowingly: convert_anthropic.py has the
+                      same hole in a starker form (reasoning appended as a
+                      `text` block, model content never emitted) — this stack
+                      speaks OpenAI, and the Anthropic wire needs a `thinking`
+                      block shape decided first. Prompt-mode extraction is off
+                      this stack's path (FORGE_CAPABILITY=native) and asks a
+                      genuinely different question.

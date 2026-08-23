@@ -150,6 +150,11 @@ services:
       --reasoning-replay ${FORGE_REASONING_REPLAY}
       --backend-timeout ${FORGE_BACKEND_TIMEOUT}
       ${FORGE_EXTRA_FLAGS}
+    environment:
+      # Read by patches/forge_merge_across_tools.py at import time. It is an env
+      # var rather than a flag because forge has no CLI surface for it — the
+      # behaviour it gates is upstream's, not a forge option.
+      FORGE_MERGE_ACROSS_TOOLS: ${FORGE_MERGE_ACROSS_TOOLS:-0}
     healthcheck:
       test:
         - CMD

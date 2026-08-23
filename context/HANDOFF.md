@@ -80,14 +80,44 @@ loop, and traced to four lines of `forge/proxy/convert.py`.
       forge, full           0/396    349/582    349/754      <- pinned, +19% prompt
    ```
 
-**Nothing was changed in response.** `FORGE_REASONING_REPLAY` is back at `full`
-where it started; three synthetic turns at ~700 tokens is not evidence enough to
-overturn a setting tuned for KV-prefix reuse, and llama's checkpoints and
-`f_sim_best` selection can salvage reuse this measurement does not see. The fix
-for (1) is a fourth build-time patch, sketched in §5 of that document, left
-unapplied deliberately: it changes the production response shape while another
-thread is running against this stack, and it makes `full`'s client-facing
-behaviour a real choice rather than an accident.
+**Both are now fixed — and NOT live.** Patches apply at image build time, so the
+running containers keep the old behaviour until `docker compose build forge`.
+Everything below was measured against a separately tagged test image and a
+throwaway container on a spare port; the running stack was never touched.
+
+`patches/forge_toolcall_content.py` gives `ToolCall` a `content` field and has
+both response builders emit content as `content` and reasoning as
+`reasoning_content`. Matched triple — llama says "I'm going to look up the
+current weather in Paris.", unpatched forge returns the reasoning, patched forge
+returns the sentence plus the reasoning in its own field. Streaming builder
+tested separately. **The replay policy survives and improves**: the assistant
+history message now reaches llama with both fields, so replayed thinking renders
+inside `<think>` where the model emitted it rather than after `</think>` as
+answer text — which is the first time the preserve_thinking/KV argument is
+structurally possible at all.
+
+`patches/forge_merge_across_tools.py` restricts `_merge_consecutive` to truly
+adjacent same-role messages and puts the cross-tool case behind
+`FORGE_MERGE_ACROSS_TOOLS=1` (`.env`, default 0):
+
+```
+   arm                          turn 1        turn 2      msgs
+   direct (no forge)         391 / 517     513 / 702         8
+   forge, unpatched          349 / 582     349 / 754         6
+   forge, patched            392 / 518     514 / 703         8
+   forge, patched, flag ON         ...     350 / 697         6
+```
+
+The patched default reproduces the no-forge baseline to within one token, and
+the flag brings the pinning straight back — which is what makes that row a
+measurement rather than a hope. `full` was also inflating the prompt (754 vs
+703) by replaying reasoning as content; the first patch removes that for free.
+`smoke_test.py` 11/11 against the patched build.
+
+Left alone knowingly: `convert_anthropic.py` has the same hole in a starker form
+(this stack speaks OpenAI, and the Anthropic wire needs a `thinking` block shape
+decided first), and prompt-mode extraction, which is off this stack's path and
+asks a different question.
 
 ## Still open on the engine thread
 
@@ -99,7 +129,12 @@ behaviour a real choice rather than an accident.
    that its corpus is now one command away. Still costs a llama stop (~20 min
    cold reload), still caps at ~64K for the f16 arm, still needs disk checked
    for a full-vocab logits file.
-3. **The fourth forge patch**, if it is wanted — decision, not a defect fix.
+3. **Decide whether to deploy patches 4 and 5.** They are written, measured and
+   committed, and a `docker compose build forge` is all it takes. The evidence is
+   in `context/design/forge-on-the-tool-call-path.md` §5. The one thing a
+   deployment changes that a reader should agree to first: pi will start showing
+   the model's actual sentence on tool-calling turns instead of its reasoning,
+   which is a visible difference in every session.
 4. **Carried, unchanged**: a GPU-heavy foreground VRAM floor is still unmeasured,
    and `eval_expr` still needs `--only eval_expr --repeat 20` at two levels.
 
@@ -124,8 +159,21 @@ behaviour a real choice rather than an accident.
 ## Gates
 
 `test_capture_proxy.py` 61/61, `capture_sessions.py --self-test` 37/37,
-`docker compose config` clean, forge and llama healthy and back on the default
-path (`forge round-trip: 'OK'`) with the capture container stopped.
+`docker compose config` clean, `smoke-test.sh` 11/11 on the live stack and 11/11
+again against the patched test image, forge and llama healthy and back on the
+default path (`forge round-trip: 'OK'`) with every throwaway container removed.
+
+**One thing to own.** The forge restarts in this session overlapped a live pi
+session — it was already 62 messages deep when forge came back from the last one,
+and llama's log shows a ten-minute gap in its big prompts spanning three
+restarts. One of its turns also ran under `keep-last` because it landed inside
+the comparison window. Three of its records (19.9k–21.1k prompt tokens, 16 tools)
+are on the tape at `//d/llm-captures/capture-2026-08-23.jsonl`, recorded without
+its operator knowing capture was on. Left in place pending a decision — it is
+also, awkwardly, exactly the real model-facing workstream the KLD run wants.
+**Check for a running session before touching forge**: `docker logs --since 5m
+qwen38-forge | grep messages=` answers it in one line, and ten minutes of quiet
+is not the same as nobody being there.
 
 ---
 

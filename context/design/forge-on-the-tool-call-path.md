@@ -7,10 +7,10 @@ the live stack; the two headline findings were then re-confirmed with plain
 curl, no capture proxy in the loop, and traced to the line of forge source that
 causes them.*
 
-Nothing in this document is a change to the stack. Two of the three findings
-are defects with a cost that has now been measured, and the fix for the first
-is a fourth build-time patch that has deliberately **not** been applied yet —
-§5 says why, and what it would take.
+§1–§4 are the findings. §5 is what was done about them the same day: two
+build-time patches, both measured against a separately tagged test image with
+the running stack untouched. They are not live — a patch applies at image build
+time, so the containers keep the old behaviour until someone rebuilds.
 
 ## 1. The model's own words never reach the client on a tool-call turn
 
@@ -146,32 +146,80 @@ prefix from growing, and the same workload without forge grows it.** That is a
 throughput question worth an order of magnitude at depth, and the tape can now
 answer it directly on a real session — `cache_n` is on every record.
 
-## 5. What has NOT been changed, and what the fix would be
+## 5. Both are now fixed, and the fixes are measured
 
-`FORGE_REASONING_REPLAY` is still `full`. It was set that way deliberately —
-`.env` records it as "preserve_thinking on the engine side avoids a full KV
-re-prefill every agentic turn", paired with
-`--chat-template-kwargs '{"preserve_thinking": true}'`. §4 puts a question mark
-over that justification, since the replay lands in `content` rather than inside
-a `<think>` block and the measured reuse is identical to `keep-last`'s — but
-three synthetic turns is not the evidence needed to overturn a tuned setting,
-and the honest next step is the same measurement on a real captured session.
+Written the same day as §1–§4, against a SEPARATELY TAGGED test image and a
+throwaway forge container on a spare port, with the running stack never touched.
+Neither is live: patches apply at image build time, so the containers in front of
+you keep the old behaviour until somebody rebuilds.
 
-The fix for §1 is a fourth build-time patch, the same shape as the third:
+**`patches/forge_toolcall_content.py`** gives `ToolCall` a `content` field, has
+the llama.cpp client populate it at both native-mode sites, and has both
+response builders emit the model's content as `content` and its reasoning as
+`reasoning_content`. Matched triple, identical request:
 
-1. give forge's `ToolCall` an optional `content` field,
-2. populate it at the sites `forge/clients/llamafile.py` builds one — the
-   streaming loop already has `choice` in scope, plus the non-streaming sites,
-3. in `tool_calls_to_openai` emit the model's content as `content` and the
-   reasoning as `reasoning_content`, never as content,
-4. same in the streaming delta builder at `convert.py`'s second reasoning site.
+```
+   llama :8080            content "I'm going to look up the current weather in Paris."
+                          reasoning "The user wants me to say one sentence…"
+   forge :8081 unpatched  content "The user wants me to say one sentence…"   <- the reasoning
+                          reasoning (no key at all)
+   forge :8097 patched    content "I'll check the current weather in Paris for you."
+                          reasoning "The user wants me to say one sentence…"
+```
 
-It has not been applied in this session for two reasons worth stating rather
-than working around. It changes the response shape on the production path while
-another thread is running against this stack, and step 3 makes the client-facing
-behaviour of `FORGE_REASONING_REPLAY=full` a genuine choice rather than the
-accident it currently is — which is a decision about this stack, not a bug fix
-to be slipped in with an instrument.
+Same result on the streaming path, which is a separate builder
+(`tool_calls_to_sse_events`) and was tested separately.
+
+**The replay policy survives it, and lands in a better place.** `full` was set
+for KV-prefix reuse via `preserve_thinking`, so the question is whether the
+reasoning still reaches the backend. Captured between the patched forge and
+llama, the assistant history message on turn 2 now reads:
+
+```
+   assistant  content="I'm going to check the current weather in Paris for you."
+              extra=['tool_calls', 'reasoning_content']
+```
+
+Both fields, in the right places. Before the patch that message carried the
+reasoning as `content` and no `reasoning_content` at all — which means the
+replay was landing AFTER the `</think>` block instead of inside it, and could
+never have reproduced the token sequence the model originally generated. The
+patch does not weaken the preserve_thinking argument; it is the first thing that
+makes it structurally possible.
+
+**`patches/forge_merge_across_tools.py`** restricts `_merge_consecutive` to
+messages that are truly adjacent, and puts the cross-tool case behind
+`FORGE_MERGE_ACROSS_TOOLS=1`. Same three-turn conversation, one nonce per arm:
+
+```
+   arm                          turn 0        turn 1          turn 2        msgs
+   direct (no forge)            0 / 395   391 / 517       513 / 702           8
+   forge, unpatched             0 / 396   349 / 582       349 / 754           6
+   forge, patched (default)     0 / 396   392 / 518       514 / 703           8
+   forge, patched, flag ON      0 / …         …           350 / 697           6
+```
+
+The patched default reproduces the no-forge baseline to within a token — 514
+against 513 — with the user turns back in their own positions
+(`system,user,assistant,tool,user,assistant,tool,user`). The flag restores the
+upstream behaviour exactly, which is what makes the row above it a measurement
+rather than a hope: turn it on and the pinning comes straight back.
+
+Note the third column of the unpatched row. `full` was also inflating the prompt
+— 754 tokens against 703 — because the reasoning was being replayed as content
+and accumulating. That goes away with the first patch, for free.
+
+`./scripts/smoke-test.sh`'s eleven checks pass against the patched build,
+including the real tool call.
+
+**What is deliberately still not touched.** `forge/proxy/convert_anthropic.py`
+has the same hole as §1 in a starker form: it appends the reasoning as a `text`
+block and never emits the model's content at all. This stack's client speaks
+OpenAI, and doing it right on the Anthropic wire means deciding how a `thinking`
+block is shaped and signed. Prompt-mode extraction is left alone for a different
+reason: with `FORGE_CAPABILITY=native` it is not on this stack's path, and in
+prompt mode the call was parsed OUT of the text, so "the content that came with
+it" is a genuinely different question.
 
 ## 6. How to reproduce any of it
 
