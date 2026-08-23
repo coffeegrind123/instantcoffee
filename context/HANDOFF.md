@@ -1,3 +1,142 @@
+# Handoff — 2026-08-23 (the engine thread: the divergence read, one measurement, one defect)
+
+Committed as `6ec91c4` on `main`. The delegation-stack thread's in-flight work
+was committed separately as `8000df3` at the operator's instruction; **that
+commit's tests were not run by this session and it is snapshotted, not
+certified.**
+
+Started from the Level1Techs divergence experiments
+(forum.level1techs.com/t/253917) and the HN thread on them. Read them against
+this stack, measured the one exposure they name that this stack had no gate for,
+and found a defect in the instrument on the way.
+
+## The assessment
+
+`context/design/inference-divergence-and-this-stack.md` — read this first, it is
+self-contained. What those experiments actually measured (teacher-forced
+full-vocab logits, top-1 argmax disagreement, with the control that repeated
+same-backend runs are bit-identical), the failure mode they found, which of
+their hazards this stack is exposed to and which it had already closed.
+
+Two live controls in it were run rather than assumed:
+
+```
+   /props chat_template   9,993 chars, 8x reasoning_effort, 29x tool_call
+                          -> the real Qwen3.8 template, NOT a ChatML fallback,
+                             which is the HN thread's most-upvoted claim about
+                             why local models feel dumb
+   /props samplers        temp 1.0 / top_k 20 / top_p 0.95 / min_p 0, every
+                          creative sampler at its disabled value
+                          -> the model card exactly; the article's "temp too low
+                             is why your qwen loops in THINK" does not apply here
+```
+
+## What got measured — literal fidelity at depth, and it is a clean negative
+
+New probe: `scripts/bench_literal.py`, the `literal` compose service,
+`./scripts/bench-literal.sh`. It asks whether exact operational literals survive
+from deep context into a **tool-call argument** — the failure those experiments
+actually found, which is not worse prose but a corrupted port, hostname,
+interface or kwarg inside a structured call.
+
+```
+   run  depths (tok)              calls  literals  non-exact
+   A    2000 control, 4000            4        32          0
+   B    2000 control, 16k/48k/90k    14       112          0
+   C    90000 x3, TEMP 1.0            6        48          0
+   D    2000 control, 8000            4        32          0
+```
+
+224 comparisons, zero corrupted, greedy and at the production sampler alike.
+Full record and limits in `versions.lock:literal_fidelity`.
+
+**What it does NOT say**: that q8_0 KV is free. That needs the f16 arm, which
+does not fit at 96K. It measures one failure mode, not prose or reasoning
+quality at depth.
+
+## What got found — the instrument lies about confidence
+
+**Speculative decoding silently disables per-token logprobs on this stack, and
+reports the missing values as certainty.** Four arms — tool call, plain text,
+temp 0.0, temp 1.0, plus the native `/completion` with `n_probs` — all return
+`top_logprobs` for exactly ONE token, the first (1 of 26, 1 of 19, 1 of 9,
+1 of 12).
+
+Confirmed at the source at the pinned tag, not inferred from the symptom:
+`tools/server/server-context.cpp` @ `b10573` builds every speculatively-accepted
+token as `result.prob = 1.0f; // set later` with a literal
+`// TODO: set result.probs`, and never calls `populate_token_probs()`. The first
+token of a response predates the first draft, which is why exactly one survives.
+
+`logprob: 0.0` is p = 1.0. The API does not say "not computed", it says "the
+model was certain". Not fixable per request — `can_speculate()` is
+`return !!spec;` and sending `"speculative.types": "none"` changed nothing.
+Recorded as `spec_logprobs_note`.
+
+## Method notes that were paid for this session
+
+- **Test a classifier against the real examples, not against its own design.**
+  The first cut had a `len_same` bucket described as "the article's failure".
+  Three of the article's four real cases CHANGE LENGTH. The signature of a
+  flipped token is a shared prefix then divergence, whatever that does to the
+  length. Thirteen unit cases now pin it, four of them the article's own.
+- **A clean negative needs a control that can FAIL.** The shallow control only
+  ever showed the probe passing — every field passed there too, so the scoring
+  path for a WRONG field never executed. A probe that returned `exact`
+  unconditionally would have printed identical output. The detection control
+  re-scores the probe's own real response against deliberately wrong
+  expectations and requires all four corruption classes to be flagged. Costs no
+  extra model call, because mutating the expectation is symmetric with the model
+  having made that mistake.
+- **`docker exec <container> curl` is how you reach a 127.0.0.1-bound service.**
+  The ports are published to the host loopback, which this container is not on.
+- **`/props`'s `default_generation_settings` is per-request DEFAULTS, not server
+  state.** It reports `"speculative.types": "none"` on a server running
+  `--spec-type ngram-simple,draft-mtp`. Checked against `docker logs` before
+  reporting a false alarm.
+- **A grammar changes which of the article's failures are reachable here.**
+  llama.cpp constrains native tool-call output once a call is detected, so the
+  structural failures it measured are largely not available. That is why every
+  field in the probe is a free-form STRING: string content is the part a grammar
+  cannot protect.
+
+## Still open on the engine thread
+
+1. **The q8_0-vs-f16 KLD run at 64K.** `llama perplexity --kl-divergence-base` /
+   `--kl-divergence` IS in the pinned image, reachable as `/app/llama
+   perplexity`. It reports same-top-token agreement — the article's metric,
+   deterministically. Costs a llama stop (~20 min cold reload), caps at ~64K on
+   VRAM for the f16 arm, and the logits file is full-vocab per token so check
+   disk first. **Needs a real captured workstream to be worth running**: the
+   article's own strongest secondary finding is that disagreement is heavily
+   prompt-dependent, so synthetic filler will understate it.
+2. **Nothing captures real workstreams yet.** Everything above is gated on it.
+3. **Carried from the previous engine handoff, unchanged**: a GPU-heavy
+   foreground floor is still unmeasured (provenance, not a blocker — 128K is
+   already refused 95 MiB below it), and `eval_expr` still needs
+   `--only eval_expr --repeat 20` at two levels to be separable.
+
+## Closed, and re-confirmed rather than re-opened
+
+Everything in the previous engine handoff's CLOSED list still holds — 96K,
+128K refused permanently, draft-KV q8_0 rejected, `size_m` 48, effort medium,
+V3 weights, the spec config, both smoke-test bugs. Nothing this session touched
+any of it. `spec_config`'s wording was SCOPED, not changed: "output is
+unchanged" is true of the sampling distribution and was never a claim about the
+arithmetic — `.env`'s own b10573 note has Q4_K crossing MMVQ -> MMQ at verify
+batch > 7, and the live logs show mean draft len 3.70-4.75 for ordinary work
+against 21-25 on the file-rewrite shape, so the kernel switches exactly when the
+model emits long verbatim copies. Untested either way; the point is only that
+"unchanged" never covered it.
+
+## Gates
+
+Smoke test 11/11 on the canonical `./scripts/smoke-test.sh`. `ctx_needle.py`
+re-run after the `probe_lib.py` extraction reproduced its recorded result to the
+token: 90,055 prompt tokens, both needles, 105,025 refused by name.
+
+---
+
 # Handoff — 2026-08-23 (the hand-test session: the unrun test run, and what setting up its control found)
 
 The brief was item 1 of the entry below: the three unseen hand tests, cheapest
