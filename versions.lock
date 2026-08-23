@@ -695,6 +695,15 @@ workstream_capture  = BUILT 2026-08-23. scripts/capture_proxy.py (a transparent
                       pi's `input` EXCLUDES cacheRead (input+cacheRead+output ==
                       totalTokens, verified 829+10839+1159==12827); and
                       `compaction` records rewrite history.
+                      THE GAP IS NOW A NUMBER, because the corpus control fired
+                      on the first real export: the deepest imported session
+                      (150 turns, 162 tool calls) tokenizes to 88,185 against
+                      the 94,164 the server itself reported — delta -5,979,
+                      exit code 1, SUSPECT. That is 6.3% of the prompt and it is
+                      the tool block (`tools: 0` in the sidecar). A KLD run fed
+                      from a transcript measures a prompt the model never saw.
+                      --allow-gaps still writes the file for prose-at-depth
+                      work; the exit code and the delta stay.
                       RUNS AS ROOT (user: "0:0"), same as the downloader against
                       MODELS_DIR: Docker Desktop presents a bind mount as
                       root:root 0755 and uid 1000 cannot write it. Found by the

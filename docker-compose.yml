@@ -393,6 +393,11 @@ services:
       CAPTURE_DIR: /captures
     volumes:
       - "${CAPTURES_DIR}:/captures"
+      # pi's transcripts, read-only. Without this `capture.sh import-pi` fails
+      # with FileNotFoundError on a path that plainly exists on the host — the
+      # container simply has no view of it. Read-only because this service only
+      # ever reads them, and they are the operator's real work.
+      - "${PI_SESSIONS_DIR}:/pi-sessions:ro"
 
 # ---------------------------------------------------------------------------
 # Named volumes

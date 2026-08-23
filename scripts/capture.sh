@@ -182,7 +182,21 @@ case "${1:-}" in
   index)      shift; sessions_run --index "$@" ;;
   show)       shift; [[ $# -ge 1 ]] || die "usage: capture.sh show <session-id>"; sessions_run --show "$@" ;;
   export)     shift; [[ $# -ge 1 ]] || die "usage: capture.sh export <session-id> --out FILE"; sessions_run --export "$@" ;;
-  import-pi)  shift; [[ $# -ge 1 ]] || die "usage: capture.sh import-pi <transcript.jsonl>..."; sessions_run --import-pi "$@" ;;
+  import-pi)  shift; [[ $# -ge 1 ]] || die "usage: capture.sh import-pi <transcript.jsonl>..."
+              # The transcripts live on the host; the container sees them at
+              # /pi-sessions. Rewrite here so the command in the README is the
+              # command that works — before this, the documented invocation
+              # failed with FileNotFoundError on a path that plainly exists.
+              HOST_SESSIONS="$(agent_dir)/sessions"
+              MAPPED=()
+              for a in "$@"; do
+                case "$a" in
+                  "${HOST_SESSIONS}"/*) MAPPED+=("/pi-sessions/${a#"${HOST_SESSIONS}/"}") ;;
+                  /pi-sessions/*)       MAPPED+=("$a") ;;
+                  *) die "capture.sh import-pi: '$a' is not under ${HOST_SESSIONS}, which is the only directory mounted into the container (see PI_SESSIONS_DIR in .env)" ;;
+                esac
+              done
+              sessions_run --import-pi "${MAPPED[@]}" ;;
   self-test)  shift
               python3 "${REPO_ROOT}/scripts/test_capture_proxy.py" || exit 1
               python3 "${REPO_ROOT}/scripts/capture_sessions.py" --self-test ;;

@@ -256,10 +256,15 @@ asks a different question.
 
 ## Still open on the engine thread
 
-1. **Take a tape of a REAL working session.** Everything above is a probe of the
-   instrument. `capture.sh on`, work normally, `capture.sh off` — then `export`
-   gives the KLD corpus, and `cache_n` on every record answers the prefix
-   question at 90k instead of at 700 tokens.
+1. **Take a tape of a REAL working session — and it is now the ONLY way to get
+   the corpus.** `capture.sh on`, work normally, `capture.sh off`. This was
+   tested rather than assumed: exporting the deepest imported pi transcript
+   (150 turns, 162 tool calls) fires the control — 88,185 tokens against the
+   94,164 the server reported, delta -5,979, exit 1 — because a transcript has
+   no tool schemas and that block is 6.3% of the prompt. A transcript corpus
+   measures a prompt the model never saw. The four records already captured from
+   a real session in this session's window DO carry the tool block, which is
+   what a usable corpus looks like.
 2. **The q8_0-vs-f16 KLD run at 64K**, unchanged from the last handoff except
    that its corpus is now one command away. Still costs a llama stop (~20 min
    cold reload), still caps at ~64K for the f16 arm, still needs disk checked

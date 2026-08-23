@@ -36,7 +36,22 @@ do not contain, checked against a real transcript rather than assumed:
 
 Those two absences are most of the prompt, and they are precisely the surface
 the divergence article's failures live on — a tool-call envelope and its
-arguments. So every imported record carries `"gaps": ["system_prompt",
+arguments. **They have since been measured, by the corpus control in §6 doing
+its job on real data.** Exporting the deepest imported session — 150 turns, 162
+tool calls — produced:
+
+```
+   CONTROL: server reported 94164 tokens for this exchange, the corpus
+            tokenizes to 88185 (delta -5979) -> SUSPECT
+   exit code 1, and the tool says: do not run a fidelity measurement on this
+```
+
+**5,979 tokens, 6.3% of the prompt, and the part that carries the failure
+surface**: `tools=0` in the sidecar. So a KLD run fed from a transcript would be
+measuring a prompt the model never saw, and would look entirely reasonable while
+doing it. `--allow-gaps` writes the file anyway, for whoever wants prose-at-depth
+rather than tool fidelity, but the exit code stays 1 and the sidecar keeps the
+delta. So every imported record carries `"gaps": ["system_prompt",
 "tool_schemas"]`, and `--export` refuses to build a KLD corpus from a gapped
 record without `--allow-gaps`. A transcript is a reconstruction of the
 conversation; it is not the token stream.
