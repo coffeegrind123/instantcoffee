@@ -142,7 +142,7 @@ services:
     ports:
       - "${BIND_ADDR}:${FORGE_PORT}:8081"
     command: >
-      --backend-url http://llama:8080
+      --backend-url ${FORGE_BACKEND_URL:-http://llama:8080}
       --backend-capability ${FORGE_CAPABILITY}
       --budget-tokens ${CTX_SIZE}
       --max-retries ${FORGE_MAX_RETRIES}
@@ -297,6 +297,91 @@ services:
       MODEL_ALIAS: ${MODEL_ALIAS}
       CTX_SIZE: ${CTX_SIZE}
       LITERAL_TIMEOUT: ${LITERAL_TIMEOUT:-900}
+
+  # ---------------------------------------------------------------------------
+  # capture — the workstream tape. OFF unless FORGE_BACKEND_URL points at it.
+  #
+  #   ./scripts/capture.sh on      start it and repoint forge
+  #   ./scripts/capture.sh off     repoint forge back and stop it
+  #
+  # In the default position (forge -> capture -> llama) the tape is what the
+  # MODEL saw, which is the only tape a fidelity measurement can use: pi's
+  # system prompt and tool schemas are on the wire by then, and so are forge's
+  # own rewrites. See .env's capture section and
+  # context/design/inference-divergence-and-this-stack.md §7.
+  #
+  # No published port. Nothing outside the compose network should reach it, and
+  # a tape recorder that is reachable from the LAN is a transcript leak.
+  #
+  # The healthcheck probes /capture/health, which the proxy answers ITSELF and
+  # never forwards — the same lesson forge's /forge/health records: a check that
+  # relays the backend's readiness marks this container unhealthy for the whole
+  # ~24 minute cold load of a model that is loading perfectly normally.
+  # ---------------------------------------------------------------------------
+  capture:
+    profiles: ["capture"]
+    image: qwen38-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    container_name: qwen38-capture
+    restart: unless-stopped
+    # root, for the same reason the downloader is run --user 0:0 against
+    # MODELS_DIR: Docker Desktop presents a bind mount as root:root 0755, and
+    # the image's `forge` user (uid 1000) cannot write to it. Found the honest
+    # way — the first live run logged
+    #     [capture] recorder write failed (PermissionError(13, ...)); proxying unaffected
+    # and kept serving, which is the "a recording failure never fails a request"
+    # guarantee doing its job on day one. The tape was empty and SAID so, rather
+    # than a healthy-looking service quietly recording nothing.
+    user: "0:0"
+    entrypoint: ["python", "/work/scripts/capture_proxy.py"]
+    command: >
+      --upstream ${CAPTURE_UPSTREAM:-http://llama:8080}
+      --listen-host 0.0.0.0
+      --listen-port 8082
+      --out-dir /captures
+      --position ${CAPTURE_POSITION:-forge-llama}
+      --max-bytes ${CAPTURE_MAX_BYTES:-8589934592}
+      --upstream-timeout ${FORGE_BACKEND_TIMEOUT:-600}
+    volumes:
+      - "${CAPTURES_DIR}:/captures"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8082/capture/health', timeout=4).status==200 else 1)"
+      interval: 15s
+      timeout: 6s
+      start_period: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # One-shot: read the tape. Runs INSIDE the compose network because --export
+  # renders through llama's own /apply-template and tokenizes with its tokenizer.
+  #   ./scripts/capture.sh index
+  #   ./scripts/capture.sh export s7f3a91 --out /captures/corpus/deep.txt
+  # ---------------------------------------------------------------------------
+  sessions:
+    profiles: ["tools"]
+    image: qwen38-forge/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    # Same bind-mount ownership as the capture service above; --export writes
+    # the corpus and its sidecar into /captures.
+    user: "0:0"
+    entrypoint: ["python", "/work/scripts/capture_sessions.py"]
+    environment:
+      LLAMA_URL: http://llama:8080
+      CAPTURE_DIR: /captures
+    volumes:
+      - "${CAPTURES_DIR}:/captures"
 
 # ---------------------------------------------------------------------------
 # Named volumes

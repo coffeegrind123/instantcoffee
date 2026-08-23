@@ -79,7 +79,8 @@ LABEL org.opencontainers.image.title="qwen3.8-forge proxy" \
 COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py \
      scripts/bench.py scripts/bench_repeat.py scripts/bench_quality.py \
      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py \
-     scripts/probe_lib.py /work/scripts/
+     scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py \
+     /work/scripts/
 # probe_lib.py is in that list even though nothing runs it directly: ctx_needle.py
 # and bench_literal.py both import it, and a missing IMPORT fails at start-up with
 # ModuleNotFoundError rather than with the "can't open file" that made the

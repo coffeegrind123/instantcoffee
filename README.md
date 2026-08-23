@@ -187,6 +187,11 @@ cd ~/my-project && qpi
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --control` | Prove the quality harness before trusting it: reference implementations must score 5/5 or the grid refuses to run |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000 --control 105000` | Prove a context window is real: a nonce at each end of the document must come back, and a prompt past the limit must be refused by name |
 | `./scripts/bench-literal.sh` | Do exact operational literals — a UUID, a commit hash, `GigabitEthernet0/0/1.201`, `page_size=112` — survive from deep context into a TOOL-CALL ARGUMENT? Two controls run first: the identical request at ~2k, so a failure at depth can be told apart from a probe that never worked, and a detection control that re-scores that real response against deliberately wrong expectations, so a clean result cannot come from a probe that is simply blind |
+| `./scripts/capture.sh on` | Start recording real workstreams: forge is repointed at the capture container, so the tape is what the MODEL saw — pi's system prompt, the tool schemas, and forge's own rewrites. `off` puts it back. Off by default; the override lives in the gitignored `.env.local` |
+| `./scripts/capture.sh index` | What workstreams are on the tape, rebuilt from a flat log by longest-common-prefix over per-message hashes. `rw` counts history REWRITES — a turn whose prompt was not the previous one plus a suffix |
+| `./scripts/capture.sh export s7f3a91 --out /captures/corpus/deep.txt` | Turn one workstream into a `llama-perplexity --kl-divergence-base` corpus, rendered through the server's own `/apply-template` and checked against the token count the server itself reported for that request |
+| `./scripts/capture.sh import-pi ~/.pi/agent/sessions/<slug>/*.jsonl` | Read pi's own transcripts into the same shape — real sessions already on disk. They carry no system prompt and no tool schemas, so every record is stamped `gaps` and refused for a corpus without `--allow-gaps` |
+| `./scripts/capture.sh self-test` | 98 checks over the recorder and the session rebuilder, no server needed. Includes the two controls that can fail: an unbuffered-stream check and a recorder that raises on every write |
 | `./scripts/bench-literal.sh --sweep 2000,16000,48000,90000 --repeat 3` | The same probe as a depth sweep. Reports per-field exact-match rates and classifies each miss — `tail_swap` and `dropped_head` are flipped tokens, `truncated` and `missing` are usually the model declining to copy |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
@@ -2046,6 +2051,20 @@ scripts/
                         one per observed failure surface, at both ends of the
                         document. The shallow control is on by default and is
                         what makes a deep failure interpretable
+  capture_proxy.py      the workstream tape: a transparent recording reverse
+                        proxy that sits between forge and llama (or in front of
+                        forge) and writes one JSONL line per completion —
+                        full request, assembled response, timings, and a
+                        per-message hash list. Streams are forwarded chunk by
+                        chunk, never buffered, and a recording failure can never
+                        fail a request. --self-test runs the checks
+  capture_sessions.py   reads the tape back: rebuilds workstreams by chaining on
+                        those hashes, classifies each join (continuation / retry
+                        / rewrite), exports a KLD corpus pinned to the server's
+                        own token count, and imports pi's transcripts with their
+                        gaps named
+  test_capture_proxy.py the recorder's unit + live-socket suite, including the
+                        no-buffering control and the exploding-recorder control
   probe_lib.py          shared by ctx_needle.py and bench_literal.py: the nonce,
                         the varied filler, and the document builder that
                         CALIBRATES its length against the server's tokenizer.

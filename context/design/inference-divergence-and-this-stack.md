@@ -333,10 +333,26 @@ Recorded as `spec_logprobs_note` in `versions.lock`.
 1. **Amend `spec_config`'s "output is unchanged" to scope it to the sampling
    distribution.** Free, correct, and it stops a future session from citing the
    line as evidence that the kernel path is irrelevant.
-2. **Start keeping real workstream captures.** Every experiment above is gated
-   on having one, and the article's side-quest post makes the same point: a
-   model router that saves sessions is the prerequisite for all of it. Nothing
-   else here can be done well without it.
+2. ~~**Start keeping real workstream captures.**~~ **DONE, 2026-08-23.**
+   `scripts/capture_proxy.py`, `scripts/capture_sessions.py`,
+   `scripts/capture.sh`, the `capture` and `sessions` compose services, 98 unit
+   checks. Full account in `context/design/workstream-capture.md`; the entry is
+   `versions.lock:workstream_capture`.
+
+   Three things about it matter more than the fact that it exists.
+   **The premise was partly wrong**: pi already keeps client-side transcripts —
+   706 recoverable turns on this box, one of them 150 turns and 162 tool calls
+   at 93,876 prompt tokens — and `--import-pi` reads them. What they lack is the
+   system prompt and the tool schemas, which is most of the prompt and all of
+   the surface this document is about, so they are labelled `gaps` and refused
+   for a KLD corpus without an explicit override.
+   **The corpus builder needed a control**, and it caught a real defect in
+   itself: the obvious render drops a final assistant turn's tool call
+   entirely (measured: 833 tokens against the server's own 905), and the
+   sentinel-cut render reproduces the token stream exactly (905, delta +0).
+   **And the tape immediately found something it was not looking for** — see
+   `context/design/forge-on-the-tool-call-path.md`, which is the first thing a
+   model-facing tape is good for and is not about quantisation at all.
 3. ~~**Add a deep literal-copy-into-tool-call task to the bench.**~~ **DONE,
    2026-08-23.** `scripts/bench_literal.py`, the `literal` compose service and
    `./scripts/bench-literal.sh`. Eight literal shapes at both ends of the
@@ -358,6 +374,20 @@ Recorded as `spec_logprobs_note` in `versions.lock`.
 4. **Still open, and still the one that needs a reload: the q8_0-vs-f16 KLD
    run at 64K.** It answers §4 properly, and its result would price the real trade —
    96K at q8_0 against ~64K at f16 — which is currently settled by default.
+   **The corpus it was waiting for is now buildable in one command**
+   (`./scripts/capture.sh export <id> --out /captures/corpus/deep.txt`), and the
+   corpus that comes out is pinned to the server's own token counter. What is
+   still needed is a real captured session to point it at — capture has to be
+   ON for a working session first, which is a decision for whoever is next at
+   the keyboard, not something to leave running by default.
+
+5. **New, and cheap, because the tape carries it already: does forge's history
+   rewriting cost a re-prefill at depth?** Every record now holds `cache_n`, so
+   the question in §4 of `forge-on-the-tool-call-path.md` — where a clean
+   three-turn measurement shows the reusable prefix growing without forge and
+   pinned with it — is answerable on a real 90k session without any new
+   instrument. It is a throughput question, not a fidelity one, but it is the
+   largest unpriced number on the production path.
 
 ## 8. What this does NOT change
 

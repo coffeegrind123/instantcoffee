@@ -642,3 +642,112 @@ draft_depth_note    = settled, and the 2026-08-17 open question is now CLOSED.
                       token costs ~23.4% against 6.7% at BF16 (llama.cpp#27342).
                       draft/cycle pinning against the ceiling is therefore NOT
                       on its own a reason to raise n-max.
+workstream_capture  = BUILT 2026-08-23. scripts/capture_proxy.py (a transparent
+                      recording reverse proxy), scripts/capture_sessions.py
+                      (rebuild workstreams from a flat tape, export a KLD
+                      corpus, import pi's own transcripts),
+                      scripts/capture.sh, the `capture` and `sessions` compose
+                      services, 61 + 37 unit checks. Closes item 2 of
+                      context/design/inference-divergence-and-this-stack.md §7,
+                      which every remaining fidelity experiment was gated on.
+                      Full account: context/design/workstream-capture.md.
+                      OFF BY DEFAULT. Nothing records until `capture.sh on`,
+                      which writes FORGE_BACKEND_URL into .env.local (gitignored
+                      — a capture session cannot be committed by accident) and
+                      recreates forge. `off` restores it. The KV cache lives in
+                      llama, which does not move, so the flip costs seconds.
+                      POSITION IS RECORDED ON EVERY LINE. forge-llama is what
+                      the MODEL saw (system prompt, tool schemas and forge's own
+                      rewrites all applied); client-forge is what the AGENT
+                      asked for. Only the first can feed a fidelity measurement,
+                      and a tape is not interpretable without knowing which it
+                      is.
+                      THE CORPUS IS PINNED TO THE SERVER'S OWN COUNTER. --export
+                      renders through llama's /apply-template and tokenizes with
+                      llama's tokenizer, then compares against
+                      usage.prompt_tokens + usage.completion_tokens for that
+                      request. Measured on a real 3-turn tool-calling capture:
+                        naive prefill render   833 tokens (server said 905)  -72
+                        sentinel-cut render    905 tokens (server said 905)   +0
+                      The -72 is the whole tool call: this template emits a
+                      tool_call block only for an assistant turn that is NOT
+                      last, so the obvious render silently drops the one thing
+                      the KLD run exists to look at. The exporter renders the
+                      final turn in HISTORY position behind a sentinel and cuts
+                      at the sentinel's own <|im_start|>.
+                      USAGE IS DERIVED WHEN THE STREAM OMITS IT. llama sends no
+                      `usage` in SSE unless asked, but `timings` carries the
+                      counts. Verified as a matched pair: prompt_n 126 +
+                      cache_n 383 == usage.prompt_tokens 509, predicted_n 226 ==
+                      completion_tokens 226. Derived values are marked
+                      derived_from:"timings". draft_n / draft_n_accepted land on
+                      the same record, so per-request speculative acceptance is
+                      now attributable to the prompt that caused it.
+                      pi's OWN TRANSCRIPTS ARE A SECOND SOURCE, with named
+                      limits. ~/.pi/agent/sessions/<slug>/*.jsonl — 706
+                      recoverable turns on this box, deepest 93,876 prompt
+                      tokens over 150 turns with 162 tool calls. They carry NO
+                      system prompt and NO tool schemas (checked, not assumed),
+                      so every imported record is stamped gaps:[system_prompt,
+                      tool_schemas] and --export refuses them without
+                      --allow-gaps. Also handled, each found by running against
+                      real files: /loop injects user turns as `custom_message`;
+                      pi's `input` EXCLUDES cacheRead (input+cacheRead+output ==
+                      totalTokens, verified 829+10839+1159==12827); and
+                      `compaction` records rewrite history.
+                      RUNS AS ROOT (user: "0:0"), same as the downloader against
+                      MODELS_DIR: Docker Desktop presents a bind mount as
+                      root:root 0755 and uid 1000 cannot write it. Found by the
+                      recorder logging PermissionError and CONTINUING TO PROXY,
+                      which is the guarantee it is built around.
+
+forge_tool_call_path = MEASURED 2026-08-23, two defects and a cost, all from
+                      matched pairs. Full account:
+                      context/design/forge-on-the-tool-call-path.md. NOTHING
+                      HAS BEEN CHANGED IN RESPONSE — this is the record, not a
+                      decision.
+                      (1) ON A TOOL-CALL TURN THE MODEL'S TEXT NEVER REACHES THE
+                      CLIENT. llama returned content "I'm going to look up the
+                      current weather in Paris for you." plus reasoning plus the
+                      call; forge returned the REASONING as content, no
+                      reasoning_content key, and the sentence gone. Structural,
+                      not a patch of ours: forge/proxy/convert.py's
+                      tool_calls_to_openai builds its message from ToolCall
+                      objects, and a forge ToolCall has a `reasoning` field and
+                      no content field at all. Same hole
+                      patches/forge_reasoning_passthrough.py already closed for
+                      TextResponse; on an agent loop the tool-call path is
+                      nearly every turn.
+                      With FORGE_REASONING_REPLAY=full the reasoning arrives as
+                      `content`, i.e. as a text block — which is exactly what
+                      that patch's docstring says must not happen, because the
+                      Matrix channel allowlists text blocks. keep-last puts it
+                      in reasoning_content (leak closed) and content comes back
+                      empty (sentence still lost). Measured both ways.
+                      (2) forge MINTS NEW tool-call ids and RE-ENCODES arguments
+                      (json.dumps of parsed args), so {"city":"Paris"} reaches
+                      the client as {"city": "Paris"}. Values survive, bytes do
+                      not. literal_fidelity's 224/224 stands — it scores parsed
+                      VALUES — but this is a second reason, alongside the
+                      grammar, that structural envelope failures are not
+                      reachable through the forge path.
+                      (3) forge REWRITES HISTORY: every user turn after the
+                      first is folded into the first user message, so the newest
+                      instruction arrives mid-prompt. Paired client-side and
+                      model-side tapes of the same turn, 8 messages -> 6.
+                      AND THAT PINS THE PREFIX CACHE. Three arms, one nonce
+                      each so none warms another, cache_n from llama itself:
+                        direct (no forge)   0/395   391/517   513/702
+                        forge, keep-last    0/399   352/517   352/635
+                        forge, full         0/396   349/582   349/754
+                      Direct, the reused prefix GROWS with the conversation;
+                      through forge it is pinned at the point the rewrite
+                      begins. `full` also inflates the prompt (754 vs 702 vs
+                      635 at turn 2) because replayed reasoning accumulates as
+                      content. THREE SYNTHETIC TURNS AT ~700 TOKENS IS NOT
+                      ENOUGH to overturn FORGE_REASONING_REPLAY=full, which was
+                      set for KV-prefix reuse, and llama's checkpoints and
+                      f_sim_best slot selection can salvage reuse this argument
+                      does not see. The same measurement on a real captured
+                      session is now one command away, and cache_n is on every
+                      record.

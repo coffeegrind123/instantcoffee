@@ -35,7 +35,8 @@ jobs:
           for f in scripts/smoke_test.py scripts/test_repeat_detector.py \
                    scripts/ab_think_lang.py scripts/test_cjk_detector.py \
                    scripts/download_model.py scripts/browser_cli.py \
-                   scripts/test_browser_cli.py; do
+                   scripts/test_browser_cli.py scripts/capture_proxy.py \
+                   scripts/capture_sessions.py scripts/test_capture_proxy.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
@@ -104,6 +105,22 @@ jobs:
 
       - name: CJK leak detector unit tests
         run: python scripts/test_cjk_detector.py
+
+      # The capture proxy sits in the production path between forge and llama, so
+      # two of its promises are the kind that fail silently and both have a
+      # control that can FAIL: an upstream that sleeps mid-stream (catching any
+      # future edit that buffers the body), and a recorder that raises on every
+      # write, checked down a KEEP-ALIVE connection because the damage only
+      # shows on the second request. No server, no GPU, no compose.
+      - name: Capture proxy unit tests
+        run: python scripts/test_capture_proxy.py
+
+      # The session rebuilder decides what a workstream IS out of a flat tape,
+      # and the corpus exporter decides what the KLD run will measure. A silent
+      # regression there produces a plausible corpus that is not the token
+      # stream the model saw.
+      - name: Capture session rebuilder unit tests
+        run: python scripts/capture_sessions.py --self-test
 
       # The browser CLI turns shell words into JSON arguments for a tool it has
       # never seen, from that tool's own schema. A regression there is silent:

@@ -1,3 +1,134 @@
+# Handoff — 2026-08-23 (the engine thread: the tape exists, and it found two things on day one)
+
+Continues the engine thread's previous section, further down this file ("the
+divergence read, the literal probe and the logprobs defect", `6eed13c`). Its
+open item 2 said **nothing captures real workstreams yet, and everything is
+gated on it**. That is now built, and the first tape taken found two defects on
+the production path that have nothing to do with quantisation.
+
+## What was built
+
+`context/design/workstream-capture.md` — read this first.
+
+```
+   scripts/capture_proxy.py      transparent recording reverse proxy, stdlib only
+   scripts/capture_sessions.py   rebuild workstreams, export a KLD corpus, import pi
+   scripts/test_capture_proxy.py 61 checks incl. two that can FAIL by design
+   scripts/capture.sh            on / off / status / index / show / export / import-pi
+   docker-compose.yml            `capture` (profile capture) + `sessions` (tools)
+   .env                          FORGE_BACKEND_URL, CAPTURES_DIR, CAPTURE_POSITION,
+                                 CAPTURE_MAX_BYTES — all off by default
+```
+
+`./scripts/capture.sh on` puts the recorder between forge and llama, so the tape
+is **what the model saw**; run `capture_proxy.py` in front of forge instead and
+you get **what the agent asked for**. Both were taken, and §4 below is what
+happens when you hold them next to each other.
+
+Verified end to end against the live stack, not just unit-tested: three real
+tool-calling turns through the full production path, indexed, and exported to a
+corpus that tokenizes to **905 tokens against the 905 the server itself
+reported** — delta +0.
+
+## Three things the build itself established
+
+- **The premise was partly wrong, and checking it was worth more than the item.**
+  pi already keeps client-side transcripts — 706 recoverable turns on this box,
+  the deepest 93,876 prompt tokens over 150 turns with 162 tool calls.
+  `--import-pi` reads them. They carry no system prompt and no tool schemas
+  (checked, not assumed), which is most of the prompt and all of the divergence
+  article's failure surface, so they are stamped `gaps` and refused for a corpus
+  without `--allow-gaps`.
+- **The corpus builder needed a control and the control caught it.** This
+  template emits a tool_call block only for an assistant turn that is NOT last,
+  so the obvious render drops the final tool call entirely — 833 tokens against
+  the server's 905, and the missing 72 are the whole call. Nothing about the
+  output looks wrong. The exporter now renders the last turn in history position
+  behind a sentinel, and every export is pinned to the server's own count.
+- **The counts are on the wire even when `usage` is not.** llama omits `usage`
+  from SSE unless asked; `timings` carries it. `prompt_n 126 + cache_n 383 ==
+  usage.prompt_tokens 509`, `predicted_n 226 == completion_tokens 226`, verified
+  as a matched pair. Derived values say so. `draft_n` / `draft_n_accepted` ride
+  along, so **per-request speculative acceptance is now attributable to the
+  prompt that caused it** — previously only visible in llama's log with nothing
+  tying it to a request.
+
+## What the tape found — `context/design/forge-on-the-tool-call-path.md`
+
+Not what it was pointed at. Re-confirmed with plain curl, no capture in the
+loop, and traced to four lines of `forge/proxy/convert.py`.
+
+1. **On a tool-call turn the model's own text never reaches the client.** llama
+   sent content "I'm going to look up the current weather in Paris for you." plus
+   reasoning plus the call; forge delivered the **reasoning** as content, no
+   `reasoning_content` key, sentence gone. `tool_calls_to_openai` builds its
+   message from `ToolCall` objects, and a forge `ToolCall` carries `reasoning`
+   and **no content field at all**. With `FORGE_REASONING_REPLAY=full` that
+   reasoning arrives as a text block — which is exactly what
+   `patches/forge_reasoning_passthrough.py`'s own docstring says must not happen,
+   on the path that patch does not cover. `keep-last` closes the leak; neither
+   recovers the sentence.
+2. **forge rewrites history**: every user turn after the first is folded into the
+   FIRST user message, so the newest instruction arrives mid-prompt. Eight
+   messages become six, shown by the paired tapes.
+3. **And that pins the prefix cache.** Three arms, one nonce each so none warms
+   another, `cache_n` from llama:
+
+   ```
+      direct (no forge)     0/395    391/517    513/702      <- reuse GROWS
+      forge, keep-last      0/399    352/517    352/635      <- pinned
+      forge, full           0/396    349/582    349/754      <- pinned, +19% prompt
+   ```
+
+**Nothing was changed in response.** `FORGE_REASONING_REPLAY` is back at `full`
+where it started; three synthetic turns at ~700 tokens is not evidence enough to
+overturn a setting tuned for KV-prefix reuse, and llama's checkpoints and
+`f_sim_best` selection can salvage reuse this measurement does not see. The fix
+for (1) is a fourth build-time patch, sketched in §5 of that document, left
+unapplied deliberately: it changes the production response shape while another
+thread is running against this stack, and it makes `full`'s client-facing
+behaviour a real choice rather than an accident.
+
+## Still open on the engine thread
+
+1. **Take a tape of a REAL working session.** Everything above is a probe of the
+   instrument. `capture.sh on`, work normally, `capture.sh off` — then `export`
+   gives the KLD corpus, and `cache_n` on every record answers the prefix
+   question at 90k instead of at 700 tokens.
+2. **The q8_0-vs-f16 KLD run at 64K**, unchanged from the last handoff except
+   that its corpus is now one command away. Still costs a llama stop (~20 min
+   cold reload), still caps at ~64K for the f16 arm, still needs disk checked
+   for a full-vocab logits file.
+3. **The fourth forge patch**, if it is wanted — decision, not a defect fix.
+4. **Carried, unchanged**: a GPU-heavy foreground VRAM floor is still unmeasured,
+   and `eval_expr` still needs `--only eval_expr --repeat 20` at two levels.
+
+## Method notes paid for this session
+
+- **A control is only a control if removing the guard makes it fail.** The
+  "a recording failure never fails a request" check passed even with the guard
+  removed, because the response was already flushed — only a SECOND request down
+  the same keep-alive connection showed the `RemoteDisconnected`. Verified by
+  deleting the guard, watching it fail, and putting it back.
+- **Run against real data before believing a parser.** Every one of the three pi
+  import bugs (`/loop`'s `custom_message` user turns, `input` excluding
+  `cacheRead`, `compaction` rewriting history) was invisible to synthetic
+  fixtures and obvious on the first real transcript.
+- **Rank in one unit.** The deepest-turn picker compared 509 TOKENS against 8
+  MESSAGES and took whichever number was bigger. It now uses tokens when every
+  record has them and request bytes otherwise, and prints which.
+- **`docker compose` here reads `.env,.env.local`** via `COMPOSE_ENV_FILES` in
+  `scripts/lib.sh`, which is why `capture.sh` can toggle the backend without
+  touching the committed `.env`.
+
+## Gates
+
+`test_capture_proxy.py` 61/61, `capture_sessions.py --self-test` 37/37,
+`docker compose config` clean, forge and llama healthy and back on the default
+path (`forge round-trip: 'OK'`) with the capture container stopped.
+
+---
+
 # Handoff — 2026-08-23 (AO7 finished, and a scan that could not fail)
 
 Third session of the day, continuing the entry below. Its item 1 was **finish
