@@ -112,6 +112,11 @@ lies in the other.** The shipped control reads `jiti(path)`.
 3. **Run the corpus before trusting it.** The one-liner is in
    `probes/README.md` under *"Run them. The corpus rots"*. Worth doing at the
    START of a pass, not the end.
+4. **Outside this repo, and cheap:** `/free`'s Stage 4b cannot see a CPU-only
+   runaway, because it gates on `RSS > 1500 MB` before it samples anything. One
+   was found by hand on this box at 22 MB and 100% of a core for ten hours. See
+   the housekeeping section below for the shape of the fix. Ask before editing —
+   it is the user's global skill file.
 
 ## Still open, carried
 
@@ -125,11 +130,44 @@ lies in the other.** The shipped control reads `jiti(path)`.
      always echoes numbers.
 ```
 
-## Housekeeping seen but not touched
+## Housekeeping: the box, and a defect in the tool that cleans it
 
 A stray `node --experimental-strip-types tests/json-store.test.ts` (pid 853149)
-has been at ~95% of a core for ten hours — an abandoned run from another session,
-not this work. `/free` is the lever.
+had been at ~95% of a core for ten and a half hours — an abandoned run from
+another session, not this work. **Reaped.** It exited on SIGTERM and its runner
+(`853139`, already re-parented to init) self-exited once the child was gone.
+
+```
+   load 1m    10.26  ->  6.06
+   load 5m    11.38  ->  7.93
+   load 15m   13.46  -> 11.07   (still draining at the last sample)
+   mem used   14 Gi  ->  13 Gi
+```
+
+Nothing else was reapable: **eight live sessions, oldest last turn 1h against a
+24h threshold**, and `/free`'s own sound per-project bound agreed that all could
+be active. Two orphaned `chrome_crashpad_handler` processes were left alone by
+rule (judge from the browser, and there was no orphaned browser); the eight
+zombies all hang off LIVE `bridge_mcp_ghidra` bridges and will clear when those
+exit. The npm cache (~1.8 GB) and `file-history` (113 MB) were left in place.
+
+**The transferable part is that `/free` could not see it.** Its Stage 4b runaway
+detector gates on `RSS > 1500 MB` before it measures anything else:
+
+```
+   the process        22 MB RSS,  100% of one core,  10h 31m,  state R
+   the filter         RSS > 1500 MB  ->  never sampled, never reported
+```
+
+So a **CPU-only runaway is invisible to the stage written to find runaways**, and
+it was found here only because a human had noticed it in a `ps` listing hours
+earlier. That is the same shape as everything else on this pass's ledger — an
+instrument whose gate excludes the case it exists for — and it is a defect in
+`~/.claude/skills/free/SKILL.md`, not in this repo. **The fix is to make Stage 4b
+sample CPU for every long-lived process and treat "large RSS" and "sustained
+CPU" as two independent triggers, not one conjunction.** Not done; it is the
+user's file and outside this repo's mandate, so it is written down rather than
+edited.
 
 ---
 
