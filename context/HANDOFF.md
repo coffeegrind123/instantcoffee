@@ -1,3 +1,309 @@
+# Handoff — 2026-08-23 (capacity pass: 96K adopted, and one lever was imaginary)
+
+`CTX_SIZE` is now **98304**, proven rather than advertised. The other two open
+items from the pass below are closed: `size_m` is not a VRAM lever and the note
+saying it was is corrected, and reasoning needed no run at all. A fourth thing
+turned up that nobody was looking for and is deliberately NOT adopted.
+
+- **96K adopted and verified.** Smoke 11/11, and `ctx_needle.py` retrieved a
+  nonce from EACH END of a 90,055-token document while a 105,026-token control
+  was refused by name.
+- **`size_m` stays at 48.** Swept 48/32/24/16: VRAM flat within **6 MiB**, while
+  draft/cycle falls 24.98 -> 11.60. The default is cheaper AND drafts more.
+- **128K refused.** It loads, but at other-tenant highs it leaves **96 MiB**.
+- **The MTP draft KV is f16, not q8_0** — undocumented, and a real ~180 MiB
+  lever at 96K. Measured, not adopted: its decode arm was contention-wrecked.
+- **Three bugs found by running things**, one of them a README command that has
+  never worked.
+
+## What 96K cost, from the engine rather than from nvidia-smi
+
+`-lv 5` CUDA0 allocation:
+
+| | 64K | 96K | 128K |
+|---|---:|---:|---:|
+| model | 16,053 | 16,053 | 16,053 |
+| main KV (16 layers, q8_0) | 2,176 | 3,264 | 4,352 |
+| main compute | ~400 | 560 | 720 |
+| draft KV (1 layer, **f16**) | 256 | 384 | 512 |
+| draft compute | ~132 | 164 | 196 |
+| **CUDA0 total** | **19,017** | **20,426** | **21,834** |
+
+Main KV is 34.0 KiB/token, draft KV 4.0. Compute buffers scale with context too
+— they are not the constant they were assumed to be. Free VRAM at 96K in
+production: ~1,320 MiB of 24,564.
+
+**128K is refused on headroom, not on function.** Other tenants on this card
+occupied 1,405-2,027 MiB across one morning. At 128K that leaves 96 MiB at the
+high end — one allocation from an OOM mid-request.
+
+## The methodology failure worth reading
+
+The first context pass ran each window as its own `capacity-probe.sh`
+invocation, so each measured its own idle floor while the tenants moved
+underneath. That reported 96K -> 128K as **+245 MiB**. The engine says
+**+1,408**. Phase 1 had already established within-run discipline for exactly
+this reason and it was not carried across.
+
+**Rules:** compare only within one invocation, and prefer the `-lv 5` table to
+any nvidia-smi sample. The probe now captures llama's startup log on SUCCESS as
+well as failure — the one run that raised the question had no engine-side
+accounting and the container was already gone by the time anyone looked.
+
+## The lever that is sitting there unadopted
+
+The `-lv 5` logs show TWO `llama_kv_cache` blocks. The second is one layer —
+layer 64, the MTP head — reading `K (f16), V (f16)` while the main cache reads
+`q8_0`. `--spec-draft-type-k`/`-ctkd` and `-ctvd` default to F16 and
+`docker-compose.yml` has never set them.
+
+Setting both to q8_0: draft KV **256 -> 136 MiB** at 64K, ~180 at 96K, drafting
+intact (draft/cycle 24.18 -> 23.05). **Not adopted**: the arm returned
+59.9/177.4/118.7 tok/s against a control of 166.4/190.1/184.9 — spread 117.5, a
+contention outlier rather than a config effect. Re-run it on a quiet box. Keep
+K and V MATCHED whatever you choose.
+
+## Three bugs, all found by running rather than reading
+
+- **`bench_quality.py` was never in `Dockerfile.forge`'s COPY list** while
+  README documented a command that runs it. It failed with "can't open file"
+  for anyone who tried. An explicit COPY list silently omits new scripts.
+- **`reasoning_effort` has two homes.** Top-level it is a llama-server param;
+  inside `chat_template_kwargs` it reaches Jinja, and this template accepts only
+  xhigh/medium/low — "none" raises and returns HTTP 500.
+- **`label` is a jq keyword.** `--arg label X` is a compile error regardless of
+  how the key is quoted. Cost a 15-minute cold load, because the probe's
+  measurement READS were exercised against the live stack but the line that
+  RECORDS them was not.
+
+## Homework
+
+- **Re-run the draft-KV q8_0 arm on a quiet box.** ~180 MiB at 96K, which is
+  14% of current free VRAM. `draft_kv_note` in versions.lock has the command.
+- **`bench_quality.py` has never run on the V3 weights.** Only their SPEED has
+  been checked. It is now shipped in the image, so it can actually be run.
+- **Decode at 96K is 36-47 tok/s against ~50 at 64K** on deep prompts. Expected
+  (decode falls with context depth), but it is the price of the window and it is
+  not separately benched at shallow depth on 96K.
+- **`.gguf.superseded` (17.9 GB)** is still the V3 rollback.
+
+## Next session
+
+Nothing is pending; the stack is on 96K, verified, committed. If you touch
+`CTX_SIZE`, move `DRY_PENALTY_LAST_N` with it — b10573 deleted the
+`-1 = context size` sentinel, and `capacity-probe.sh` does this for you.
+
+Before believing any VRAM number: `docker compose logs llama` at `-lv 5` prints
+llama's own allocation table. Sampled device VRAM on this box carries error bars
+of several hundred MiB because the card is shared.
+
+---
+
+# Handoff — 2026-08-23 (twenty-second pass: what happens while we are waiting)
+
+The brief was to evaluate subagents, the loop and the verifier comprehensively
+and write it up in detail, with an ASCII graph — and to fix what turned up along
+the way. All of it is done. The write-up is
+`context/design/subagents-loop-verifier-concurrency.md`, self-contained in the
+same way the six before it: §1 is the whole machine in seven drawings, §2 is pi
+itself, §3 is the event bus, §4–§9 are the seven packages, assuming none of the
+twenty-one documents before it.
+
+- **Six findings, AM1–AM6, all fixed**, each with a regression test that fails
+  when the fix is removed and a probe that prints BEFORE and NOW so it is its own
+  control. §11 has the change and the control-run failing count for each.
+- **One of them closes a bound the handoff has carried as open for seven
+  passes** — the compaction lock could only ever be read for compactions an
+  *extension* asked for. The sentence that kept it open named the wrong event.
+- **The gates were re-run BEFORE anything was written**, so the *before* column is
+  a measurement of the tree as this pass found it: 1,222 tests, 106 probes, lint
+  clean everywhere.
+- **The axis:** *for every `await` inside a handler, a settlement chain or a
+  callback, name what ELSE can run at that point — then name what the code
+  assumes has not changed by the time it resumes.*
+- **§10.2 of the write-up is the artefact:** the interleaving ledger. Thirty-five
+  awaits — every point in the stack at which the single thread is given away —
+  with how long each can suspend for and what re-reads the world afterwards. Six
+  carried a ✘. §10.2.1 draws the six by DISTANCE, and the distribution is the
+  opposite of last pass's: **three of six are distance zero and all three are
+  "two paths, one construct"; the other three are a producer and a consumer that
+  never look at each other's timeline.**
+
+```
+                                      before    after
+   vendor/pi-subagents-lite  tests     411       433    lint 103/103 files
+   vendor/pi-loop-mode       tests     264       272
+   vendor/prinny-channel     tests     463       473
+   .pi/extensions/compaction-guard      56        75
+   vendor/rtk-pi             tests      28        28
+                                      ─────     ─────
+                                      1,222     1,281
+   probes                               106       111
+```
+
+## The one that matters most
+
+**AM2 — the compaction the lock could not see.** Three senders in this stack ask
+*"is somebody compacting this session right now?"* before they start a turn — the
+subagent nudge (AH1), the loop turn (AG2), prinny's empty-turn continuation
+(AG3) — and all three could only ever see the two EXTENSIONS that compact. The
+third compactor is **pi**, and it compacts more than both of them together.
+
+The standing item said pi emits `compaction_start` internally but not as an
+`ExtensionEvent`, which is **true and names the wrong event**.
+`session_before_compact` *is* an `ExtensionEvent`, and pi emits it from both of
+its compaction entry points — `compact()` at `agent-session.js:1389` and
+`_runAutoCompaction()` at `:1613` — for every reason there is, whenever any
+extension has a handler. Two in this stack do. The start of every pi compaction
+has been observable all along.
+
+And only one of pi's two call sites is dangerous, which is why the fix is worth
+having:
+
+```
+   _handlePostAgentRun()  :776   _isAgentRunActive TRUE  → a sender QUEUES. Safe.
+   prompt()               :865   _isAgentRunActive FALSE → sendCustomMessage takes
+                                 `await this._runAgentPrompt(appMessage)` at
+                                 :1088, which checks NOTHING.
+```
+
+`prompt()` is what an operator's typed message reaches and what
+`prinny-channel`'s `sendUserMessage` reaches. So a Matrix message on a saturated
+session opens a multi-second window in which the session reads as idle, the lock
+reads as free, and a nudge or a loop turn starts a whole agent run inside the
+compaction — built from a `messages.slice()` of the pre-compaction context, into
+an array `compact()` is about to replace.
+
+`.pi/extensions/compaction-guard` now takes the lock on pi's behalf, under the
+owner name `"pi"` (the host's, not the extension's — every reader prints
+`${holder.owner} is compacting`). It releases at **four** events, because
+`session_compact` fires only on the success path: an Esc during a compaction
+reaches `session.abortCompaction()` and emits nothing to extensions, and a
+five-minute stale hold would be worse than the collision.
+
+**The one thing that had to be got right:** the lock is process-global and the
+question is per-SESSION. That has never mattered, because the two packages that
+take it are inert inside a subagent's session — and the guard is not, deliberately
+(capping a child's own tool output is what it is for). So the take, and only the
+take, is gated on the factory-time `bornInsideSubagentSpawn()`.
+
+## The other five
+
+| # | What | Fix |
+| --- | --- | --- |
+| AM1 | `stopChannel` reads `child`, which is assigned on the line AFTER `await instance.start()` — and that handshake is a node process importing matrix-js-sdk plus Rust crypto WASM, measured at **27.5 s** here with a **120 s** budget. So `/prinny stop` reported "channel stopped." and the channel came up anyway; `/prinny restart` and `/prinny configure` did nothing AND were handed the first start's promise, reporting its outcome as their own; `session_shutdown` left a sidecar logging into Matrix for a session that had ended — on the Olm store `server/src/state.ts` says "must never be shared between two running bots" | `src/channel-lifecycle.ts`: a token the start captures and the stop moves, re-read after every await, plus the in-flight instance held so a stop can END it rather than wait for it. Ending is the load-bearing choice — a `session_shutdown` that blocked for two minutes would be worse than the bug, and `McpChild.stop()`'s `failPending` makes the start's own catch run at once |
+| AM3 | `AgentManager.dispose()` disposed `execution.session` — the session a REPAIR runs in — and left the verifier running with a handle to it. Not a crash: a disposed `AgentSession` still accepts `prompt()`, it is simply no longer subscribed to its agent, so the repair spent a model call and returned `""`, `structuralVerdict("")` read that as `ok: false`, and **the child's good answer went back annotated "checked against the task and did not address it"**. The check being torn down was reported to the parent as the child having failed | `src/agents/record-teardown.ts`: one function, one order — transcript → verifier → session — with both of the manager's teardowns going through it. They had already drifted: only `removeRecord` cleared `execution.session`, and neither ended the verifier |
+| AM4 | `runToken` is bumped by eleven loop transitions and by **neither session transition**, and exactly one continuation survives a session swap: a `ctx.compact()` callback, which pi holds in a `void`ed async IIFE nothing here can reach. The swap is what MAKES it fire — `dispose()` calls `abortCompaction()`, so pi throws "Compaction cancelled", which is not benign — and it then charged the newly restored run's cooldown ladder and called `persistState(pi)` on a stale `pi`, i.e. threw an **unhandled rejection** rather than a caught error | `runToken++` in `session_start` and `session_shutdown`, next to the `clearPendingTimer()` already there. Two lines; every surviving continuation then bails at the check that already exists |
+| AM5 | `SpawnCoordinator.dispose()` cleared `backgroundAgentIds` — and it runs at `session_shutdown` **before** `AgentManager.dispose()`, which is what actually ends the runs. So every background delegation still running was stripped of the one-shot that says its answer is owed, and settled into an `onAgentComplete` that scheduled nothing: no delivery, and **no report of one**. AI1 fixed the ids already queued and wrote down that the `session-replaced` guard "can only fire for a record that settles AFTER the dispose" — those records are what it is for, and this line was why none could reach it | `src/spawn/nudge-schedule.ts` owns the one-shot and the batch; `retire()` drops only the batch. The set costs three strings and the coordinator is dropped whole, so the clear was never reclaiming anything |
+| AM6 | One nudge timer, two deadlines. `if (this.nudgeTimer) return` gave the whole batch whichever delay arrived first, so a delegation settling inside a held record's 5 s compaction re-ask waited out the remainder of a hold that was not about it — up to 25× its own delay | The schedule keeps the earliest due time and re-arms when a shorter delay arrives. The other direction is left alone: a re-ask that fires early asks the lock again and defers again, which costs one map read |
+
+## Three things worth reading before the next change
+
+- **Four of six fixes are an EXTRACTION, and that is the axis's signature.** The
+  previous fifteen axes ask questions about a single point in the code and can be
+  answered by reading one function carefully. This one cannot: every finding is a
+  statement about two points and the time between them. `channel-lifecycle.ts`,
+  `record-teardown.ts`, `nudge-schedule.ts` and the guard's `compaction-lock.ts`
+  all exist because the code was already correct at each point and wrong about the
+  pair, and an extraction is what makes the pair a thing a reader can see and a
+  test can drive.
+- **A construct with two teardowns is already drifting.** AM3 and AM5 are both
+  that shape, and in both cases each path was individually reasonable. The rule is
+  §10.1's sixth invariant: *one order, written in one function.* The cheapest way
+  to run it is to open every function that ends something and ask what ELSE ends
+  the same thing.
+- **HOW LONG is the question that separates a finding from a hazard.** §10.2's
+  ledger has thirty-five awaits and only six carried a ✘; the six are the ones
+  measured in seconds to minutes, or unbounded. A 200 ms debounce and a 120 s
+  handshake are the same shape and not the same problem.
+
+## The homework this pass leaves
+
+The checklist is now sixteen surfaces:
+
+```
+   1. what we RETURN from a handler          X5
+   2. what we PASS to a call                 Z1–Z4, AA4
+   3. which events REACH us at all           AA1
+   4. what a host function's answer CAN say  AA2, AB1, AB3
+   5. WHEN it can say it, and how long the   AB1–AB4
+      answer stays true
+   6. WHO RECEIVES IT, and what they see     AC1–AC5
+      when nobody does
+   7. WHO OBEYS IT — and does the code that  AD1–AD7
+      obeys ever see the instruction
+   8. WHAT WE BELIEVE ABOUT OURSELVES        AE1–AE7
+   9. WHAT WE DECIDED NOT TO DO              AF1–AF6
+  10. WHAT WE NAMED — then go and open it    AG1–AG6
+  11. WHERE ELSE IT BELONGS — write the      AH1–AH6
+      scan, not the third fix
+  12. WHAT WE PROMISED — quote the sentence  AI1–AI5
+      and find the path where it is false
+  13. WHO IS ALLOWED TO ASK — name every     AJ1–AJ5
+      actor that reaches the decision
+  14. WHAT THE TEST IS A PROXY FOR — write   AK1–AK5
+      the set down twice and enumerate the
+      difference
+  15. WHAT WE START AND NEVER FINISH — name  AL1–AL9
+      the ONE place that ends it, then the
+      paths that miss it
+  16. WHAT HAPPENS WHILE WE ARE WAITING —    AM1–AM6  ← this pass
+      name what else runs at this await, and
+      what we read above it and act on below
+```
+
+The candidates this pass did not exhaust, on its own axis, are in §13.1 of the
+write-up. The two worth naming here:
+
+```
+   · `ctx.compact()` callbacks cannot be cancelled — pi holds them and offers no
+     handle. The token check is the whole defence, and it is enough, but a future
+     pi that grows a cancel should be taken up by both call sites.
+   · Two `Agent` tool calls with different MODEL KEYS really do run concurrently
+     (pi's `toolExecution` defaults to "parallel"). Checked and left: the
+     SlotTable is exact, the spawn depth is a counter, and the registry writes
+     are idempotent. Worth a probe the day a per-provider limit goes above one.
+```
+
+§13.2 is the other half of this pass's homework and is worth more than the open
+list: **six things this axis looked at and found already correct**, each with the
+reason, so the next pass does not re-derive them. The best of them is that Y1's
+window is not real — `runVerification` reaches `phase("judging")` with no await
+between it and the `verifyAbort` assignment, so there is no moment at which a
+record is terminal, verifying, and `isVerifyingRecord`-false.
+
+The residue, stated in the tense that would have helped: **the next `await` will
+be added by somebody who has just decided what to wait for. The question to ask is
+not "did I handle the error?" — everyone answers yes — but "what did I read above
+this line, and is it still true below it?" Where the answer is "the host
+guarantees it", write down WHICH guarantee, with the file and line, because that
+is the sentence that will be wrong first.**
+
+## Next session
+
+1. **AM2 has never met a real threshold compaction with a real Matrix message
+   arriving during it.** The probe drives the real guard and the real readers and
+   the window is derived from pi's source, but nobody has watched the deferral
+   happen on the box. `/prinny` a question into a session over the threshold and
+   watch for *"pi is compacting — holding iteration N"*.
+2. **`/prinny prepare` has not been re-run since AL3 or AM1.** The sidecar runs
+   from a staged runtime keyed on a content fingerprint of `server/src`, so the
+   next start restages automatically — but that restage does an `npm install` and
+   has not been exercised, and AM1 changed the code around the start it feeds.
+3. **Watch the transcript in a live TUI.** `renderSubagentEntry` has still never
+   been drawn. Unchanged from the last two passes and still the cheapest unrun
+   thing on the list.
+4. **§AD.2 of the hand-testing script is still the most interesting unrun item**:
+   ask the model, in prose from Matrix, to start a loop with a goal check. The
+   only item in the whole script that tests a REFUSAL a person has to answer.
+5. **The rescue turn has still never met a real llama-server with an unloaded
+   rescue model** (AL2's rung 3).
+
+**The working tree still carries the fourth through twenty-second passes
+uncommitted.**
+
+---
+
 # Handoff — 2026-08-22, later that night (provenance pass: where a number came from)
 
 Follow-on to the engine pass below. **Nothing was re-measured and no config

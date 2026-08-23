@@ -1,0 +1,55 @@
+{
+  "label": "ctx-96k",
+  "settings": "CTX_SIZE=98304",
+  "loaded": true,
+  "server_n_ctx": "98304",
+  "vram_used_mib": "23567",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "2027",
+  "bench": "prefill",
+  "measured_utc": "2026-08-22T21:28:23Z",
+  "result": {
+    "model": "qwen3.8-27b",
+    "rows": [
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 57.81,
+        "prompt_n": 90029,
+        "prompt_tps": 1786.052817915973,
+        "predicted_n": 256,
+        "predicted_tps": 36.2415598026242,
+        "cache_n": 0,
+        "draft_n": 385,
+        "draft_accepted": 170,
+        "draft_acceptance": 0.442
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 56.61,
+        "prompt_n": 90029,
+        "prompt_tps": 1778.44673244958,
+        "predicted_n": 256,
+        "predicted_tps": 45.11417867868532,
+        "cache_n": 0,
+        "draft_n": 322,
+        "draft_accepted": 175,
+        "draft_acceptance": 0.543
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 56.65,
+        "prompt_n": 90029,
+        "prompt_tps": 1770.1197788456243,
+        "predicted_n": 256,
+        "predicted_tps": 46.86480001411458,
+        "cache_n": 0,
+        "draft_n": 373,
+        "draft_accepted": 170,
+        "draft_acceptance": 0.456
+      }
+    ]
+  }
+}

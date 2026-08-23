@@ -69,7 +69,10 @@
     "model_repo": "unsloth/Qwen3.8-27B-GGUF",
     "gguf_file": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
     "gguf_size": "17923394624",
-    "gguf_mtime": "1786799731"
+    "gguf_mtime": "1786799731",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
   },
   "pins_source": "backfilled-2026-08-22",
   "pins_note": "Backfilled 2026-08-22 from the quarantine note and versions.lock. These are the 2026-08-16 runs: llama.cpp b10200, f16/f16 KV, CTX_SIZE 32768, and the pre-Dynamic-V3 weights now parked on disk as Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded (17923394624 bytes, written 2026-08-15T13:15Z, i.e. before these runs). Stamped so the files say for themselves why they are not comparable, rather than relying on a README that travels separately from them.",

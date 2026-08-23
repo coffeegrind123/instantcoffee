@@ -1,0 +1,12 @@
+{
+  "label": "ctx-128k-verbose",
+  "settings": "CTX_SIZE=131072,LLAMA_EXTRA_FLAGS=-n 8192 --load-mode none -lv 5",
+  "loaded": true,
+  "server_n_ctx": "131072",
+  "vram_used_mib": "23977",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "1536",
+  "bench": "none",
+  "measured_utc": "2026-08-23T06:08:01Z",
+  "result": null
+}

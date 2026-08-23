@@ -354,16 +354,28 @@ capture_pins() {
   size="${st%% *}"; mtime="${st##* }"
   [[ "$size" == "$st" ]] && { size=""; mtime=""; }
 
+  # SPEC_NGRAM_* are launch flags this script does NOT sweep — they come from
+  # .env and stay fixed for a whole run — so they belong with the stack rather
+  # than with the swept config. They matter here: `size_m` sets
+  # n_outputs_per_seq (1 + common_speculative_n_max()), which is ~529 MiB of
+  # output buffer at its default of 48, and changing it changes both VRAM and
+  # what ngram-simple can draft. Without them in the pin set, a size_m
+  # experiment produces result files indistinguishable from the baseline.
+  # Empty means "flag not passed", i.e. the engine default.
   PINS_JSON="$(jq -nc \
     --arg tag "$tag" --arg digest "$digest" \
     --arg ctx "$(env_get CTX_SIZE)" \
     --arg k "$(env_get CACHE_TYPE_K)" --arg v "$(env_get CACHE_TYPE_V)" \
     --arg repo "$(env_get MODEL_REPO)" --arg gguf "$gguf" \
     --arg size "$size" --arg mtime "$mtime" \
+    --arg nmh "$(env_get SPEC_NGRAM_MIN_HITS)" \
+    --arg nsn "$(env_get SPEC_NGRAM_SIZE_N)" \
+    --arg nsm "$(env_get SPEC_NGRAM_SIZE_M)" \
     '{llama_tag:$tag, llama_digest:$digest, ctx_size:$ctx,
       cache_type_k:$k, cache_type_v:$v,
       model_repo:$repo, gguf_file:$gguf,
-      gguf_size:$size, gguf_mtime:$mtime}')"
+      gguf_size:$size, gguf_mtime:$mtime,
+      ngram_min_hits:$nmh, ngram_size_n:$nsn, ngram_size_m:$nsm}')"
   printf '%s' "$PINS_JSON"
 }
 
@@ -669,7 +681,10 @@ report_pins() {
                  "ctx=" + (.pins.ctx_size // "?"),
                  "kv=" + (.pins.cache_type_k // "?") + "/" + (.pins.cache_type_v // "?"),
                  "gguf=" + (.pins.gguf_file // "?") + " " + (.pins.gguf_size // "?") + "b"
-                     + " mtime " + (.pins.gguf_mtime // "?")
+                     + " mtime " + (.pins.gguf_mtime // "?"),
+                 "ngram(min_hits/n/m)=" + ((.pins.ngram_min_hits // "") | if . == "" then "def" else . end)
+                     + "/" + ((.pins.ngram_size_n // "") | if . == "" then "def" else . end)
+                     + "/" + ((.pins.ngram_size_m // "") | if . == "" then "def" else . end)
                ] | join("  ")) end),
         (.n | tostring),
         .names,

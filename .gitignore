@@ -24,3 +24,7 @@ __pycache__/
 # here was removed on 2026-08-15; nothing writes this directory automatically any
 # more except ./scripts/ab-think-lang.sh --save.
 results/
+
+# Whole-file .env backup held by scripts/capacity-probe.sh for the length of a
+# probe run. Same reasoning as .env.spec-sweep-backup above.
+.env.capacity-probe-backup

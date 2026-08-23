@@ -65,7 +65,7 @@ pi. `coding` is the default.
 > `bf16/bf16`); the experiment that produced the ~65x prefill collapse used
 > `f16` K with `q8_0` V, and it was the *mismatch* that pushed flash attention
 > onto the CPU, not the quantization. Confirmed by llama.cpp#20866. Matched
-> `q8_0/q8_0` halves the cache, so `CTX_SIZE` is now **65536**. 4-bit KV stays
+> `q8_0/q8_0` halves the cache, so `CTX_SIZE` is now **98304**. 4-bit KV stays
 > off the table — llama.cpp#27109 (open) has `q4_x` collapsing prefill to
 > 34–106 t/s on this exact `qwen35` hybrid architecture against 991–1276 t/s at
 > `q8_0`, which is what makes most of the public 130K–250K 4090 recipes
@@ -104,7 +104,7 @@ pi. `coding` is the default.
                   ▼
        ┌─────────────────────┐   llama-server     :8080
        │  llama.cpp (CUDA)    │   Qwen3.8-27B, --jinja native function
-       │                      │   calling, 64K context
+       │                      │   calling, 96K context
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -179,6 +179,9 @@ cd ~/my-project && qpi
 | `./scripts/spec-sweep.sh --workload repeat` | What `ngram-simple` is worth on repetitive output |
 | `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything — with mean, max and within-config spread, and a provenance block that says whether every row came off one stack |
 | `./scripts/spec-sweep.sh --pins` | What build, context size, KV types and weights this box would stamp on a result right now |
+| `./scripts/capacity-probe.sh --config 'ctx-96k\|CTX_SIZE=98304' --bench prefill` | Does a launch flag FIT, and what does it cost in VRAM — context window, ngram table size, draft cache type |
+| `./scripts/capacity-probe.sh --list` | Re-print the capacity table without running anything |
+| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000 --control 105000` | Prove a context window is real: a nonce at each end of the document must come back, and a prompt past the limit must be refused by name |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
 | `./scripts/mcp.sh --servers` | List MCP servers reachable as a CLI |
@@ -233,7 +236,7 @@ The keys worth knowing:
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** — see the bind-mount trap below |
 | `GGUF_FILE` | set by the active mode | `coding` uses `Qwen3.8-27B-UD-Q4_K_XL.gguf`; `prose` the Heretic-decensored IQ4_XS. See the VRAM table |
-| `CTX_SIZE` | `65536` | Context per slot; also what forge uses as its token budget. Sized by the `q8_0/q8_0` KV cache — see below |
+| `CTX_SIZE` | `98304` | Context per slot; also what forge uses as its token budget. Sized by the `q8_0/q8_0` KV cache — see below. **`DRY_PENALTY_LAST_N` must move with it**: b10573 deleted the `-1 = context size` sentinel |
 | `REASONING_BUDGET` | `4096` | `-1` unrestricted, `0` disables thinking, `N` caps it. The guard against a turn that thinks itself out of an answer entirely — at a cap, `xhigh` has been measured returning 12,582 reasoning chars and **zero** content |
 | `REASONING_BUDGET_MESSAGE` | *(see `.env`)* | What the engine injects when the budget runs out. Phrase it toward delivering, not toward answering — an agentic turn cut off mid-plan still needs to be free to call a tool |
 | `REASONING_EFFORT` | `medium` | **New in 3.8.** `xhigh`\|`high`\|`medium`\|`low` — `high` is rewritten to `xhigh`, anything else fails the request *for this setting*. A **request** may instead send `{"reasoning_effort":"none"}` (llama.cpp intercepts it before the template) or override per turn with `{"chat_template_kwargs":{"reasoning_effort":"low"}}`; forge forwards both. Upstream defaults to `xhigh`; this stack does not, see below |
@@ -439,7 +442,8 @@ escape — llama.cpp refuses to start with `V cache quantization requires flash_
 So a matched `q8_0/q8_0` was available the whole time. Only **16 of 64 layers** hold
 a KV cache on this hybrid architecture (`16 × (3 × GatedDeltaNet → 1 × Gated
 Attention)`), so with the MTP block counted the cache is ~68 KiB/token at `f16` and
-~36 KiB/token at `q8_0`. `CTX_SIZE` is now **65536**, which costs about 130 MiB more
+~34 KiB/token at `q8_0` (measured from llama's own `-lv 5` table, 16 layers).
+`CTX_SIZE` is now **98304**, which costs about 1,360 MiB more
 than the 32K `f16` window it replaced.
 
 **4-bit KV is not an option here**, whatever the public 4090 recipes say: llama.cpp
@@ -602,7 +606,7 @@ Then, in the project you want worked on:
 **Why this one.** Three properties matter on a stack like this, and they were
 checked rather than taken from the README:
 
-- **It survives compaction, which is the whole point at `CTX_SIZE=32768`.**
+- **It survives compaction, which is the whole point on a local window.**
   Loop state is persisted as pi session entries and restored with
   `restoreLoopState(ctx.sessionManager.getBranch())`, so a compaction does not
   end the run. On context pressure it builds a *local* summary from loop state
@@ -1113,12 +1117,16 @@ What it writes, and why each field:
         "supportsReasoningEffort": false
       },
       "models": [
-        { "id": "qwen3.8-27b", "contextWindow": 32768, "maxTokens": 8192 }
+        { "id": "qwen3.8-27b", "contextWindow": 98304, "maxTokens": 8192 }
       ]
     }
   }
 }
 ```
+
+`contextWindow` above is illustrative. The real one is GENERATED from
+`CTX_SIZE` by `scripts/pi-local.sh:100`, so it tracks `.env` automatically and
+this block cannot drift the running system — only a reader who hand-copies it.
 
 - **`openai-completions`, not `anthropic-messages`.** forge speaks both, but the
   OpenAI endpoint is the short path (pi → forge → llama.cpp). Routing via
@@ -1880,7 +1888,8 @@ many layers were actually offloaded.
 Drop a rung on the quant table or lower `CTX_SIZE`. **Do not reach for
 `-ctk f16 -ctv q8_0`** — a quantized V cache buys ~2 GiB of VRAM and takes
 prefill off the GPU entirely (~65x slower, measured); it is why `CTX_SIZE` is
-65536 since 2026-08-22 (was 32768). See the quant section above.
+98304 since 2026-08-23 (65536 on 2026-08-22, 32768 before that). Proven by
+`ctx_needle.py`, not by `/props` — see the quant section above.
 
 **`docker pull` from ghcr.io fails with `denied` on a public image.**
 A stale ghcr credential in `~/.docker/config.json` is being sent and rejected — this
@@ -1950,6 +1959,14 @@ scripts/
   bench_quality.py      reasoning effort vs ANSWER QUALITY: hidden edge-case
                         assertions, model code executed, LOC as the
                         over-engineering proxy. Length is not quality
+  capacity-probe.sh     does a launch flag FIT and what does it cost — context
+                        window, ngram size_m, draft KV type. Records VRAM
+                        against a stack-down idle floor and llama's own -lv 5
+                        allocation table, and restores .env on every exit path
+  ctx_needle.py         proves a context window is real rather than advertised:
+                        a distinct nonce at EACH END of the document must come
+                        back, plus a negative control past the limit. Sizes the
+                        prompt from the server's /tokenize, not an estimate
   spec-sweep.sh         sweep SPEC_TYPE x n-max x p-min, report draft/cycle.
                         Every result records the pin set that produced it,
                         so --resume cannot skip a row measured on another

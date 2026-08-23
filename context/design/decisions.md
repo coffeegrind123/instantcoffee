@@ -7321,3 +7321,318 @@ its margin over the matching draft-mtp row is partly real drafting. It still
 understates the upside badly — the same pair is 182.5 against 120.2 on `repeat`
 — so synthetic remains the wrong instrument for that question, for a different
 reason than the one written down.
+
+---
+
+## 2026-08-23 — Twenty-second pass over subagents, the loop and the verifier: what happens while we are waiting
+
+Full write-up: `context/design/subagents-loop-verifier-concurrency.md`
+(self-contained; §1 is the machine in seven panels, §10.2 is the artefact, §11 is
+the findings). This entry records the decisions, so they are not reopened.
+
+**The axis.** For every `await` inside a handler, a settlement chain or a
+callback, name what ELSE can run at that point — then name what the code assumes
+has not changed by the time it resumes. Three questions per await, and the first
+is what separates a finding from a hazard: **how long can this suspend?** Six of
+the thirty-five awaits in §10.2's ledger carried a defect, and all six are the
+ones measured in seconds to minutes, or unbounded.
+
+**Gates.** 1,222 → 1,281 tests, 106 → 111 probes, lint clean everywhere. The
+*before* column was measured before anything was written.
+
+### The findings, and what was decided about each
+
+**AM1 — the stop that could not see the start.** `stopChannel` reads `child`,
+which `startChannel` assigns on the line AFTER `await instance.start()` — and
+that handshake is a node process importing matrix-js-sdk plus its Rust crypto
+WASM, measured at 27.5 s in this container with a 120 s budget.
+
+*Decided: END the in-flight start rather than WAIT for it.* Waiting was the
+obvious alternative and it is wrong: the handshake's own budget is two minutes,
+and a `session_shutdown` that blocked for two minutes would be a worse bug than
+the one being fixed. `McpChild.stop()` is bounded (SIGTERM, SIGKILL after a 5 s
+grace) and calls `failPending`, which rejects the in-flight `initialize` — so the
+start's own catch runs at once and the awaited promise returns immediately.
+
+*Decided: EXTRACT rather than add three module `let`s.* `extensions/index.ts`
+imports pi-tui, pi-ai and typebox at runtime, so the suite cannot load it — which
+is why six suites in that package assert on its SOURCE TEXT. `src/connect.ts` was
+extracted for AL3 for the same reason on the sidecar's side; this is the same
+move on the other side of the pipe.
+
+*Decided: `/prinny status` gains a third state.* A start in flight used to draw as
+"not running", which is the honest-looking answer at exactly the moment the
+operator is most likely to ask.
+
+**AM2 — the compaction lock could not see pi.** Closes a bound the handoff had
+carried as open for seven passes. The sentence that kept it open —
+*"pi emits `compaction_start` internally but not as an `ExtensionEvent`"* — is
+true and names the wrong event. `session_before_compact` IS an `ExtensionEvent`
+and pi emits it from both compaction entry points, for every reason, whenever any
+extension has a handler.
+
+*Decided: `.pi/extensions/compaction-guard` is the taker.* It is the only
+extension loaded in every session regardless of what else is enabled, and
+compaction is the whole of what it is for. `pi-loop-mode` has a
+`session_before_compact` handler too, but a loop is not always running.
+
+*Decided: the owner name is `"pi"`, the HOST's, not the extension's.* Every
+reader prints `${holder.owner} is compacting`; "compaction-guard is compacting"
+would name the wrong actor to an operator.
+
+*Decided: FOUR release rungs, not one.* `session_compact` fires only on the
+success path, so an Esc during a compaction (`interactive-mode.js:2703`) or a
+failed summariser emits nothing to extensions. A single rung would leave the hold
+to `STALE_MS` — five minutes of an unattended loop deferring every turn — which
+is worse than the collision the lock prevents. `agent_start` and `agent_settled`
+are both strictly after any compaction pi can run.
+
+*Decided: the take, and only the take, is gated on being a child's instance.* The
+lock is process-global and its question is per-session. That has never mattered,
+because the two packages that take it are inert inside a subagent's session — and
+this extension is not, deliberately. A child's compaction must not hold back the
+parent's loop turns and delegation results.
+
+*Accepted consequence, stated rather than guarded:* an operator `/reload` landing
+inside a child's session BUILD would make the parent's instance read as a child's
+and never take the lock for that session. That is a return to the pre-AM2
+behaviour, not a new failure, and closing it would need a per-session identity
+the extension API does not offer.
+
+**AM3 — the teardown that ended the session the verifier was running in.**
+`AgentManager.dispose()` disposed `execution.session` — the session a REPAIR runs
+in — and left the verifier running with a handle to it. Not a crash: a disposed
+`AgentSession` still accepts `prompt()` and simply reports nothing, so the repair
+returned `""`, the structural gate read that as a failure, and the child's good
+answer went back to the parent annotated *"checked against the task and did not
+address it"*.
+
+*Decided: one teardown function, and the ORDER is its contract* —
+transcript → verifier → session. The two paths had already drifted (only
+`removeRecord` cleared `execution.session`), which is what two teardowns for one
+construct does.
+
+*Decided: `verifyAbort` is NOT cleared by the teardown.* `runVerification`'s own
+`finally` owns that field and clears it on every path including the one this
+abort creates; clearing it here would race that and could leave
+`isVerifyingRecord` reading a record as idle while its catch is still running.
+
+**AM4 — `runToken` and the two session transitions.** Eleven loop transitions
+move it; neither session transition did. Exactly one continuation survives a
+swap — a `ctx.compact()` callback, which pi holds in a `void`ed async IIFE
+nothing here can reach — and the swap is what MAKES it fire, because
+`AgentSession.dispose()` calls `abortCompaction()`.
+
+*Decided: two lines, not a new mechanism.* The token check already exists at every
+one of the callback's exits; the fix is to move the token.
+
+*Decided: no attempt to cancel the callback.* pi offers no handle, and the token
+check is enough — everything the callbacks touch reads it first. If pi ever grows
+a cancel, both call sites should take it.
+
+**AM5 — the one-shot `dispose()` cleared.** `SpawnCoordinator.dispose()` cleared
+`backgroundAgentIds` and runs at `session_shutdown` BEFORE `AgentManager.dispose()`,
+which is what actually ends the runs. AI1 fixed the ids already queued and named
+this half: the `session-replaced` guard *"can only fire for a record that settles
+AFTER the dispose"*, and those records are what it is for.
+
+*Decided: the one-shot survives the teardown.* It costs three short strings and
+the coordinator is dropped whole at `setCoordinator(null)`, so the clear was
+never reclaiming anything.
+
+**AM6 — one nudge timer, two deadlines.** The batch's single timer was armed by
+whichever caller arrived first, and since AH1 the two callers want 200 ms and
+5,000 ms.
+
+*Decided: the earliest due time wins; the other direction is left alone.* A
+re-ask that fires early asks the lock again and defers again, which costs one map
+read. Re-arming in both directions would churn the timer for no gain.
+
+### The rule this pass adds to the invariants
+
+**A construct with two teardowns has one ORDER, written in one function.** AM3 and
+AM5 are both that shape, and in both cases each path was individually reasonable —
+which is why neither was visible until the two were written next to each other.
+The cheapest way to run the axis is to open every function that ends something
+and ask what ELSE ends the same thing.
+
+### Four of six fixes are an extraction, and that is the axis's signature
+
+The previous fifteen axes ask questions about a single point in the code and can
+be answered by reading one function carefully. This one cannot: every finding is
+a statement about two points and the time between them. `channel-lifecycle.ts`,
+`record-teardown.ts`, `nudge-schedule.ts` and the guard's `compaction-lock.ts`
+all exist because the code was already correct at each point and wrong about the
+pair, and the extraction is what makes the pair a thing a reader can see and a
+test can drive.
+
+### One test was rewritten rather than deleted
+
+AI1's regression test pinned the ORDER of two source-text fragments
+(`[...this.pendingNudges]` before `this.pendingNudges.clear()`). The invariant is
+right; the pin was to an expression, and AM5's extraction moved it. It now
+asserts the half that stayed in the coordinator — dispose reads what `retire()`
+hands back, and reports it — with the ordering itself asserted in the new
+module's suite, where it can be driven rather than read.
+
+### The measured negatives
+
+Six things this axis checked and found already correct are recorded in §13.2 of
+the write-up, with the reason for each, so the next pass does not re-derive them.
+The most useful: **Y1's window is not real** — `runVerification` reaches
+`phase("judging")` with no `await` between it and the `verifyAbort` assignment,
+so there is no moment at which a record is terminal, verifying, and
+`isVerifyingRecord`-false. And **two concurrent `steer()` calls cannot both
+continue a settled record**, because `continueSettledAgent` is synchronous and
+sets `settled = false` before it returns.
+
+### One thing that is now documented and was not
+
+`.pi/extensions/compaction-guard/FORK.md` is new. The twenty-first pass's handoff
+recorded its absence; AM2 gave that extension a fourth job and a fourth copy of
+the compaction protocol, and the reasoning for both — particularly why it is NOT
+inert in a subagent's session while the lock is — does not fit in a code comment.
+
+## 2026-08-23 — the capacity experiments: one lever was imaginary, one was hiding
+
+Three open items from the engine pass, all "worth doing only if you want more
+window or more VRAM headroom". Two are now closed with measurements, one is
+closed without a run, and a fourth thing turned up that nobody was looking for.
+
+**96K is adopted.** `CTX_SIZE=98304`, and `DRY_PENALTY_LAST_N` moved with it.
+
+### `size_m` is not a VRAM lever, and the note claiming it was is wrong
+
+`vram_note` said the +529 MiB from adopting the spec config was the output
+buffers being sized for `n_outputs_per_seq = 1 + size_m = 49` rather than 3.
+The mechanism is real — confirmed in b10573 source, `common_speculative_n_max()`
+(`common/speculative.cpp:2283`) takes the MAX over enabled speculators, so
+ngram-simple's `size_m` (48, `common/common.h:360`) overrides `draft.n_max` (4).
+The ATTRIBUTION is not.
+
+Swept 48 / 32 / 24 / 16 at 64K, one probe invocation, one idle floor:
+
+| size_m | n_outputs | VRAM MiB | draft/cycle |
+|---:|---:|---:|---:|
+| 48 (default) | 49 | 22,306 | 24.98 |
+| 32 | 33 | 22,403 | 18.48 |
+| 24 | 25 | 22,409 | 14.61 |
+| 16 | 17 | 22,405 | 11.60 |
+
+The three explicit settings are within **6 MiB** of each other despite a 2x
+difference in `n_outputs_per_seq`. The arithmetic says why: a logits row is
+`n_vocab x 4 B` = 151,936 x 4 = 594 KiB, so 49 rows is ~29 MiB. There was never
+529 MiB to reclaim. That delta belongs to the MTP draft context, which cannot be
+given back without giving up `draft-mtp` itself.
+
+Lowering `size_m` only truncates drafts — draft/cycle falls monotonically. The
+default is cheaper on VRAM *and* drafts more. **Leave it at 48.**
+
+The decode column from that sweep is unusable and is recorded as such: the
+baseline's three runs were 170.6 / 164.4 / **88.7** with the box at load 11.
+`draft/cycle` is the contention-resistant signal, and it is unambiguous.
+
+### 96K fits, 128K is not safe, and the difference is other people's VRAM
+
+All three windows LOADED and served a prompt at ~92% of their own width. That
+was not the question. The question is what happens when the rest of the card is
+busy.
+
+Engine allocation at `-lv 5`, which is the number that matters:
+
+| | 64K | 96K | 128K |
+|---|---:|---:|---:|
+| model | 16,053 | 16,053 | 16,053 |
+| main KV (16 layers, q8_0) | 2,176 | 3,264 | 4,352 |
+| main compute | ~400 | 560 | 720 |
+| draft KV (1 layer, **f16**) | 256 | 384 | 512 |
+| draft compute | ~132 | 164 | 196 |
+| **CUDA0 total** | **19,017** | **20,426** | **21,834** |
+
+Main KV is 34.0 KiB/token, draft KV 4.0. Compute buffers scale with context too
+(560 -> 720); they are not the constant they were assumed to be.
+
+Other tenants on this card occupied **1,405 to 2,027 MiB** across a single
+morning. Against that swing:
+
+| ctx | free at tenants-low | free at tenants-high |
+|---|---:|---:|
+| 64K | 2,794 | 2,303 |
+| 96K | 1,435 | 944 |
+| 128K | 587 | **96** |
+
+128K loaded during the probe only because the tenants happened to be at their
+low. Put them back where they were three hours earlier and it has 96 MiB of
+headroom — one allocation from an OOM mid-request. **96K adopted, 128K refused.**
+
+**A methodology failure worth keeping.** The first pass ran each context as its
+own `capacity-probe.sh` invocation, so each measured its own idle floor while
+the tenants moved underneath. That gave 96K -> 128K as **+245 MiB** when the
+engine says **+1,408**. Phase 1 had already established within-run discipline
+for exactly this reason and it was not carried across. Rules: compare only
+within one invocation, and prefer the engine's `-lv 5` table to any nvidia-smi
+sample. The probe now captures llama's startup log on SUCCESS as well as on
+failure, because the one run that raised the question had no engine-side
+accounting and the container was already gone.
+
+### The lever nobody was looking for: the draft KV is f16
+
+The `-lv 5` logs show TWO `llama_kv_cache` blocks. The second is one layer —
+layer 64, the MTP head — and it reads `K (f16), V (f16)` while the main cache
+reads `q8_0`. `--spec-draft-type-k` / `-ctkd` and `-ctvd` (`common/arg.cpp:4043`)
+default to F16 and `docker-compose.yml` has never set them.
+
+Measured: draft KV **256 -> 136 MiB** at 64K (~180 MiB at 96K), drafting intact
+(draft/cycle 24.18 -> 23.05).
+
+**Not adopted.** Decode could not be measured — the q8_0 arm returned
+59.9 / 177.4 / 118.7 tok/s against a control of 166.4 / 190.1 / 184.9, spread
+117.5, a contention outlier rather than a config effect. It needs a quiet box.
+Whatever is chosen, keep K and V MATCHED: mismatched types fall off the CUDA
+flash-attention path, which is the whole reason this stack sat at 32K for ten
+days.
+
+### Reasoning: closed without a run
+
+`bench_quality.py`'s own header already answers it — medium 100% pass / 71 LOC,
+xhigh 100% / 99 LOC at 4x the wall clock. And `REASONING_BUDGET=4096` does not
+bind: xhigh's 41,489 reason_chars across five tasks is ~2,000 tokens per task.
+Raising either knob is a no-op or a regression. What is still unmeasured is
+answer QUALITY on the V3 weights — only their speed has been checked.
+
+### Three bugs found by running things
+
+- **`bench_quality.py` was never in `Dockerfile.forge`'s COPY list**, while
+  README documented `--entrypoint python bench /work/scripts/bench_quality.py`.
+  That command failed with "can't open file" for anyone who tried it. An
+  explicit COPY list silently omits new scripts. Fixed, with a note.
+- **`reasoning_effort` has two different homes.** Top-level it is a
+  llama-server parameter; inside `chat_template_kwargs` it goes to Jinja, and
+  this model's template accepts only xhigh/medium/low — "none" makes it
+  `raise_exception` and the request returns HTTP 500. `bench_quality.py:154`
+  already used the top-level form; `ctx_needle.py` now does too.
+- **`label` is a jq keyword.** `jq -n --arg label X '{"label":$label}'` is a
+  compile error; quoting the key does not help, because the error is on the
+  `--arg` binding. Cost a 15-minute cold load and a bench run, because the
+  probe's measurement READS had been exercised against the live stack but the
+  line that RECORDS them had not.
+
+### `ctx_needle.py`, and why `/props` is not a proof
+
+`/props` reporting `n_ctx = 98304` proves the flag was accepted. A prompt that
+prefills at depth proves tokens went in. Neither rules out a window that
+silently drops its middle — that failure produces identical prefill numbers and
+identical tok/s.
+
+So the new script plants a distinct nonce at EACH END of the document and
+requires both back, with a negative control past the limit that must be refused
+by name. At 96K: a 90,055-token document returned
+`ALPHA=L32FBQR6 OMEGA=17W4QEJU`, both exact, `finish_reason=stop`; the control
+at 105,026 tokens returned `exceed_context_size_error` naming `n_ctx 98304`.
+
+Its first version sized the prompt with a fixed 1.35 words-per-token and
+produced **452,701** tokens for a 90,000 target. Filler like `ledger42` is three
+tokens, not a fraction of one. It now calibrates against the server's own
+`/tokenize` and iterates to within 1%, printing each step. A generator that
+cannot hit its own target does not test a context limit; it tests the limit's
+error message.

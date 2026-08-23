@@ -1,0 +1,67 @@
+{
+  "label": "sizem-default",
+  "settings": "SPEC_NGRAM_SIZE_M=",
+  "loaded": true,
+  "server_n_ctx": "65536",
+  "vram_used_mib": "22306",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "1961",
+  "bench": "repeat",
+  "measured_utc": "2026-08-22T21:02:51Z",
+  "result": {
+    "model": "qwen3.8-27b",
+    "rows": [
+      {
+        "requested": 12,
+        "status": 200,
+        "wall_s": 8.5,
+        "workload": "repeat",
+        "prompt_n": 1211,
+        "prompt_tps": 758.2839864322895,
+        "predicted_n": 1175,
+        "predicted_tps": 170.62153034432706,
+        "cache_n": 0,
+        "draft_n": 1749,
+        "draft_accepted": 1105,
+        "draft_acceptance": 0.632,
+        "echo": 0.988,
+        "echo_exact_tokenizer": true,
+        "completion_tokens_measured": 1120
+      },
+      {
+        "requested": 12,
+        "status": 200,
+        "wall_s": 9.52,
+        "workload": "repeat",
+        "prompt_n": 1211,
+        "prompt_tps": 1007.1707898847118,
+        "predicted_n": 1175,
+        "predicted_tps": 164.38492733038035,
+        "cache_n": 0,
+        "draft_n": 1749,
+        "draft_accepted": 1105,
+        "draft_acceptance": 0.632,
+        "echo": 0.988,
+        "echo_exact_tokenizer": true,
+        "completion_tokens_measured": 1120
+      },
+      {
+        "requested": 12,
+        "status": 200,
+        "wall_s": 94.38,
+        "workload": "repeat",
+        "prompt_n": 1211,
+        "prompt_tps": 1028.6344304584516,
+        "predicted_n": 1175,
+        "predicted_tps": 88.67544342064843,
+        "cache_n": 0,
+        "draft_n": 1748,
+        "draft_accepted": 1105,
+        "draft_acceptance": 0.632,
+        "echo": 0.988,
+        "echo_exact_tokenizer": true,
+        "completion_tokens_measured": 1120
+      }
+    ]
+  }
+}

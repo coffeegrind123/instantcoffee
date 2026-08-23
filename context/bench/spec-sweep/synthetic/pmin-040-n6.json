@@ -57,7 +57,10 @@
     "model_repo": "unsloth/Qwen3.8-27B-GGUF",
     "gguf_file": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
     "gguf_size": "17559178144",
-    "gguf_mtime": "1787404836"
+    "gguf_mtime": "1787404836",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
   },
   "pins_source": "backfilled-2026-08-22",
   "pins_note": "Backfilled 2026-08-22; these runs predate pin stamping. Not guesswork: the exited qwen38-llama container from the end of this sweep records image server-cuda-b10573, -c 65536, -ctk/-ctv q8_0, -m /models/Qwen3.8-27B-UD-Q4_K_XL.gguf, and was created 2026-08-22T17:01Z — the same minute the last result here was written. Every result file in this directory has an mtime later than the V3 gguf's (2026-08-22T13:20Z), so all of them ran against V3. And spec-sweep.sh rewrites only SPEC_TYPE, SPEC_DRAFT_N_MAX and SPEC_DRAFT_P_MIN, never LLAMA_TAG, CTX_SIZE or the CACHE_TYPE_* keys, so the whole sweep necessarily shared these four pins.",

@@ -1,0 +1,542 @@
+ Container qwen38-llama Recreate 
+ Container qwen38-llama Recreated 
+ Container qwen38-llama Starting 
+ Container qwen38-llama Started 
+ Container qwen38-llama Waiting 
+ Container qwen38-llama Healthy 
+
+===== llama startup log (draftkv-q8) =====
+qwen38-llama  | 0.05.815.082 D create_tensor: loading tensor blk.63.attn_q.input_scale
+qwen38-llama  | 0.05.815.089 D create_tensor: loading tensor blk.63.attn_k.input_scale
+qwen38-llama  | 0.05.815.094 D create_tensor: loading tensor blk.63.attn_v.input_scale
+qwen38-llama  | 0.05.815.099 D create_tensor: loading tensor blk.63.attn_output.input_scale
+qwen38-llama  | 0.05.815.103 D create_tensor: loading tensor blk.63.ffn_gate.input_scale
+qwen38-llama  | 0.05.815.107 D create_tensor: loading tensor blk.63.ffn_down.input_scale
+qwen38-llama  | 0.05.815.112 D create_tensor: loading tensor blk.63.ffn_up.input_scale
+qwen38-llama  | 0.05.815.117 D create_tensor: loading tensor blk.64.attn_q.scale
+qwen38-llama  | 0.05.815.122 D create_tensor: loading tensor blk.64.attn_k.scale
+qwen38-llama  | 0.05.815.127 D create_tensor: loading tensor blk.64.attn_v.scale
+qwen38-llama  | 0.05.815.131 D create_tensor: loading tensor blk.64.attn_output.scale
+qwen38-llama  | 0.05.815.136 D create_tensor: loading tensor blk.64.ffn_gate.scale
+qwen38-llama  | 0.05.815.141 D create_tensor: loading tensor blk.64.ffn_down.scale
+qwen38-llama  | 0.05.815.146 D create_tensor: loading tensor blk.64.ffn_up.scale
+qwen38-llama  | 0.05.815.151 D create_tensor: loading tensor blk.64.nextn.eh_proj.scale
+qwen38-llama  | 0.05.815.156 D create_tensor: loading tensor blk.64.attn_q.input_scale
+qwen38-llama  | 0.05.815.161 D create_tensor: loading tensor blk.64.attn_k.input_scale
+qwen38-llama  | 0.05.815.166 D create_tensor: loading tensor blk.64.attn_v.input_scale
+qwen38-llama  | 0.05.815.171 D create_tensor: loading tensor blk.64.attn_output.input_scale
+qwen38-llama  | 0.05.815.178 D create_tensor: loading tensor blk.64.ffn_gate.input_scale
+qwen38-llama  | 0.05.815.183 D create_tensor: loading tensor blk.64.ffn_down.input_scale
+qwen38-llama  | 0.05.815.188 D create_tensor: loading tensor blk.64.ffn_up.input_scale
+qwen38-llama  | 0.05.815.193 D create_tensor: loading tensor blk.64.nextn.eh_proj.input_scale
+qwen38-llama  | 0.06.828.502 I load_tensors: offloading output layer to GPU
+qwen38-llama  | 0.06.828.545 I load_tensors: offloading 64 repeating layers to GPU
+qwen38-llama  | 0.06.828.546 I load_tensors: offloaded 66/66 layers to GPU
+qwen38-llama  | 0.06.828.556 I load_tensors:        CUDA0 model buffer size = 16053.22 MiB
+qwen38-llama  | 0.06.828.558 I load_tensors:    CUDA_Host model buffer size =   682.03 MiB
+qwen38-llama  | 0.06.836.551 D load_all_data: using async uploads for device CUDA0, buffer type CUDA0, backend CUDA0
+qwen38-llama  | 3.39.360.692 D load_all_data: buffer type CUDA_Host is not the default buffer type for device CUDA0 for async uploads
+qwen38-llama  | 3.47.438.683 I cmn  common_init_: added <|endoftext|> logit bias = -inf
+qwen38-llama  | 3.47.438.742 I cmn  common_init_: added <|im_end|> logit bias = -inf
+qwen38-llama  | 3.47.438.744 I cmn  common_init_: added <|fim_pad|> logit bias = -inf
+qwen38-llama  | 3.47.438.745 I cmn  common_init_: added <|repo_name|> logit bias = -inf
+qwen38-llama  | 3.47.438.745 I cmn  common_init_: added <|file_sep|> logit bias = -inf
+qwen38-llama  | 3.47.438.983 I llama_context: constructing llama_context
+qwen38-llama  | 3.47.439.033 I llama_context: n_seq_max             = 1
+qwen38-llama  | 3.47.439.033 I llama_context: n_ctx                 = 65536
+qwen38-llama  | 3.47.439.034 I llama_context: n_ctx_seq             = 65536
+qwen38-llama  | 3.47.439.036 I llama_context: n_batch               = 2048
+qwen38-llama  | 3.47.439.037 I llama_context: n_ubatch              = 512
+qwen38-llama  | 3.47.439.037 I llama_context: causal_attn           = 1
+qwen38-llama  | 3.47.439.039 I llama_context: flash_attn            = enabled
+qwen38-llama  | 3.47.439.040 I llama_context: kv_unified            = true
+qwen38-llama  | 3.47.439.060 I llama_context: freq_base             = 10000000.0
+qwen38-llama  | 3.47.439.061 I llama_context: freq_scale            = 1
+qwen38-llama  | 3.47.439.062 I llama_context: n_rs_seq              = 4
+qwen38-llama  | 3.47.439.062 I llama_context: n_outputs_max         = 49
+qwen38-llama  | 3.47.439.063 I llama_context: n_outputs_max_per_seq = 49
+qwen38-llama  | 3.47.439.066 I llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+qwen38-llama  | 3.47.439.115 D set_abort_callback: call
+qwen38-llama  | 3.47.443.824 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+qwen38-llama  | 3.47.444.850 D llama_kv_cache: layer   0: filtered
+qwen38-llama  | 3.47.444.880 D llama_kv_cache: layer   1: filtered
+qwen38-llama  | 3.47.444.881 D llama_kv_cache: layer   2: filtered
+qwen38-llama  | 3.47.444.893 D llama_kv_cache: layer   3: dev = CUDA0
+qwen38-llama  | 3.47.444.941 D llama_kv_cache: layer   4: filtered
+qwen38-llama  | 3.47.444.942 D llama_kv_cache: layer   5: filtered
+qwen38-llama  | 3.47.444.942 D llama_kv_cache: layer   6: filtered
+qwen38-llama  | 3.47.444.944 D llama_kv_cache: layer   7: dev = CUDA0
+qwen38-llama  | 3.47.444.954 D llama_kv_cache: layer   8: filtered
+qwen38-llama  | 3.47.444.955 D llama_kv_cache: layer   9: filtered
+qwen38-llama  | 3.47.444.955 D llama_kv_cache: layer  10: filtered
+qwen38-llama  | 3.47.444.956 D llama_kv_cache: layer  11: dev = CUDA0
+qwen38-llama  | 3.47.444.963 D llama_kv_cache: layer  12: filtered
+qwen38-llama  | 3.47.444.963 D llama_kv_cache: layer  13: filtered
+qwen38-llama  | 3.47.444.963 D llama_kv_cache: layer  14: filtered
+qwen38-llama  | 3.47.444.964 D llama_kv_cache: layer  15: dev = CUDA0
+qwen38-llama  | 3.47.444.966 D llama_kv_cache: layer  16: filtered
+qwen38-llama  | 3.47.444.967 D llama_kv_cache: layer  17: filtered
+qwen38-llama  | 3.47.444.967 D llama_kv_cache: layer  18: filtered
+qwen38-llama  | 3.47.444.968 D llama_kv_cache: layer  19: dev = CUDA0
+qwen38-llama  | 3.47.444.972 D llama_kv_cache: layer  20: filtered
+qwen38-llama  | 3.47.444.972 D llama_kv_cache: layer  21: filtered
+qwen38-llama  | 3.47.444.972 D llama_kv_cache: layer  22: filtered
+qwen38-llama  | 3.47.444.973 D llama_kv_cache: layer  23: dev = CUDA0
+qwen38-llama  | 3.47.444.977 D llama_kv_cache: layer  24: filtered
+qwen38-llama  | 3.47.444.981 D llama_kv_cache: layer  25: filtered
+qwen38-llama  | 3.47.444.982 D llama_kv_cache: layer  26: filtered
+qwen38-llama  | 3.47.444.983 D llama_kv_cache: layer  27: dev = CUDA0
+qwen38-llama  | 3.47.444.987 D llama_kv_cache: layer  28: filtered
+qwen38-llama  | 3.47.444.987 D llama_kv_cache: layer  29: filtered
+qwen38-llama  | 3.47.444.987 D llama_kv_cache: layer  30: filtered
+qwen38-llama  | 3.47.444.991 D llama_kv_cache: layer  31: dev = CUDA0
+qwen38-llama  | 3.47.444.993 D llama_kv_cache: layer  32: filtered
+qwen38-llama  | 3.47.444.994 D llama_kv_cache: layer  33: filtered
+qwen38-llama  | 3.47.444.994 D llama_kv_cache: layer  34: filtered
+qwen38-llama  | 3.47.444.995 D llama_kv_cache: layer  35: dev = CUDA0
+qwen38-llama  | 3.47.444.998 D llama_kv_cache: layer  36: filtered
+qwen38-llama  | 3.47.445.000 D llama_kv_cache: layer  37: filtered
+qwen38-llama  | 3.47.445.002 D llama_kv_cache: layer  38: filtered
+qwen38-llama  | 3.47.445.003 D llama_kv_cache: layer  39: dev = CUDA0
+qwen38-llama  | 3.47.445.005 D llama_kv_cache: layer  40: filtered
+qwen38-llama  | 3.47.445.006 D llama_kv_cache: layer  41: filtered
+qwen38-llama  | 3.47.445.006 D llama_kv_cache: layer  42: filtered
+qwen38-llama  | 3.47.445.006 D llama_kv_cache: layer  43: dev = CUDA0
+qwen38-llama  | 3.47.445.008 D llama_kv_cache: layer  44: filtered
+qwen38-llama  | 3.47.445.008 D llama_kv_cache: layer  45: filtered
+qwen38-llama  | 3.47.445.009 D llama_kv_cache: layer  46: filtered
+qwen38-llama  | 3.47.445.009 D llama_kv_cache: layer  47: dev = CUDA0
+qwen38-llama  | 3.47.445.015 D llama_kv_cache: layer  48: filtered
+qwen38-llama  | 3.47.445.015 D llama_kv_cache: layer  49: filtered
+qwen38-llama  | 3.47.445.016 D llama_kv_cache: layer  50: filtered
+qwen38-llama  | 3.47.445.017 D llama_kv_cache: layer  51: dev = CUDA0
+qwen38-llama  | 3.47.445.018 D llama_kv_cache: layer  52: filtered
+qwen38-llama  | 3.47.445.019 D llama_kv_cache: layer  53: filtered
+qwen38-llama  | 3.47.445.019 D llama_kv_cache: layer  54: filtered
+qwen38-llama  | 3.47.445.020 D llama_kv_cache: layer  55: dev = CUDA0
+qwen38-llama  | 3.47.445.028 D llama_kv_cache: layer  56: filtered
+qwen38-llama  | 3.47.445.028 D llama_kv_cache: layer  57: filtered
+qwen38-llama  | 3.47.445.029 D llama_kv_cache: layer  58: filtered
+qwen38-llama  | 3.47.445.029 D llama_kv_cache: layer  59: dev = CUDA0
+qwen38-llama  | 3.47.445.031 D llama_kv_cache: layer  60: filtered
+qwen38-llama  | 3.47.445.031 D llama_kv_cache: layer  61: filtered
+qwen38-llama  | 3.47.445.032 D llama_kv_cache: layer  62: filtered
+qwen38-llama  | 3.47.445.032 D llama_kv_cache: layer  63: dev = CUDA0
+qwen38-llama  | 3.47.445.033 D llama_kv_cache: layer  64: filtered
+qwen38-llama  | 3.47.485.668 I llama_kv_cache:      CUDA0 KV buffer size =  2176.00 MiB
+qwen38-llama  | 3.47.590.458 I llama_kv_cache: size = 2176.00 MiB ( 65536 cells,  16 layers,  1/1 seqs), K (q8_0): 1088.00 MiB, V (q8_0): 1088.00 MiB
+qwen38-llama  | 3.47.590.495 I llama_kv_cache: attn_rot_k = 1, n_embd_head_k_all = 256
+qwen38-llama  | 3.47.590.495 I llama_kv_cache: attn_rot_v = 1, n_embd_head_k_all = 256
+qwen38-llama  | 3.47.590.619 D llama_memory_recurrent, layer   0: dev = CUDA0
+qwen38-llama  | 3.47.590.648 D llama_memory_recurrent, layer   1: dev = CUDA0
+qwen38-llama  | 3.47.590.650 D llama_memory_recurrent, layer   2: dev = CUDA0
+qwen38-llama  | 3.47.590.651 D llama_memory_recurrent: layer   3: skipped
+qwen38-llama  | 3.47.590.651 D llama_memory_recurrent, layer   4: dev = CUDA0
+qwen38-llama  | 3.47.590.652 D llama_memory_recurrent, layer   5: dev = CUDA0
+qwen38-llama  | 3.47.590.652 D llama_memory_recurrent, layer   6: dev = CUDA0
+qwen38-llama  | 3.47.590.653 D llama_memory_recurrent: layer   7: skipped
+qwen38-llama  | 3.47.590.653 D llama_memory_recurrent, layer   8: dev = CUDA0
+qwen38-llama  | 3.47.590.653 D llama_memory_recurrent, layer   9: dev = CUDA0
+qwen38-llama  | 3.47.590.654 D llama_memory_recurrent, layer  10: dev = CUDA0
+qwen38-llama  | 3.47.590.655 D llama_memory_recurrent: layer  11: skipped
+qwen38-llama  | 3.47.590.655 D llama_memory_recurrent, layer  12: dev = CUDA0
+qwen38-llama  | 3.47.590.655 D llama_memory_recurrent, layer  13: dev = CUDA0
+qwen38-llama  | 3.47.590.656 D llama_memory_recurrent, layer  14: dev = CUDA0
+qwen38-llama  | 3.47.590.656 D llama_memory_recurrent: layer  15: skipped
+qwen38-llama  | 3.47.590.657 D llama_memory_recurrent, layer  16: dev = CUDA0
+qwen38-llama  | 3.47.590.659 D llama_memory_recurrent, layer  17: dev = CUDA0
+qwen38-llama  | 3.47.590.660 D llama_memory_recurrent, layer  18: dev = CUDA0
+qwen38-llama  | 3.47.590.661 D llama_memory_recurrent: layer  19: skipped
+qwen38-llama  | 3.47.590.661 D llama_memory_recurrent, layer  20: dev = CUDA0
+qwen38-llama  | 3.47.590.662 D llama_memory_recurrent, layer  21: dev = CUDA0
+qwen38-llama  | 3.47.590.662 D llama_memory_recurrent, layer  22: dev = CUDA0
+qwen38-llama  | 3.47.590.663 D llama_memory_recurrent: layer  23: skipped
+qwen38-llama  | 3.47.590.663 D llama_memory_recurrent, layer  24: dev = CUDA0
+qwen38-llama  | 3.47.590.664 D llama_memory_recurrent, layer  25: dev = CUDA0
+qwen38-llama  | 3.47.590.665 D llama_memory_recurrent, layer  26: dev = CUDA0
+qwen38-llama  | 3.47.590.665 D llama_memory_recurrent: layer  27: skipped
+qwen38-llama  | 3.47.590.666 D llama_memory_recurrent, layer  28: dev = CUDA0
+qwen38-llama  | 3.47.590.667 D llama_memory_recurrent, layer  29: dev = CUDA0
+qwen38-llama  | 3.47.590.667 D llama_memory_recurrent, layer  30: dev = CUDA0
+qwen38-llama  | 3.47.590.668 D llama_memory_recurrent: layer  31: skipped
+qwen38-llama  | 3.47.590.669 D llama_memory_recurrent, layer  32: dev = CUDA0
+qwen38-llama  | 3.47.590.670 D llama_memory_recurrent, layer  33: dev = CUDA0
+qwen38-llama  | 3.47.590.671 D llama_memory_recurrent, layer  34: dev = CUDA0
+qwen38-llama  | 3.47.590.671 D llama_memory_recurrent: layer  35: skipped
+qwen38-llama  | 3.47.590.672 D llama_memory_recurrent, layer  36: dev = CUDA0
+qwen38-llama  | 3.47.590.672 D llama_memory_recurrent, layer  37: dev = CUDA0
+qwen38-llama  | 3.47.590.673 D llama_memory_recurrent, layer  38: dev = CUDA0
+qwen38-llama  | 3.47.590.674 D llama_memory_recurrent: layer  39: skipped
+qwen38-llama  | 3.47.590.675 D llama_memory_recurrent, layer  40: dev = CUDA0
+qwen38-llama  | 3.47.590.690 D llama_memory_recurrent, layer  41: dev = CUDA0
+qwen38-llama  | 3.47.590.691 D llama_memory_recurrent, layer  42: dev = CUDA0
+qwen38-llama  | 3.47.590.691 D llama_memory_recurrent: layer  43: skipped
+qwen38-llama  | 3.47.590.692 D llama_memory_recurrent, layer  44: dev = CUDA0
+qwen38-llama  | 3.47.590.692 D llama_memory_recurrent, layer  45: dev = CUDA0
+qwen38-llama  | 3.47.590.693 D llama_memory_recurrent, layer  46: dev = CUDA0
+qwen38-llama  | 3.47.590.694 D llama_memory_recurrent: layer  47: skipped
+qwen38-llama  | 3.47.590.694 D llama_memory_recurrent, layer  48: dev = CUDA0
+qwen38-llama  | 3.47.590.694 D llama_memory_recurrent, layer  49: dev = CUDA0
+qwen38-llama  | 3.47.590.695 D llama_memory_recurrent, layer  50: dev = CUDA0
+qwen38-llama  | 3.47.590.696 D llama_memory_recurrent: layer  51: skipped
+qwen38-llama  | 3.47.590.696 D llama_memory_recurrent, layer  52: dev = CUDA0
+qwen38-llama  | 3.47.590.696 D llama_memory_recurrent, layer  53: dev = CUDA0
+qwen38-llama  | 3.47.590.697 D llama_memory_recurrent, layer  54: dev = CUDA0
+qwen38-llama  | 3.47.590.698 D llama_memory_recurrent: layer  55: skipped
+qwen38-llama  | 3.47.590.698 D llama_memory_recurrent, layer  56: dev = CUDA0
+qwen38-llama  | 3.47.590.698 D llama_memory_recurrent, layer  57: dev = CUDA0
+qwen38-llama  | 3.47.590.699 D llama_memory_recurrent, layer  58: dev = CUDA0
+qwen38-llama  | 3.47.590.699 D llama_memory_recurrent: layer  59: skipped
+qwen38-llama  | 3.47.590.700 D llama_memory_recurrent, layer  60: dev = CUDA0
+qwen38-llama  | 3.47.590.700 D llama_memory_recurrent, layer  61: dev = CUDA0
+qwen38-llama  | 3.47.590.701 D llama_memory_recurrent, layer  62: dev = CUDA0
+qwen38-llama  | 3.47.590.702 D llama_memory_recurrent: layer  63: skipped
+qwen38-llama  | 3.47.648.479 I llama_memory_recurrent:      CUDA0 RS buffer size =   748.12 MiB
+qwen38-llama  | 3.47.648.546 I llama_memory_recurrent: size =  748.12 MiB (     1 cells,  64 layers,  1 seqs  4 rs_seq), R (f32):   28.12 MiB, S (f32):  720.00 MiB
+qwen38-llama  | 3.47.648.554 D llama_context: enumerating backends
+qwen38-llama  | 3.47.648.577 D llama_context: backend_ptrs.size() = 2
+qwen38-llama  | 3.47.648.579 I sched_reserve: reserving ...
+qwen38-llama  | 3.47.648.583 D sched_reserve: max_nodes = 27712
+qwen38-llama  | 3.47.672.263 D sched_reserve: reserving full memory module
+qwen38-llama  | 3.47.672.335 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+qwen38-llama  | 3.47.672.336 I resolve_fused_ops: resolving fused Gated Delta Net support:
+qwen38-llama  | 3.47.672.339 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.47.676.131 I resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+qwen38-llama  | 3.47.676.193 D graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+qwen38-llama  | 3.47.679.159 I resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+qwen38-llama  | 3.47.679.187 I resolve_fused_ops: resolving fused Lightning Indexer support:
+qwen38-llama  | 3.47.679.189 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.47.682.432 I resolve_fused_ops: Lightning Indexer enabled
+qwen38-llama  | 3.47.682.465 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+qwen38-llama  | 3.47.682.467 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.47.685.381 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+qwen38-llama  | 3.47.685.414 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.47.687.933 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+qwen38-llama  | 3.47.687.980 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.47.690.107 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+qwen38-llama  | 3.47.690.135 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =   49
+qwen38-llama  | 3.47.878.893 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.47.883.074 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =   49
+qwen38-llama  | 3.47.887.749 I sched_reserve:      CUDA0 compute buffer size =   400.28 MiB
+qwen38-llama  | 3.47.887.790 I sched_reserve:  CUDA_Host compute buffer size =    84.28 MiB
+qwen38-llama  | 3.47.887.791 I sched_reserve: graph nodes  = 4423
+qwen38-llama  | 3.47.887.792 I sched_reserve: graph splits = 2
+qwen38-llama  | 3.47.887.793 I sched_reserve: reserve took 239.21 ms, sched copies = 1
+qwen38-llama  | 3.47.888.089 I cmn          init: llama threadpool init, n_threads = 8
+qwen38-llama  | 3.47.888.199 D attach_threadpool: call
+qwen38-llama  | 3.47.888.219 D set_adapters_lora: adapters = (nil)
+qwen38-llama  | 3.47.888.255 D adapters_lora_are_same: adapters = (nil)
+qwen38-llama  | 3.47.888.256 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+qwen38-llama  | 3.48.283.626 I common_speculative_init_result: creating MTP draft context against the target model '/models/Qwen3.8-27B-UD-Q4_K_XL.gguf'
+qwen38-llama  | 3.48.283.713 I llama_context: constructing llama_context
+qwen38-llama  | 3.48.283.718 I llama_context: n_seq_max             = 1
+qwen38-llama  | 3.48.283.719 I llama_context: n_ctx                 = 65536
+qwen38-llama  | 3.48.283.719 I llama_context: n_ctx_seq             = 65536
+qwen38-llama  | 3.48.283.720 I llama_context: n_batch               = 2048
+qwen38-llama  | 3.48.283.721 I llama_context: n_ubatch              = 512
+qwen38-llama  | 3.48.283.721 I llama_context: causal_attn           = 1
+qwen38-llama  | 3.48.283.722 I llama_context: flash_attn            = enabled
+qwen38-llama  | 3.48.283.723 I llama_context: kv_unified            = true
+qwen38-llama  | 3.48.283.731 I llama_context: freq_base             = 10000000.0
+qwen38-llama  | 3.48.283.732 I llama_context: freq_scale            = 1
+qwen38-llama  | 3.48.283.733 I llama_context: n_rs_seq              = 0
+qwen38-llama  | 3.48.283.733 I llama_context: n_outputs_max         = 1
+qwen38-llama  | 3.48.283.734 I llama_context: n_outputs_max_per_seq = 1
+qwen38-llama  | 3.48.283.734 I llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+qwen38-llama  | 3.48.283.770 D set_abort_callback: call
+qwen38-llama  | 3.48.283.976 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+qwen38-llama  | 3.48.287.905 D llama_kv_cache: layer   0: filtered
+qwen38-llama  | 3.48.287.947 D llama_kv_cache: layer   1: filtered
+qwen38-llama  | 3.48.287.947 D llama_kv_cache: layer   2: filtered
+qwen38-llama  | 3.48.287.948 D llama_kv_cache: layer   3: filtered
+qwen38-llama  | 3.48.287.948 D llama_kv_cache: layer   4: filtered
+qwen38-llama  | 3.48.287.948 D llama_kv_cache: layer   5: filtered
+qwen38-llama  | 3.48.287.949 D llama_kv_cache: layer   6: filtered
+qwen38-llama  | 3.48.287.949 D llama_kv_cache: layer   7: filtered
+qwen38-llama  | 3.48.287.949 D llama_kv_cache: layer   8: filtered
+qwen38-llama  | 3.48.287.950 D llama_kv_cache: layer   9: filtered
+qwen38-llama  | 3.48.287.950 D llama_kv_cache: layer  10: filtered
+qwen38-llama  | 3.48.287.950 D llama_kv_cache: layer  11: filtered
+qwen38-llama  | 3.48.287.950 D llama_kv_cache: layer  12: filtered
+qwen38-llama  | 3.48.287.951 D llama_kv_cache: layer  13: filtered
+qwen38-llama  | 3.48.287.951 D llama_kv_cache: layer  14: filtered
+qwen38-llama  | 3.48.287.951 D llama_kv_cache: layer  15: filtered
+qwen38-llama  | 3.48.287.952 D llama_kv_cache: layer  16: filtered
+qwen38-llama  | 3.48.287.952 D llama_kv_cache: layer  17: filtered
+qwen38-llama  | 3.48.287.952 D llama_kv_cache: layer  18: filtered
+qwen38-llama  | 3.48.287.953 D llama_kv_cache: layer  19: filtered
+qwen38-llama  | 3.48.287.953 D llama_kv_cache: layer  20: filtered
+qwen38-llama  | 3.48.287.953 D llama_kv_cache: layer  21: filtered
+qwen38-llama  | 3.48.287.954 D llama_kv_cache: layer  22: filtered
+qwen38-llama  | 3.48.287.954 D llama_kv_cache: layer  23: filtered
+qwen38-llama  | 3.48.287.955 D llama_kv_cache: layer  24: filtered
+qwen38-llama  | 3.48.287.973 D llama_kv_cache: layer  25: filtered
+qwen38-llama  | 3.48.287.974 D llama_kv_cache: layer  26: filtered
+qwen38-llama  | 3.48.287.975 D llama_kv_cache: layer  27: filtered
+qwen38-llama  | 3.48.287.975 D llama_kv_cache: layer  28: filtered
+qwen38-llama  | 3.48.287.975 D llama_kv_cache: layer  29: filtered
+qwen38-llama  | 3.48.287.975 D llama_kv_cache: layer  30: filtered
+qwen38-llama  | 3.48.287.976 D llama_kv_cache: layer  31: filtered
+qwen38-llama  | 3.48.287.976 D llama_kv_cache: layer  32: filtered
+qwen38-llama  | 3.48.287.977 D llama_kv_cache: layer  33: filtered
+qwen38-llama  | 3.48.287.977 D llama_kv_cache: layer  34: filtered
+qwen38-llama  | 3.48.287.977 D llama_kv_cache: layer  35: filtered
+qwen38-llama  | 3.48.287.978 D llama_kv_cache: layer  36: filtered
+qwen38-llama  | 3.48.287.978 D llama_kv_cache: layer  37: filtered
+qwen38-llama  | 3.48.287.978 D llama_kv_cache: layer  38: filtered
+qwen38-llama  | 3.48.287.978 D llama_kv_cache: layer  39: filtered
+qwen38-llama  | 3.48.287.979 D llama_kv_cache: layer  40: filtered
+qwen38-llama  | 3.48.287.979 D llama_kv_cache: layer  41: filtered
+qwen38-llama  | 3.48.287.979 D llama_kv_cache: layer  42: filtered
+qwen38-llama  | 3.48.287.979 D llama_kv_cache: layer  43: filtered
+qwen38-llama  | 3.48.287.980 D llama_kv_cache: layer  44: filtered
+qwen38-llama  | 3.48.287.980 D llama_kv_cache: layer  45: filtered
+qwen38-llama  | 3.48.287.980 D llama_kv_cache: layer  46: filtered
+qwen38-llama  | 3.48.287.980 D llama_kv_cache: layer  47: filtered
+qwen38-llama  | 3.48.287.981 D llama_kv_cache: layer  48: filtered
+qwen38-llama  | 3.48.287.981 D llama_kv_cache: layer  49: filtered
+qwen38-llama  | 3.48.287.981 D llama_kv_cache: layer  50: filtered
+qwen38-llama  | 3.48.287.981 D llama_kv_cache: layer  51: filtered
+qwen38-llama  | 3.48.287.982 D llama_kv_cache: layer  52: filtered
+qwen38-llama  | 3.48.287.982 D llama_kv_cache: layer  53: filtered
+qwen38-llama  | 3.48.287.982 D llama_kv_cache: layer  54: filtered
+qwen38-llama  | 3.48.287.982 D llama_kv_cache: layer  55: filtered
+qwen38-llama  | 3.48.287.982 D llama_kv_cache: layer  56: filtered
+qwen38-llama  | 3.48.287.983 D llama_kv_cache: layer  57: filtered
+qwen38-llama  | 3.48.287.983 D llama_kv_cache: layer  58: filtered
+qwen38-llama  | 3.48.287.986 D llama_kv_cache: layer  59: filtered
+qwen38-llama  | 3.48.287.986 D llama_kv_cache: layer  60: filtered
+qwen38-llama  | 3.48.287.986 D llama_kv_cache: layer  61: filtered
+qwen38-llama  | 3.48.287.987 D llama_kv_cache: layer  62: filtered
+qwen38-llama  | 3.48.287.987 D llama_kv_cache: layer  63: filtered
+qwen38-llama  | 3.48.287.995 D llama_kv_cache: layer  64: dev = CUDA0
+qwen38-llama  | 3.48.291.723 I llama_kv_cache:      CUDA0 KV buffer size =   136.00 MiB
+qwen38-llama  | 3.48.296.456 I llama_kv_cache: size =  136.00 MiB ( 65536 cells,   1 layers,  1/1 seqs), K (q8_0):   68.00 MiB, V (q8_0):   68.00 MiB
+qwen38-llama  | 3.48.296.522 I llama_kv_cache: attn_rot_k = 1, n_embd_head_k_all = 256
+qwen38-llama  | 3.48.296.523 I llama_kv_cache: attn_rot_v = 1, n_embd_head_k_all = 256
+qwen38-llama  | 3.48.297.057 D llama_context: enumerating backends
+qwen38-llama  | 3.48.297.127 D llama_context: backend_ptrs.size() = 2
+qwen38-llama  | 3.48.297.129 I sched_reserve: reserving ...
+qwen38-llama  | 3.48.297.132 D sched_reserve: max_nodes = 27712
+qwen38-llama  | 3.48.332.666 D sched_reserve: reserving full memory module
+qwen38-llama  | 3.48.332.684 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+qwen38-llama  | 3.48.332.685 I resolve_fused_ops: resolving fused Gated Delta Net support:
+qwen38-llama  | 3.48.332.690 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.333.139 I resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+qwen38-llama  | 3.48.333.163 D graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+qwen38-llama  | 3.48.333.734 I resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+qwen38-llama  | 3.48.333.735 I resolve_fused_ops: resolving fused Lightning Indexer support:
+qwen38-llama  | 3.48.333.736 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.334.414 I resolve_fused_ops: Lightning Indexer enabled
+qwen38-llama  | 3.48.334.436 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+qwen38-llama  | 3.48.334.438 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.334.972 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+qwen38-llama  | 3.48.334.999 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.335.430 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+qwen38-llama  | 3.48.335.454 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.335.764 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+qwen38-llama  | 3.48.335.765 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.592.993 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.593.291 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.594.019 I sched_reserve:      CUDA0 compute buffer size =   400.28 MiB
+qwen38-llama  | 3.48.594.055 I sched_reserve:  CUDA_Host compute buffer size =    84.28 MiB
+qwen38-llama  | 3.48.594.056 I sched_reserve: graph nodes  = 62
+qwen38-llama  | 3.48.594.056 I sched_reserve: graph splits = 2
+qwen38-llama  | 3.48.594.057 I sched_reserve: reserve took 296.93 ms, sched copies = 1
+qwen38-llama  | 3.48.594.886 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+qwen38-llama  | 3.48.620.545 D CUDA Graph id 84 reused
+qwen38-llama  | 3.48.620.583 D ggml_backend_cuda_graph_compute: CUDA graph warmup complete
+qwen38-llama  | 3.48.661.305 I cmn  common_conte: the context supports bounded partial sequence removal
+qwen38-llama  | 3.48.681.684 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+qwen38-llama  | 3.48.682.299 I spec common_specu: adding speculative implementation 'ngram-simple'
+qwen38-llama  | 3.48.682.324 I spec common_specu: - size_n=12, size_m=48, min_hits=1
+qwen38-llama  | 3.48.682.350 I spec common_specu: adding speculative implementation 'draft-mtp'
+qwen38-llama  | 3.48.682.353 I spec common_specu: - n_max=4, n_min=0, p_min=0.40, n_embd=5120, backend_sampling=1
+qwen38-llama  | 3.48.682.355 I spec common_specu: - gpu_layers=-1, cache_k=q8_0, cache_v=q8_0, ctx_tgt=yes, ctx_dft=yes, devices=[default]
+qwen38-llama  | 3.48.682.442 D set_sampler: seq_id = 0, sampler = 0x5b750a47c770
+qwen38-llama  | 3.48.682.515 D set_embeddings_nextn: value = 1, masked = 0
+qwen38-llama  | 3.48.682.515 D set_embeddings_nextn: value = 1, masked = 1
+qwen38-llama  | 3.48.683.360 I sched_reserve: reserving ...
+qwen38-llama  | 3.48.683.394 D sched_reserve: max_nodes = 27717
+qwen38-llama  | 3.48.728.944 D sched_reserve: reserving full memory module
+qwen38-llama  | 3.48.728.982 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+qwen38-llama  | 3.48.728.986 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.814.194 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.814.500 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+qwen38-llama  | 3.48.814.672 I sched_reserve:      CUDA0 compute buffer size =   400.28 MiB
+qwen38-llama  | 3.48.814.703 I sched_reserve:  CUDA_Host compute buffer size =    84.28 MiB
+qwen38-llama  | 3.48.814.704 I sched_reserve: graph nodes  = 68
+qwen38-llama  | 3.48.814.704 I sched_reserve: graph splits = 2
+qwen38-llama  | 3.48.814.705 I sched_reserve: reserve took 131.31 ms, sched copies = 1
+qwen38-llama  | 3.48.858.932 I srv    load_model: speculative decoding context initialized
+qwen38-llama  | 3.48.858.969 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 65536
+qwen38-llama  | 3.48.858.973 D slot        reset: id  0 | task -1 | 
+qwen38-llama  | 3.48.859.062 I srv    load_model: prompt cache is enabled, size limit: 2048 MiB
+qwen38-llama  | 3.48.859.088 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+qwen38-llama  | 3.48.859.089 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+qwen38-llama  | 3.48.859.090 I srv    load_model: context checkpoints enabled, max = 16, min spacing = 256
+qwen38-llama  | 3.48.859.186 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+qwen38-llama  | 3.48.859.212 D srv          init: __TEST_TAG_CACHE_IDLE_SLOTS_ENABLED__
+qwen38-llama  | 3.48.864.394 D Using specialized template: Qwen3-Coder
+qwen38-llama  | 3.48.866.518 I srv          init: init: chat template, example_format: '<|im_start|>system
+qwen38-llama  | You are a helpful assistant<|im_end|>
+qwen38-llama  | <|im_start|>user
+qwen38-llama  | Hello<|im_end|>
+qwen38-llama  | <|im_start|>assistant
+qwen38-llama  | <think>
+qwen38-llama  | 
+qwen38-llama  | </think>
+qwen38-llama  | 
+qwen38-llama  | Hi there<|im_end|>
+qwen38-llama  | <|im_start|>user
+qwen38-llama  | How are you?<|im_end|>
+qwen38-llama  | <|im_start|>assistant
+qwen38-llama  | <think>
+qwen38-llama  | '
+qwen38-llama  | 3.48.866.587 D Using specialized template: Qwen3-Coder
+qwen38-llama  | 3.48.867.499 I srv          init: init: chat template, thinking = 1
+qwen38-llama  | 3.48.867.532 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+qwen38-llama  | 3.48.867.593 I srv  llama_server: model loaded
+qwen38-llama  | 3.48.867.621 I srv  llama_server: listening on http://0.0.0.0:8080
+qwen38-llama  | 3.48.867.621 W srv  llama_server: NOTICE: server default port will be changed to :9931 in a future release
+qwen38-llama  | 3.48.867.622 W srv  llama_server:         ref: https://github.com/ggml-org/llama.cpp/pull/26508
+qwen38-llama  | 3.48.867.838 D que    start_loop: processing new tasks
+qwen38-llama  | 3.48.867.862 D que    start_loop: update slots
+qwen38-llama  | 3.48.867.864 I srv  update_slots: all slots are idle
+qwen38-llama  | 3.48.867.864 D que    start_loop: waiting for new tasks
+qwen38-llama  | 3.53.101.836 D srv          stop: all tasks already finished, no need to cancel
+qwen38-llama  | 3.54.101.959 D srv          stop: all tasks already finished, no need to cancel
+ Image qwen38-forge/proxy:0.9.0 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 588B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 4.96kB 0.1s done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.1s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.1s
+
+#5 [1/8] FROM docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+#5 resolve docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 0.0s done
+#5 DONE 0.1s
+
+#6 [internal] load build context
+#6 transferring context: 531B 0.2s done
+#6 DONE 3.8s
+
+#7 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/bench_repeat.py scripts/ab_think_lang.py /work/scripts/
+#7 CACHED
+
+#8 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#8 CACHED
+
+#9 [2/8] RUN test -n "0.9.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#9 CACHED
+
+#10 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.0"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#10 CACHED
+
+#11 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py /tmp/patches/
+#11 CACHED
+
+#12 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && rm -rf /tmp/patches
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:669efb3e3dd9e721312b696dd9c7a1f6779fcf11714ac76f81f697b16886d6d5 done
+#14 exporting config sha256:17f9d544357840876c7e2eba7ed3d443283fe26d6468e8aeba7b18c05d81a5ae done
+#14 exporting attestation manifest sha256:d5c91a50f6f3b8f376ff6ac99f511eefdcf5dcf2d64da0c4d19fc65bfe4b042f 0.1s done
+#14 exporting manifest list sha256:db3bbc20369a597595b6906bea3cc31c4ec8280d44ecb703516af17ce2af597e 0.0s done
+#14 naming to docker.io/qwen38-forge/proxy:0.9.0 done
+#14 unpacking to docker.io/qwen38-forge/proxy:0.9.0
+#14 unpacking to docker.io/qwen38-forge/proxy:0.9.0 0.1s done
+#14 DONE 0.2s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image qwen38-forge/proxy:0.9.0 Built 
+ Container qwen38-forge-bench-run-bf74791a6389 Creating 
+ Container qwen38-forge-bench-run-bf74791a6389 Created 
+
+bench-repeat — qwen3.8-27b via http://llama:8080
+repetitive rewrite workload; echo measured over 12-token windows (ngram-simple's default lookup width)
+
+  funcs=12   prompt=1211   out=1189  decode=  59.9 tok/s  echo=  99%  wall= 22.77s draft=1113/1771 (63% accepted)
+  funcs=12   prompt=1211   out=1175  decode= 177.4 tok/s  echo=  99%  wall=200.59s draft=1105/1748 (63% accepted)
+  funcs=12   prompt=1211   out=1214  decode= 118.7 tok/s  echo=  99%  wall=173.14s draft=1129/1805 (62% accepted)
+
+best decode: 177.4 tok/s     mean echo: 99% across 3 usable run(s)
+draft acceptance: 3347/5324 = 62.9%
+draft per cycle:  23.05 tokens
+
+With ngram-simple enabled, draft/cycle can reach 48 (its size_m) because a
+lookup hit costs no forward pass. With draft-mtp alone it cannot exceed
+SPEC_DRAFT_N_MAX, and each drafted token costs one MTP pass. A high echo
+with draft/cycle pinned near n-max is repetition the engine is paying full
+price for.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 22.77,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 414.0874534920976,
+      "predicted_n": 1189,
+      "predicted_tps": 59.92130033256826,
+      "cache_n": 0,
+      "draft_n": 1771,
+      "draft_accepted": 1113,
+      "draft_acceptance": 0.628,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 200.59,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 312.77950955862957,
+      "predicted_n": 1175,
+      "predicted_tps": 177.42458095155192,
+      "cache_n": 0,
+      "draft_n": 1748,
+      "draft_accepted": 1105,
+      "draft_acceptance": 0.632,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 173.14,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 28.65601808088257,
+      "predicted_n": 1214,
+      "predicted_tps": 118.67402856551374,
+      "cache_n": 0,
+      "draft_n": 1805,
+      "draft_accepted": 1129,
+      "draft_acceptance": 0.625,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+ Container qwen38-llama Recreate 
+ Container qwen38-llama Recreated 
+ Container qwen38-llama Starting 
+ Container qwen38-llama Started 
+ Container qwen38-llama Waiting 
+ Container qwen38-llama Healthy 
+ Image qwen38-forge/proxy:0.9.0 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 588B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 4.96kB 0.1s done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.1s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.0s done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+#6 resolve docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 0.0s done
+#6 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 531B 0.2s done
+#5 DONE 3.2s
+
+#7 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#7 CACHED
+
+#8 [2/8] RUN test -n "0.9.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#8 CACHED
+
+#9 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.0"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#9 CACHED
+
+#10 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py /tmp/patches/
+#10 CACHED
+
+#11 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && rm -rf /tmp/patches
+#11 CACHED
+
+#12 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py scripts/bench.py scripts/bench_repeat.py scripts/ab_think_lang.py /work/scripts/
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:669efb3e3dd9e721312b696dd9c7a1f6779fcf11714ac76f81f697b16886d6d5 done
+#14 exporting config sha256:17f9d544357840876c7e2eba7ed3d443283fe26d6468e8aeba7b18c05d81a5ae done
+#14 exporting attestation manifest sha256:d89ac33061b877f653579cd6414ea73e53d3b1c91a9a32d6d18f1091d961f343 0.1s done
+#14 exporting manifest list sha256:c0a97864563347dabc197067240c3ea75678b5adbe603a472f01d8977ea96389
+#14 exporting manifest list sha256:c0a97864563347dabc197067240c3ea75678b5adbe603a472f01d8977ea96389 0.0s done
+#14 naming to docker.io/qwen38-forge/proxy:0.9.0 done
+#14 unpacking to docker.io/qwen38-forge/proxy:0.9.0 0.0s done
+#14 DONE 0.2s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image qwen38-forge/proxy:0.9.0 Built 
+ Container qwen38-forge-bench-run-c95dc60952fc Creating 
+ Container qwen38-forge-bench-run-c95dc60952fc Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=60000  prompt=60029  prefill=  1969.0 tok/s  decode=  45.9 tok/s  wall= 36.30s draft=173/331 (52% accepted)
+  pp=60000  prompt=60029  prefill=  1963.2 tok/s  decode=  52.8 tok/s  wall= 35.71s draft=179/311 (58% accepted)
+  pp=60000  prompt=60029  prefill=  1926.3 tok/s  decode=  52.6 tok/s  wall= 36.23s draft=177/330 (54% accepted)
+
+best prefill: 1969.0 tok/s     best decode: 52.8 tok/s
+MTP draft acceptance: 529/972 = 54.4% across 3 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 60000,
+      "status": 200,
+      "wall_s": 36.3,
+      "prompt_n": 60029,
+      "prompt_tps": 1968.9954960978769,
+      "predicted_n": 256,
+      "predicted_tps": 45.915219977118014,
+      "cache_n": 0,
+      "draft_n": 331,
+      "draft_accepted": 173,
+      "draft_acceptance": 0.523
+    },
+    {
+      "requested": 60000,
+      "status": 200,
+      "wall_s": 35.71,
+      "prompt_n": 60029,
+      "prompt_tps": 1963.1565977860732,
+      "predicted_n": 256,
+      "predicted_tps": 52.827591664676135,
+      "cache_n": 0,
+      "draft_n": 311,
+      "draft_accepted": 179,
+      "draft_acceptance": 0.576
+    },
+    {
+      "requested": 60000,
+      "status": 200,
+      "wall_s": 36.23,
+      "prompt_n": 60029,
+      "prompt_tps": 1926.2512956205148,
+      "predicted_n": 256,
+      "predicted_tps": 52.63826058416084,
+      "cache_n": 0,
+      "draft_n": 330,
+      "draft_accepted": 177,
+      "draft_acceptance": 0.536
+    }
+  ]
+}
