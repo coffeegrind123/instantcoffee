@@ -1,3 +1,281 @@
+# Handoff — next session: the quiet-box work (draft-KV, V3 quality, and 128K revisited)
+
+Three jobs, and they share one blocker. Two measurements were left unfinished
+because the box was too noisy to trust a decode number, and the 128K decision was
+made on headroom that is mostly **not ours** — so diagnosing quietness is not a
+chore before the real work, it IS the work that unblocks all three.
+
+Do them in this order. Quietness first, because the other two produce garbage
+without it, and the 128K answer may change once it is understood.
+
+---
+
+## 0. FIRST: establish and verify a quiet box
+
+**What noise did to us.** Three separate measurements this session were made
+unusable by contention, each time in the same shape — one wild run inside an
+otherwise sane set:
+
+| config | the three runs (tok/s) | mean | spread |
+|---|---|---:|---:|
+| sizem-default | 170.6 / 164.4 / **88.7** | 141.2 | 81.9 |
+| draftkv-q8 | **59.9** / 177.4 / 118.7 | 118.7 | 117.5 |
+| ngram-n4 (production, quiet box, for scale) | ~182-191 | 182.5 | 27.5 |
+
+A single outlier drags the mean below the thing it is being compared with, and
+the ranking inverts. **The mean is not the signal; the spread is the alarm.**
+
+**The state during the bad runs, measured:** load average 11.18 on 16 cores,
+~40 `claude` processes, 1 GiB free RAM of 21. At the time of writing it is load
+4.52 with the same 40 processes — better, not good.
+
+### The pre-flight gate — run this and do not start until it passes
+
+```sh
+uptime                                    # want 1-min load < 4 on 16 cores
+free -g                                   # want available > 4 GiB
+ps aux | grep -c '[c]laude'               # was 40; each is ~600-800 MB RSS
+nproc                                     # 16 here
+```
+
+If it fails, the `/free` skill is the lever — it kills abandoned claude sessions
+(idle >=24h, never the live one), reaps orphan MCP bridges and prunes caches:
+
+```sh
+# Skill: free      (args: --dry-run first, then --yes)
+```
+
+**Beware: other sessions are ACTIVE in this repo.** At the end of this session
+there were ~40 claude processes and another agent was writing to `vendor/` and
+`.pi/` with file mtimes seconds old. `/free` only reaps *idle* sessions, but
+check `git status` before and after — do not kill a session mid-commit, and do
+not commit its half-written code (this session deliberately did not).
+
+### The GPU floor is a THIRD dimension, and it is not ours
+
+Stop llama and read the device. That is the only way to see it:
+
+```sh
+docker compose stop llama
+docker run --rm --gpus all --entrypoint nvidia-smi \
+  ghcr.io/ggml-org/llama.cpp:server-cuda-b10573 \
+  --query-gpu=memory.used,memory.total --format=csv,noheader
+```
+
+Observed across ONE morning: **1,405 / 1,536 / 1,881 / 1,905 / 1,961 / 2,027
+MiB** — a 622 MiB swing.
+
+**It is not another container.** `qwen38-llama` is the only GPU-enabled
+container on this box (checked via `HostConfig.DeviceRequests` across every
+running container). `nvidia-smi --query-compute-apps` from inside the container
+shows only pid 7, itself — a PID-namespace artefact, not evidence of absence.
+
+So the floor is **the Windows host**: Docker Desktop's GPU paravirtualisation
+plus whatever Windows itself is doing (compositor, browsers, anything with
+hardware acceleration). We cannot kill it from in here, and it moves with what
+the user is doing on the desktop.
+
+**To measure it properly you need the host bridge, and it is currently DOWN.**
+`~/.claude-host-bridge-token` EXISTS but nothing is listening — `hostexec` fails
+with `Failed to connect to host.docker.internal port 6799`. Note that the token
+file being present does NOT mean the bridge is running, which contradicts the
+usual assumption. Ask the user to double-click
+`C:\Users\User\Downloads\as\data\claude-host-bridge\start-bridge.bat`,
+then:
+
+```sh
+~/claude-host-bridge/hostexec 'nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv'
+```
+
+That names the Windows processes holding VRAM, and it is the missing input for
+job 3.
+
+### Detecting noise DURING a run, so a bad number is caught not quoted
+
+`capacity-probe.sh --list` and `spec-sweep.sh --report` both print SPREAD.
+**Reject any decode comparison where SPREAD exceeds ~15% of the mean**, and look
+at the individual runs before believing a mean:
+
+```sh
+jq -r '[(.result.rows//[])[]|select(.error==null and .cached!=true)|.predicted_tps|.*10|round/10]' \
+  context/bench/capacity/<label>.json
+```
+
+`draft/cycle` is a property of the drafting rather than of the clock, so it
+survives contention when decode does not. When the two disagree, believe
+draft/cycle.
+
+---
+
+## 1. Draft-KV q8_0 — the ~180 MiB that is sitting there
+
+**The finding.** The MTP draft context runs **F16** KV while the main context
+runs q8_0. `--spec-draft-type-k`/`-ctkd` and `-ctvd` (`common/arg.cpp:4043`)
+default to F16 and `docker-compose.yml` has never set them. Nobody knew.
+
+**Already engine-confirmed** (`-lv 5`, not inferred): draft KV **256 -> 136 MiB**
+at 64K. At the current 96K it is 384 -> ~204, so **~180 MiB**, which is ~14% of
+the ~1,320 MiB free. Drafting was intact: draft/cycle 24.18 -> 23.05.
+
+**Why it is not adopted:** decode was contention-wrecked (see the table above).
+
+**The re-run** — note this now runs at 96K, since that is what `.env` holds, so
+it measures the production window rather than the 64K one:
+
+```sh
+./scripts/capacity-probe.sh --bench repeat \
+  --config "draftkv-f16-ctl|LLAMA_EXTRA_FLAGS=-n 8192 --load-mode none -lv 5" \
+  --config "draftkv-q8|LLAMA_EXTRA_FLAGS=-n 8192 --load-mode none -lv 5 -ctkd q8_0 -ctvd q8_0"
+```
+
+Both arms in ONE invocation — that is not stylistic. Separate invocations each
+measure their own idle floor while the Windows host moves underneath, and that
+is exactly how this session reported 96K->128K as +245 MiB when the engine said
++1,408.
+
+**Acceptance:** adopt only if decode is within noise of the control AND
+draft/cycle holds near 23-24, with SPREAD under ~15% on BOTH arms. If it passes,
+add `-ctkd q8_0 -ctvd q8_0` to `docker-compose.yml` beside the existing
+`-ctk/-ctv` lines (they are launch flags, so it is a recreate), and re-run the
+smoke test.
+
+**KEEP K AND V MATCHED.** Mismatched types fall off the CUDA flash-attention
+path — `ggml_cuda_get_best_fattn_kernel()` returns `BEST_FATTN_KERNEL_NONE` when
+`K->type != V->type` without `GGML_CUDA_FA_ALL_QUANTS`. That single fact is why
+this stack sat at 32K for ten days on a misdiagnosis.
+
+---
+
+## 2. `bench_quality.py` has never run on the V3 weights
+
+Only their SPEED has been checked. Answer QUALITY on Dynamic V3 is completely
+unmeasured — the numbers everyone quotes are from 2026-08-17, on the PRE-V3
+weights, b10200, f16/f16, 32K.
+
+```sh
+docker compose --profile tools run --rm --build \
+    --entrypoint python bench /work/scripts/bench_quality.py
+```
+
+**It only became runnable this session.** `bench_quality.py` was never in
+`Dockerfile.forge`'s COPY list while README documented that exact command, so it
+failed with "can't open file" for anyone who tried. Now shipped.
+
+**The 2026-08-17 baseline to compare against** (5 tasks x 5 hidden assertions,
+model code extracted and EXECUTED):
+
+| effort | pass% | LOC | reason_chars | wall |
+|---|---:|---:|---:|---:|
+| none | 84.0 | 164 | 0 | 23.3s |
+| low | 96.0 | 63 | 9,007 | 48.3s |
+| **medium (production)** | **100.0** | **71** | 13,876 | 59.9s |
+| xhigh | 100.0 | 99 | 41,489 | 244.4s |
+
+**Read the control requirement in its header before trusting any number.** A
+pass rate is meaningless until known-correct reference implementations score
+5/5; otherwise a buggy assertion is indistinguishable from a model failure, in
+the direction that flatters the harness. If you add a task, verify its reference
+FIRST.
+
+**What would be news:** V3 scoring below 100% at medium would be a quality
+regression from the weights and would put the V3 adoption itself in question —
+`Qwen3.8-27B-UD-Q4_K_XL.gguf.superseded` (17.9 GB) is still on disk as the
+rollback. V3 matching 100% closes the last open question about the new weights.
+
+Note this bench is far less contention-sensitive than a decode bench — it scores
+pass/fail and LOC, not tok/s — so it can run on a moderately busy box. Only
+`wall` is noise-sensitive. Do it while waiting for the box to settle.
+
+---
+
+## 3. 128K, revisited — it was refused on OUR headroom, not on function
+
+**Re-read the refusal.** 128K **loads, serves, and answers a 120,029-token
+prompt at 1,726/1,720/1,705 tok/s prefill** — four digits and steady, none of
+the two-digit monotonic collapse that llama.cpp#27109 produces. Nothing about it
+is broken. It was refused purely because of what is left over.
+
+Engine `-lv 5` allocation, CUDA0 MiB:
+
+| | 96K (current) | 128K |
+|---|---:|---:|
+| model | 16,053 | 16,053 |
+| main KV (16 layers, q8_0) | 3,264 | 4,352 |
+| main compute | 560 | 720 |
+| draft KV (1 layer, f16) | 384 | 512 |
+| draft compute | 164 | 196 |
+| **CUDA0 total** | **20,426** | **21,834** |
+
+Sampled with CUDA context overhead: 128K occupies **22,441 MiB** of a 24,564 MiB
+device. What is left depends entirely on the Windows host floor:
+
+| host floor | free at 128K |
+|---:|---:|
+| 1,405 (lowest seen) | 718 MiB |
+| 1,536 | 587 MiB |
+| 2,027 (highest seen) | **96 MiB** |
+
+**That is the whole objection.** 96 MiB is one allocation from an OOM
+mid-request, and the floor is set by a desktop we do not control and did not
+measure.
+
+### What would change the answer
+
+1. **Find out what the Windows host is actually holding** (job 0 — needs the
+   bridge started). If it is a browser or something closable, the floor may go
+   to a few hundred MiB and 128K gains ~1.5 GiB of margin. **This is the
+   decisive unknown and it has never been looked at.**
+2. **Adopt draft-KV q8_0** (job 1). At 128K the draft KV is 512 MiB f16, so
+   q8_0 gives back **~240 MiB** — turning the worst case from 96 to ~336 MiB.
+3. **Both together**, with the floor at ~500 MiB and draft q8_0:
+   24,564 - (22,441 - 240) - 500 = **~1,860 MiB free**, which is better than
+   96K has today. At that point 128K is straightforwardly adoptable.
+
+### How to test it, and what proof to demand
+
+```sh
+./scripts/capacity-probe.sh --bench prefill \
+  --config "ctx-128k|CTX_SIZE=131072" --bench-args "--prompt-len 120000"
+```
+
+`CTX_SIZE` sets `DRY_PENALTY_LAST_N` automatically — the probe does it and says
+so. b10573 deleted the `-1 = context size` sentinel, and a bad value there fails
+at ARGUMENT PARSING, which presents as a container restarting every few seconds
+**with no model log at all**.
+
+Then prove the window rather than trusting `/props`:
+
+```sh
+docker compose --profile tools run --rm --build --entrypoint python bench \
+  /work/scripts/ctx_needle.py --tokens 125000 --control 140000
+```
+
+A nonce must come back from BOTH ENDS, and the control must be refused by name.
+`/props` reporting 131072 only proves the flag was accepted; a window silently
+dropping its middle gives identical prefill and identical tok/s.
+
+**Do not adopt 128K on a lucky sample.** It loaded cleanly during this session's
+probe purely because the host floor happened to be at 1,536 that minute. Require
+the worst-observed floor to still leave real margin, or measure the floor over a
+period rather than once.
+
+---
+
+## Ground truth for the next session
+
+- Stack is on **96K**, verified (smoke 11/11, both-ends needle retrieval at
+  90,055 tokens, control refused at 105,026). Committed and pushed: `1630399`.
+- `.env` is committed, so `git checkout -- .env` is always a clean restore.
+  `capacity-probe.sh` and `spec-sweep.sh` both keep their backups IN THE REPO
+  and refuse to start if a previous run left one behind.
+- Prefer llama's own `-lv 5` allocation table to any nvidia-smi sample. Sampled
+  device VRAM on this box carries error bars of several hundred MiB.
+- `size_m` is CLOSED — leave it at 48. Reasoning effort/budget are CLOSED —
+  leave them. Do not re-litigate either; both are recorded with measurements in
+  `versions.lock` and `decisions.md`.
+
+---
+
 # Handoff — 2026-08-23 (capacity pass: 96K adopted, and one lever was imaginary)
 
 `CTX_SIZE` is now **98304**, proven rather than advertised. The other two open
