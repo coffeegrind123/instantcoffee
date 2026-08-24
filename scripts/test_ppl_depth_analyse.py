@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ppl_depth_analyse import (  # noqa: E402
     PassLog, alignment_control, asymmetry_bound_pct, chunks_in_window,
-    combine_arm, parse_log, scored_corpus_range)
+    combine_arm, parse_log, scored_corpus_range, span_map)
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +270,50 @@ class TestAlignmentControl(unittest.TestCase):
         b = parse_log(synth_log(4096, 0, 4, positional_nll), "b.log")
         with self.assertRaises(ValueError):
             alignment_control(a, b, 1)
+
+
+class TestSpanMap(unittest.TestCase):
+    """The instrument that shows what an arm's single number hides."""
+
+    WIN = (8192, 65536)
+
+    def _logs(self, nll_fn):
+        out = []
+        for n in (2048, 4096, 8192):
+            for f in (0, n // 2):
+                text = synth_log(n, f, 65536 // n, nll_fn)
+                out.append((n, f, parse_log(text, f"arm-{n}-f{f}.log")))
+        return out
+
+    def test_every_depth_agrees_in_every_cell_when_nll_is_positional(self):
+        rows = span_map(self._logs(positional_nll), 4096, *self.WIN)
+        # (65536 - 8192) / 4096 = 14 cells, and every one of them is fed.
+        self.assertEqual(len(rows), 14, "8192..65536 on a 4096 grid")
+        for r in rows:
+            ppls = [v["ppl"] for v in r["by_depth"].values()]
+            self.assertGreaterEqual(len(ppls), 2, f"{r['span']} has one depth only")
+            self.assertAlmostEqual(max(ppls) / min(ppls), 1.0, places=3,
+                                   msg=f"{r['span']}: {r['by_depth']}")
+
+    def test_the_deeper_column_is_higher_everywhere_when_history_costs(self):
+        rows = span_map(self._logs(history_nll), 4096, *self.WIN)
+        for r in rows:
+            by = r["by_depth"]
+            if 2048 in by and 8192 in by:
+                self.assertGreater(by[8192]["ppl"], by[2048]["ppl"], str(r["span"]))
+
+    def test_a_chunk_that_straddles_a_cell_is_dropped_not_smeared(self):
+        # n_ctx 8192 scores 4095 tokens per chunk; on a 2048 grid nothing fits.
+        logs = [(8192, 0, parse_log(synth_log(8192, 0, 8, positional_nll), "arm-8192-f0.log"))]
+        self.assertEqual(span_map(logs, 2048, *self.WIN), [])
+        # …and on a 4096 grid the same chunks land cleanly.
+        self.assertTrue(span_map(logs, 4096, *self.WIN))
+
+    def test_it_records_which_rotations_fed_each_cell(self):
+        rows = span_map(self._logs(positional_nll), 4096, *self.WIN)
+        seen = {tuple(v["rotations"]) for r in rows for v in r["by_depth"].values()}
+        self.assertTrue(any(len(t) == 1 for t in seen),
+                        "a cell fed by one rotation is exactly the 8192 case")
 
 
 class TestAsymmetryBound(unittest.TestCase):

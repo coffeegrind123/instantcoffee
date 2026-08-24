@@ -34,3 +34,4 @@ results/
 # is a few hundred KB of progress bars.
 .kld-logs/
 .ppl-stride-logs/
+.ppl-depth-logs/

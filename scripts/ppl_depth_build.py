@@ -169,6 +169,9 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=20260824)
     ap.add_argument("--manifest", default=None,
                     help="where to write the manifest (default: OUT_DIR/manifest.json)")
+    ap.add_argument("--reuse-filler", action="store_true",
+                    help="use the filler prefixes already in OUT_DIR instead of "
+                         "calibrating new ones, and do not talk to llama at all")
     args = ap.parse_args()
 
     targets = [int(x) for x in args.filler_tokens.split(",") if x.strip()]
@@ -176,6 +179,29 @@ def main() -> int:
         return _die("--filler-tokens is empty")
 
     corpus = open(args.corpus, encoding="utf-8").read()
+
+    # WHY --reuse-filler EXISTS, and why it is not a shortcut.
+    #
+    # The filler prefixes are a property of the TOKENIZER, not of the corpus, so
+    # a second corpus needs exactly the same ones. Rebuilding them means the
+    # server has to be up — and the server is down for the whole scoring stage,
+    # so replicating on a second corpus would otherwise cost a full cold reload
+    # between the two runs purely to re-derive files that already exist byte for
+    # byte.
+    #
+    # Nothing is taken on trust by doing this. The check that matters is not
+    # /tokenize's opinion of the prefix; it is `arm_count - corpus_count == K`
+    # under PERPLEXITY'S OWN tokenizer, which ppl-depth-run.sh's stage 1 reads
+    # off the error path for every arm file it is about to score, and which
+    # refuses rather than warns. That check is strictly stronger than the one
+    # skipped here, because it is made by the program that does the scoring.
+    if args.reuse_filler:
+        print(f"==> corpus  {args.corpus}  ({len(corpus)} bytes)")
+        print("    --reuse-filler: not contacting llama. The filler prefixes are")
+        print("    taken as written; stage 1's error-path probe verifies each arm")
+        print("    file's exact length under perplexity's own tokenizer.")
+        return reuse(args, corpus, targets)
+
     count = TokenCounter(args.llama_url)
 
     print(f"==> corpus  {args.corpus}")
@@ -235,6 +261,44 @@ def main() -> int:
                  "The filler is plain ASCII and both tokenizers must agree on "
                  "it; ppl-depth-run.sh checks that against perplexity's own "
                  "error path."),
+        "arms": entries,
+    }
+    path = args.manifest or os.path.join(args.out_dir, "manifest.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2)
+    print(f"==> manifest  {path}")
+    return 0
+
+
+def reuse(args, corpus: str, targets: list) -> int:
+    """Concatenate the existing calibrated prefixes onto a different corpus."""
+    base = os.path.basename(args.corpus)
+    stem = base[:-4] if base.endswith(".txt") else base
+    entries = []
+    for target in targets:
+        fil_path = os.path.join(args.out_dir, f"filler-{target}.txt")
+        if not os.path.exists(fil_path):
+            return _die(f"{fil_path} does not exist; run without --reuse-filler once "
+                        f"while llama is up")
+        prefix = open(fil_path, encoding="utf-8").read()
+        arm_path = os.path.join(args.out_dir, f"{stem}-f{target}.txt")
+        with open(arm_path, "w", encoding="utf-8") as fh:
+            fh.write(prefix + corpus)
+        print(f"==> filler  {target} tokens -> {arm_path}")
+        entries.append({
+            "filler_tokens": target,
+            "arm_file": arm_path,
+            "filler_file": fil_path,
+            "reused": True,
+        })
+    manifest = {
+        "corpus": args.corpus,
+        "corpus_bytes": len(corpus),
+        "separator": SEP,
+        "reused_filler": True,
+        "note": ("Prefixes reused from a previous calibration; no /tokenize call "
+                 "was made. ppl-depth-run.sh's stage 1 verifies each arm file "
+                 "against perplexity's own token count before scoring."),
         "arms": entries,
     }
     path = args.manifest or os.path.join(args.out_dir, "manifest.json")

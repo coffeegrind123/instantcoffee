@@ -227,9 +227,35 @@ def combine_arm(logs: list, fillers: list, win_lo: int, win_hi: int) -> ArmResul
     if total_count == 0:
         raise ValueError(f"n_ctx={n_ctx}: no chunk of any rotation fits the window")
     span = max(0, win_hi - win_lo - 1)
+    # NEGATIVE means the rotations OVERLAP rather than partition — which is what
+    # a resolving run does on purpose (four quarter-offsets cover each corpus
+    # quarter twice, through two different chunk alignments). The union PPL is
+    # then a weighted average and not "the corpus once", so it is reported but
+    # must not be read as a depth figure. `span_map()` is the instrument for
+    # that shape.
     return ArmResult(n_ctx=n_ctx, ppl=math.exp(total_nll / total_count),
                      nll=total_nll, count=total_count, passes=detail,
                      missed_tokens=span - total_count, window=(win_lo, win_hi))
+
+
+def rotation_spread_pct(arm: ArmResult) -> float:
+    """How far apart the rotations of ONE arm are, as a percentage.
+
+    This is a free yardstick for the whole exercise, and it is worth more than
+    the analytic asymmetry bound because it is measured rather than argued. The
+    two rotations at a given depth score COMPLEMENTARY halves of the corpus —
+    50% disjoint, the largest token-set difference this design can produce — at
+    an IDENTICAL history distribution. Whatever they differ by is pure corpus
+    heterogeneity, with no depth in it at all.
+
+    Two arms of this probe are 0.07% disjoint. So if the cross-depth difference
+    is much larger than the within-depth rotation spread, no plausible token-set
+    effect explains it — which is precisely the objection §3d could not answer.
+    """
+    ppls = [p["ppl"] for p in arm.passes if p.get("kept") is not None]
+    if len(ppls) < 2:
+        return 0.0
+    return 100.0 * (max(ppls) - min(ppls)) / min(ppls)
 
 
 def asymmetry_bound_pct(shallow: ArmResult, deep: ArmResult,
@@ -315,11 +341,78 @@ def alignment_control(a: PassLog, b: PassLog, offset: int) -> dict:
             "rows": rows}
 
 
+def span_map(logs: list, grid: int, win_lo: int, win_hi: int) -> list:
+    """Per-chunk NLL re-binned onto a common grid, so depths compare on spans.
+
+    THIS IS THE INSTRUMENT THE AGGREGATE HIDES. On 2026-08-24 the two rotations
+    at n_ctx 8192 came back at 14.77 and 227.67 — a 15x disagreement between two
+    passes that differ only in where the chunk boundary falls — while at 2048 and
+    4096 they agreed to 9% and 22%. An arm's single number cannot show that, and
+    quoting it would have reported a corpus-wide depth effect that is in fact
+    concentrated in one rotation's chunks.
+
+    `logs` is a list of (n_ctx, filler, PassLog). A chunk is assigned to a grid
+    cell only when its whole scored range fits inside it, so nothing is smeared
+    across a boundary; cells where a depth contributed nothing are left out of
+    that depth's column rather than filled in.
+    """
+    cells: dict = {}
+    for n_ctx, filler, lg in logs:
+        per = lg.per_chunk_nll()
+        S = lg.scored_per_chunk
+        for i, nll in per.items():
+            lo, hi = scored_corpus_range(n_ctx, filler, i - 1)
+            if lo < win_lo or hi >= win_hi:
+                continue
+            cell = (lo // grid) * grid
+            if hi >= cell + grid:
+                continue
+            key = (cell, n_ctx)
+            acc = cells.setdefault(key, [0.0, 0, []])
+            acc[0] += nll
+            acc[1] += S
+            acc[2].append(filler)
+    out = []
+    depths = sorted({n for _, n in cells})
+    for cell in sorted({c for c, _ in cells}):
+        row = {"span": [cell, cell + grid], "by_depth": {}}
+        for n in depths:
+            acc = cells.get((cell, n))
+            if acc and acc[1]:
+                row["by_depth"][n] = {"ppl": math.exp(acc[0] / acc[1]),
+                                      "tokens": acc[1],
+                                      "rotations": sorted(acc[2])}
+        out.append(row)
+    return out
+
+
+def _fmt_span_map(rows: list) -> str:
+    depths = sorted({n for r in rows for n in r["by_depth"]})
+    head = f"{'corpus span':>18} " + " ".join(f"{n:>10}" for n in depths)
+    if len(depths) >= 2:
+        head += f"   {depths[-1]}/{depths[0]}"
+    lines = [head]
+    for r in rows:
+        cells = []
+        for n in depths:
+            v = r["by_depth"].get(n)
+            cells.append(f"{v['ppl']:>10.2f}" if v else f"{'-':>10}")
+        line = f"{r['span'][0]:>8}..{r['span'][1] - 1:<8} " + " ".join(cells)
+        lo, hi = r["by_depth"].get(depths[0]), r["by_depth"].get(depths[-1])
+        if len(depths) >= 2 and lo and hi:
+            line += f"   {hi['ppl'] / lo['ppl']:>8.1f}x"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 def _fmt_arm(a: ArmResult) -> str:
     lines = [f"  n_ctx {a.n_ctx:<6} PPL {a.ppl:>10.4f}   "
              f"{a.count} tokens scored, {a.missed_tokens} missed, "
-             f"history {a.n_ctx // 2 + 1}..{a.n_ctx - 1}"]
+             f"history {a.n_ctx // 2 + 1}..{a.n_ctx - 1}",
+             f"      rotation spread {rotation_spread_pct(a):.1f}% "
+             f"(two 50%-disjoint halves at the SAME depth — the scale of a pure "
+             f"token-set effect)"]
     for p in a.passes:
         if p.get("kept") is None:
             lines.append(f"      filler {p['filler']:<6} no chunk fits the window")
@@ -342,6 +435,10 @@ def main() -> int:
     ap.add_argument("--control", default=None,
                     help="A,B,OFFSET: log basenames and the whole-chunk offset "
                          "between them")
+    ap.add_argument("--spans", type=int, default=0,
+                    help="also print a per-span map on a grid of this many "
+                         "corpus tokens (e.g. 4096). The aggregate cannot show a "
+                         "rotation that disagrees with its own partner; this can.")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
@@ -394,9 +491,17 @@ def main() -> int:
         ratio = hi.ppl / lo.ppl
         report["ppl_ratio_deepest_over_shallowest"] = ratio
         report["asymmetry_bound_pct"] = bound
+        report["rotation_spread_pct"] = {r.n_ctx: rotation_spread_pct(r) for r in results}
         print(f"==> PPL({hi.n_ctx}) / PPL({lo.n_ctx}) = {ratio:.4f}")
         print(f"    worst case from the {abs(lo.missed_tokens - hi.missed_tokens)}-token "
               f"set asymmetry: {bound:.3f}% on the deeper arm")
+
+    if args.spans:
+        flat = [(n, f, lg) for n, v in arms.items() for f, lg in v]
+        rows = span_map(flat, args.spans, win_lo, win_hi)
+        report["span_map"] = rows
+        print(f"==> per-span map, grid {args.spans}")
+        print("\n".join("    " + line for line in _fmt_span_map(rows).split("\n")))
 
     if args.control:
         a, b, off = args.control.split(",")

@@ -63,10 +63,22 @@ require_cmd docker python3
 
 CORPUS=""
 DEPTHS="2048,4096,8192"
+# Which filler prefixes to run at each depth. "half" is the default and is the
+# design in the header: F=0 and F=N/2 score exact complements, so the union is
+# every corpus token once.
+#
+# Any other list is for RESOLVING a rotation, not for building the union. Four
+# quarter-offsets at one depth (0,N/4,N/2,3N/4) cover each corpus quarter TWICE
+# through two different chunk alignments, which is the only way to tell a
+# property of the CONTENT from a property of where the chunk boundary fell —
+# the question the 2026-08-24 8192 result left open, where the two halves
+# disagreed by 15x.
+ROTATIONS="half"
 WIN_HI=65536
 OUT_SUBDIR="ppl-depth"
 DRY=0
 SKIP_BUILD=0
+REUSE_FILLER=0
 ANALYSE_ONLY=""
 UNPINNED=0
 BATCH=2048
@@ -77,11 +89,14 @@ while [[ $# -gt 0 ]]; do
     --corpus=*) CORPUS="${1#*=}"; shift ;;
     --depths) DEPTHS="${2:-}"; shift 2 || die "--depths needs a value" ;;
     --depths=*) DEPTHS="${1#*=}"; shift ;;
+    --rotations) ROTATIONS="${2:-}"; shift 2 || die "--rotations needs a value" ;;
+    --rotations=*) ROTATIONS="${1#*=}"; shift ;;
     --window-hi) WIN_HI="${2:-}"; shift 2 || die "--window-hi needs a value" ;;
     --window-hi=*) WIN_HI="${1#*=}"; shift ;;
     --out-subdir) OUT_SUBDIR="${2:-}"; shift 2 || die "--out-subdir needs a value" ;;
     --batch) BATCH="${2:-}"; shift 2 || die "--batch needs a value" ;;
     --skip-build) SKIP_BUILD=1; shift ;;
+    --reuse-filler) REUSE_FILLER=1; shift ;;
     --analyse-only) ANALYSE_ONLY="${2:-}"; shift 2 || die "--analyse-only needs a log directory" ;;
     --unpinned) UNPINNED=1; shift ;;
     --dry-run) DRY=1; shift ;;
@@ -91,7 +106,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 DEPTH_LIST=( ${DEPTHS//,/ } )
-(( ${#DEPTH_LIST[@]} >= 2 )) || die "--depths needs at least two depths: one number answers nothing"
+# One depth answers nothing about DEPTH — but a single depth with three or more
+# rotations is not a depth comparison at all, it is the within-depth control
+# that says whether a rotation's result is a property of the content or of
+# where the chunk boundary fell. Allow exactly that, and nothing else.
+if (( ${#DEPTH_LIST[@]} < 2 )); then
+  _nrot=0
+  if [[ "$ROTATIONS" != "half" ]]; then
+    for _r in ${ROTATIONS//,/ }; do _nrot=$((_nrot + 1)); done
+  fi
+  (( _nrot >= 3 )) || die "--depths needs at least two depths (or one depth with at least three --rotations, which is the within-depth control)"
+fi
 SHALLOWEST="${DEPTH_LIST[0]}"
 DEEPEST="${DEPTH_LIST[0]}"
 for d in "${DEPTH_LIST[@]}"; do
@@ -127,10 +152,24 @@ else
   esac
 fi
 
-# The filler sizes the run needs: one half-chunk per depth, plus one WHOLE chunk
-# at the shallowest depth for the alignment control.
+# rotations_for <depth> -> the filler sizes to run at that depth, F=0 included.
+rotations_for() {
+  local d="$1"
+  if [[ "$ROTATIONS" == "half" ]]; then echo "0 $((d / 2))"; return; fi
+  local r out=()
+  for r in ${ROTATIONS//,/ }; do
+    (( r >= 0 && r < d )) || die "rotation ${r} is not in [0, ${d}); a filler of a whole chunk or more is the CONTROL, not a rotation"
+    out+=("$r")
+  done
+  printf '%s\n' "${out[@]}" | sort -n | uniq | paste -sd' ' -
+}
+
+# The filler prefixes this run needs: every nonzero rotation at every depth,
+# plus one WHOLE chunk at the shallowest depth for the alignment control.
 declare -A FILLER_SET=()
-for d in "${DEPTH_LIST[@]}"; do FILLER_SET[$((d / 2))]=1; done
+for d in "${DEPTH_LIST[@]}"; do
+  for r in $(rotations_for "$d"); do (( r > 0 )) && FILLER_SET[$r]=1; done
+done
 FILLER_SET[$SHALLOWEST]=1
 FILLERS="$(printf '%s\n' "${!FILLER_SET[@]}" | sort -n | paste -sd, -)"
 
@@ -205,6 +244,20 @@ sys.exit(0 if (verdict == 'OK' and not gaps) else 1)
   #
   # There is no log_probs vector here because there is no --kl-divergence-base:
   # §3d's D1 established that omitting it is byte-identical and ~10x faster.
+  #
+  # THE ESTIMATE IS CALIBRATED, not derived and left alone. Sampled from the
+  # container's own cgroup every 4s through the n_ctx=8192 arm on 2026-08-24:
+  #
+  #     predicted resident   3880 MiB
+  #     measured anon        4198 MiB   (+8.2 %)
+  #     measured file         2737 MiB   page cache from reading the GGUF
+  #     host free bottomed at  158 MiB   swap used 0
+  #
+  # So the arithmetic is right to within a tenth, and the 10 % margin below is
+  # that measurement rather than a round number. The page cache is NOT added:
+  # it is reclaimable and the kernel reclaimed it — free fell to 158 MiB and
+  # nothing swapped. It is stated here because a reader looking at that 158 MiB
+  # afterwards would otherwise reasonably conclude the guard nearly failed.
   local nvocab; nvocab="$(gguf_n_vocab "$MODELS" "$GGUF" "$SIDECAR_IMAGE")"
   if [[ "$nvocab" =~ ^[0-9]+$ ]]; then
     echo "    n_vocab       ${nvocab} (read from the GGUF, not assumed)"
@@ -223,12 +276,12 @@ sys.exit(0 if (verdict == 'OK' and not gaps) else 1)
   local blocked=0 d need_mb
   for d in "${DEPTH_LIST[@]}"; do
     need_mb=0
-    (( d > BATCH )) && need_mb=$(( (d / 2) * nvocab * 4 / 1048576 ))
+    (( d > BATCH )) && need_mb=$(( (d / 2) * nvocab * 4 * 110 / 100 / 1048576 ))
     if (( need_mb > avail_mb )); then
       printf '    n_ctx %-6s REFUSED: ~%s MiB resident against %s MiB free\n' "$d" "$need_mb" "$avail_mb"
       blocked=1
     else
-      printf '    n_ctx %-6s ok: ~%s MiB resident (%s chunks per rotation)\n' \
+      printf '    n_ctx %-6s ok: ~%s MiB resident incl. the measured 10%% margin (%s chunks per rotation)\n' \
         "$d" "$need_mb" "$(( WIN_HI / d ))"
     fi
   done
@@ -239,6 +292,10 @@ sys.exit(0 if (verdict == 'OK' and not gaps) else 1)
 
   local recent
   recent="$(docker logs --since 10m "$LLAMA_CT" 2>&1 | grep -cE 'slot launch_slot_|prompt processing' || true)"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$LLAMA_CT"; then
+    echo "    llama         already stopped; nothing to interrupt"
+    recent=0
+  fi
   echo "    llama traffic ${recent} task lines in the last 10 minutes"
   if (( recent > 0 )); then
     if (( DRY )); then
@@ -280,11 +337,17 @@ stage_script() {
 # against the server's own tokenizer, never against a words-per-token constant.
 # ---------------------------------------------------------------------------
 build_corpora() {
-  local net; net="$(llama_network)"
-  [[ -n "$net" ]] || die "could not read ${LLAMA_CT}'s network; is it running?"
-  echo "==> building the filler-prefixed corpora (network ${net})"
-  local cmd=(
-    docker run --rm --network "$net"
+  # --reuse-filler needs no server, so it needs no network either — which is the
+  # whole point: it lets a second corpus be prepared while llama is still down.
+  local net=""
+  if (( ! REUSE_FILLER )); then
+    net="$(llama_network)"
+    [[ -n "$net" ]] || die "could not read ${LLAMA_CT}'s network; is it running?"
+  fi
+  echo "==> building the filler-prefixed corpora${net:+ (network $net)}"
+  local cmd=(docker run --rm)
+  [[ -n "$net" ]] && cmd+=(--network "$net")
+  cmd+=(
       -v "${CAPS}:/captures"
       --user 0:0
       -e LLAMA_URL=http://llama:8080
@@ -293,6 +356,7 @@ build_corpora() {
       "${SCRIPT_STAGE}/ppl_depth_build.py"
         --corpus "$CORPUS" --out-dir "$OUTDIR" --filler-tokens "$FILLERS"
   )
+  (( REUSE_FILLER )) && cmd+=(--reuse-filler)
   printf '   '; printf ' %q' "${cmd[@]}"; echo
   (( DRY )) && return 0
   stage_script "${REPO_ROOT}/scripts/ppl_depth_build.py"
@@ -377,8 +441,13 @@ main_run() {
       run_perplexity probe "$(arm_file "$f")" "$PROBE_CTX" 0 "probe-f${f}.log"
     done
     for d in "${DEPTH_LIST[@]}"; do
-      run_perplexity pass "$CORPUS" "$d" "$(( WIN_HI / d ))" "arm-${d}-f0.log"
-      run_perplexity pass "$(arm_file $((d/2)))" "$d" "$(( WIN_HI / d ))" "arm-${d}-f$((d/2)).log"
+      for r in $(rotations_for "$d"); do
+        if (( r == 0 )); then
+          run_perplexity pass "$CORPUS" "$d" "$(( WIN_HI / d ))" "arm-${d}-f0.log"
+        else
+          run_perplexity pass "$(arm_file "$r")" "$d" "$(( WIN_HI / d ))" "arm-${d}-f${r}.log"
+        fi
+      done
     done
     run_perplexity pass "$(arm_file "$SHALLOWEST")" "$SHALLOWEST" \
       "$(( WIN_HI / SHALLOWEST + 1 ))" "ctl-${SHALLOWEST}-f${SHALLOWEST}.log"
@@ -450,8 +519,13 @@ main_run() {
       echo "    n_ctx ${d}: the corpus holds ${n_corpus} tokens, the window needs $(( chunks * d ))"
       failed=1; continue
     fi
-    run_perplexity pass "$CORPUS" "$d" "$chunks" "arm-${d}-f0.log" || failed=1
-    run_perplexity pass "$(arm_file $((d/2)))" "$d" "$chunks" "arm-${d}-f$((d/2)).log" || failed=1
+    for r in $(rotations_for "$d"); do
+      if (( r == 0 )); then
+        run_perplexity pass "$CORPUS" "$d" "$chunks" "arm-${d}-f0.log" || failed=1
+      else
+        run_perplexity pass "$(arm_file "$r")" "$d" "$chunks" "arm-${d}-f${r}.log" || failed=1
+      fi
+    done
   done
   run_perplexity pass "$(arm_file "$SHALLOWEST")" "$SHALLOWEST" \
     "$(( WIN_HI / SHALLOWEST + 1 ))" "ctl-${SHALLOWEST}-f${SHALLOWEST}.log" || failed=1
