@@ -181,6 +181,7 @@ cd ~/my-project && qpi
 | `./scripts/spec-sweep.sh --pins` | What build, context size, KV types and weights this box would stamp on a result right now |
 | `./scripts/capacity-probe.sh --config 'ctx-96k\|CTX_SIZE=98304' --bench prefill` | Does a launch flag FIT, and what does it cost in VRAM — context window, ngram table size, draft cache type |
 | `./scripts/capacity-probe.sh --list` | Re-print the capacity table without running anything — now with within-config SPREAD, SPREAD% and DRAFT/CYCLE, and a provenance footer |
+| `python3 scripts/kv_alt_analyse.py` | Compare two launch configs across SEVERAL COLD LOADS, with the LOAD as the unit of replication. `capacity-probe.sh` writes one JSON per config and one config is one cold load, so alternating the arms (`kvalt-a-f16`, `kvalt-a-q8_0`, `kvalt-b-f16`, …) gives several independent loads per arm. Prints the between-load and within-load spreads side by side, because their ratio says whether a one-load-per-arm design could ever have answered the question — which is exactly what `versions.lock:kv_accept_note` says went wrong with its own -2.6 % prefill figure |
 | `./scripts/vram-floor.sh` | How much VRAM the Windows desktop is holding, sampled over 15 minutes without stopping llama, and what that leaves for a bigger context window |
 | `./scripts/vram-floor.sh --report` | Re-print the last floor capture without re-sampling |
 | `./scripts/vram-floor.sh --label active` | Capture under a name of its own, so an idle capture and a busy-desktop one can be compared instead of overwriting each other |
