@@ -633,6 +633,32 @@ if [[ -n "$EXTRA_ARGS" ]]; then
   pi_flags+=("${extra[@]}")
 fi
 
+# The web-content rules, whenever a browser is on the tool surface.
+#
+# This is the HIGHEST-AUTHORITY place available: pi's --append-system-prompt is
+# repeatable and documented as taking text or file contents, so the rules land
+# in the system prompt rather than in a skill the model may or may not consult.
+#
+# It is not sufficient on its own and is not meant to be. A system prompt is
+# read once, at the top of the session; a hostile page arrives thousands of
+# tokens later, mid-loop. The mechanical half is the envelope that
+# scripts/untrusted_content.py and .pi/extensions/browser-guard.ts wrap around
+# the returned bytes, which travels WITH the payload. Rules give the model the
+# reason; the envelope puts that reason next to the attempt.
+#
+# Attached only when the browser is enabled: ~460 tokens is cheap against a
+# 98,304-token window, and free when there is nothing to defend against.
+WEB_RULES="$REPO_ROOT/prompts/web-untrusted.md"
+WEB_RULES_NOTE=""
+if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
+  if [[ -r "$WEB_RULES" ]]; then
+    pi_flags+=(--append-system-prompt "$(cat "$WEB_RULES")")
+    WEB_RULES_NOTE=", web-content rules"
+  else
+    warn "$WEB_RULES is missing — the browser is enabled with no anti-injection rules in the system prompt."
+  fi
+fi
+
 # THINK_LANG fragment, if one is selected. pi's --help documents
 # --append-system-prompt as taking "text or file contents" and as repeatable,
 # but the file is read here anyway so the same bytes reach both clients.
@@ -703,5 +729,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

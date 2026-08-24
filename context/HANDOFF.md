@@ -2,6 +2,12 @@
 
 ## Read this first
 
+**Open work has its own file: `context/OPEN-WORK.md`.** It is ranked, written to
+be started cold, and carries the I/O rules that keep this instrument from
+lagging the host. Read that first if you are here to continue rather than to
+find out what happened.
+
+
 **One thing on the stack DID change, and it is running.** `Dockerfile.forge`
 gained a sixth patch, the image `qwen38-forge/proxy:0.9.0` was rebuilt, and
 `qwen38-forge` was recreated onto it. `.env`, `docker-compose.yml` and `modes/`

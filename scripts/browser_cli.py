@@ -37,6 +37,11 @@ import time
 import urllib.error
 import urllib.request
 
+# Sits beside this file. Imported by path rather than by package because the
+# CLI is run as a script from anywhere, including through ./scripts/browser.sh.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import untrusted_content  # noqa: E402
+
 # --- configuration -----------------------------------------------------------
 # Every value is resolved by browser.sh from .env and handed over as an env var,
 # so this file has no opinion about where the defaults live.
@@ -927,11 +932,21 @@ def main(argv: list[str]) -> int:
         result = call_tool(name, arguments)
         body = text_of(result)
 
+    # Everything a browser tool returns is text from the internet. It is wrapped
+    # in a nonce-delimited envelope so the model can tell page content from
+    # instructions — see scripts/untrusted_content.py for why a rule in the
+    # system prompt is not enough on its own. --json is NOT wrapped: it is a
+    # machine-readable mode for scripts, and a caller that asked for JSON gets
+    # JSON. An ERROR is not wrapped either: it comes from the CLI and the MCP
+    # server, not from the page.
     if out_flags.json:
         print(json.dumps(result, separators=(",", ":")))
     else:
         if out_flags.head > 0:
             body = "\n".join(body.splitlines()[: out_flags.head])
+        if not result.get("isError"):
+            url = arguments.get("url") if isinstance(arguments, dict) else ""
+            body = untrusted_content.wrap_if_needed(body, name, str(url or ""))
         print(body)
     return 1 if result.get("isError") else 0
 
