@@ -7,13 +7,21 @@
 #   ./scripts/ppl-depth-run.sh --corpus /captures/corpus/deep-s26b5bb.txt
 #   ./scripts/ppl-depth-run.sh --corpus ... --dry-run     print everything, run nothing
 #   ./scripts/ppl-depth-run.sh --corpus ... --analyse-only .ppl-depth-logs/<stamp>
+#   ./scripts/ppl-depth-run.sh --corpus ... --depths 8192 --rotations 0,2048,4096,6144
+#                                             the within-depth control: each corpus
+#                                             quarter covered TWICE, through two
+#                                             different chunk alignments
+#   ./scripts/ppl-depth-run.sh --corpus <other> --unpinned --reuse-filler
+#                                             a second corpus on the prefixes already
+#                                             calibrated, with llama still down
 #
 # THIS IS NOT ppl-stride-run.sh AND IT IS NOT perplexity_v2. That path allocated
 # n_ctx*n_vocab floats with no reserve() — 12.2 GiB peak — and deadlocked the
 # operator's Windows host twice on 2026-08-24. It stays disarmed. This script
 # uses the DEFAULT mode, whose resident cost is (n_ctx/2)*n_vocab*4 and only
 # when n_ctx > n_batch, writes no logits file at all, and is ~20x faster per
-# token. The deepest arm here wants 3.79 GiB; that path wanted 12.2.
+# token. The deepest arm here was MEASURED at 4.20 GiB anon in its own cgroup;
+# that path wanted 12.2.
 #
 # THE INSTRUMENT. Default mode scores chunk j over offsets [n_ctx/2+1, n_ctx-1]
 # — always the whole top half, never a subrange — and a scored token's history
@@ -539,11 +547,30 @@ main_run() {
 # out of a container means a bad analysis costs nothing to redo.
 analyse() {
   local dir="$1"
+  # --analyse-only can be pointed at a run whose depths are not this
+  # invocation's, so the control pair is discovered from the directory rather
+  # than derived from --depths. Without this, re-reading a --depths 8192 run
+  # with the default flags names a 2048 control that was never written.
+  local ctl_log ctl_depth="$SHALLOWEST"
+  ctl_log="$(cd "$dir" 2>/dev/null && ls ctl-*-f*.log 2>/dev/null | head -n1)"
+  if [[ -n "$ctl_log" ]]; then
+    ctl_depth="${ctl_log#ctl-}"; ctl_depth="${ctl_depth%%-*}"
+  fi
   echo
   echo "==> analysis"
+  # --spans and --partitions are on by default because the aggregate is the one
+  # thing that CANNOT show a rotation disagreeing with its own partner, and that
+  # is exactly what happened at 8192 on 2026-08-24. A default that hides the
+  # question is not a default worth having.
+  #
+  # The grid is DEEPEST/2 and not SHALLOWEST: the deepest arm's chunks are
+  # DEEPEST/2 - 1 tokens wide, so any narrower cell cannot hold one and the
+  # deepest arm — the one most in need of a per-span look — falls out of the map
+  # entirely. (It still reports what it could not bin either way.)
   python3 "${REPO_ROOT}/scripts/ppl_depth_analyse.py" \
       --logdir "$dir" --window "${WIN_LO},${WIN_HI}" \
-      --control "arm-${SHALLOWEST}-f0.log,ctl-${SHALLOWEST}-f${SHALLOWEST}.log,1" \
+      --spans "$(( DEEPEST / 2 ))" --partitions \
+      --control "arm-${ctl_depth}-f0.log,${ctl_log:-ctl-${ctl_depth}-f${ctl_depth}.log},1" \
       --json "${dir}/result.json"
 }
 

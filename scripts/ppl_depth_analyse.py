@@ -613,6 +613,16 @@ def main() -> int:
 
     if args.control:
         a, b, off = args.control.split(",")
+        missing = [n for n in (a, b) if n not in parsed]
+        if missing:
+            # A named control that is not on disk must not take the run's whole
+            # analysis down with it — the arms above are already computed and the
+            # JSON below is the record. Say which log is absent and what is.
+            print(f"==> alignment control SKIPPED: no readable {', '.join(missing)} "
+                  f"in {args.logdir}")
+            print(f"    present: {', '.join(sorted(parsed)) or '(nothing parsed)'}")
+            args.control = None
+    if args.control:
         ctl = alignment_control(parsed[a], parsed[b], int(off))
         report["control"] = {k: v for k, v in ctl.items() if k != "rows"}
         report["control"]["rows"] = ctl["rows"]

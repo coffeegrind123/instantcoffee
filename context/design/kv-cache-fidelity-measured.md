@@ -23,6 +23,13 @@ The short version, and it is not the one §4 expected:
   a filler prefix rather than by placing a region in it — gives 6.35 at n_ctx
   2048 and 12.24 at 4096. x1.93 in perplexity for x2 in history, with the
   instrument's own alignment control passing at 0.72x its printing floor.
+- **And 8192 has no number, for a reason that is the corpus's and not the
+  instrument's.** Four rotations there span 14.77 to 227.67, per-chunk
+  perplexity spans 2.54 to 1065.10, and the mean and the median disagree about
+  which of two partitions of the same tokens is larger — six or seven chunks
+  from a tail that heavy cannot produce an arm figure. §2's limit (1) caps a
+  captured corpus at the server's own window, so this one can never give more
+  than 8 chunks at that depth.
 - **Three limits, read out of the tool's source, retire the plan §6 had
   priced.** The deepest arm a real workstream can support here is CTX_SIZE/2;
   the ceiling is host RAM sized on `n_ctx * n_vocab`, not VRAM; and perplexity
@@ -662,12 +669,13 @@ deliberately absurd 12 nats each moves the deep arm's perplexity by 0.583 %.
   70,053 is also an independent reproduction of the count `perplexity_v2` printed
   on 2026-08-24 before that route was closed.
 
-- **The whole-chunk alignment control.** The same corpus behind a filler of a
-  WHOLE chunk must reproduce every per-chunk NLL, shifted by one chunk index —
+- **The whole-chunk alignment control**, run at 2048 and again at 8192. The same
+  corpus behind a filler of a WHOLE chunk must reproduce every per-chunk NLL,
+  shifted by one chunk index —
   `llama_memory_clear` at the top of every chunk (perplexity.cpp:558) means its
   later chunks are bit-identical work. 32 chunk pairs at n_ctx 2048: worst
   per-chunk difference **4.75e-4 relative, 0.72x the log's own four-decimal
-  printing floor. PASS.** The verdict is a ratio against a floor derived from
+  printing floor; 8 pairs at n_ctx 8192, 1.36e-5 relative, 0.5x. Both PASS.** The verdict is a ratio against a floor derived from
   the log rather than a threshold someone picked; on synthetic logs the same
   test reads 0.5x for an exact match, 22x for a filler off by ONE token and
   2338x for an offset off by one chunk.
@@ -680,56 +688,68 @@ deliberately absurd 12 nats each moves the deep arm's perplexity by 0.583 %.
   `batch_size=2048, n_seq=1`; §3d's C1/C2 already refused batch count as a cause
   in both directions.
 
-### The 8192 arm's two rotations disagree by 15x, and the aggregate must not be quoted
+### The 8192 arm is not a measurement, and the reason is the corpus rather than the instrument
 
 `57.9907` is the union of a rotation that returned 14.77 and one that returned
-227.67. At 2048 and 4096 the rotations agree to 9 % and 22 %; at 8192 they do
-not agree at all. Re-binning every arm's per-chunk NLL onto a common 4096-token
-grid (`--spans 4096`) shows the disagreement is not spread out — it alternates
-exactly with the rotation:
+227.67. At 2048 and 4096 the rotations agree to 9 % and 22 %; at 8192 they do not
+agree at all. **Four rotations were then run at that one depth** — `F` = 0, 2048,
+4096, 6144 — because `F` and `F + N/2` are complements, so `{0, 4096}` and
+`{2048, 6144}` are two INDEPENDENT PARTITIONS OF THE SAME TOKENS differing only
+in where the chunk boundaries fall. Agreement means the effect is a property of
+the content; disagreement means it is a property of where the boundary fell.
+
+**The instrument is exact at this depth**, so none of what follows is a
+mechanical artefact. The whole-chunk alignment control was run again AT 8192 —
+a filler of a full chunk must reproduce every per-chunk NLL shifted by one chunk
+index — and passed at **1.36e-5 relative, 0.5x the log's own printing floor**,
+tighter than the 2048 control's 0.72x. And every number below is deterministic:
+`F = 0` and `F = 4096` were re-run from scratch in the second run and reproduced
+the first run's eight per-chunk running values **byte for byte**.
 
 ```
-       corpus span       2048       4096       8192   8192/2048
-    8192..12287          4.63      15.41    1065.10      229.8x
-   12288..16383          7.95      12.01      18.25        2.3x
-   16384..20479          4.70       8.92     275.45       58.6x
-   20480..24575          6.06       8.59       6.24        1.0x
-   24576..28671          3.08       7.39     792.45      257.6x
-   28672..32767         10.98      11.19      10.92        1.0x
-   32768..36863          3.22      40.40      60.99       18.9x
-   36864..40959         13.66      14.72      22.13        1.6x
-   40960..45055          2.70      13.12     143.66       53.3x
-   45056..49151         15.04      29.97      21.66        1.4x
-   49152..53247          3.34       3.29     523.79      156.7x
-   53248..57343         10.55       8.33       6.19        0.6x
-   57344..61439          9.23      29.31      29.71        3.2x
-   61440..65535          8.45       7.66      41.60        4.9x
+   per-chunk PPL at n_ctx 8192, in corpus order, window [8192, 65536)
+
+     F=0        18.25     6.24    10.92    22.13    21.66     6.19    41.60
+     F=2048    371.96   162.05    10.92    17.38    44.02     2.54    68.42
+     F=4096   1065.10   275.45   792.45    60.99   143.66   523.79    29.71
+     F=6144     26.42    71.04   108.85    59.93    76.86    14.67
 ```
 
-Every odd row is scored by `F = 4096` and every even row by `F = 0`, and the
-split is perfect: 3x to 258x against 0.6x to 4.9x. Two readings fit the same
-data and this run cannot separate them, because in this corpus the rotation and
-the easy/hard split are **perfectly aligned** — the spans `F = 4096` scores are
-also the spans that are cheapest at 2048 (mean 4.4 against 10.4):
+**The answer is neither reading: the sample is too small and too heavy-tailed
+for an arm figure to exist at this depth on this corpus.** Per-chunk perplexity
+spans 2.54 to 1065.10 — 2.6 orders of magnitude — over six or seven chunks per
+rotation, and the two partitions disagree by a factor that depends on the window
+and **reverses direction between the mean and the median**:
 
-- the degradation is a property of the CONTENT — locally-predictable text loses
-  the most when the history it is predicted from grows, which is what a
-  fixed-size recurrent state saturating would look like (§3c: 48 of 64 layers);
-- or it is a property of WHERE THE CHUNK BOUNDARY FELL, and one alignment
-  happens to cut this corpus badly at 8192-token spacing.
+```
+   partition        aggregate PPL                     median chunk PPL
+                win [10241,63488)   [14337,59392)
+   {0, 4096}          46.78             53.78                35.66
+   {2048, 6144}       41.85             32.81                59.93
+```
 
-**So do not quote 57.99 as "perplexity at n_ctx 8192" yet.** The 2048 and 4096
-figures do not have this problem and are the quotable pair.
+A mean and a median that disagree about which of two samples is the larger is
+the signature of too few draws from a heavy tail, not of a resolved effect.
+Against that, the 1.1x-1.7x spread between partitions is not evidence of a
+boundary-placement effect and the 15x spread between individual rotations is not
+evidence of a content effect. **Neither is separable here.**
 
-The resolving experiment is one run and is already specified:
-`--depths 8192 --rotations 0,2048,4096,6144`, which covers each corpus quarter
-TWICE through two different chunk alignments. If the two coverages of a quarter
-agree, the effect is content; if they disagree, it is boundary placement.
+**The limit is structural and it belongs to the corpus, not the instrument.**
+§2's limit (1) says a captured workstream can never exceed the server's own
+context window, so `deep-s26b5bb`'s 70,053 tokens give 34 chunks at n_ctx 2048,
+17 at 4096 and **8 at 8192** — and the arms' stability tracks exactly that:
+rotation spread 9 %, 22 %, 1441 %. There is not enough document.
+
+**What survives at 8192, and it is not nothing:** all four rotations exceed the
+4096 arm's 12.24 (medians 18.3, 44.0, 275.5, 59.9). The trend continues past
+4096. Its size is not determined.
 
 ### What this does and does not settle
 
 - **It settles that the depth effect is real** rather than a partition artefact,
-  at least between 2048 and 4096, and that is the step §3d could not defend.
+  between 2048 and 4096, and that is the step §3d could not defend. **It does
+  not put a number on 8192** — see above; that needs a longer corpus, not a
+  better instrument.
 - **It does not identify the mechanism.** In default mode history and
   position-in-chunk are the same number, so "more history" and "further into the
   window" cannot be told apart by this instrument at all.
