@@ -1,3 +1,257 @@
+# Handoff — 2026-08-24d (the depth question, answered; and three carried items closed)
+
+## The headline: §3d's confound is gone and the effect survived it
+
+`kv-cache-fidelity-measured.md` §3e, new. The one thing §3d could not defend was
+that default-mode perplexity **scores a different set of tokens at every depth**,
+so its ladder compared 17 chunks of one partition against 8 of another.
+
+**The handoff's own plan for this does not close, and the flaw is in the scoring
+rule rather than the arithmetic.** perplexity.cpp:542-600 at b10573:
+
+```
+   first = n_ctx/2
+   process_logits(..., tokens + start + first, n_ctx - 1 - first, ...)
+```
+
+A chunk scores offsets `[N/2+1, N-1]` — **the whole top half, never a subrange**
+— and emits ONE number for all of it. The plan put a 1024-token region at offset
+`N/2` in a 2048 arm and an 8192 arm and called them "the same tokens"; the 8192
+arm's chunk also scores the 3071 corpus tokens after the region, and R's
+contribution is not separable from them. No filler PLACEMENT fixes that.
+
+**Rotation does.** Prefix the corpus with exactly `N/2` tokens and the pass
+scores the exact COMPLEMENT of the unprefixed one. Two passes per depth, union =
+every corpus token once, identical set at every depth:
+
+```
+   n_ctx    PPL        tokens scored   history        rotation spread
+    2048     6.3521      57,288        1025..2047          9.0 %
+    4096    12.2366      57,316        2049..4095         22.1 %
+    8192    57.9907      57,330        4097..8191       1441 %   <- do not quote
+```
+
+**2048 -> 4096 is the quotable pair: x1.93 in perplexity for x2 in history, on a
+token set that is 99.93 % identical.** The depth effect is real.
+
+`rotation spread` is the free yardstick and it is worth more than any argument:
+the two rotations at one depth score COMPLEMENTARY halves — 50 % disjoint, the
+biggest token-set difference this design can make — at an identical history
+distribution. 9 % and 22 % against a 93 % cross-depth difference between arms
+that are 0.073 % disjoint.
+
+## The 8192 arm has no number, and the reason is worth more than a number would be
+
+At 8192 the two rotations came back at **14.77 and 227.67**, so four were run at
+that one depth — `F` = 0, 2048, 4096, 6144. `F` and `F + N/2` are complements, so
+`{0,4096}` and `{2048,6144}` are **two independent partitions of the same
+tokens**, differing only in where the chunk boundaries fall. Agreement would mean
+content; disagreement would mean boundary placement.
+
+```
+   per-chunk PPL at n_ctx 8192, corpus order, window [8192, 65536)
+
+     F=0        18.25     6.24    10.92    22.13    21.66     6.19    41.60
+     F=2048    371.96   162.05    10.92    17.38    44.02     2.54    68.42
+     F=4096   1065.10   275.45   792.45    60.99   143.66   523.79    29.71
+     F=6144     26.42    71.04   108.85    59.93    76.86    14.67
+```
+
+**The answer is neither, and it took the run to see it: the sample is too small
+and too heavy-tailed for an arm figure to exist at this depth on this corpus.**
+Per-chunk perplexity spans 2.54 to 1065.10 over six or seven chunks per rotation,
+and the two partitions disagree by a factor that depends on the window and
+**reverses direction between the mean and the median** — 46.78 against 41.85 on
+the aggregate, 35.66 against 59.93 on the median. A mean and a median that
+disagree about which of two samples is larger is the signature of too few draws
+from a heavy tail, not of a resolved effect.
+
+**It is not the instrument.** The whole-chunk alignment control was run again AT
+8192 and passed at **1.36e-5 relative, 0.5x the log's own printing floor** —
+tighter than the 2048 control's 0.72x — and `F=0` and `F=4096` were re-run from
+scratch in the second run and reproduced the first run's eight per-chunk values
+**byte for byte**.
+
+**It is the corpus, and structurally so.** §2's limit (1) caps a captured
+workstream at the server's own context window, so `deep-s26b5bb`'s 70,053 tokens
+give 34 chunks at 2048, 17 at 4096 and **8 at 8192** — and the arms' stability
+tracks exactly that: rotation spread 9 %, 22 %, 1441 %. **A number at 8192 needs
+a longer corpus, not a better instrument.**
+
+What survives: all four rotations exceed the 4096 arm's 12.24 (medians 18.3,
+44.0, 275.5, 59.9), so the trend continues past 4096 with its size undetermined.
+
+## Three carried items closed, and two of them were not what the backlog said
+
+### `mcp-stdio.ts`'s numeric-id reply path — the drop was the smaller half
+
+Carried since the eleventh pass. JSON-RPC allows a string, a number or null for
+`id` and asks a server only to echo what it was sent; this client sends numbers,
+so `typeof id === 'number'` covered every reply this repo's own sidecar has ever
+produced and **nothing else**. A server that stringifies answers `7` as `"7"` —
+that message matched neither branch and `dispatch` returned having done nothing.
+No log line, no rejection: the promise sat until `requestTimeoutMs` and the
+symptom read as "the sidecar never answered", pointing at the sidecar rather than
+the wire. `initialize` is request 1, so the first casualty is the handshake.
+
+Three silent dead ends, all now reported: a string id is accepted **only when its
+integer form is actually outstanding** (coercing unconditionally could resolve
+the wrong call), a reply whose id is not outstanding is logged without a verdict
+on which of the three reasons it is, and anything that is neither a method nor a
+matchable reply has a terminal branch at last.
+
+### `access.json` / `.env` two-writer race — the backlog missed the half with teeth
+
+"Both read-modify-write; the repair is a lock file." The lost update is real and
+the lock fixes it. But **both writers of `access.json` used the literal path
+`${file}.tmp`**, and both writers of `.env` used `${ENV_FILE}.tmp`.
+`writeFileSync` opens O_TRUNC, so two processes on one temp path do not lose an
+update — they **splice**: one truncates mid-write of the other, the other's
+remaining bytes land past the new end, and the atomic rename faithfully installs
+one document's prefix, a hole of NULs and another's tail. `readAccessFile` then
+quarantines it and **every allowlist entry, dmPolicy and room policy is gone**.
+On `.env` the casualty is the Matrix device id, whose loss the code's own comment
+describes: a new device on next boot, peers stop sharing room keys, and the bot
+quietly cannot read encrypted rooms.
+
+Both halves fixed. `src/file-lock.ts` + `server/src/file-lock.ts` (duplicated
+deliberately — the sidecar compiles with `rootDir: src`; same arrangement as
+`stateDir()`), and unique temp paths in all six writers including the four that
+have one writer today. The lock **degrades rather than throws**: `gate()` is on
+the Matrix inbound path, where an exception turns a race into a dropped message.
+
+The load-bearing test is four **real child processes** racing one file, with the
+control run beside it: unlocked, they must lose writes, or the locked result
+proves nothing.
+
+### `/loop resume` does not clear the turn buffers, and that is correct
+
+Carried for five passes as an anomaly. It is not one, twice over. (1) There is
+nothing left to drain — `agent_end` returns at its first line when
+`state.active` is false, which is why `stop`/`end`/idle-`finish` drain for
+themselves; every other deactivation (provider pause, check pause, operator
+abort, iteration cap, both completions) happens INSIDE `agent_end` below the
+drain. Enumerated by grepping every `state.active = false` against the drain's
+line number. (2) Draining there would be a **defect**: `resume` is also how an
+operator undoes a soft stop, and a soft stop is requested mid-turn — clearing the
+buffers would discard the tool count of a turn still in flight, which is X4's own
+failure arriving through the fix for X4.
+
+10 tests, and both claims mutation-tested rather than assumed: add
+`resetTurnBuffers()` to `resume` and only the soft-stop-undo case fails; remove
+it from `stop` and only the stop case fails.
+
+## `convert_anthropic.py` is three defects, not one — and the blocker is named
+
+Read out of the patched image rather than from memory. Beyond "reasoning as a
+`text` block and the content never emitted": `text_response_to_anthropic` has
+**no `reasoning` and no `finish_reason` parameter at all**, so patch 4 is
+entirely absent on that path. And the `text`-block choice is a safety inversion,
+not just a loss — `text` is the one block type `vendor/prinny-channel`
+forwards, so on the Anthropic wire the model's private deliberation is what
+reaches a Matrix room.
+
+The decision that blocks a fix: Anthropic's thinking block carries a `signature`
+the API issues and verifies, which a proxy fronting a local model does not have.
+Emit without one, emit a placeholder, or keep reasoning off `content` entirely —
+the last is the only option that cannot put a fabricated signature into a
+transcript later replayed against the real API. **Still yours to decide; what can
+be said without deciding is that it must not be a `text` block.**
+
+## The memory rule, now with a measurement under it
+
+The preflight's resident estimate was derived and never checked. Sampled from
+the container's own cgroup every 4 s through the n_ctx 8192 arm:
+
+```
+   predicted resident   3880 MiB
+   measured anon        4198 MiB   (+8.2 %)
+   measured file        2737 MiB   page cache from reading the GGUF
+   host free bottomed     158 MiB  swap used 0
+```
+
+The arithmetic is right to within a tenth and the guard now carries that 10 % as
+a measured margin. The page cache is deliberately NOT added — it is reclaimable
+and the kernel reclaimed it — but it is written down, because a reader seeing
+158 MiB afterwards would otherwise conclude the guard nearly failed.
+
+## Mine, and it is the rule this repo already had
+
+**I edited `scripts/ppl-depth-run.sh` while it was running.** Bash reads a script
+incrementally by byte offset, so the inserted lines shifted everything after the
+read point and the interpreter landed mid-construct — `local: can only be used in
+a function`, `n_corpus: unbound variable`, and a comment line executed as a
+command. The measurement and the analysis had both completed and `result.json`
+was already written, and the EXIT trap still restarted llama, so nothing was lost
+— but it is exactly the standing rule "**do not edit a file a running script
+owns**", which this repo wrote down for `.env` and which applies to the script
+itself just as hard.
+
+## Standing rules this session paid for
+
+- **A scored set is not a token set.** Default-mode perplexity scores the whole
+  top half of a chunk and emits one number for it. Any design that says "and then
+  we look at just this region" is wrong before it runs.
+- **A control's verdict should be a ratio against a floor the data itself
+  gives.** The alignment control compares the worst per-chunk difference to the
+  log's own four-decimal printing floor: exact reads 0.5x, a filler off by one
+  token 22x, an offset off by one chunk 2338x. A fixed threshold would have been
+  far above the floor for a 4-chunk run and far below it for a 33-chunk one.
+- **An aggregate can hide the finding.** The 8192 arm's single number is 57.99
+  and says nothing about its two halves being 14.77 and 227.67. `--spans` exists
+  because of that, and it counts what it could not bin for the same reason.
+- **Duplicate rather than import across a compile boundary, and TEST that the
+  copies agree.** `server/src` compiles with `rootDir: src` and cannot import
+  from `src/` — a `.ts` specifier there is a TS5097 that `node --check` cannot
+  see and only `--prepare` catches.
+
+## Still open, in value-per-hour order
+
+1. **The throughput side of the q8_0 trade** — unchanged and still the cheapest
+   real item. `versions.lock:kv_accept_note` explains why the -2.6 % prefill
+   figure must not be quoted: each arm got exactly ONE cold load, so the load is
+   aliased onto the arm. The fix is the design, and it is one invocation:
+
+   ```
+      ./scripts/capacity-probe.sh --bench prefill \
+        --bench-args '--prompt-len 32000 --repeat 10' \
+        --config 'kvalt-a-f16|CTX_SIZE=65536,CACHE_TYPE_K=f16,CACHE_TYPE_V=f16' \
+        --config 'kvalt-a-q8_0|CTX_SIZE=65536,CACHE_TYPE_K=q8_0,CACHE_TYPE_V=q8_0' \
+        …repeat the pair four times, alternating…
+   ```
+
+   About 7 minutes per config, so ~56 minutes for eight. `capacity-probe.sh` now
+   also captures the engine's own memory breakdown per arm, so a VRAM difference
+   between two loads of the SAME config becomes visible instead of inferred.
+
+2. **The second corpus.** `pi-150turn` degrades in the same direction under
+   §3d's confounded ladder and has never been through the rotation instrument.
+   `--reuse-filler` exists precisely so this costs one run rather than two:
+
+   ```
+      ./scripts/ppl-depth-run.sh --corpus /captures/corpus/pi-150turn.txt \
+        --unpinned --reuse-filler
+   ```
+
+   `--unpinned` is correct here and not a shortcut: that corpus declares
+   `system_prompt` and `tool_schemas` gaps and a -5,979 token delta, which
+   disqualifies it for TOOL fidelity and not for prose-at-depth.
+
+3. **`FORGE_MERGE_ACROSS_TOOLS=1` at real depth** — unchanged, and still needs an
+   operator decision because it needs capture ON for a working session.
+
+4. **Tighten the acceptance null** — `--workload repeat` and a 60K prompt.
+
+5. **The carried backlog that needs you rather than me**: the four `s735f17`
+   records on the tape (real session data — do not use or delete without
+   asking), the GPU-heavy foreground VRAM floor (it means asking you to load the
+   card), and `convert_anthropic.py`'s thinking-block shape.
+
+6. **`eval_expr` at `--repeat 20`, two levels.** Command in `README.md`; the task
+   set is not deterministic, so one grid cell is one sample.
+
+---
+
 # Handoff — 2026-08-24c (the work plan: everything still open, minus the one thing that must not run)
 
 Written as a plan rather than a report. The three sections below it are what
