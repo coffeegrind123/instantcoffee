@@ -779,21 +779,34 @@ nats per token), while the other sixty agree at 0.1-0.8x the floor:
    …sixty others   …          …          <1e-3       <1
 ```
 
-Those two passes score **identical token sequences** — the control's whole
-construction — with `llama_memory_clear` at the top of every chunk. And this
-engine is deterministic: two independent runs of the same pass have already
-reproduced each other digit for digit. Identical input and a deterministic
-engine cannot give different output, so either the inputs are not identical or
-something survives the clear. **That is being measured, not guessed** — the
-same pass is being re-run against itself, which separates engine
-non-determinism on near-zero-probability tokens from state that outlives
-`llama_memory_clear`.
+**Diagnosed, and it was a bug in the corpus builder rather than anything about
+the model.** Three measurements, in order:
 
-Until it is settled, note what it does NOT touch: §3e's 2048-vs-4096 result on
-`deep-s26b5bb` stands on a control that passed at 0.72x the floor over 32
-pairs, and the 8192 control on the same corpus passed at 0.5x over 8. Whatever
-this is, it did not fire there — and the pairs it fires on here are more
-extreme than anything that corpus contains.
+1. **The engine is exactly deterministic.** The 64-chunk pass was re-run
+   identically: all 64 running estimates matched to the printed digit, worst
+   relative difference **0**. So identical input cannot give different output,
+   and one of the two passes was not seeing what it was assumed to see.
+2. **Every disagreement is in the `pi-150turn` half.** All 34 pairs below
+   corpus token 70,053 agree; all four failures are above it.
+3. **`ppl_depth_build.py` read and wrote the corpus in TEXT MODE.** Python's
+   universal-newline translation turns `\r\n` into `\n` and a bare `\r` into
+   `\n` on the way in, and writing it back does not undo it. `pi-150turn.txt`
+   holds **414 carriage returns**, ten of them in `\r\n` pairs;
+   `deep-s26b5bb.txt` holds **none**. So the arm file's corpus half was ten
+   bytes shorter than the corpus and differed from it in 414 places — the
+   control's "same tokens, shifted by a whole chunk" premise was simply false,
+   and it fired on precisely the four chunks that contained changed bytes.
+
+The builder now reads and writes corpora as bytes; the rebuilt arm file is
+`prefix + corpus` byte for byte with all 414 CRs intact, and
+`tests/../test_ppl_depth_build.py` pins it with a corpus containing every shape
+of carriage return — plus the control that proves text mode would have changed
+it, because otherwise the test passes for no reason.
+
+**Nothing above §3e is affected.** `deep-s26b5bb` has zero carriage returns, so
+text mode and binary mode agree on it byte for byte — which is exactly why this
+survived every earlier run and appeared the moment a second corpus arrived. The
+2048-vs-4096 result stands.
 
 ### What this does and does not settle
 

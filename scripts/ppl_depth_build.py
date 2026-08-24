@@ -47,6 +47,34 @@ from probe_lib import TokenCounter, VOCAB  # noqa: E402
 # against perplexity's own counter.
 SEP = "\n\n"
 
+# EVERY CORPUS READ AND WRITE IS BINARY, AND THAT IS NOT FUSSINESS.
+#
+# Python's text mode applies universal-newline translation on the way IN: "\r\n"
+# becomes "\n" and a bare "\r" becomes "\n". Writing the result back does not
+# undo it. So `open(path).read()` followed by `open(path,'w').write()` silently
+# REWRITES a corpus that contains carriage returns — and a captured transcript
+# imported from the Windows side does.
+#
+# Measured 2026-08-24, and found by the alignment control rather than by
+# reading this code: `pi-150turn.txt` holds 414 CR bytes, of which 10 are part
+# of "\r\n" pairs. The arm file built from it was 10 bytes shorter than its
+# corpus and differed from it in 414 places, so the "same tokens, shifted by a
+# whole chunk" premise the control rests on was false — and the control said so
+# at 871.8x its own printing floor, on exactly the four chunks that contained
+# the changed bytes. `deep-s26b5bb.txt` has zero CRs, which is why every earlier
+# run was unaffected and why this survived until a second corpus arrived.
+def read_corpus_bytes(path: str) -> bytes:
+    """The corpus exactly as it is on disk. No decode, no newline translation."""
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
+def write_arm_file(path: str, prefix: str, corpus: bytes) -> None:
+    """prefix + corpus, byte for byte. The prefix is ASCII by construction."""
+    with open(path, "wb") as fh:
+        fh.write(prefix.encode("utf-8"))
+        fh.write(corpus)
+
 # Pad words, cheapest first. The exact-landing loop needs at least one candidate
 # that costs a single token; the longer ones let it close a multi-token gap in
 # one step instead of failing.
@@ -178,7 +206,7 @@ def main() -> int:
     if not targets:
         return _die("--filler-tokens is empty")
 
-    corpus = open(args.corpus, encoding="utf-8").read()
+    corpus = read_corpus_bytes(args.corpus)
 
     # WHY --reuse-filler EXISTS, and why it is not a shortcut.
     #
@@ -205,7 +233,7 @@ def main() -> int:
     count = TokenCounter(args.llama_url)
 
     print(f"==> corpus  {args.corpus}")
-    n_corpus = count(corpus)
+    n_corpus = count(corpus.decode("utf-8"))
     print(f"    {len(corpus)} bytes, {n_corpus} tokens through /tokenize "
           f"(control tokens PARSED — perplexity will report more)")
 
@@ -222,8 +250,8 @@ def main() -> int:
         # corpus's first, the prefix would not be `target` tokens long inside the
         # concatenation even though it is on its own, and every chunk boundary
         # would be off by one with nothing to say so.
-        joined = prefix + corpus
-        n_joined = count(joined)
+        joined_bytes = prefix.encode("utf-8") + corpus
+        n_joined = count(joined_bytes.decode("utf-8"))
         additive = (n_joined == target + n_corpus)
         print(f"    junction      {n_joined} = {target} + {n_corpus}? "
               f"{'yes' if additive else 'NO — off by %+d' % (n_joined - target - n_corpus)}")
@@ -234,10 +262,9 @@ def main() -> int:
 
         arm_path = os.path.join(args.out_dir, f"{stem}-f{target}.txt")
         fil_path = os.path.join(args.out_dir, f"filler-{target}.txt")
-        with open(arm_path, "w", encoding="utf-8") as fh:
-            fh.write(joined)
-        with open(fil_path, "w", encoding="utf-8") as fh:
-            fh.write(prefix)
+        write_arm_file(arm_path, prefix, corpus)
+        with open(fil_path, "wb") as fh:
+            fh.write(prefix.encode("utf-8"))
         print(f"    wrote         {arm_path}")
         entries.append({
             "filler_tokens": target,
@@ -270,7 +297,7 @@ def main() -> int:
     return 0
 
 
-def reuse(args, corpus: str, targets: list) -> int:
+def reuse(args, corpus: bytes, targets: list) -> int:
     """Concatenate the existing calibrated prefixes onto a different corpus."""
     base = os.path.basename(args.corpus)
     stem = base[:-4] if base.endswith(".txt") else base
@@ -280,10 +307,10 @@ def reuse(args, corpus: str, targets: list) -> int:
         if not os.path.exists(fil_path):
             return _die(f"{fil_path} does not exist; run without --reuse-filler once "
                         f"while llama is up")
-        prefix = open(fil_path, encoding="utf-8").read()
+        with open(fil_path, "rb") as fh:
+            prefix = fh.read().decode("utf-8")
         arm_path = os.path.join(args.out_dir, f"{stem}-f{target}.txt")
-        with open(arm_path, "w", encoding="utf-8") as fh:
-            fh.write(prefix + corpus)
+        write_arm_file(arm_path, prefix, corpus)
         print(f"==> filler  {target} tokens -> {arm_path}")
         entries.append({
             "filler_tokens": target,
