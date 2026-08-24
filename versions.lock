@@ -953,6 +953,47 @@ kv_accept_note      = MEASURED 2026-08-24, and it is a NULL WITH A STATED FLOOR.
                       THE FIX IS THE DESIGN, not more repeats: ALTERNATE the arms
                       across several cold loads (f16, q8_0, f16, q8_0, ...) so
                       load-to-load variation is averaged instead of aliased.
+                      THAT RUN HAPPENED, 2026-08-24, AND IT RETRACTS THE -2.6 %.
+                      Eight cold loads, f16 and q8_0 alternating, --repeat 10 at
+                      a 32,000-token prompt, CTX_SIZE 65536, everything else
+                      untouched. The unit of replication is THE LOAD, so the SE
+                      is computed across four load means per arm rather than
+                      across requests inside one load
+                      (./scripts/kv_alt_analyse.py):
+                        metric      f16 loads              q8_0 loads
+                        prefill   2147 2334 2311 2295   2254 2292 2264 2259
+                        decode    53.0 57.0 58.5 59.4   55.1 55.5 54.0 52.6
+                        accept   .485 .494 .525 .493   .481 .501 .484 .477
+                        metric     f16      q8_0     diff        t (4+4 loads)
+                        prefill   2272     2267    -0.19 %      -0.10
+                        decode    56.97    54.32   -4.66 %      -1.71
+                        accept    0.4989   0.4857  -2.66 %      -1.30
+                      READ IT AS: NOTHING IS RESOLVED, and the prefill penalty
+                      in particular is GONE. -2.6 % becomes -0.19 %, because the
+                      f16 arm's own four loads span 187 tok/s (SD 84.4) — the
+                      -54.7 tok/s that looked resolved at 8.26 SE is well inside
+                      the spread between two loads of the SAME config. DO NOT
+                      QUOTE -2.6 %.
+                      WHY THE OLD DESIGN COULD NOT HAVE WORKED, as a number:
+                      for prefill the between-load SD is 84.4 against a
+                      within-load SD of 35.1 — a ratio of 2.41, so most of the
+                      variance lives exactly where one load per arm cannot see
+                      it. For decode and acceptance the ratio is 0.63 and 0.23,
+                      so those two were less badly served by the old design; they
+                      are simply not resolved at four loads either.
+                      THE ONE NUMBER THAT MIGHT SURVIVE is decode: -4.66 % here
+                      against -5.0 % from the aliased pass, the same size and the
+                      same sign, at t = -1.71. That is suggestive and not
+                      established; it wants more loads, not more repeats.
+                      VRAM IS THE ONE THING THAT IS RESOLVED, and it is resolved
+                      easily: f16 23113/23088/23098/23048 against q8_0
+                      21386/21384/21344/21344 MiB. The f16 arm's whole range is
+                      65 MiB and q8_0's is 42 — both inside the 50 MiB
+                      resolution limit this probe's own header states — while the
+                      gap between them is 1,721 MiB, forty times either spread.
+                      q8_0 KV buys ~1.7 GiB and that is what it buys.
+                      Records: context/bench/capacity/kvalt-*.json and
+                      kvalt-between-load.json.
                       Until that is run, the honest statement is that q8_0 is
                       somewhere between 0.7 % and 2.6 % slower to prefill and 3-5
                       % slower to decode at 64K, direction reproduced twice,
