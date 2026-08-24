@@ -58,6 +58,57 @@ TMO="$(env_get BROWSER_MCP_TIMEOUT)";    : "${TMO:=180}"
 # server's own "exceeded its Ns time budget".
 TOOLTMO="$(env_get BROWSER_MCP_TOOL_TIMEOUT)"; : "${TOOLTMO:=25}"
 
+# ---------------------------------------------------------------------------
+# An X display that is actually there.
+#
+# The comment above used to assert "the container already runs Xvfb on :99". It
+# does not, and the failure is invisible: /tmp/.X11-unix/X99 SURVIVES the
+# process that created it, so the socket file exists, $DISPLAY looks valid, and
+# nothing says otherwise until Chrome refuses to launch with
+#
+#     Chrome cannot start headed: no X server is reachable ($DISPLAY=':99' is
+#     set but nothing is listening on it)
+#
+# — at which point the browser runs headless, and headless is what Bing and most
+# news sites block or stall. Measured 2026-08-24: a session burned minutes on
+# 404s and navigate calls timing out past the server's 25s budget, and every one
+# of them was this. Chrome opens in 2s and Bing settles in 3.6s once an X server
+# is genuinely listening.
+#
+# So: probe the display rather than trust it, and start Xvfb when it is absent.
+# A stale socket is removed first — Xvfb refuses to bind over one.
+ensure_display() {
+  [[ -n "$DISP" ]] || return 0
+  if command -v xdpyinfo >/dev/null 2>&1; then
+    DISPLAY="$DISP" xdpyinfo >/dev/null 2>&1 && return 0
+  elif pgrep -f "Xvfb ${DISP} " >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v Xvfb >/dev/null 2>&1; then
+    warn "no X server on ${DISP} and Xvfb is not installed — Chrome will fall back to headless,"
+    warn "which many sites block. Install Xvfb, or point BROWSER_MCP_DISPLAY at a real display."
+    return 0
+  fi
+  local num="${DISP#:}"; num="${num%%.*}"
+  rm -f "/tmp/.X11-unix/X${num}" 2>/dev/null || true
+  echo "  starting Xvfb on ${DISP} (nothing was listening)"
+  nohup Xvfb "$DISP" -screen 0 1920x1080x24 -nolisten tcp \
+    >"${TMPDIR:-/tmp}/xvfb${num}.log" 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.5
+    if command -v xdpyinfo >/dev/null 2>&1; then
+      DISPLAY="$DISP" xdpyinfo >/dev/null 2>&1 && return 0
+    elif [[ -S "/tmp/.X11-unix/X${num}" ]]; then
+      return 0
+    fi
+  done
+  warn "Xvfb did not come up on ${DISP}; see ${TMPDIR:-/tmp}/xvfb${num}.log"
+}
+case "${1:-}" in
+  up|restart|navigate|start_browser) ensure_display ;;
+  *) [[ -n "${BROWSER_MCP_AUTOSTART:-1}" ]] && ensure_display ;;
+esac
+
 export ZENDRIVER_MCP_DIR="$DIR"
 export BROWSER_MCP_HOST="$HOST"
 export BROWSER_MCP_PORT="$PORT"
