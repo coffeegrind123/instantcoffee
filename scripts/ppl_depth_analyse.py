@@ -357,6 +357,11 @@ def span_map(logs: list, grid: int, win_lo: int, win_hi: int) -> list:
     that depth's column rather than filled in.
     """
     cells: dict = {}
+    # SILENCE IS NOT SUCCESS. A chunk wider than the grid, or one that straddles
+    # a cell boundary, cannot be binned — and the quarter-offset rotations a
+    # resolving run uses straddle EVERY cell of the natural grid, so a map drawn
+    # without this counter would quietly show half the passes and look complete.
+    dropped: dict = {}
     for n_ctx, filler, lg in logs:
         per = lg.per_chunk_nll()
         S = lg.scored_per_chunk
@@ -366,6 +371,7 @@ def span_map(logs: list, grid: int, win_lo: int, win_hi: int) -> list:
                 continue
             cell = (lo // grid) * grid
             if hi >= cell + grid:
+                dropped[(n_ctx, filler)] = dropped.get((n_ctx, filler), 0) + 1
                 continue
             key = (cell, n_ctx)
             acc = cells.setdefault(key, [0.0, 0, []])
@@ -383,10 +389,15 @@ def span_map(logs: list, grid: int, win_lo: int, win_hi: int) -> list:
                                       "tokens": acc[1],
                                       "rotations": sorted(acc[2])}
         out.append(row)
+    if dropped:
+        out.append({"straddled": [{"n_ctx": n, "filler": f, "chunks": c}
+                                  for (n, f), c in sorted(dropped.items())]})
     return out
 
 
 def _fmt_span_map(rows: list) -> str:
+    straddled = [r for r in rows if "straddled" in r]
+    rows = [r for r in rows if "span" in r]
     depths = sorted({n for r in rows for n in r["by_depth"]})
     head = f"{'corpus span':>18} " + " ".join(f"{n:>10}" for n in depths)
     if len(depths) >= 2:
@@ -402,6 +413,11 @@ def _fmt_span_map(rows: list) -> str:
         if len(depths) >= 2 and lo and hi:
             line += f"   {hi['ppl'] / lo['ppl']:>8.1f}x"
         lines.append(line)
+    for blk in straddled:
+        for d in blk["straddled"]:
+            lines.append(f"NOT BINNED: n_ctx {d['n_ctx']} filler {d['filler']} — "
+                         f"{d['chunks']} chunks straddle this grid and are absent "
+                         f"from every row above")
     return "\n".join(lines)
 
 
