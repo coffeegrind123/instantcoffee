@@ -18,6 +18,11 @@ The short version, and it is not the one §4 expected:
   artefact and must not be quoted.** It is a property of how `llama-perplexity`
   stores its base log-probs, it appears identically in the null control, and
   §"The 16.5-nat floor" below is the source line that causes it.
+- **The depth anomaly is real, and it is not a partition artefact.** §3e:
+  scoring the SAME tokens at two history lengths — by rotating the corpus behind
+  a filler prefix rather than by placing a region in it — gives 6.35 at n_ctx
+  2048 and 12.24 at 4096. x1.93 in perplexity for x2 in history, with the
+  instrument's own alignment control passing at 0.72x its printing floor.
 - **Three limits, read out of the tool's source, retire the plan §6 had
   priced.** The deepest arm a real workstream can support here is CTX_SIZE/2;
   the ceiling is host RAM sized on `n_ctx * n_vocab`, not VRAM; and perplexity
@@ -389,6 +394,13 @@ This is not a KV-cache question — both arms see it, and the base arm sees it w
 no test arm in the run at all — but it is the reason the depth sweep stops at
 8192, so it belongs here.
 
+**Read §3e first if you only want the answer.** The confound this section could
+not remove — that changing `n_ctx` changes WHICH tokens are scored — was removed
+on 2026-08-24 by a different instrument, and the effect survives it: on an
+identical token set, doubling the history roughly doubles perplexity. What
+follows is the observation as it stood, and the list of things already refused,
+which is still what stops anyone re-walking them.
+
 Two corpora, f16 KV, no logits file in the run, everything else identical. The
 last column drops chunk 1, because chunk 1's scored window starts at `n_ctx/2` —
 a different point in the document at every depth — and on a corpus that opens
@@ -551,6 +563,181 @@ an exact null control under it — both arms are the same architecture at the sa
 depth. It does mean **cross-depth comparison of absolute PPL on this stack
 should not be trusted**, and that the article's "divergence grows past ~40k"
 cannot be tested here by this route.
+
+## 3e. The depth question, answered on a matched token set
+
+Measured 2026-08-24 with `scripts/ppl-depth-run.sh`. §3d's one surviving
+confound was that default-mode perplexity scores a DIFFERENT SET OF TOKENS at
+every depth, so its ladder compared 17 chunks of one partition against 8 chunks
+of another. This removes exactly that and changes nothing else.
+
+### The instrument, and why the obvious version of it does not work
+
+From `perplexity.cpp:542-600` at the pinned tag, read before anything ran:
+
+```
+   first = n_ctx/2
+   tokens_data = tokens + start + first
+   process_logits(..., tokens_data, n_ctx - 1 - first, ...)   scores [i+1]
+```
+
+so chunk `j` scores absolute offsets `[N/2+1, N-1]` — **the whole top half,
+never a subrange** — and a scored token's history is exactly its offset.
+
+The plan carried in the 2026-08-24c handoff was to place a 1024-token region at
+offset `N/2` in a 2048 arm and an 8192 arm and call them "the same tokens". They
+are not: the 8192 arm's chunk also scores the 3071 corpus tokens that follow the
+region and emits ONE number for all 4095 of them. R's contribution is not
+separable, and no filler placement makes it so, because the scored set is always
+the top half.
+
+**Rotation works where placement cannot.** Prefix the corpus with exactly `N/2`
+tokens of filler and every corpus token moves half a chunk, so the pass scores
+the exact COMPLEMENT of the unprefixed pass:
+
+```
+   F = 0      chunk j scores corpus [jN + N/2 + 1,  jN + N - 1]
+   F = N/2    chunk j scores corpus [jN + 1,        jN + N/2 - 1]
+```
+
+Two passes per depth. Their union is every corpus token in the window, each
+scored exactly once, each with history in `[N/2+1, N-1]` — **the same token set
+at 2048, 4096 and 8192**, which is the comparison §3d could not make.
+
+Chunks whose scored range is not wholly inside the analysis window are dropped,
+and that is not cosmetic: in the `F = N/2` pass, chunk 0's scored corpus tokens
+carry `N/2` tokens of FILLER as their history, and there is more of it at larger
+`N`. Keeping them would charge the deeper arm more filler-context than the
+shallow one — the exact shape of confound this exists to remove.
+
+### The result
+
+Corpus `deep-s26b5bb`, analysis window corpus `[8192, 65536)`, f16 KV, `-b 2048`,
+`-fa on`, no `--kl-divergence-base` anywhere:
+
+```
+   n_ctx    PPL        tokens scored    history       rotation spread
+    2048     6.3521       57,288        1025..2047          9.0 %
+    4096    12.2366       57,316        2049..4095         22.1 %
+    8192    57.9907       57,330        4097..8191       1441 %   <- see below
+```
+
+**2048 -> 4096 is the clean result: x1.93 in perplexity for x2 in history, on a
+token set that is 99.93 % identical.** §3d's partition confound is refuted as the
+explanation — the effect is not an artefact of which tokens each depth happened
+to score.
+
+`rotation spread` is the free yardstick, and it is worth more than any argument.
+The two rotations at one depth score **complementary halves** of the corpus —
+50 % disjoint, the largest token-set difference this design can produce — at an
+IDENTICAL history distribution. Whatever they differ by is pure corpus
+heterogeneity with no depth in it. At 2048 and 4096 that is 9 % and 22 %, while
+the cross-depth difference is 93 %, and the two arms are 0.073 % disjoint rather
+than 50 %.
+
+### Why the token sets are not exactly identical, and by how much
+
+Each arm's union misses the multiples of its own `N/2`: 55 tokens at 2048, 27 at
+4096, 13 at 8192, out of a 57,343-position window. The misses are **nested** —
+multiples of 4096 are multiples of 2048 are multiples of 1024 — so the whole
+discrepancy between the shallowest and deepest arm is the 42 tokens the deep arm
+scores and the shallow one does not, 0.073 %. Charging those 42 tokens a
+deliberately absurd 12 nats each moves the deep arm's perplexity by 0.583 %.
+
+### The controls, all four of which ran before any number was read
+
+- **The filler's length under PERPLEXITY'S OWN tokenizer**, read off its error
+  path (`tokenizes to only %zu tokens`), which is the only place default mode
+  ever prints a token count. `llama-server`'s `/tokenize` does NOT agree with it
+  — it parses control tokens and perplexity does not — so the builder's count is
+  a prediction until this confirms it:
+
+  ```
+     corpus alone   70,053
+     + f1024        71,077   delta 1024   exact
+     + f2048        72,101   delta 2048   exact
+     + f4096        74,149   delta 4096   exact
+  ```
+
+  70,053 is also an independent reproduction of the count `perplexity_v2` printed
+  on 2026-08-24 before that route was closed.
+
+- **The whole-chunk alignment control.** The same corpus behind a filler of a
+  WHOLE chunk must reproduce every per-chunk NLL, shifted by one chunk index —
+  `llama_memory_clear` at the top of every chunk (perplexity.cpp:558) means its
+  later chunks are bit-identical work. 32 chunk pairs at n_ctx 2048: worst
+  per-chunk difference **4.75e-4 relative, 0.72x the log's own four-decimal
+  printing floor. PASS.** The verdict is a ratio against a floor derived from
+  the log rather than a threshold someone picked; on synthetic logs the same
+  test reads 0.5x for an exact match, 22x for a filler off by ONE token and
+  2338x for an offset off by one chunk.
+
+- **Reproduction of the number being explained.** The `F = 0` pass at n_ctx 8192
+  returns `Final estimate: PPL = 16.0634` — §3d's own figure for that depth, to
+  four decimals, from a different run on a different day.
+
+- **The batching is identical across arms.** All five passes report
+  `batch_size=2048, n_seq=1`; §3d's C1/C2 already refused batch count as a cause
+  in both directions.
+
+### The 8192 arm's two rotations disagree by 15x, and the aggregate must not be quoted
+
+`57.9907` is the union of a rotation that returned 14.77 and one that returned
+227.67. At 2048 and 4096 the rotations agree to 9 % and 22 %; at 8192 they do
+not agree at all. Re-binning every arm's per-chunk NLL onto a common 4096-token
+grid (`--spans 4096`) shows the disagreement is not spread out — it alternates
+exactly with the rotation:
+
+```
+       corpus span       2048       4096       8192   8192/2048
+    8192..12287          4.63      15.41    1065.10      229.8x
+   12288..16383          7.95      12.01      18.25        2.3x
+   16384..20479          4.70       8.92     275.45       58.6x
+   20480..24575          6.06       8.59       6.24        1.0x
+   24576..28671          3.08       7.39     792.45      257.6x
+   28672..32767         10.98      11.19      10.92        1.0x
+   32768..36863          3.22      40.40      60.99       18.9x
+   36864..40959         13.66      14.72      22.13        1.6x
+   40960..45055          2.70      13.12     143.66       53.3x
+   45056..49151         15.04      29.97      21.66        1.4x
+   49152..53247          3.34       3.29     523.79      156.7x
+   53248..57343         10.55       8.33       6.19        0.6x
+   57344..61439          9.23      29.31      29.71        3.2x
+   61440..65535          8.45       7.66      41.60        4.9x
+```
+
+Every odd row is scored by `F = 4096` and every even row by `F = 0`, and the
+split is perfect: 3x to 258x against 0.6x to 4.9x. Two readings fit the same
+data and this run cannot separate them, because in this corpus the rotation and
+the easy/hard split are **perfectly aligned** — the spans `F = 4096` scores are
+also the spans that are cheapest at 2048 (mean 4.4 against 10.4):
+
+- the degradation is a property of the CONTENT — locally-predictable text loses
+  the most when the history it is predicted from grows, which is what a
+  fixed-size recurrent state saturating would look like (§3c: 48 of 64 layers);
+- or it is a property of WHERE THE CHUNK BOUNDARY FELL, and one alignment
+  happens to cut this corpus badly at 8192-token spacing.
+
+**So do not quote 57.99 as "perplexity at n_ctx 8192" yet.** The 2048 and 4096
+figures do not have this problem and are the quotable pair.
+
+The resolving experiment is one run and is already specified:
+`--depths 8192 --rotations 0,2048,4096,6144`, which covers each corpus quarter
+TWICE through two different chunk alignments. If the two coverages of a quarter
+agree, the effect is content; if they disagree, it is boundary placement.
+
+### What this does and does not settle
+
+- **It settles that the depth effect is real** rather than a partition artefact,
+  at least between 2048 and 4096, and that is the step §3d could not defend.
+- **It does not identify the mechanism.** In default mode history and
+  position-in-chunk are the same number, so "more history" and "further into the
+  window" cannot be told apart by this instrument at all.
+- **It is one corpus.** `pi-150turn` degrades in the same direction under §3d's
+  confounded ladder and has never been through this one. `--reuse-filler` exists
+  so that replication costs one run rather than two.
+- **It matters for the server**, which runs a 98,304-token window — four times
+  the deepest arm here, on the arm of the curve that is getting worse.
 
 ## 4. Reproducing any of it
 
