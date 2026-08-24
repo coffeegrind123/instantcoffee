@@ -154,17 +154,29 @@ Three layers went in on 2026-08-24:
 fresh nonce, `start_browser` not wrapped, `--json` not wrapped, errors not
 wrapped.
 
-**NOT verified: the native-tool path.** `.pi/extensions/browser-guard.ts` was
-never exercised against a real `browser_*` tool result, because that needs a pi
-session with `BROWSER_MCP_NATIVE` on. The wrapping branch is new code in a hook
-that previously returned early for every success. **Run one browser call through
-a pi session and read the result before trusting it.** If pi's `tool_result`
-return shape differs from what the branch assumes, the failure mode is a
-successful call whose content vanishes — loud, but only if you look.
+**The native-tool path is now verified, and verifying it found a bug.** A live pi
+session on 2026-08-24 wrapped `browser_navigate` and `browser_get_text_content`
+correctly — and also wrapped an ERROR, which it should not have.
 
-Also unexamined: whether anything else on the tool surface returns web-derived
-text without going through these two paths (an MCP fetch tool, `curl` via bash).
-`curl` output is not wrapped and arguably should be.
+The cause is that **`isError` does not mean what it looks like**. From pi's
+`executePreparedToolCall`:
+
+```
+   try   { let result = await prepared.tool.execute(...); return { result, isError: !1 } }
+   catch { return { result: createErrorToolResult(...), isError: !0 } }
+```
+
+`isError` is true ONLY when a tool throws. The browser MCP server RETURNS its
+failures, so every one of them arrives with `isError: false`. Two consequences,
+both now fixed: browser errors were being fenced as though a page wrote them,
+and the extension's original timeout-advice branch — which gated on `isError` —
+had been **unreachable for the exact failure it was written for** since it was
+written. Failure is now detected from the text (`TOOL_FAILURE`), and
+`.pi/extensions/tests/browser-guard.test.ts` pins both directions.
+
+Still unexamined: whether anything else on the tool surface returns web-derived
+text without going through these two paths. `curl` output via bash is NOT
+wrapped and arguably should be.
 
 ---
 

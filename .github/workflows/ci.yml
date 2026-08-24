@@ -72,6 +72,19 @@ jobs:
       # savings evaporate with nothing to show for it. Neither shows up in a
       # session. src/gate.ts imports nothing from pi precisely so this can run
       # with no node_modules.
+      # The extension SUITES, which nothing ran until 2026-08-24: the syntax
+      # check above proves they parse, and seven compaction-guard test files
+      # (75 assertions) plus the browser guard's own had never been executed by
+      # CI at all. The browser guard's is the one that matters most — it pins
+      # that a browser tool FAILURE is recognised from its text rather than from
+      # `isError`, which pi sets only when a tool throws, and which the browser
+      # MCP server therefore never sets.
+      - name: Extension unit tests
+        run: |
+          node --experimental-strip-types --no-warnings --test \
+            .pi/extensions/tests/*.test.ts \
+            .pi/extensions/compaction-guard/tests/*.test.ts
+
       # pi is installed HERE rather than at the Matrix step further down,
       # because the rtk suite drives pi's real `execCommand` to establish what a
       # killed child actually resolves to — a stub of it would assert the shape
@@ -405,12 +418,32 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # .env IS the source of truth for this, as it is for everything else the
+      # scripts read through `env_get`. It used to be
+      # `${{ vars.FORGE_VERSION || '0.8.2' }}` — a repository variable that is
+      # not set, so every CI build used the literal fallback. That fallback went
+      # stale: .env moved to 0.9.0 and CI kept building 0.8.2, so the image CI
+      # tested was never the image this repo targets.
+      #
+      # It surfaced as a patch refusing, which is the patches working exactly as
+      # designed — `forge_cached_tokens` looks for a TokenUsage construction that
+      # 0.8.2 does not contain and stops the build rather than shipping
+      # unpatched. Reading the version from .env means CI cannot build a
+      # different forge from the one the operator runs.
+      - name: FORGE_VERSION from .env
+        id: forge
+        run: |
+          v="$(grep -E '^FORGE_VERSION=' .env | tail -n1 | cut -d= -f2)"
+          test -n "$v" || { echo ".env has no FORGE_VERSION"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "  building forge $v"
+
       - name: Build forge image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.forge
-          build-args: FORGE_VERSION=${{ vars.FORGE_VERSION || '0.8.2' }}
+          build-args: FORGE_VERSION=${{ steps.forge.outputs.version }}
           load: true
           tags: qwen38-forge/proxy:ci
           cache-from: type=gha
