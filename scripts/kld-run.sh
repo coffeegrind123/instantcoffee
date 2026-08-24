@@ -53,6 +53,7 @@ UNPINNED=0
 BASE_KV="f16"
 TEST_KV="q8_0"
 NULL_CONTROL=0
+ALLOW_SWAP=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -67,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --test-kv) TEST_KV="${2:-}"; shift 2 || die "--test-kv needs a value" ;;
     --test-kv=*) TEST_KV="${1#*=}"; shift ;;
     --null-control) NULL_CONTROL=1; shift ;;
+    --allow-swap) ALLOW_SWAP=1; shift ;;
     --unpinned) UNPINNED=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -127,54 +129,8 @@ logits_path() { echo "${OUTDIR}/logits-${BASE_KV}-$1.bin"; }
 base_log()    { echo "${OUTDIR}/base-${BASE_KV}-$1.log"; }
 test_log()    { echo "${OUTDIR}/test-$2-vs-${BASE_KV}-$1.log"; }
 
-# ---------------------------------------------------------------------------
-# n_vocab, from the GGUF's own metadata.
-#
-# Everything that bounds this experiment's host-memory cost is n_ctx * n_vocab,
-# so n_vocab has to be a fact rather than a remembered constant. GGUF puts its
-# metadata key-value block at the head of the file and `tokenizer.ggml.tokens`
-# early within it, so this reads under 2 KB and stops at the array's count — it
-# never touches the token strings, let alone the tensors.
-#
-# `llama_vocab_n_tokens()` is exactly the length of that array, which is the
-# same number perplexity writes into the logits file's header — so verify_logits
-# later re-states it from an independent source, and a disagreement would show.
-# ---------------------------------------------------------------------------
-gguf_n_vocab() {
-  docker run --rm -i --user 0:0 -v "${MODELS}:/models:ro" \
-      --entrypoint python "$SIDECAR_IMAGE" - "/models/${GGUF}" <<'GGUFPY' 2>&1
-import struct, sys
-FIXED = {0:1, 1:1, 2:2, 3:2, 4:4, 5:4, 6:4, 7:1, 10:8, 11:8, 12:8}
-T_STR, T_ARR = 8, 9
-try:
-    f = open(sys.argv[1], "rb")
-    if f.read(4) != b"GGUF":
-        print("not a GGUF file"); sys.exit(1)
-    _ver, _ntensors, nkv = struct.unpack("<IQQ", f.read(20))
-    u32 = lambda: struct.unpack("<I", f.read(4))[0]
-    u64 = lambda: struct.unpack("<Q", f.read(8))[0]
-    st  = lambda: f.read(u64())
-    def skip(t):
-        if t in FIXED: f.read(FIXED[t])
-        elif t == T_STR: st()
-        elif t == T_ARR:
-            et, n = u32(), u64()
-            if et in FIXED: f.read(FIXED[et] * n)
-            elif et == T_STR:
-                for _ in range(n): st()
-            else: raise ValueError("array of metadata type %d" % et)
-        else: raise ValueError("metadata type %d" % t)
-    for _ in range(nkv):
-        key = st().decode("utf-8", "replace")
-        t = u32()
-        if key == "tokenizer.ggml.tokens" and t == T_ARR:
-            u32(); print(u64()); sys.exit(0)
-        skip(t)
-    print("tokenizer.ggml.tokens not present in the metadata"); sys.exit(1)
-except Exception as e:
-    print("%s: %s" % (type(e).__name__, e)); sys.exit(1)
-GGUFPY
-}
+# n_vocab comes from the GGUF's own metadata — gguf_n_vocab() in lib.sh, shared
+# with ppl-stride-run.sh, which bounds its host memory on the same product.
 
 # ---------------------------------------------------------------------------
 # Preflight. Everything that can be checked without stopping the server is
@@ -320,7 +276,7 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
   #     22 GiB box. A wrong constant in a guard is worse than no guard: it
   #     answers confidently.
   local nvocab
-  nvocab="$(gguf_n_vocab)"
+  nvocab="$(gguf_n_vocab "$MODELS" "$GGUF" "$SIDECAR_IMAGE")"
   if [[ "$nvocab" =~ ^[0-9]+$ ]]; then
     echo "    n_vocab       ${nvocab} (tokenizer.ggml.tokens, read from the GGUF)"
   else
@@ -348,17 +304,37 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
       verdict="REFUSED: needs ~${need_mb} MiB host RAM, only $(( avail_mb + swap_mb )) MiB incl. swap"
       blocked=1
     elif (( need_mb > avail_mb )); then
-      # NOT just "it will be slow". OBSERVED TWICE at n_ctx 16384 on this box:
-      # the base arm swaps, one of its ~3.8 GiB log-prob writes comes up short,
-      # the ofstream latches badbit, EVERY LATER WRITE IS SILENTLY DISCARDED,
-      # and perplexity exits 0 with a file holding 0.6 GB of an expected 15.2.
-      # The identical write to the identical directory completes when the box
-      # has headroom, so this is memory pressure and not the path. verify_logits
-      # catches it after the fact; this is the warning before it.
-      verdict="TIGHT: ~${need_mb} MiB wanted against ${avail_mb} MiB free — it will
-                  swap, and a swapping base arm has been observed writing a
-                  SHORT logits file and still exiting 0. Free memory first, or
-                  expect verify_logits to refuse this depth"
+      # THIS WAS A WARNING UNTIL 2026-08-24 AND IS NOW A REFUSAL. Two separate
+      # failures, both from a pass that fit only into swap:
+      #
+      #   1. OBSERVED TWICE at n_ctx 16384 on this box: the base arm swaps, one
+      #      of its ~3.8 GiB log-prob writes comes up short, the ofstream
+      #      latches badbit, EVERY LATER WRITE IS SILENTLY DISCARDED, and
+      #      perplexity exits 0 with a file holding 0.6 GB of an expected 15.2.
+      #      The identical write to the identical directory completes when the
+      #      box has headroom, so it is memory pressure and not the path.
+      #   2. A sibling script (ppl-stride-run.sh) printed the SAME "tight, it
+      #      will swap" warning, proceeded, and DEADLOCKED THE WINDOWS HOST —
+      #      twice. Recovering it needed an operator at the keyboard.
+      #
+      # There is no outcome on this side of the line worth having. A pass that
+      # only fits in swap produces a corrupt logits file at best and takes the
+      # machine out at worst, so "free+swap covers it" is not a reason to run.
+      # --allow-swap exists because a future box may have real swap on real
+      # NVMe and a smaller model; it is not a flag to reach for here.
+      if (( ALLOW_SWAP )); then
+        verdict="TIGHT (--allow-swap): ~${need_mb} MiB wanted against ${avail_mb} MiB
+                  free. It WILL swap. A swapping base arm has been observed
+                  writing a SHORT logits file and still exiting 0, and a
+                  sibling script in the same state took the host down"
+      else
+        verdict="REFUSED: ~${need_mb} MiB wanted against ${avail_mb} MiB free — it
+                  would swap. Free real memory or drop this depth. A swapping
+                  base arm has written a SHORT logits file and exited 0 (twice),
+                  and a sibling script in the same state DEADLOCKED THE HOST
+                  (twice). Pass --allow-swap only if you have read both."
+        blocked=1
+      fi
     else
       verdict="ok: ~${need_mb} MiB host RAM, ${need_tok} tokens needed"
     fi

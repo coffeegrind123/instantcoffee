@@ -459,13 +459,92 @@ raising `n_ctx` directly raises how much history every scored token carries.
   this architecture flash attention only touches the 16 attention layers anyway
   (§3c).
 
-### What has not been tested yet
+### The direct test was attempted on 2026-08-24, and the route is closed
 
-The direct test of §3c's mechanism: score the **same tokens** at two different
-history lengths. perplexity's chunking cannot do that on its own — position in
-the chunk and amount of history move together — so it needs either a corpus
-prefixed with filler to shift a region's position, or `perplexity_v2`'s
-`--ppl-stride` mode, which scores with a fixed history window.
+The test is: score the **same tokens** at two different history lengths.
+perplexity's default chunking cannot do it — position in the chunk and amount of
+history move together — but `perplexity_v2`, selected by `--ppl-stride`, can, and
+it is present at the pinned tag. Its scoring rule was read out of
+`perplexity.cpp:296-441` before anything was run:
+
+```
+   chunk i covers tokens [i*stride, i*stride + n_ctx)
+   llama_memory_clear() at the top of every chunk
+   scored: j = n_ctx-stride-1 .. n_ctx-2   -> the LAST `stride` tokens
+
+   so chunk i of a window W scores [i*S + W - S, i*S + W - 1],
+   every scored token carries W-S..W-1 tokens of history,
+   and W2's chunk k IS W1's chunk k + (W2-W1)/S, token for token.
+```
+
+That arithmetic is right, and it was confirmed against a real run: `-c 1792`
+with `--ppl-stride 512` produced `Calculation chunk = 2048`, `n_seq=1`, 133
+chunks — the `params.n_ctx += params.ppl_stride/2` at perplexity.cpp:2043
+behaving exactly as read. **Two arms at different windows would have scored
+identical token sets. The instrument is correct.**
+
+**It is unusable on this stack for two independent reasons, and the second one
+cost the operator their machine.**
+
+- **It is ~20x slower per token.** perplexity_v2 took **144.35 s to decode one
+  2048-token chunk** — 14 tok/s — against 558 tok/s for the default mode's
+  4096-token chunk in the same image, same weights, same f16 KV
+  (`.kld-logs/20260823T210410Z/base-f16-4096.log`, 7.34 s/pass). The timer
+  closes before the scoring loop, so this is decode, not softmax. At that rate
+  the shallowest arm alone is 5 h 20 m and the intended 2048/4096/8192 ladder is
+  over two days. **The cause was NOT isolated**: two things differ from the
+  default mode at once — `-b 512` against `-b 2048`, and v2's unconditional
+  `common_batch_add(..., /*logits=*/true)` requesting output for every position
+  rather than only for `pos >= n_ctx/2`. Either could be the 20x.
+- **It deadlocked the Windows host, twice.** v2 accumulates the whole chunk's
+  logits into one `std::vector<float>` with no `reserve()` — `n_ctx * n_vocab`
+  floats, and n_vocab is 248,320 here:
+
+  ```
+     W = 2048   ->  2.0 GiB final,   3.1 GiB peak across the last realloc
+     W = 4096   ->  4.1 GiB final,   6.1 GiB peak
+     W = 8192   ->  8.1 GiB final,  12.2 GiB peak
+  ```
+
+  on top of the 17.9 GB of weights `--load-mode none` reads into RAM, on a
+  22 GiB Docker VM shared with every other container on the box. Not an OOM
+  kill and not a slow run: **the host stopped and had to be recovered by hand.**
+  Once on the run itself, and once more on a four-config timing probe that would
+  have isolated the 20x — which is why it is still not isolated.
+
+**The guard computed the danger correctly and then waved it through.** The
+preflight in `scripts/ppl-stride-run.sh` printed `peak ~12125 MiB` before the
+run that killed the box. It classified that as `TIGHT` — a warning — because
+free plus swap covered it on paper. *Swap covering a 12 GiB spike is not the
+same as the machine surviving it.* There is no safe verdict between "ok" and
+"refused" for an allocation of this shape, and `TIGHT` is now a refusal.
+
+The script is **disarmed**: it exits 1 without `--i-have-read-the-deadlock-note`
+and prints why. `--dry-run` still works and allocates nothing, which is the
+reason it was kept rather than deleted.
+
+**What survived, and is worth having:**
+
+- `scripts/ppl_stride_analyse.py` and its 19 tests. It recovers per-chunk NLL
+  from v2's running series by differencing (`nll_cum(i) = i*S*ln(printed_i)`),
+  maps chunks to absolute token ranges, and aligns arms across windows. The
+  load-bearing test synthesises logs from an NLL that depends only on absolute
+  token index — correctly aligned arms must then agree exactly — and there is a
+  control for that control: a deliberate one-chunk offset must break the
+  agreement, and does. If v2 numbers ever arrive by another route, this aligns
+  them.
+- **perplexity's own token count for this corpus is 70,053.** v2 prints it
+  unconditionally (`have %zu tokens`) where the default mode prints it only on
+  the error path — so this run closes limit (3)'s bracket of [69,632, 73,727] to
+  an exact number. Against llama's own `/tokenize` count of 69,440 with control
+  tokens parsed, `parse_special = false` costs **+613 tokens, +0.88%**.
+
+**If the depth question is picked up again, it needs a different instrument.** A
+corpus prefixed with filler to shift a region's position, scored by the DEFAULT
+mode, does the same job with the default mode's memory profile and speed. That
+route was never tried and is not known to be dangerous.
+
+### What has not been tested yet
 
 None of this changes the q8_0 result in §3a, which stands at 4096 and 8192 with
 an exact null control under it — both arms are the same architecture at the same

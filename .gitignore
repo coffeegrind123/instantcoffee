@@ -33,3 +33,4 @@ results/
 # land in context/design/; these are the transcripts behind them, and one run
 # is a few hundred KB of progress bars.
 .kld-logs/
+.ppl-stride-logs/

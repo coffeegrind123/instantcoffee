@@ -280,3 +280,54 @@ pin_diff() {
     | select(($a[$k] // "") != ($b[$k] // ""))
     | "      \($k): \($a[$k] // "-")  ->  \($b[$k] // "-")"' | sort -u
 }
+
+
+# --- gguf --------------------------------------------------------------------
+# n_vocab, from the GGUF's own metadata.  Shared by kld-run.sh and
+# ppl-stride-run.sh:  gguf_n_vocab <models_dir> <gguf_file> <sidecar_image>
+#
+# Everything that bounds these experiments' host-memory cost is n_ctx * n_vocab,
+# so n_vocab has to be a fact rather than a remembered constant. GGUF puts its
+# metadata key-value block at the head of the file and `tokenizer.ggml.tokens`
+# early within it, so this reads under 2 KB and stops at the array's count — it
+# never touches the token strings, let alone the tensors.
+#
+# `llama_vocab_n_tokens()` is exactly the length of that array, which is the
+# same number perplexity writes into the logits file's header — so verify_logits
+# later re-states it from an independent source, and a disagreement would show.
+gguf_n_vocab() {
+  local models="$1" gguf="$2" sidecar="$3"
+  docker run --rm -i --user 0:0 -v "${models}:/models:ro" \
+      --entrypoint python "$sidecar" - "/models/${gguf}" <<'GGUFPY' 2>&1
+import struct, sys
+FIXED = {0:1, 1:1, 2:2, 3:2, 4:4, 5:4, 6:4, 7:1, 10:8, 11:8, 12:8}
+T_STR, T_ARR = 8, 9
+try:
+    f = open(sys.argv[1], "rb")
+    if f.read(4) != b"GGUF":
+        print("not a GGUF file"); sys.exit(1)
+    _ver, _ntensors, nkv = struct.unpack("<IQQ", f.read(20))
+    u32 = lambda: struct.unpack("<I", f.read(4))[0]
+    u64 = lambda: struct.unpack("<Q", f.read(8))[0]
+    st  = lambda: f.read(u64())
+    def skip(t):
+        if t in FIXED: f.read(FIXED[t])
+        elif t == T_STR: st()
+        elif t == T_ARR:
+            et, n = u32(), u64()
+            if et in FIXED: f.read(FIXED[et] * n)
+            elif et == T_STR:
+                for _ in range(n): st()
+            else: raise ValueError("array of metadata type %d" % et)
+        else: raise ValueError("metadata type %d" % t)
+    for _ in range(nkv):
+        key = st().decode("utf-8", "replace")
+        t = u32()
+        if key == "tokenizer.ggml.tokens" and t == T_ARR:
+            u32(); print(u64()); sys.exit(0)
+        skip(t)
+    print("tokenizer.ggml.tokens not present in the metadata"); sys.exit(1)
+except Exception as e:
+    print("%s: %s" % (type(e).__name__, e)); sys.exit(1)
+GGUFPY
+}
