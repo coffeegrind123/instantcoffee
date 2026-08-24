@@ -25,12 +25,16 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from kv_alt_analyse import compare, load_stats, sd, usable_rows  # noqa: E402
+from kv_alt_analyse import (  # noqa: E402
+    CONTENDED_SPREAD_PCT, compare, load_stats, sd, usable_rows)
 
 
 def write_doc(dirpath: str, label: str, values: list, metric="prompt_tps",
               cached=0) -> str:
-    rows = [{"status": 200, "cache_n": 0, metric: v} for v in values]
+    """One capacity-probe JSON. `metric` is written to BOTH metric keys so a
+    test can read the same values back under either name."""
+    rows = [{"status": 200, "cache_n": 0, metric: v, "predicted_tps": v,
+             "prompt_tps": v} for v in values]
     rows += [{"status": 200, "cache_n": 4096, metric: 99999.0} for _ in range(cached)]
     path = os.path.join(dirpath, f"{label}.json")
     with open(path, "w", encoding="utf-8") as fh:
@@ -143,6 +147,44 @@ class TestBetweenLoad(unittest.TestCase):
             # The ratio is the diagnosis: load-to-load variation dominating means
             # one load per arm could never have answered the question.
             self.assertGreater(c["a_sd_between"] / c["a_sd_within"], 10.0)
+        finally:
+            shutil.rmtree(d)
+
+
+class TestContention(unittest.TestCase):
+    """capacity-probe.sh prints a 15% rule next to its table and enforces none of it.
+
+    A rule that is printed and not enforced is a rule that gets skipped — this
+    one was skipped on the first reading of the very run it was written for. So
+    the spread is computed here and reported beside every arm mean.
+    """
+
+    def test_a_tight_load_is_not_flagged(self):
+        d = tempfile.mkdtemp()
+        try:
+            write_doc(d, "kvalt-a-f16", [100.0, 101.0, 99.0, 100.0])
+            st = load_stats([os.path.join(d, "kvalt-a-f16.json")], "prompt_tps")
+            self.assertLess(st[0]["spread_pct"], CONTENDED_SPREAD_PCT)
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_starved_load_is_flagged(self):
+        d = tempfile.mkdtemp()
+        try:
+            # 45 to 60 on a mean of ~52: the shape a contended box produces.
+            write_doc(d, "kvalt-a-f16", [45.0, 60.0, 52.0, 51.0])
+            st = load_stats([os.path.join(d, "kvalt-a-f16.json")], "predicted_tps")
+            self.assertGreater(st[0]["spread_pct"], CONTENDED_SPREAD_PCT)
+        finally:
+            shutil.rmtree(d)
+
+    def test_the_spread_is_max_minus_min_over_the_mean(self):
+        """The same statistic capacity-probe prints, not a standard deviation."""
+        d = tempfile.mkdtemp()
+        try:
+            write_doc(d, "kvalt-a-f16", [90.0, 110.0])
+            st = load_stats([os.path.join(d, "kvalt-a-f16.json")], "prompt_tps")
+            self.assertAlmostEqual(st[0]["spread_pct"], 20.0, places=6)
         finally:
             shutil.rmtree(d)
 

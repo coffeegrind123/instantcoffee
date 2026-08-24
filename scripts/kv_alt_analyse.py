@@ -41,6 +41,15 @@ METRICS = (("prompt_tps", "prefill tok/s"),
            ("predicted_tps", "decode tok/s"),
            ("draft_acceptance", "MTP acceptance"))
 
+# capacity-probe.sh's own report states this and then leaves it to the reader:
+# "READ SPREAD% BEFORE READING DEC-MEAN. Above ~15% the runs disagree with each
+# other more than any config effect this probe can resolve, and the mean is an
+# artefact of whichever run got starved." A rule that is printed next to a table
+# and not enforced is a rule that gets skipped — it was skipped once here, on
+# the first reading of this very run — so the spread is computed and the verdict
+# is printed beside every arm mean.
+CONTENDED_SPREAD_PCT = 15.0
+
 
 def usable_rows(doc: dict) -> list:
     """Rows the bench itself would count: answered, not served from the cache.
@@ -77,8 +86,12 @@ def load_stats(paths: list, metric: str) -> list:
                 if isinstance(r.get(metric), (int, float))]
         if not vals:
             continue
+        m = mean(vals)
         out.append({"label": doc.get("label") or os.path.basename(p),
-                    "mean": mean(vals), "sd": sd(vals), "n": len(vals)})
+                    "mean": m, "sd": sd(vals), "n": len(vals),
+                    # max-min over the mean, the same statistic capacity-probe
+                    # prints as SPREAD%.
+                    "spread_pct": 100.0 * (max(vals) - min(vals)) / m if m else 0.0})
     return out
 
 
@@ -147,6 +160,17 @@ def main() -> int:
               f"{args.arm_b} {c['b_sd_within']:.4g}")
         print(f"    t = {c['t']:+.2f} on {c['n_loads_a']}+{c['n_loads_b']} loads"
               f"   {'RESOLVED' if abs(c['t']) >= 2.5 else 'NOT RESOLVED'} at this n")
+        hot = [x for x in a + b if x["spread_pct"] > CONTENDED_SPREAD_PCT]
+        if hot:
+            worst = max(x["spread_pct"] for x in hot)
+            print(f"    CONTENDED: {len(hot)} of {len(a) + len(b)} loads have a "
+                  f"within-load spread above {CONTENDED_SPREAD_PCT:.0f}% "
+                  f"(worst {worst:.1f}%). capacity-probe.sh's own rule is that "
+                  f"the mean is then")
+            print(f"    an artefact of whichever run got starved — re-run on a "
+                  f"quiet box rather than quoting this.")
+            report.setdefault("contended", {})[metric] = {
+                "loads_over_threshold": len(hot), "worst_spread_pct": worst}
         big = max(c["a_sd_between"], c["b_sd_between"])
         small = max(max(c["a_sd_within"], c["b_sd_within"]), 1e-12)
         print(f"    between/within = {big / small:.2f} — "

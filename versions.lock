@@ -981,10 +981,31 @@ kv_accept_note      = MEASURED 2026-08-24, and it is a NULL WITH A STATED FLOOR.
                       it. For decode and acceptance the ratio is 0.63 and 0.23,
                       so those two were less badly served by the old design; they
                       are simply not resolved at four loads either.
-                      THE ONE NUMBER THAT MIGHT SURVIVE is decode: -4.66 % here
-                      against -5.0 % from the aliased pass, the same size and the
-                      same sign, at t = -1.71. That is suggestive and not
-                      established; it wants more loads, not more repeats.
+                      DECODE LOOKED LIKE IT MIGHT SURVIVE AND DOES NOT, and the
+                      reason was printed under the probe's own table the whole
+                      time. capacity-probe.sh: "READ SPREAD% BEFORE READING
+                      DEC-MEAN. Above ~15 % the runs disagree with each other
+                      more than any config effect this probe can resolve, and the
+                      mean is an artefact of whichever run got starved." ALL
+                      EIGHT loads are above it for decode (15.4-31.9 %) and for
+                      acceptance (worst 56 %). The kvaccept30 pass that produced
+                      the original -5.0 % was worse still: 49.1 % and 42.3 %.
+                      Prefill is the one metric UNDER the threshold, which is why
+                      the -0.19 % retraction above stands on firmer ground than
+                      anything else here.
+                      AND THE METRIC THE PROBE SAYS TO BELIEVE UNDER CONTENTION
+                      POINTS THE OTHER WAY. "DRAFT/CYC survives contention when
+                      decode does not, so when the two disagree, believe
+                      DRAFT/CYC." Per load: f16 4.05/4.10/4.01/4.30 (mean 4.115)
+                      against q8_0 4.38/4.18/4.15/4.28 (mean 4.248) — q8_0 is
+                      +3.2 % HIGHER, t = +1.60, opposite in sign to decode's
+                      -4.66 %. Two measurements of the same thing disagreeing in
+                      DIRECTION, neither resolved, with the tie-break rule
+                      favouring q8_0. THERE IS NO ESTABLISHED DECODE PENALTY.
+                      kv_alt_analyse.py now computes the spread and prints the
+                      verdict beside every arm mean, because a rule printed under
+                      a table and enforced nowhere is a rule that gets skipped —
+                      it was skipped on the first reading of this very run.
                       VRAM IS THE ONE THING THAT IS RESOLVED, and it is resolved
                       easily: f16 23113/23088/23098/23048 against q8_0
                       21386/21384/21344/21344 MiB. The f16 arm's whole range is

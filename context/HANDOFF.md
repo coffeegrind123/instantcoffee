@@ -229,9 +229,23 @@ reader sees what it cost and what it changed rather than an empty slot.)*
    For decode and acceptance that ratio is 0.63 and 0.23, so those were less
    badly served — and are simply not resolved either.
 
-   **The one number that might survive is decode**: -4.66 % here against -5.0 %
-   from the aliased pass, same size and sign, t = -1.71. Suggestive, not
-   established, and it wants more LOADS rather than more repeats.
+   **Decode looked like it might survive and does not**, and the reason was
+   printed under the probe's own table the whole time: "READ SPREAD% BEFORE
+   READING DEC-MEAN. Above ~15 % … the mean is an artefact of whichever run got
+   starved." All eight loads are above it for decode (15.4-31.9 %) and for
+   acceptance (worst 56 %); the original -5.0 % pass was worse still at 49.1 %
+   and 42.3 %. Prefill is the one metric UNDER the threshold, which is why the
+   -0.19 % retraction is the firmest thing here.
+
+   And the metric the probe says to believe under contention points the other
+   way: DRAFT/CYC is f16 4.115 against q8_0 4.248, **q8_0 +3.2 % higher**,
+   opposite in sign to decode's -4.66 %. Two measurements of the same thing
+   disagreeing in DIRECTION, neither resolved, with the tie-break favouring
+   q8_0. **There is no established decode penalty either.**
+
+   `kv_alt_analyse.py` now computes the spread and prints the verdict beside
+   every arm mean — a rule printed under a table and enforced nowhere is a rule
+   that gets skipped, and it was skipped on the first reading of this very run.
 
    VRAM is the one thing that resolves easily: ranges of 65 and 42 MiB inside
    the probe's own 50 MiB resolution limit, against a 1,721 MiB gap. **q8_0 KV
