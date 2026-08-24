@@ -40,46 +40,57 @@ biggest token-set difference this design can make — at an identical history
 distribution. 9 % and 22 % against a 93 % cross-depth difference between arms
 that are 0.073 % disjoint.
 
-## The 8192 arm has no number, and the reason is worth more than a number would be
+## 8192, answered on a longer corpus — and it is a cliff, not a slope
 
-At 8192 the two rotations came back at **14.77 and 227.67**, so four were run at
-that one depth — `F` = 0, 2048, 4096, 6144. `F` and `F + N/2` are complements, so
-`{0,4096}` and `{2048,6144}` are **two independent partitions of the same
-tokens**, differing only in where the chunk boundaries fall. Agreement would mean
-content; disagreement would mean boundary placement.
+`deep-s26b5bb` alone gives 8 chunks at that depth and its four rotations spanned
+14.77 to 227.67, which is no arm figure at all. Concatenating it with
+`pi-150turn` — 161,254 tokens, **64 / 32 / 16 chunks** per rotation, alignment
+control **passing at 0.8x its printing floor over 64 pairs**:
 
 ```
-   per-chunk PPL at n_ctx 8192, corpus order, window [8192, 65536)
-
-     F=0        18.25     6.24    10.92    22.13    21.66     6.19    41.60
-     F=2048    371.96   162.05    10.92    17.38    44.02     2.54    68.42
-     F=4096   1065.10   275.45   792.45    60.99   143.66   523.79    29.71
-     F=6144     26.42    71.04   108.85    59.93    76.86    14.67
+   n_ctx    PPL        tokens scored    rotation spread
+    2048    13.3188      122,760            8.6 %
+    4096    28.5385      122,820          110.4 %
+    8192    86.1443      122,850          212.3 %
 ```
 
-**The answer is neither, and it took the run to see it: the sample is too small
-and too heavy-tailed for an arm figure to exist at this depth on this corpus.**
-Per-chunk perplexity spans 2.54 to 1065.10 over six or seven chunks per rotation,
-and the two partitions disagree by a factor that depends on the window and
-**reverses direction between the mean and the median** — 46.78 against 41.85 on
-the aggregate, 35.66 against 59.93 on the median. A mean and a median that
-disagree about which of two samples is larger is the signature of too few draws
-from a heavy tail, not of a resolved effect.
+**x2.14 from 2048 to 4096 replicates the x1.93 on a different, larger corpus
+with its own passing control.**
 
-**It is not the instrument.** The whole-chunk alignment control was run again AT
-8192 and passed at **1.36e-5 relative, 0.5x the log's own printing floor** —
-tighter than the 2048 control's 0.72x — and `F=0` and `F=4096` were re-run from
-scratch in the second run and reproduced the first run's eight per-chunk values
-**byte for byte**.
+**And the aggregate is the wrong summary.** Across thirty 4096-token spans the
+8192/2048 ratio has a **median of 1.74**, upper quartile 18.9: sixteen spans
+move less than 2x, **nine move more than 10x**, and one moves 149,597x
+(28.83 -> 4,313,018 — the model assigning ~2e-7 to the tokens that actually
+occurred). Dropping that single span takes the 8192 aggregate from 86.14 to
+59.32 while 2048 barely moves.
 
-**It is the corpus, and structurally so.** §2's limit (1) caps a captured
-workstream at the server's own context window, so `deep-s26b5bb`'s 70,053 tokens
-give 34 chunks at 2048, 17 at 4096 and **8 at 8192** — and the arms' stability
-tracks exactly that: rotation spread 9 %, 22 %, 1441 %. **A number at 8192 needs
-a longer corpus, not a better instrument.**
+**So quote the median span ratio and the distribution, never the aggregate.**
+The model does not degrade smoothly with context; it falls off a cliff on
+particular content, and the cliffs dominate any average. More chunks tamed the
+rotation disagreement (1441 % on eight, 212 % on sixteen) and did NOT tame the
+tail, because the tail is content.
 
-What survives: all four rotations exceed the 4096 arm's 12.24 (medians 18.3,
-44.0, 275.5, 59.9), so the trend continues past 4096 with its size undetermined.
+### A bug this run found, and the control that found it
+
+`ppl_depth_build.py` read and wrote corpora in Python **text mode**, whose
+universal-newline translation turns `\r\n` into `\n` and a bare `\r` into `\n`
+and does not undo it on write. `pi-150turn.txt` holds **414 carriage returns**;
+`deep-s26b5bb.txt` holds **none** — which is why every earlier run was
+unaffected and why this waited for a second corpus. The first long-corpus
+attempt scored a corpus altered in 414 places, and its alignment control failed
+at 871.8x the floor on exactly the four chunks containing changed bytes.
+
+Diagnosed by measurement, in this order: the engine re-ran a 64-chunk pass with
+a worst relative difference of **exactly 0**, so identical input cannot give
+different output; all 34 pairs below the `pi-150turn` boundary agreed and all
+four failures were above it; then the byte comparison. Corpora are now read and
+written as bytes, pinned by five tests.
+
+**And the two controls are not interchangeable.** The corrupted and correct
+builds produced **identical token counts**, so the error-path probe — the
+control for the filler's LENGTH — passed on the altered corpus. Only the
+alignment control, which asks whether the corpus is the SAME TOKENS shifted by a
+whole chunk, could see it. A run with one of them has a hole in it.
 
 ## Three carried items closed, and two of them were not what the backlog said
 
@@ -251,31 +262,13 @@ reader sees what it cost and what it changed rather than an empty slot.)*
    the probe's own 50 MiB resolution limit, against a 1,721 MiB gap. **q8_0 KV
    buys ~1.7 GiB and that is what it buys.**
 
-2. **A LONGER corpus, which is what 8192 actually needs** — and the cheapest one
-   is already on the tape. `deep-s26b5bb` is 70,053 tokens under perplexity's own
-   tokenizer and `pi-150turn` is ~88k, so **concatenating them gives ~158k** and a
-   window of 131,072 — which is **16 chunks at 8192**, 32 at 4096 and 64 at 2048,
-   twice what this session had at every depth. The rotation instrument does not
-   care that the document is two sessions joined: it fixes the token set, and the
-   set is identical across depths either way. That is the run that would put a
-   number on 8192, and it is the one worth doing first.
-
-   Replicating on `pi-150turn` ALONE is the weaker version — 10 chunks at 8192
-   against 8 — but it is a second corpus, which the property does not yet have:
-
-   ```
-      ./scripts/ppl-depth-run.sh --corpus /captures/corpus/pi-150turn.txt \
-        --unpinned --reuse-filler
-   ```
-
-   `--reuse-filler` exists so either costs one run rather than two: it
-   concatenates the already-calibrated prefixes without contacting llama, and
-   stage 1's error-path probe still verifies every arm file's exact length under
-   perplexity's own tokenizer, which is the stronger check anyway.
-
-   `--unpinned` is correct here and not a shortcut: that corpus declares
-   `system_prompt` and `tool_schemas` gaps and a -5,979 token delta, which
-   disqualifies it for TOOL fidelity and not for prose-at-depth.
+2. ~~A longer corpus for 8192~~ — **DONE**, see above. `deep-plus-pi.txt` is on
+   the tape with a README explaining why a concatenation is sound for THIS
+   instrument and unusable for a KLD run. What it leaves open is narrower and
+   more interesting: **what makes a span a cliff?** Nine of thirty move more
+   than 10x and one moves 149,597x, and nothing yet says what those spans
+   contain. The span map (`--spans`) gives their exact corpus ranges, so this is
+   a reading exercise on `deep-plus-pi.txt`, not another GPU hour.
 
 3. **`FORGE_MERGE_ACROSS_TOOLS=1` at real depth** — unchanged, and still needs an
    operator decision because it needs capture ON for a working session.
