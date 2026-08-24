@@ -72,6 +72,16 @@ jobs:
       # savings evaporate with nothing to show for it. Neither shows up in a
       # session. src/gate.ts imports nothing from pi precisely so this can run
       # with no node_modules.
+      # pi is installed HERE rather than at the Matrix step further down,
+      # because the rtk suite drives pi's real `execCommand` to establish what a
+      # killed child actually resolves to — a stub of it would assert the shape
+      # the code already assumes and prove nothing. Without pi on PATH that one
+      # test skips, and the premise behind the whole AB3 finding goes unchecked
+      # in CI. (It used to HARD FAIL on an absolute path that only existed on
+      # the author's box, which took every step after it down with it.)
+      - name: Install pi
+        run: npm install -g @earendil-works/pi-coding-agent
+
       - name: rtk gate unit tests
         working-directory: vendor/rtk-pi
         run: node --experimental-strip-types --no-warnings --test tests/*.test.ts
@@ -165,9 +175,7 @@ jobs:
       # wrong notification method name — the extension's whole job, and
       # something no unit test can see.
       - name: Matrix channel — the extension inside a real pi
-        run: |
-          npm install -g @earendil-works/pi-coding-agent
-          cd vendor/prinny-channel && npm run test:e2e
+        run: cd vendor/prinny-channel && npm run test:e2e
 
       # A fragment that is empty, or that forgets to pin the output language,
       # would quietly turn THINK_LANG into "answer in Chinese".
