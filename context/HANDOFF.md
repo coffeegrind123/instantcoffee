@@ -207,22 +207,35 @@ itself just as hard.
 
 ## Still open, in value-per-hour order
 
-1. **The throughput side of the q8_0 trade** — unchanged and still the cheapest
-   real item. `versions.lock:kv_accept_note` explains why the -2.6 % prefill
-   figure must not be quoted: each arm got exactly ONE cold load, so the load is
-   aliased onto the arm. The fix is the design, and it is one invocation:
+*(item 1 was done during the session and is kept, struck through, so the next
+reader sees what it cost and what it changed rather than an empty slot.)*
+
+1. ~~The throughput side of the q8_0 trade~~ — **DONE, and it retracts the
+   number.** Eight cold loads, f16/q8_0 alternating, `--repeat 10` at a
+   32,000-token prompt. The unit of replication is THE LOAD:
 
    ```
-      ./scripts/capacity-probe.sh --bench prefill \
-        --bench-args '--prompt-len 32000 --repeat 10' \
-        --config 'kvalt-a-f16|CTX_SIZE=65536,CACHE_TYPE_K=f16,CACHE_TYPE_V=f16' \
-        --config 'kvalt-a-q8_0|CTX_SIZE=65536,CACHE_TYPE_K=q8_0,CACHE_TYPE_V=q8_0' \
-        …repeat the pair four times, alternating…
+      metric     f16      q8_0     diff        t (4+4 loads)
+      prefill   2272     2267    -0.19 %      -0.10
+      decode    56.97    54.32   -4.66 %      -1.71
+      accept    0.4989   0.4857  -2.66 %      -1.30
    ```
 
-   About 7 minutes per config, so ~56 minutes for eight. `capacity-probe.sh` now
-   also captures the engine's own memory breakdown per arm, so a VRAM difference
-   between two loads of the SAME config becomes visible instead of inferred.
+   **Nothing is resolved, and the -2.6 % prefill penalty is gone.** The f16
+   arm's own four loads span 187 tok/s (2147, 2334, 2311, 2295), so the
+   -54.7 tok/s that looked resolved at 8.26 SE sits inside the spread between
+   two loads of the SAME config. The old design's failure is now a number:
+   for prefill the between-load SD is 84.4 against a within-load SD of 35.1.
+   For decode and acceptance that ratio is 0.63 and 0.23, so those were less
+   badly served — and are simply not resolved either.
+
+   **The one number that might survive is decode**: -4.66 % here against -5.0 %
+   from the aliased pass, same size and sign, t = -1.71. Suggestive, not
+   established, and it wants more LOADS rather than more repeats.
+
+   VRAM is the one thing that resolves easily: ranges of 65 and 42 MiB inside
+   the probe's own 50 MiB resolution limit, against a 1,721 MiB gap. **q8_0 KV
+   buys ~1.7 GiB and that is what it buys.**
 
 2. **A LONGER corpus, which is what 8192 actually needs** — and the cheapest one
    is already on the tape. `deep-s26b5bb` is 70,053 tokens under perplexity's own
