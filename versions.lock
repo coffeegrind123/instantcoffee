@@ -844,12 +844,36 @@ kv_accept_note      = MEASURED 2026-08-24, and it is a NULL WITH A STATED FLOOR.
                       draft/cycle FLIPPED SIGN between the two passes (+0.111
                       then -0.172), so it carries no signal here; quote
                       acceptance, not draft/cycle, for this comparison.
-                      NOT RESOLVED, and consistently signed both passes: decode
-                      is 3-5 % LOWER at q8_0 (1.8 SE at n=30) and prefill 2.6 %
-                      lower. Direction reproduced; magnitude inside the +/-6 %
-                      decode variance spec_variance_note documents. If anyone
-                      cares to settle it, that is the arm to re-run, not
-                      acceptance.
+                      THE THROUGHPUT SIDE IS MESSIER THAN THE FIRST WRITE-UP OF
+                      THIS ENTRY SAID, and the correction matters. Per-run:
+                        pass   metric    f16      q8_0     diff      SE
+                        n=5    prefill  2109.3   2094.5   -0.7 %    0.95
+                        n=30   prefill  2141.3   2086.6   -2.6 %    8.26
+                        n=5    decode     55.9     54.0   -3.3 %    0.50
+                        n=30   decode     54.2     51.5   -5.0 %    1.84
+                      Prefill variance is tight (sd 1.1-1.4 %, matching the
+                      +/-1.5 % in spec_variance_note), so at n=30 the prefill
+                      difference is RESOLVED WITHIN THAT PASS at 8.26 SE. But the
+                      two passes disagree with EACH OTHER: -14.8 against -54.7
+                      tok/s, about 2.4 SE apart. Both cannot be sampling noise
+                      around one number.
+                      READ IT AS: there is a BETWEEN-COLD-LOAD term that neither
+                      pass can see, because each arm got exactly one load and the
+                      load is therefore ALIASED ONTO THE ARM. Whatever differs
+                      between two loads of the same config (allocator layout,
+                      device state, other tenants) is being attributed to the KV
+                      type. So do NOT quote -2.6 % as a q8_0 prefill penalty on
+                      the strength of 8.26 SE; the SE is computed within the very
+                      thing that is confounded.
+                      THE FIX IS THE DESIGN, not more repeats: ALTERNATE the arms
+                      across several cold loads (f16, q8_0, f16, q8_0, ...) so
+                      load-to-load variation is averaged instead of aliased.
+                      Until that is run, the honest statement is that q8_0 is
+                      somewhere between 0.7 % and 2.6 % slower to prefill and 3-5
+                      % slower to decode at 64K, direction reproduced twice,
+                      magnitude unestablished.
+                      NONE OF THIS TOUCHES THE ACCEPTANCE RESULT, which is a null
+                      whose two passes AGREE (+0.0192 and +0.0175).
                       LIMITS. One depth (64K, 32K prompt) and one workload
                       (bench.py synthetic). kv_cache_fidelity's 4.7 % figure is
                       at n_ctx 4096/8192, so the fidelity and acceptance numbers

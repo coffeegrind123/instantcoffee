@@ -1,3 +1,247 @@
+# Handoff — 2026-08-24c (the work plan: everything still open, minus the one thing that must not run)
+
+Written as a plan rather than a report. The three sections below it are what
+happened; this one is what is left and how to do it. Items are ordered by
+*value per hour*, not by how interesting they are.
+
+## THE ONE HARD EXCLUSION, before anything else
+
+**Do not arm `scripts/ppl-stride-run.sh`. Do not run `llama-perplexity` with
+`--ppl-stride`. Do not re-run the four-config timing probe that isolated its
+20x slowdown.** That code path deadlocked the operator's Windows host twice on
+2026-08-24 and had to be recovered by hand. The script exits 1 without
+`--i-have-read-the-deadlock-note` and that flag is not for you.
+
+This does **not** exclude the depth question itself. Item 1 answers the same
+question by a different route with an ordinary memory profile. The banned thing
+is `perplexity_v2`, not curiosity about context length.
+
+## The memory rule everything below inherits
+
+`perplexity_v2` allocated `n_ctx * n_vocab` floats with no `reserve()` — 12.2
+GiB peak — on top of 17.9 GB of weights, on a 22 GiB VM shared with every other
+container. The preflight *computed that correctly*, called it `TIGHT`, and let
+it run.
+
+**Before starting any arm, state its resident cost and check it against real
+free memory, not free+swap.** `kld-run.sh` now refuses rather than warns
+(`--allow-swap` overrides, and is not for you either). If a design needs swap to
+fit, the design is wrong.
+
+---
+
+## 1. The depth question, by the safe route  ·  the headline item
+
+`kv-cache-fidelity-measured.md` §3d: perplexity climbs steeply with `n_ctx` on
+two different corpora — 11.61 at 4096, 16.06 at 8192, 94.00 at 16384 —
+reproducible to four decimals, with the logits path, batch count, trained
+context, flash attention and physical ubatch each refused by its own control.
+§3c's candidate mechanism is that 48 of this model's 64 layers are state-space
+with a **fixed-size** recurrent state, so raising `n_ctx` raises how much
+history every scored token carries.
+
+**The confound that makes §3d unreadable**: default-mode perplexity scores
+positions `n_ctx/2 .. n_ctx-1`, so changing `n_ctx` changes both the history
+*and which tokens are scored*. Every depth partitions the document differently.
+
+### The design
+
+Fix the token set with **filler at the front of the corpus**, and use the
+**default** mode. Chunk `i` covers `[i*N, (i+1)*N)` and scores the second half,
+so a corpus token at position `p` preceded by `F` filler tokens lands at offset
+`(F+p) mod N` and is scored iff that offset is `>= N/2`, with history exactly
+equal to its offset.
+
+Pick a target region starting at corpus position `s`, then choose filler so the
+region lands at the *start* of the scored half in each arm:
+
+```
+   arm A   N = 2048    F_A ≡ (1024 - s) mod 2048    -> history 1024
+   arm B   N = 8192    F_B ≡ (4096 - s) mod 8192    -> history 4096
+```
+
+Both arms score the same corpus tokens `R[0..1023]`, and in both the preceding
+history is the **real document** (the chunk containing R starts at corpus
+position `s - N/2`), just 1024 tokens of it against 4096. That is a 4x history
+ratio on an identical token set — the measurement §3d could not make.
+
+### The control, which decides whether any of it means anything
+
+**Shift the filler by a whole `N` and nothing must change.** `F_A` and
+`F_A + 2048` put the region at the same offset in a different chunk index. If
+those two arms do not agree to the printed digit, the filler is doing something
+and no history comparison from this design is readable. **Run that before the
+history arms, not after.**
+
+### Cost, and why it is safe
+
+Omit `--kl-divergence-base` entirely. §3d's D1 already established this is
+byte-identical and roughly 10x faster (21.75 s/pass against 249.95), and it
+drops the `log_probs` buffer completely:
+
+```
+   resident  =  (n_ctx/2) * n_vocab * 4        n_vocab = 248,320
+     N=2048   ->  1.02 GiB
+     N=4096   ->  2.03 GiB
+     N=8192   ->  4.07 GiB
+     N=16384  ->  8.14 GiB   (only with llama stopped and >=12 GiB really free)
+```
+
+Nothing here approaches the 12.2 GiB that took the host down, and there is no
+logits file, so §3b's silent short write cannot happen either.
+
+### The one open problem in this design, named rather than hidden
+
+**Default-mode perplexity does not print its token count except on the error
+path**, so the exact `F` under *perplexity's* tokenizer is not directly
+readable, and `parse_special = false` makes it differ from llama's `/tokenize`
+(+613, +0.88% on `deep-s26b5bb`, measured).
+
+Two ways out, cheapest first:
+
+- **The error path is a free counter.** `if (tokens.size() < 2*n_ctx)` prints
+  `the data file you provided tokenizes to only %zu tokens` and returns
+  immediately — no allocation, no scoring. Run once with an absurd `-c` to read
+  the exact count of any file. One model load per calibration.
+- **Filler is plain ASCII with no control tokens**, so llama's `/tokenize`
+  should agree with perplexity on the filler *alone*. Verify that once via the
+  error path, then size filler with `probe_lib.build_document()` — which
+  calibrates against the tokenizer in three passes and exists precisely because
+  a fixed words-per-token constant overshot by 5x once already.
+
+`scripts/probe_lib.py` has `filler()` (deliberately varied, so `ngram-simple`
+cannot draft straight through it) and `build_document()`. `kld-run.sh` would
+need a `--no-logits` mode; D1 did it by hand.
+
+**If it confirms**: "PPL degrades with context length on this model" becomes a
+first-class property in `versions.lock`, and it matters, because the server runs
+a 98,304-token window. **If it refutes**: §3d is a partition artefact and §3c's
+mechanism is dead. Either outcome is worth the run.
+
+---
+
+## 2. The throughput side of the q8_0 trade  ·  cheap, and my analysis of it was wrong
+
+`versions.lock:kv_accept_note` and §4b. The acceptance null is solid and its two
+passes agree. **The throughput numbers are not, and the first write-up
+understated the problem:**
+
+```
+   pass   metric    f16      q8_0     diff      SE within pass
+   n=5    prefill  2109.3   2094.5   -0.7 %    0.95
+   n=30   prefill  2141.3   2086.6   -2.6 %    8.26   <- "resolved"
+   n=5    decode     55.9     54.0   -3.3 %    0.50
+   n=30   decode     54.2     51.5   -5.0 %    1.84
+```
+
+Prefill variance is tight (sd 1.1-1.4%), so n=30 "resolves" a 2.6% penalty at
+8.26 SE — **and the n=5 pass says 0.7%, about 2.4 SE away from it.** Both cannot
+be noise around one number.
+
+**Each arm got exactly one cold load, so the load is aliased onto the arm.**
+Anything that differs between two loads of the same config is being charged to
+the KV type, and the within-pass SE is computed *inside* the confound. More
+repeats will not fix it; they will tighten a biased estimate.
+
+**The fix is the design: alternate arms across several cold loads** — f16, q8_0,
+f16, q8_0, … — so load-to-load variation is averaged rather than attributed. Four
+loads per arm at `--repeat 10` costs about the same wall clock as what was
+already run and actually answers the question.
+
+`capacity-probe.sh --config` is repeatable and applies configs in order, so this
+is one invocation with eight `--config` flags. It now also captures the engine's
+own memory breakdown per arm, so a VRAM difference between two loads of the
+*same* config becomes visible instead of inferred.
+
+Why it matters: it points the **opposite way** to the reason q8_0 was adopted.
+
+---
+
+## 3. `FORGE_MERGE_ACROSS_TOOLS=1` at real depth  ·  needs an operator decision
+
+Unchanged and still the cheapest *real* open item. §4a of
+`forge-on-the-tool-call-path.md` claims patch 5 is what keeps `cache_n` growing
+to 66,750 across a 29-turn workstream (1,078,947 prompt tokens presented, 67,149
+actually prefilled — 93.8% reused). That rests on the patch's mechanism plus a
+synthetic three-turn result, **not** on a measurement at 68k.
+
+One capture session with that one variable flipped turns an inference into a
+number. It needs capture ON for a working session, which is a decision for
+whoever is at the keyboard — do not leave it running by default.
+
+---
+
+## 4. Tighten the acceptance null, if it is worth more time
+
+The null is real but narrow: **one depth (64K, 32K prompt), one workload
+(`bench.py` synthetic), detection floor 6.9% relative.** A penalty smaller than
+~3.3 points of acceptance would not have been seen, and the fidelity figure it
+is reasoned against (4.7% top-1 flips) is at `n_ctx` 4096/8192, not 64K.
+
+Two cheap extensions, in order of value:
+
+- **`--workload repeat`** (`bench_repeat.py`, the file-rewrite task). It reports
+  ECHO, so "the drafter did nothing" is distinguishable from "the model did not
+  repeat anything" — a different drafting regime from synthetic, and
+  `spec-sweep.sh`'s own header says to run both.
+- **A deeper prompt.** 32K of a 64K window exercises half the cache. `--bench-args
+  '--prompt-len 60000'` exercises nearly all of it, which is where a KV-precision
+  effect should be largest if it exists.
+
+---
+
+## 5. The carried backlog, with what each one actually needs
+
+- **The four `s735f17` records on the tape** (21,329 prompt tokens, 16 tools).
+  Untouched, and still an operator decision — they are real session data. Do not
+  use or delete them without asking.
+- **`eval_expr` at `--repeat 20`, two levels.** `quality_8task` has xhigh at
+  90% with all four lost assertions in `eval_expr`, against 100% everywhere
+  else — but the new task set is **not deterministic**, so one grid cell is one
+  sample. Existing evidence is medium 6 samples / 5 clean and xhigh 5 samples /
+  3 clean: directionally what the bench is built to detect, **not separable at
+  n=5**. The command is in `README.md:199`
+  (`--only eval_expr --level xhigh --repeat 4 --show-code`); it needs 20.
+- **A GPU-heavy foreground VRAM floor.** `vram_note`'s floor is measured on an
+  idle desktop (1,068-1,091 MiB across today's probes, against the 1,500.8 MiB
+  in the record). Every "does it fit" verdict on this stack is priced against
+  that floor, and nobody has measured it while the operator is actually using
+  the GPU. **Ask before doing this one** — it means asking them to load the card.
+- **`forge/proxy/convert_anthropic.py`**, patch 4's hole in a starker form: the
+  reasoning is appended as a `text` block and the model's content is never
+  emitted at all. Off this stack's path (`FORGE_CAPABILITY=native`, and this
+  stack speaks OpenAI); it needs a `thinking` block shape **decided** before it
+  can be written.
+- **`/loop resume` carries state across from the run that ended** (AC2 in
+  `subagents-loop-verifier-deliveries.md`) — the check's verdict and its error
+  streak. Read AC2 and AE1 together: AE1 is the related finding that
+  `status = "paused"` is a display field nothing branches on.
+- **`access.json` / `.env` two-writer race**, and **`mcp-stdio.ts`'s numeric-id
+  reply path.** Both unchanged and both un-investigated in any document; they
+  need a first pass, not a fix.
+
+---
+
+## Standing rules this session paid for
+
+- **A null needs its detection floor, or it says nothing.** The n=5 and n=30
+  acceptance passes have the same point estimate and completely different
+  meanings.
+- **One sample per condition aliases the condition onto the sample.** Item 2 is
+  the live example: one cold load per arm made every load-to-load difference
+  look like a KV-type effect.
+- **Do not edit a file a running script owns.** `capacity-probe.sh` and
+  `spec-sweep.sh` own `.env` for the duration; they now warn before discarding a
+  concurrent edit, but the rule is to edit before or after.
+- **Test the write path, not just the reads.** An `--argjson` on an empty
+  capture silently wrote a zero-byte result file — the measurement lost to its
+  own provenance field.
+- **Fix a pattern against captured data, not against a second guess.** The
+  memory-breakdown grep matched only headers the first time because the real row
+  is `|   - CUDA0 (RTX 4090)   | ...`, not `| CUDA0 |`.
+
+---
+
 # Handoff — 2026-08-24b (the HN thread, read against the stack; one new measurement)
 
 Continues the same day's "the depth test: right instrument, and it took the host

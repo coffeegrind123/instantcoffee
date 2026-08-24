@@ -275,11 +275,25 @@ was about **weight** quantisation, which this box cannot vary at all — there i
 no 8-bit alternative that leaves room for a 96K window. What was tested is the
 KV half of the claim, which is the half this stack has a knob for.
 
-**One thing did not resolve and is consistently signed**: decode is 3-5% *lower*
-at q8_0 in both passes (1.8 SE at n=30), and prefill 2.6% lower. Inside the ±6%
-decode variance `spec_variance_note` documents, so it is not a result — but it
-is the arm to re-run if anyone wants the throughput side settled, and it points
-the opposite way to the reason q8_0 was adopted.
+**The throughput side is messier, and the first write-up of this section
+understated it.** Prefill variance is tight (sd 1.1-1.4%, matching
+`spec_variance_note`'s ±1.5%), so at n=30 the prefill difference is *resolved
+within that pass* at 8.26 SE — q8_0 2.6% slower. But the n=5 pass says 0.7%, and
+the two estimates are about **2.4 SE apart from each other**. Both cannot be
+sampling noise around a single number.
+
+What that means: **each arm got exactly one cold load, so the load is aliased
+onto the arm.** Anything that differs between two loads of the same config is
+being charged to the KV type, and the within-pass SE is computed inside the
+confound. The fix is the design, not more repeats — **alternate the arms across
+several cold loads** (f16, q8_0, f16, q8_0, …) so load-to-load variation is
+averaged rather than attributed.
+
+Until that runs, the honest statement is: q8_0 is somewhere between 0.7% and
+2.6% slower to prefill and 3-5% slower to decode at 64K, direction reproduced
+twice, magnitude unestablished — and it points the opposite way to the reason
+q8_0 was adopted. **None of this touches the acceptance null**, whose two passes
+agree (+0.0192 and +0.0175).
 
 ## 5. Gap 2 — "output is unchanged" is true of the distribution and false of the arithmetic
 
