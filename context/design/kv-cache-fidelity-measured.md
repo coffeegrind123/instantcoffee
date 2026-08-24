@@ -862,6 +862,36 @@ of the sample size, and no corpus length makes a mean over cliff-prone spans
 into a stable number. **Quote the median span ratio and the distribution, not
 the aggregate.**
 
+### What makes a span a cliff: one hypothesis, measured and refuted
+
+The obvious guess, from reading the worst span, is repetitive low-entropy text.
+It is git progress output — `Updating files:  81% (512/631)<CR>Updating files:
+82% (518/631)<CR>` for thousands of tokens — and a fixed-size recurrent state
+(§3c) saturating on exactly that is a tidy story. The 49x span is repeated tool
+schemas, which fits too.
+
+**It does not survive being measured.** Compressing each span with zlib as an
+objective stand-in for repetitiveness, over all thirty:
+
+```
+   spans under 2x   (n=16)    median zlib ratio  0.345
+   spans over 10x   (n= 9)    median zlib ratio  0.364
+```
+
+Indistinguishable, and very slightly the WRONG way. The 149,597x span is
+genuinely compressible (0.218) — and it is not even the most compressible span
+present: `106496..110591` compresses to 0.208 and moves 1.7x. **Repetitiveness
+does not predict the cliff.**
+
+Two things a better attempt would need. First, exact token offsets: the mapping
+used here is `llama`'s `/tokenize` scaled by the ratio of the two tokenizers'
+totals (157,626 against 161,254), which drifts by up to ~2,000 tokens across the
+file, so span boundaries are approximate and per-span content analysis inherits
+that. `--kl-divergence-base` writes perplexity's exact token array into its
+header, so one small base pass would give the true offsets. Second, a candidate
+that is not a guess: what these spans have in common is still unknown, and
+"repetitive" was the first idea rather than the best one.
+
 ### The two controls catch different things, and neither substitutes for the other
 
 Worth stating because this run proved it the hard way. The corrupted build and

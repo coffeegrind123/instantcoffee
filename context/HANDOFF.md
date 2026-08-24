@@ -266,9 +266,19 @@ reader sees what it cost and what it changed rather than an empty slot.)*
    the tape with a README explaining why a concatenation is sound for THIS
    instrument and unusable for a KLD run. What it leaves open is narrower and
    more interesting: **what makes a span a cliff?** Nine of thirty move more
-   than 10x and one moves 149,597x, and nothing yet says what those spans
-   contain. The span map (`--spans`) gives their exact corpus ranges, so this is
-   a reading exercise on `deep-plus-pi.txt`, not another GPU hour.
+   than 10x and one moves 149,597x. The obvious hypothesis — repetitive
+   low-entropy text — was tried and **refuted**: compressing every span with
+   zlib gives a median ratio of 0.345 for the spans under 2x and 0.364 for those
+   over 10x, indistinguishable and slightly the wrong way. The worst span IS git
+   progress output (`Updating files: 81% (512/631)<CR>…`), but it is not even
+   the most compressible span in the file.
+
+   What a better attempt needs: exact token offsets. The mapping used was
+   `/tokenize` scaled by the two tokenizers' totals (157,626 against 161,254),
+   which drifts up to ~2,000 tokens across the file. `--kl-divergence-base`
+   writes perplexity's exact token array into its header, so ONE small base pass
+   gives true offsets — and then the question is a reading exercise rather than
+   another GPU hour.
 
 3. **`FORGE_MERGE_ACROSS_TOOLS=1` at real depth** — unchanged, and still needs an
    operator decision because it needs capture ON for a working session.
