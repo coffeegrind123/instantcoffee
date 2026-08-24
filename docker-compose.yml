@@ -16,6 +16,12 @@ services:
     init: true
     environment:
       - LLAMA_SET_ROWS=1
+      # Default 3 = exactly what this stack has always run; nothing changes
+      # unless a caller exports LLAMA_LOG_VERBOSITY. capacity-probe.sh exports
+      # 5, because common_memory_breakdown_print() — the model/KV/compute table
+      # that vram_note calls the authority — is gated above 3 and is therefore
+      # invisible at the default. See capacity-probe.sh's breakdown block.
+      - LLAMA_ARG_LOG_VERBOSITY=${LLAMA_LOG_VERBOSITY:-3}
     ports:
       - "${BIND_ADDR}:${LLAMA_PORT}:8080"
     volumes:

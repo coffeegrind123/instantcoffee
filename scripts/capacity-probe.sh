@@ -87,6 +87,14 @@ esac
 
 mkdir -p "$RESULTS_DIR"
 
+# The server gates its memory-breakdown table above verbosity 3, so at the
+# default it does not exist to be captured — measured, not assumed: a clean
+# SIGTERM shutdown at -lv 3 exits 0, logs "cleaning up before exit...", and
+# prints no table. docker-compose.yml defaults this to 3 so production is
+# unchanged; a probe wants the engine's own numbers, which is the whole point of
+# a probe.
+export LLAMA_LOG_VERBOSITY=5
+
 # --- .env protection ---------------------------------------------------------
 ENV_BACKUP="$REPO_ROOT/.env.capacity-probe-backup"
 ENV_RESTORED=0
@@ -104,6 +112,36 @@ restore_env() {
   [[ "$ENV_RESTORED" == 1 ]] && return 0
   ENV_RESTORED=1
   if [[ -s "$ENV_BACKUP" ]]; then
+    # A CONCURRENT EDIT IS ABOUT TO BE DISCARDED, AND SILENCE IS THE WRONG
+    # ANSWER. Added 2026-08-24 after exactly that: someone edited .env to add
+    # documentation WHILE a probe was running. The backup predated the edit, the
+    # restore put the old file back, and the run cheerfully reported ".env
+    # restored and verified byte-identical to HEAD" — which was true, and which
+    # is precisely why nobody noticed the edit was gone. It surfaced only
+    # because `git status` later showed .env unmodified when it should not have
+    # been.
+    #
+    # Restoring is still the RIGHT behaviour: this script owns .env for the
+    # duration and half-applied experimental settings are worse than a lost
+    # comment. What was missing is saying so. The keys this script itself wrote
+    # are known (APPLIED_KEYS), so any OTHER difference between the live file
+    # and the backup is somebody else's work, and it gets named line by line.
+    if ! cmp -s "$REPO_ROOT/.env" "$ENV_BACKUP"; then
+      local foreign
+      foreign="$(diff <(sed -E 's/=.*//' "$ENV_BACKUP") <(sed -E 's/=.*//' "$REPO_ROOT/.env") \
+                   >/dev/null 2>&1 && echo same || echo differs)"
+      local changed
+      changed="$(diff "$ENV_BACKUP" "$REPO_ROOT/.env" 2>/dev/null \
+                 | grep -E '^[<>]' | grep -vE "^[<>] *(${APPLIED_KEYS:-__none__})=" | head -20 || true)"
+      if [[ -n "$changed" ]]; then
+        warn "  .env changed under this run in ways this script did NOT write."
+        warn "  Those changes are about to be DISCARDED by the restore:"
+        printf '%s\n' "$changed" | sed 's/^/      /' >&2
+        warn "  Re-apply them after this run. While a probe is running, .env"
+        warn "  belongs to the probe — edit it before or after, never during."
+        [[ "$foreign" == "differs" ]] && warn "  (whole keys were added or removed, not just values)"
+      fi
+    fi
     cp "$ENV_BACKUP" "$REPO_ROOT/.env"
     rm -f "$ENV_BACKUP"
     if cmp -s "$REPO_ROOT/.env" <(git -C "$REPO_ROOT" show HEAD:.env 2>/dev/null); then
@@ -163,11 +201,20 @@ server_n_ctx() {
     | jq -r '.default_generation_settings.n_ctx // .n_ctx // empty' 2>/dev/null
 }
 
+APPLIED_KEYS=""
+note_applied_key() {
+  # Alternation for the grep -vE above. Keys are [A-Z_]+, so no escaping needed.
+  case "|${APPLIED_KEYS}|" in *"|$1|"*) return 0 ;; esac
+  APPLIED_KEYS="${APPLIED_KEYS:+${APPLIED_KEYS}|}$1"
+}
+
 apply_setting() {
   local kv="$1" key="${1%%=*}" val="${1#*=}"
+  note_applied_key "$key"
   env_set "$key" "$val"
   # CTX_SIZE is not one knob; see the header.
   if [[ "$key" == "CTX_SIZE" ]]; then
+    note_applied_key DRY_PENALTY_LAST_N
     env_set DRY_PENALTY_LAST_N "$val"
     dim "    DRY_PENALTY_LAST_N set to $val with it (b10573 rejects the old -1 sentinel)"
   fi
@@ -241,6 +288,66 @@ probe() {
     fi
   fi
 
+  # ---- the engine's OWN memory breakdown, which is the authority -----------
+  #
+  # vram_note says the engine breakdown beats a sampled nvidia-smi figure, and
+  # the comment on the startup-log capture above says the engine's numbers are
+  # "the control for a VRAM figure sampled from nvidia-smi". Until 2026-08-24
+  # this script did not actually capture them, and the gap showed: an f16-vs-q8_0
+  # probe at 64K measured a SAMPLED delta of +1645..+1718 MiB where vram_note's
+  # KV arithmetic predicts +2176, and nothing on disk could decompose the ~500
+  # MiB difference. A control that is described but not collected is not a
+  # control.
+  #
+  # WHY IT WAS MISSING, read from source rather than guessed:
+  # tools/server/server.cpp:543-546 at b10573 calls
+  # common_memory_breakdown_print(ll_ctx) only AFTER the http thread joins —
+  # i.e. on SHUTDOWN, not at load. So no amount of reading the startup log finds
+  # it, and `--force-recreate` for the next config destroys the container that
+  # would have printed it. It has to be collected by stopping llama on purpose,
+  # here, while its logs still exist.
+  #
+  # The table (common/fit.cpp:830-834) is:
+  #   memory breakdown [MiB] | total | free | self | model | context | compute |
+  #   unaccounted
+  # which is exactly the model/KV/compute split a sampled device figure cannot
+  # give. The stop costs nothing net: the next probe recreates the container
+  # anyway, and the restore at the end does too.
+  local breakdown=""
+  if (( ok_load )); then
+    info "  stopping llama to collect its own memory breakdown (it prints at exit) ..."
+    compose stop llama >/dev/null 2>&1 || true
+    {
+      printf '\n===== engine memory breakdown (%s) =====\n' "$label"
+      compose logs --no-color llama 2>&1 | grep -A 12 -iE "memory breakdown \[MiB\]" || \
+        printf '(no "memory breakdown [MiB]" table in the log — the server may have\n'\
+'been SIGKILLed before its exit path ran, or the build stopped printing it)\n'
+    } >>"$raw" 2>&1 || true
+    # --arg, NOT --argjson. The first version of this used --argjson and the
+    # capture came back empty, so jq refused the WHOLE object and wrote a
+    # zero-byte result file — the measurement was lost to its own provenance
+    # field. A capture that fails must cost nothing; it is now a plain string
+    # that jq turns into null when empty, and there is no input that can make it
+    # invalid. (This is the same "test the write path" lesson as the $lbl/$label
+    # note below, relearned one field over.)
+    # Anchor on the FUNCTION NAME, which prefixes every line of the table
+    # (header and each device row). The first attempt matched on the column
+    # header and on "| CUDA0 |", and caught only the headers: the real row is
+    # "|   - CUDA0 (RTX 4090)   | 24563 = 1561 + (20625 = 16053 + 4012 + 560) ..."
+    # so the device name carries a model in parentheses and never sits directly
+    # against the pipe. Pattern fixed against a captured log rather than guessed
+    # a second time.
+    #
+    # All tables are kept, not just the last: the server prints one during load
+    # and one at exit, and they differ in `free` (22242 vs 1561 on a 96K probe)
+    # while agreeing on `self`. The timestamps tell them apart, and a probe that
+    # silently dropped the load-time one would hide exactly the kind of drift
+    # this field exists to expose.
+    breakdown="$(compose logs --no-color llama 2>&1 \
+      | grep -F "common_memory_breakdown_print" \
+      | sed -E 's/^.*common_memory_breakdown_print: //' || true)"
+  fi
+
   # $lbl, NOT $label. `label` is a jq keyword (`label $out | ... break $out`),
   # so jq rejects a VARIABLE of that name outright — quoting the object key does
   # not help, because the error is on the `--arg` binding. Verified both ways:
@@ -258,10 +365,12 @@ probe() {
     --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg bench "$BENCH" \
     --argjson result "$bench_json" \
+    --arg breakdown "$breakdown" \
     --argjson pins "$(capture_stack_pins)" \
     '{"label":$lbl, "settings":$settings, "loaded":($loaded == 1),
       "server_n_ctx":$n_ctx,
       "vram_used_mib":$used, "vram_total_mib":$total, "vram_idle_mib":$idle,
+      "engine_memory_breakdown":(if $breakdown == "" then null else $breakdown end),
       "bench":$bench, "measured_utc":$when, "pins":$pins, "result":$result}' >"$js"
 
   if (( ok_load )); then

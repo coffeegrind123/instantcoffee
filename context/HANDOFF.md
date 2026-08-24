@@ -1,3 +1,332 @@
+# Handoff — 2026-08-24b (the HN thread, read against the stack; one new measurement)
+
+Continues the same day's "the depth test: right instrument, and it took the host
+down". **Read that section's warning first — `scripts/ppl-stride-run.sh` is
+disarmed and must stay that way.** This section is the follow-on work: an HN
+thread was read against the stack, most of it turned out to be already-done or
+already-rejected, and the one genuinely new claim in it was measured.
+
+## The measurement: q8_0 KV costs no measurable draft acceptance
+
+`versions.lock:kv_accept_note`, and §4b of
+`context/design/inference-divergence-and-this-stack.md`.
+
+The claim (HN, Refefer): *"KLD matters a lot ... and it especially manifests
+with MTP/DFlash acceptance rate."* If it transfers to KV quantisation, the 4.7%
+top-1 flip rate q8_0 KV costs should show up as rejected drafts.
+
+```
+   n=30 runs/arm, 32,000-tok prompt      f16      q8_0    q8_0 - f16
+   draft acceptance                     0.481    0.499     +0.0175   (1.05 SE)
+   decode tok/s                          54.2     51.5       -2.7    (-5.0 %)
+   prefill tok/s                         2141     2087        -54    (-2.6 %)
+   VRAM, whole-device MiB               23014    21369    f16 +1645
+```
+
+**Null, and the sign is backwards for the claim.** Replicated at n=5 (+0.0192,
+0.36 SE) before being re-run at n=30 for power. **The floor is the result**: this
+design resolves ≥0.033 absolute (6.9% relative); a smaller penalty would not have
+been seen, and the n=5 pass could only have seen 20.7%, which is why it was not
+reported on its own.
+
+This gives §4's trade a **third measured axis**. It had fidelity and VRAM; it now
+has the speculative path. `draft/cycle` flipped sign between the two passes
+(+0.111 then −0.172) so it carries no signal here — quote acceptance.
+
+**Unresolved, consistently signed, and worth someone's time:** decode is 3-5%
+*lower* at q8_0 in both passes (1.8 SE), prefill 2.6% lower. Inside the ±6%
+variance `spec_variance_note` documents, so not a result — but it points the
+opposite way to the reason q8_0 was adopted.
+
+**Also now measured rather than computed: 64K f16 fits.** 23,014 MiB
+whole-device against a ~1,075 MiB idle floor, reproduced to the MiB across two
+independent probes. Note the instruments disagree: the sampled f16−q8_0 delta is
++1,645/+1,718 MiB where `vram_note`'s engine arithmetic predicts +2,176 (main KV
+2176→4352). Nobody has decomposed the ~500 MiB gap — `capacity-probe.sh` captures
+the startup log but the server runs at verbosity 3 and the memory breakdown needs
+`-lv 5`. `vram_note` says the engine breakdown is the authority; treat the
+sampled figure as corroboration of the sign, not of the size.
+
+## The rest of the thread: already done, already rejected, or already better
+
+- **pi-victor's config is ours, flag for flag** — `-c 98304 -ctk q8_0 -ctv q8_0
+  -fa on --parallel 1 --jinja` on a 4090+3070 with no forge. Independent arrival
+  at the same operating point. `versions.lock:independent_config`.
+- **`--fit on` would be a no-op here, observed not inferred.** Every llama
+  startup log on this stack already carries
+  `common_fit_params: failed to fit params ... n_gpu_layers already set by user
+  to 999, abort`. Recorded in the same entry.
+- **jnwatson's `--reasoning-budget` + `--reasoning-budget-message` + effort tip
+  is literally `docker-compose.yml:61-63`.**
+- **Refefer's "low doesn't save you tokens"** — `.env` already said it more
+  precisely, from our own measurement: low reasons *less* across five coding
+  tasks (9,007 vs 13,876 chars) and *more* on one HTML/UI prompt (6,409 vs
+  3,404). True on some prompts, false on others.
+- **Refefer's "reasoning budget really hurts the model"** — does not bind here.
+  At medium, three prompts produced 77 / 900 / 636 chars against a 4096-**token**
+  budget. It binds at xhigh, which `.env` already documents.
+- **Draft-KV quantisation** (`-ctkd/-ctvd`, which exists and we don't set) was
+  already tested and rejected 2026-08-23: it *costs* +216 MiB at 96K rather than
+  saving 180. `versions.lock:draft_kv_note`.
+- **Abliteration** — the thread argues it both ways and §8 now carries the
+  disagreement intact. trollbridge's estimate ("about the same jump as 5-bit to
+  4-bit") is the useful one because `kld-run.sh` can now *measure* exactly that.
+  Any abliterated tune proposed here should produce its own KLD and same-top-1
+  numbers against stock on `deep-s26b5bb` before it is argued about.
+- **`alexander-hanel.github.io/StressingLLMs`** ranks Deepseek-v4-flash above
+  Qwen 3.8 27B at reverse engineering. Model-selection datapoint; the weights
+  here are constrained by 24 GiB before any benchmark.
+
+## Method notes worth carrying
+
+**`capacity-probe.sh` was the right tool and needed no changes.** It takes
+comma-separated `KEY=VAL` overrides, owns the `CTX_SIZE`/`DRY_PENALTY_LAST_N`
+coupling, verifies its `.env` backup against `git show HEAD:.env`, and treats a
+server that will not load as a *result*. Both runs restored `.env`
+byte-identical to HEAD. Prefer it over a new script for anything that varies a
+launch flag.
+
+**Report the detection floor with every null.** The n=5 pass and the n=30 pass
+have the same point estimate and completely different meanings. Only the second
+one is worth writing down, and only because it states what it could have seen.
+
+**Do not edit a file a running script owns.** I edited `.env` to add the
+reasoning-effort notes *while* `capacity-probe.sh` was mid-run. The probe had
+already taken its backup, so its restore put the pre-edit file back and
+correctly reported `.env restored and verified byte-identical to HEAD`. Nothing
+was damaged — the protection did exactly its job — but the edit vanished and
+only `git status` showing `.env` unmodified caught it. This is the same class of
+mistake as last session's edit-a-running-bash-script, one file over. The scripts
+that rewrite `.env` are `capacity-probe.sh` and `spec-sweep.sh`; while either is
+running, `.env` is theirs.
+
+## Implemented this session (not just written down)
+
+Four code changes, each tested rather than assumed.
+
+1. **`kld-run.sh` now REFUSES a depth that would swap** (`--allow-swap` to
+   override). It was a warning. Two separate failures came from the same state:
+   the §3b silent short write, and a sibling script that printed the same
+   warning and deadlocked the host. Verified: `--depths 16384` — the exact
+   config that produced the truncated logits file — is now refused before the
+   server is stopped, and `--allow-swap` degrades it to a warning.
+2. **`capacity-probe.sh` now captures the engine's own memory breakdown.** Its
+   header always claimed the engine's numbers as "the control for a VRAM figure
+   sampled from nvidia-smi"; it never collected them. Two reasons, both read
+   from source: `tools/server/server.cpp:543` calls
+   `common_memory_breakdown_print` only on **shutdown**, and the table is gated
+   above verbosity 3. So the probe now stops llama on purpose (free — the next
+   config recreates anyway) and `docker-compose.yml` takes
+   `LLAMA_ARG_LOG_VERBOSITY=${LLAMA_LOG_VERBOSITY:-3}`, which the probe exports
+   as 5. **Production behaviour is unchanged at the default.**
+3. **`capacity-probe.sh` AND `spec-sweep.sh` warn before discarding a
+   concurrent `.env` edit.**
+   Restoring is still right — the script owns `.env` for the duration — but
+   doing it silently is not. It now diffs the live file against its backup,
+   excludes the keys it wrote itself (`APPLIED_KEYS`), and names anything left.
+   Unit-tested on four cases including the exact one that bit me (a comment
+   block added mid-run). `spec-sweep.sh` had the identical restore and the
+   identical hazard; it now has the identical guard, keyed on the three
+   `SPEC_*` keys it writes.
+4. **`gguf_n_vocab()` moved to `lib.sh`** and takes
+   `<models_dir> <gguf_file> <sidecar_image>`; `kld-run.sh` and
+   `ppl-stride-run.sh` share it.
+
+### Two bugs I shipped and caught by testing
+
+Both in the breakdown capture, both invisible without running it:
+
+- **`--argjson` on an empty capture killed the whole result file.** jq rejected
+  the object and wrote zero bytes — the measurement was lost to its own
+  provenance field. Now `--arg` with an `if == "" then null` guard, so no input
+  can break the write path. This is the same lesson as the `$lbl`/`$label` note
+  already in that file, relearned one field over.
+- **The first grep matched only the table headers.** The real row is
+  `|   - CUDA0 (RTX 4090)   | 24563 = 1561 + (20625 = 16053 + 4012 + 560) + 2376 |`
+  — the device name carries a model in parentheses and never sits against the
+  pipe. Now anchored on the function name, and the pattern was fixed against a
+  captured log rather than guessed a second time.
+
+### And the new instrument immediately found something
+
+At the 96K production config the engine reports
+`self 20625 = model 16053 + context 4012 + compute 560`. That agrees with
+`vram_note`'s table on model and main compute **to the MiB**, and splits the
+rest differently: `context` 4012 vs main KV 3264 + draft KV 384 = 3648, and
+`compute` 560 vs 560 + 164. Net ~200 MiB. The engine rolls the draft context's
+buffers into `context`; the per-arm rows in `vram_note` were read by hand at
+`-lv 5`. Neither is wrong — but **quote `self` for a total**, and `vram_note`
+now says so.
+
+## Next session — in this order
+
+1. **Do not arm `ppl-stride-run.sh`.** See the previous section.
+2. **The decode arm above**, if the throughput side of §4 is worth settling:
+   q8_0 is 3-5% slower than f16 at 64K in both passes, direction reproduced,
+   magnitude inside documented variance.
+3. **`FORGE_MERGE_ACROSS_TOOLS=1` at real depth** — unchanged, still the
+   cheapest open item, still needs one capture session with that one variable
+   flipped.
+
+---
+
+# Handoff — 2026-08-24 (the depth test: right instrument, and it took the host down)
+
+Continues "the control ran, and it moved the headline" (`59df4a9`). Its item 2
+was the direct test of the fixed-state hypothesis — score the SAME tokens at two
+different history lengths. **The instrument was correct and the route is closed.
+Read the warning before anything else.**
+
+## Read this first
+
+**`scripts/ppl-stride-run.sh` deadlocked the Windows host twice on 2026-08-24.**
+Not an OOM kill, not a slow run — the machine stopped and the operator had to
+recover it by hand. Once on the run itself, and once on the timing probe that
+would have diagnosed the first failure.
+
+The script is now **disarmed**: it exits 1 without
+`--i-have-read-the-deadlock-note`, and prints why. `--dry-run` still works and
+allocates nothing. **Do not arm it.** The full account is §3d of
+`context/design/kv-cache-fidelity-measured.md`, under "The direct test was
+attempted on 2026-08-24, and the route is closed".
+
+Cause, in one paragraph: `--ppl-stride` selects `perplexity_v2()`, which requests
+logits for **every** position and accumulates the whole chunk into one
+`std::vector<float>` with no `reserve()` — `n_ctx * n_vocab` floats, and n_vocab
+is 248,320 here, so 8.1 GiB final and **12.2 GiB across the last realloc** at
+window 8192 — on top of the 17.9 GB of weights `--load-mode none` reads into RAM,
+on a 22 GiB Docker VM shared with every other container on the box.
+
+## The guard computed the danger and waved it through, and that is the lesson
+
+The preflight printed **`peak ~12125 MiB`** before the run that killed the box.
+It is not that the guard was wrong; it is that it classified 12 GiB against
+15 GiB of free-plus-swap as `TIGHT` — a *warning* — and let the run proceed.
+
+**Swap covering a spike on paper is not the machine surviving it.** There is no
+safe verdict between "ok" and "refused" for an allocation of that shape. `TIGHT`
+is now `REFUSED` in that script. `kld-run.sh` still has a `TIGHT` verdict of the
+same shape at n_ctx 16384; it was left alone deliberately — that warning is what
+correctly predicted the §3b short write, and its allocation profile is different
+(it never spikes to 1.5x) — but whoever next touches it should read this first.
+
+## What the attempt did establish, and it is not nothing
+
+**The instrument really is the right one.** `perplexity_v2`'s scoring rule was
+read out of `perplexity.cpp:296-441` before anything ran:
+
+```
+   chunk i covers [i*stride, i*stride + n_ctx),  KV cleared each chunk
+   scored: the LAST `stride` tokens of the window
+   -> chunk i of window W scores [i*S + W - S, i*S + W - 1]
+   -> every scored token carries W-S .. W-1 tokens of history
+   -> W2's chunk k IS W1's chunk k + (W2-W1)/S, token for token
+```
+
+Confirmed against a real run: `-c 1792 --ppl-stride 512` gave `Calculation chunk
+= 2048`, `n_seq=1`, 133 chunks — `params.n_ctx += params.ppl_stride/2`
+(perplexity.cpp:2043) behaving exactly as read. Two arms at different windows
+would have scored identical token sets. Nothing about the *design* was wrong.
+
+**Limit (3) is now exact.** `perplexity_v2` prints its token count
+unconditionally where the default mode prints it only on the error path:
+`deep-s26b5bb` tokenizes to **70,053** tokens under `parse_special = false`,
+against llama's own `/tokenize` count of 69,440 with specials parsed. The
+mismatch costs **+613 tokens, +0.88 %**. The old bracket of [69,632, 73,727] is
+closed.
+
+**perplexity_v2 is ~20x slower per token on this stack**, and this is why the
+route would have been impractical even with infinite RAM: **144.35 s to decode
+one 2048-token chunk** (14 tok/s) against 558 tok/s for the default mode's
+4096-token chunk in the same image with the same weights and the same f16 KV.
+The timer closes before the scoring loop, so it is decode, not softmax. **The
+cause is NOT isolated** — `-b 512` vs `-b 2048` and the all-positions logits
+request both differ from the default mode, and the probe that would have
+separated them is what deadlocked the host the second time.
+
+**`scripts/ppl_stride_analyse.py` + 19 tests survive and are sound.** It
+differences v2's running series into per-chunk NLL
+(`nll_cum(i) = i*S*ln(printed_i)`), maps chunks to absolute token ranges, and
+aligns arms. The load-bearing test synthesises logs from an NLL that depends only
+on absolute token index, so correctly aligned arms must agree exactly — and there
+is a control for that control: a deliberate one-chunk offset must break the
+agreement, and does. If v2 numbers ever arrive by another route, this aligns
+them.
+
+## §4 of the divergence document: item 4 is closed, and it came back clean
+
+The last handoff flagged §4's third bullet as possibly priced on a VRAM figure
+that assumed a dense model. **It is not.** `versions.lock:vram_note` was measured
+from the engine at `-lv 5`, and its own row reads `main KV 3264 (16 layers
+q8_0)` — the hybrid is already in the number. Restated in §4 so nobody re-derives
+it:
+
+```
+   96K q8_0   16053 + 3264 + 560 + 384/164        = 20426
+   96K f16    main KV 3264 -> 6528                = 23690
+              874 MiB free against a 1500.8 floor -> SHORT BY ~627 MiB
+   64K f16    main KV 2176 -> 4352                = 21193
+              3371 MiB free against the same floor -> fits, ~1870 spare
+```
+
+So "96K at q8_0 against ~64K at f16" is priced correctly. §4's second bullet also
+got a paragraph: **the hybrid fact makes the literal-fidelity result stronger,
+not weaker** — verbatim recall from depth is exactly what a fixed-size recurrent
+state should be worst at, 48 of 64 layers are carrying the document in one, and
+224 literals still came back exact at up to 90k.
+
+## Mine, and it is the second time in two sessions
+
+Last session I edited a running bash script and it ran garbage. This session I
+launched a 12 GiB allocation because the guard said "tight" instead of "no", and
+then — after the host had already gone down once — launched a four-config probe
+that reloaded the model four times in a row and took it down again. **The second
+one is the worse mistake: the first crash was information, and I spent it.**
+
+If a run has already taken the machine down, the next thing to run is nothing.
+
+## Next session — in this order
+
+1. **Do not arm `ppl-stride-run.sh`.** If the depth question is worth more time,
+   the untried route is a corpus prefixed with filler to shift a region's
+   position, scored by the **default** mode — same question, default mode's
+   memory profile and speed. Nothing is known to be dangerous about it.
+2. **The `FORGE_MERGE_ACROSS_TOOLS=1` arm at real depth** is unchanged and is now
+   the cheapest open item. §4a's strongest claim rests on a synthetic three-turn
+   result plus the patch's mechanism, not a measurement at 68k. One capture
+   session with that one variable flipped turns an inference into a number.
+3. **The q8_0 result in §3a is untouched by any of this** — it has its exact null
+   control, it compares two arms at one depth, and it did not go near
+   `perplexity_v2`.
+
+## Housekeeping
+
+`.ppl-stride-logs/20260824T073747Z/w2048.log` is kept LOCALLY (the directory is
+gitignored, same as `.kld-logs/`): it is the evidence for the
+144.35 s/pass figure and the 70,053-token count. The scratchpad probe script was
+deleted. `qwen38-llama` is up and healthy; no orphan perplexity containers
+remain. `gguf_n_vocab()` moved from `kld-run.sh` into `lib.sh` and now takes
+`<models_dir> <gguf_file> <sidecar_image>`; `kld-run.sh`'s single call site was
+updated and it still parses.
+
+## Still open, carried
+
+```
+   · The four records of a real pi session on the tape (`s735f17`, 21,329
+     prompt tokens, 16 tools) are UNTOUCHED and still need their operator's
+     decision.
+   · A GPU-heavy foreground VRAM floor is still unmeasured.
+   · `eval_expr` still needs `--only eval_expr --repeat 20` at two levels.
+   · `forge/proxy/convert_anthropic.py` still has patch 4's hole in a starker
+     form. Off this stack's path; needs a `thinking` block shape decided.
+   · `access.json` / `.env` two-writer race; `/loop resume` not clearing turn
+     buffers; `mcp-stdio.ts`'s numeric-id reply path. All unchanged.
+   · The 2026-08-23 handoff asked whoever ran `compose down` on the whole stack
+     at 21:08 that day to say so somewhere. Still unanswered.
+```
+
+---
+
 # Handoff — 2026-08-24 (the engine thread: the control ran, and it moved the headline)
 
 Continues "the corpus exists, and the KLD run is half a result" (`6f2f4b8`).

@@ -277,10 +277,37 @@ check_stale_env_backup() {
   die  "compare them, put the right one back (cp '$ENV_BACKUP' .env), delete the backup, then re-run"
 }
 
+# The keys this script writes. Anything ELSE that changed between the backup and
+# the live file is somebody else's edit, and the restore is about to throw it
+# away. Kept next to restore_env so the two cannot drift.
+SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN'
+
 restore_env() {
   [[ "$ENV_RESTORED" == 1 ]] && return 0
   ENV_RESTORED=1
   if [[ -s "$ENV_BACKUP" ]]; then
+    # A CONCURRENT EDIT IS ABOUT TO BE DISCARDED, AND SILENCE IS THE WRONG
+    # ANSWER. Added 2026-08-24 after it happened to capacity-probe.sh, which has
+    # the identical restore and now has the identical guard: someone edited .env
+    # while a run was in progress, the backup predated the edit, the restore put
+    # the old file back, and the run reported success. The edit was gone and
+    # nothing said so.
+    #
+    # Restoring is still correct — this script owns .env for the duration, and a
+    # half-applied sweep value is worse than a lost comment. What was missing is
+    # saying so, so the edit can be re-applied instead of silently vanishing.
+    if ! cmp -s "$REPO_ROOT/.env" "$ENV_BACKUP"; then
+      local changed
+      changed="$(diff "$ENV_BACKUP" "$REPO_ROOT/.env" 2>/dev/null \
+                 | grep -E '^[<>]' | grep -vE "^[<>] *(${SWEEP_KEYS})=" | head -20 || true)"
+      if [[ -n "$changed" ]]; then
+        warn "  .env changed under this run in ways this script did NOT write."
+        warn "  Those changes are about to be DISCARDED by the restore:"
+        printf '%s\n' "$changed" | sed 's/^/      /' >&2
+        warn "  Re-apply them after this run. While a sweep is running, .env"
+        warn "  belongs to the sweep — edit it before or after, never during."
+      fi
+    fi
     cp "$ENV_BACKUP" "$REPO_ROOT/.env"
     rm -f "$ENV_BACKUP"
     info ".env restored to its pre-sweep state"

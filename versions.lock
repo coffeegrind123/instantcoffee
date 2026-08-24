@@ -80,6 +80,32 @@ kv_cache            = q8_0/q8_0 (CHANGED 2026-08-22; MEASURED — prefill four
                       that quarter — the article this stack compares itself
                       against measured dense transformers, where the same flag
                       would touch four times as much.
+independent_config  = CORROBORATED 2026-08-24 by an unrelated operator, and it is
+                      the whole operating point rather than one flag. HN thread
+                      on "I gave Qwen 3.8 27B a reverse-engineering job"
+                      (xda-developers.com), commenter pi-victor, running the same
+                      model on a 4090 + 3070 with llama.cpp directly:
+                        -c 98304  -ctk q8_0 -ctv q8_0  -fa on  --parallel 1
+                        --jinja  --split-mode layer --tensor-split 6,1  --fit on
+                      Every one of those that this stack also sets, it sets to the
+                      same value: CTX_SIZE 98304, CACHE_TYPE_K/V q8_0, FLASH_ATTN
+                      on, -np, --jinja. Different hardware, different harness (pi
+                      + llama.cpp with no forge), arrived independently. That is
+                      not evidence the config is OPTIMAL — nobody swept it there
+                      either — but it does retire "this combination is unusual".
+                      NOT ADOPTED from that config, deliberately:
+                      · --fit on / -fitt / -fitc EXIST at this pinned tag and are
+                        not set here, and it would be a NO-OP if they were —
+                        OBSERVED, not inferred. Every llama startup log on this
+                        stack already carries the fitter declining:
+                          common_fit_params: failed to fit params to free device
+                          memory: n_gpu_layers already set by user to 999, abort
+                        --fit only adjusts UNSET arguments, and this stack sets
+                        -c and -ngl explicitly from engine-measured VRAM
+                        (vram_note). capacity-probe.sh is the deliberate version
+                        of the same job, and it reports rather than guesses.
+                      · --mmproj / --image-min-tokens are vision; not this
+                        stack's path.
 load_mode           = none (mmap off; MODELS_DIR is a 9p bind mount)
 reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget).
                       Re-confirmed on the V3 weights 2026-08-23 — see
@@ -485,6 +511,35 @@ kv_cache_fidelity   = MEASURED 2026-08-24, and the instrument was measured
                       box. verify_logits() now sizes the file against its own
                       header after every base pass; its four paths were exercised
                       against fabricated files.
+                      LIMIT (3) IS NOW EXACT, 2026-08-24. perplexity_v2 prints
+                      its token count unconditionally where the default mode
+                      prints it only on the error path: deep-s26b5bb tokenizes to
+                      70,053 tokens under parse_special=false, against llama's own
+                      /tokenize count of 69,440 with specials parsed. So the cost
+                      of the mismatch is +613 tokens, +0.88 % — the earlier
+                      bracket of [69,632, 73,727] is closed.
+                      THE DIRECT TEST OF THE DEPTH QUESTION WAS ATTEMPTED AND THE
+                      ROUTE IS CLOSED. `llama-perplexity --ppl-stride` selects
+                      perplexity_v2, whose scoring rule DOES hold history fixed
+                      (chunk i scores the last `stride` tokens of a window, so two
+                      windows score identical token sets offset by whole chunks —
+                      read from perplexity.cpp:296-441 and confirmed against a
+                      real run). It is unusable here for two independent reasons:
+                      it decoded one 2048-token chunk in 144.35 s (14 tok/s
+                      against the default mode's 558 tok/s on the same image and
+                      weights — a 20x slowdown whose cause was NOT isolated), and
+                      it accumulates n_ctx*n_vocab floats with no reserve() —
+                      12.2 GiB peak at window 8192 — on top of 17.9 GB of weights
+                      on a shared 22 GiB VM. IT DEADLOCKED THE WINDOWS HOST TWICE
+                      and the operator had to recover the machine by hand. The
+                      preflight had computed the 12,125 MiB peak correctly and
+                      classified it TIGHT rather than REFUSED because swap covered
+                      it on paper; that verdict is now a refusal, and
+                      scripts/ppl-stride-run.sh is disarmed behind
+                      --i-have-read-the-deadlock-note. DO NOT RE-RUN IT. A corpus
+                      prefixed with filler, scored by the DEFAULT mode, would
+                      answer the same question with the default mode's memory
+                      profile; that route is untried.
                       Full account: context/design/kv-cache-fidelity-measured.md.
 ctx_needle_reverify = 2026-08-23, after the probe_lib.py extraction. The filler,
                       the nonce and the tokenizer-calibrated document builder
@@ -527,6 +582,31 @@ vram_note           = MEASURED FROM THE ENGINE 2026-08-23, at -lv 5, rather
                       are not the constant they were assumed to be.
                       Sampled whole-device usage at 96K production: 23244 of
                       24564, i.e. ~1320 MiB free.
+                      THE ENGINE'S OWN AGGREGATE, captured automatically since
+                      2026-08-24 (capacity-probe.sh now collects it; the server
+                      prints it only at SHUTDOWN and only above verbosity 3,
+                      which is why nothing had it before). At the 96K production
+                      config:
+                        | memory breakdown [MiB] | total  free   self  model
+                          context compute unaccounted |
+                        |  - CUDA0 (RTX 4090) | 24563 = 1561 + (20625 = 16053
+                          + 4012 + 560) + 2376 |
+                        |  - Host             |          798 =   682 + 0 + 116 |
+                      It AGREES on model (16053) and on main compute (560) to
+                      the MiB, and it SPLITS THE REST DIFFERENTLY from the table
+                      above: `context` 4012 against main KV 3264 + draft KV 384
+                      = 3648 (+364), and `compute` 560 against main 560 + draft
+                      164 = 724 (-164). Net, engine `self` 20625 against this
+                      table's 20425, so ~200 MiB. The engine rolls the draft
+                      context's buffers into `context` rather than reporting
+                      them separately; the per-arm rows above came from reading
+                      allocation lines at -lv 5 by hand. Neither is wrong, they
+                      are different groupings — but quote `self` when quoting a
+                      total, because that is the number the engine stands
+                      behind. `unaccounted` is other tenants on the device.
+                      NOTE 2376 unaccounted at exit against 22242 free during
+                      load: the load-time and exit-time tables differ in `free`
+                      and agree on `self`, which is why both are kept.
                       READ SAMPLED VRAM WITH CARE. nvidia-smi reports the
                       DEVICE, and other tenants on this card occupied 1405-2027
                       MiB across a single morning. Comparing two probe runs by
@@ -728,6 +808,54 @@ draft_kv_note       = REJECTED 2026-08-23. DO NOT SET -ctkd/-ctvd q8_0. The
                       Keep K and V MATCHED whatever you choose; mismatched types
                       fall off the CUDA flash-attention path, which is the whole
                       reason this stack was stuck at 32K for ten days.
+kv_accept_note      = MEASURED 2026-08-24, and it is a NULL WITH A STATED FLOOR.
+                      THE CLAIM, from the 2026-08-24 HN thread on the XDA
+                      reverse-engineering piece (Refefer): "KLD matters _a lot_
+                      when it comes to its performance and it especially
+                      manifests with MTP/DFlash acceptance rate". If true of KV
+                      quantisation, the 4.7 % top-1 flip rate q8_0 KV costs
+                      (kv_cache_fidelity) should show up as drafts the target
+                      rejects — i.e. part of q8_0's throughput win handed back.
+                      THE TEST. capacity-probe.sh --bench prefill, 32,000-token
+                      prompt, 256 tokens generated per run, production spec
+                      config untouched (ngram-simple,draft-mtp / n-max 4 /
+                      p-min 0.40). Both arms at CTX_SIZE 65536, the ONLY
+                      difference -ctk/-ctv. 64K rather than 96K because f16 does
+                      not fit at 96K — that is the whole trade in section 4 of
+                      inference-divergence-and-this-stack.md.
+                        n=30 per arm     f16        q8_0      q8_0 - f16
+                        acceptance     0.481      0.499        +0.0175
+                          per-run sd  +/-0.061   +/-0.068     1.05 SE
+                        draft/cycle     4.34       4.17        -0.172
+                        decode t/s      54.2       51.5         -2.7 (-5.0 %)
+                        prefill t/s     2141       2087          -54 (-2.6 %)
+                        VRAM (MiB)     23014      21369        f16 +1645
+                      READ IT AS: q8_0 KV costs NO MEASURABLE DRAFT ACCEPTANCE.
+                      The difference is 1.05 SE and its SIGN IS BACKWARDS for the
+                      claim — q8_0 accepted slightly MORE. Replicated: an
+                      independent n=5 pass the same afternoon gave +0.0192
+                      (0.36 SE), same sign, same size.
+                      THE FLOOR IS THE POINT, because a null without one says
+                      nothing: at n=30 this design resolves an acceptance shift
+                      of 0.033 absolute (6.9 % relative) or larger. A penalty
+                      smaller than ~3.3 points of acceptance would NOT have been
+                      seen. The n=5 pass could only have seen 0.107 (20.7 %),
+                      which is why it was re-run rather than reported.
+                      draft/cycle FLIPPED SIGN between the two passes (+0.111
+                      then -0.172), so it carries no signal here; quote
+                      acceptance, not draft/cycle, for this comparison.
+                      NOT RESOLVED, and consistently signed both passes: decode
+                      is 3-5 % LOWER at q8_0 (1.8 SE at n=30) and prefill 2.6 %
+                      lower. Direction reproduced; magnitude inside the +/-6 %
+                      decode variance spec_variance_note documents. If anyone
+                      cares to settle it, that is the arm to re-run, not
+                      acceptance.
+                      LIMITS. One depth (64K, 32K prompt) and one workload
+                      (bench.py synthetic). kv_cache_fidelity's 4.7 % figure is
+                      at n_ctx 4096/8192, so the fidelity and acceptance numbers
+                      are not at the same depth. And the original claim was
+                      about WEIGHT quant, which this box cannot vary — there is
+                      no 8-bit alternative that leaves room for a 96K window.
 draft_depth_note    = settled, and the 2026-08-17 open question is now CLOSED.
                       p-min was the binding knob, not n-max: at p-min 0.75 the
                       draft was cut to one token on ~70% of cycles (draft/cycle
