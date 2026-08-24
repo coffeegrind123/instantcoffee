@@ -804,10 +804,19 @@ The builder now reads and writes corpora as bytes; the rebuilt arm file is
 of carriage return — plus the control that proves text mode would have changed
 it, because otherwise the test passes for no reason.
 
-**Nothing above §3e is affected.** `deep-s26b5bb` has zero carriage returns, so
-text mode and binary mode agree on it byte for byte — which is exactly why this
-survived every earlier run and appeared the moment a second corpus arrived. The
-2048-vs-4096 result stands.
+**Nothing above §3e is affected, and that was CHECKED rather than reasoned.**
+`deep-s26b5bb` has zero carriage returns, so text mode and binary mode agree on
+it byte for byte — which is exactly why this survived every earlier run and
+appeared the moment a second corpus arrived. All five arm files built for §3e
+by the OLD builder were compared against `filler-<K>.txt + deep-s26b5bb.txt`
+after the fix:
+
+```
+   deep-s26b5bb-f1024 / f2048 / f4096 / f6144 / f8192   all EXACT
+```
+
+The 2048-vs-4096 result stands on files that are byte-identical to what the
+fixed builder would have produced.
 
 ### The longer corpus, with the control passing: it is a cliff, not a slope
 
