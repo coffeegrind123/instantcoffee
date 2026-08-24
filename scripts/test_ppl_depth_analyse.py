@@ -22,7 +22,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ppl_depth_analyse import (  # noqa: E402
-    PassLog, _fmt_span_map, alignment_control, asymmetry_bound_pct,
+    PassLog, _fmt_arm, _fmt_span_map, alignment_control, asymmetry_bound_pct,
     chunks_in_window, combine_arm, parse_log, scored_corpus_range, span_map)
 
 
@@ -220,6 +220,17 @@ class TestArms(unittest.TestCase):
         finally:
             FILLER_NLL = old
         self.assertAlmostEqual(clean, loud, places=6)
+
+    def test_overlapping_rotations_report_a_negative_miss(self):
+        """A resolving run covers each token twice; that must not read as a bug."""
+        logs, fills = [], []
+        for f in (0, 2048, 4096, 6144):
+            logs.append(parse_log(synth_log(8192, f, 8, positional_nll),
+                                  f"arm-8192-f{f}.log"))
+            fills.append(f)
+        res = combine_arm(logs, fills, 8192, 65536)
+        self.assertLess(res.missed_tokens, 0, "four rotations must overlap")
+        self.assertIn("SCORED TWICE", _fmt_arm(res))
 
     def test_mixed_n_ctx_in_one_arm_is_refused(self):
         a = parse_log(synth_log(2048, 0, 4, positional_nll), "a.log")

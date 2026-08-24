@@ -423,8 +423,14 @@ def _fmt_span_map(rows: list) -> str:
 
 # ---------------------------------------------------------------------------
 def _fmt_arm(a: ArmResult) -> str:
+    # A negative `missed_tokens` means the rotations OVERLAP instead of
+    # partitioning, which a resolving run does on purpose. Saying "-4095 missed"
+    # would read as a bug in the arithmetic rather than as the shape of the run.
+    cover = (f"{a.missed_tokens} missed" if a.missed_tokens >= 0
+             else f"{-a.missed_tokens} SCORED TWICE — these rotations overlap, so "
+                  f"this PPL is a weighted average and not the corpus once")
     lines = [f"  n_ctx {a.n_ctx:<6} PPL {a.ppl:>10.4f}   "
-             f"{a.count} tokens scored, {a.missed_tokens} missed, "
+             f"{a.count} tokens scored, {cover}, "
              f"history {a.n_ctx // 2 + 1}..{a.n_ctx - 1}",
              f"      rotation spread {rotation_spread_pct(a):.1f}% "
              f"(two 50%-disjoint halves at the SAME depth — the scale of a pure "
