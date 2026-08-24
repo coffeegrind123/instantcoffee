@@ -820,6 +820,16 @@ fixed builder would have produced.
 
 ### The longer corpus, with the control passing: it is a cliff, not a slope
 
+> **Corrected by §3f, twice.** The span ratios below are ratios of
+> exponentials: the 149,597x span moves **4.54x in NLL** (delta 11.92
+> nats/token), the median span moves 1.18 rather than 1.74, and the corpus-wide
+> cost is a **1.72x total NLL** rather than 6.47x. And at n_ctx 8192 each cell
+> of this map is fed by exactly ONE rotation, so "nine of thirty spans move more
+> than 10x" is nine spans from one rotation: F=4096 has a median delta-NLL of
+> 2.597 against F=0's 0.365. Read §3f before quoting any number in this
+> subsection.
+
+
 Re-run 2026-08-24 after the builder fix. `deep-s26b5bb` + `pi-150turn`, 161,254
 tokens under perplexity's own tokenizer, window corpus `[8192, 131072)` —
 **64 / 32 / 16 chunks** per rotation, double §3e's sample at every depth. All
@@ -872,6 +882,12 @@ into a stable number. **Quote the median span ratio and the distribution, not
 the aggregate.**
 
 ### What makes a span a cliff: one hypothesis, measured and refuted
+
+> **Answered in §3f**, and the blocker named at the end of this subsection —
+> exact token offsets — turned out to be one flag rather than a missing
+> instrument. The refutation below stands and is strengthened: on exact offsets,
+> five content features fail to separate the high-delta spans from the low ones.
+
 
 The obvious guess, from reading the worst span, is repetitive low-entropy text.
 It is git progress output — `Updating files:  81% (512/631)<CR>Updating files:
@@ -929,7 +945,7 @@ it.
 - **It matters for the server**, which runs a 98,304-token window — four times
   the deepest arm here, on the arm of the curve that is getting worse.
 
-## 3f. What makes a span a cliff: the model's distribution leaves the text
+## 3f. What makes a span a cliff: a per-token misfire rate
 
 `scripts/ppl-cliff-run.sh`, `scripts/ppl_tokens.py`, `scripts/ppl_cliff_analyse.py`.
 
@@ -985,88 +1001,131 @@ chunk's result depends on nothing but its own `n_ctx` tokens at positions
 starts at that chunk's first token — one model load and one chunk of decode
 instead of a whole arm, and the arm's own per-chunk number is the control.
 
-All six chunks isolated on 2026-08-24 reproduced their arm:
+Every chunk isolated on 2026-08-24 reproduced its arm; the table is under "the
+answer" below, because the numbers it contains are the result and not only the
+control.
+
+### The answer: chunk perplexity is a misfire-rate readout
+
+Thirteen chunks were isolated across three runs, and every one reproduced its
+arm (the 86017..90111 chunk was run twice, in different runs, and returned
+4,312,987.9359 both times):
 
 ```
    n_ctx  scored corpus      isolated PPL      arm PPL          rel diff
     2048  86017..87039     506,623.5305    506,630.8692        1.45e-05
-    2048  88065..89087           1.0986          1.0985        1.03e-04
-    2048  90113..91135           1.8897          1.8901        1.95e-04
     2048  87041..88063           1.1283          1.1281        1.94e-04
+    2048  88065..89087           1.0986          1.0985        1.03e-04
     2048  89089..90111           1.1005          1.1005        5.66e-06
+    2048  90113..91135           1.8897          1.8901        1.95e-04
+    8192   8193..12287       1,065.0920      1,065.0981        5.72e-06
+    8192  12289..16383          18.2526         18.2527        5.82e-06
+    8192  16385..20479         275.4538        275.4542        1.58e-06
+    8192  20481..24575           6.2353          6.2352        1.38e-05
+    8192  24577..28671         792.4512        792.4501        1.43e-06
+    8192  28673..32767          10.9237         10.9240        2.60e-05
     8192  86017..90111   4,312,987.9359  4,313,018.0902        6.99e-06
 ```
 
-The arm prints a four-decimal RUNNING estimate, so its per-chunk value is a
-difference of two rounded logs; those relative differences are that rounding,
-not a discrepancy. **The isolation is exact**, and the staged slice's own token
-array matched the corpus map with zero mismatches in every case.
+Those differences are the arm's own four-decimal running-estimate rounding, not
+a discrepancy. **The isolation is exact**, and each staged slice's token array
+matched the corpus map with zero mismatches.
 
-### The answer: the same text is trivial at 2048 and catastrophic at 8192
-
-The 149,597x span is `deep-plus-pi` corpus 86016..90111 — a `git checkout`
-progress bar, `Updating files:  34% (215/631)<CR>` repeated for thousands of
-tokens. Per-token log-probs over that text, at two depths:
+THE FAILURE IS A PER-TOKEN MISFIRE, AND IT IS EVERYWHERE. Split each chunk's
+per-token NLL at 10 nats. Above that line the model is not uncertain: it has put
+its mass on an unrelated token, typically at ~1.5-2 nats (p ~ 0.15-0.2) while the
+token that is actually there costs ~17 (p ~ 4e-8). Below it, ordinary text.
 
 ```
-   chunk                        mean NLL   at their own ceiling   NLL deciles (0..100%)
-   2048  87041..88063             0.121     0 of 1023            0,0,0,0,0,0,0,0.0001,0.0004,0.033,7.03
-   2048  89089..90111             0.096     0 of 1023            0,0,0,0,0,0,0,0,0,0.022,3.04
-   2048  88065..89087             0.094     0 of 1023            0,0,0,0,0,0,0,0,0.0002,0.028,4.63
-   2048  86017..87039            11.982   271 of 1023  (26.5 %)
-   8192  86017..90111            13.285  1797 of 4095  (43.9 %)  0,6.01,10.63,12.76,14.35,15.66,16.01,16.09,16.27,16.60,17.78
+   scored corpus        arm PPL   mean NLL   misfire %   of total NLL   the rest
+   20481..24575            6.24      1.746       5.54        44.6 %       1.024
+   28673..32767           10.92      2.315       7.16        42.3 %       1.439
+   12289..16383           18.25      2.622      11.77        67.0 %       0.980
+   16385..20479          275.45      4.911      23.81        73.1 %       1.736
+   24577..28671          792.45      5.769      29.52        77.6 %       1.831
+    8193..12287        1,065.10      5.992      31.23        79.2 %       1.816
+   86017..90111    4,313,018.09     13.285      82.27        93.4 %       4.917
 ```
 
-**The healthy chunks predict this text essentially perfectly.** Eight of eleven
-deciles are exactly 0.0 — the model knows the next line before it starts — and
-the worst tokens are the counter digits, which are genuinely unpredictable:
-`'7' -> '8'` at 4.63 nats, `'9' -> '1'` at 4.34. That is the correct behaviour
-and the whole chunk costs 0.1 nats/token.
+**Perplexity orders perfectly with the misfire rate, over six orders of
+magnitude of PPL and a 15x range of rate.** A "cliff" chunk and a "healthy" one
+are not two phenomena. They are the same per-token failure at five times the
+rate, and between 42 % and 93 % of every chunk's entire NLL comes from that
+minority of tokens. The tokens that do NOT misfire differ by less than 2x across
+the first six rows while their perplexities differ by 170x.
 
-**The failing chunks are not confidently wrong about the next progress line.
-The distribution has left the text.**
+Sample misfires, one per chunk, actual token then what the model wanted:
 
 ```
-   corpus pos    NLL   actual        what the model wanted
-       86452  17.667  'Updating'  -> ' api'          (1.667)
-       86165  17.666  ' files'    -> ' subset'       (1.666)
-       89888  17.782  ' '         -> ' decision'     (1.904)
-       88834  17.680  '7'         -> <id 87939>      (1.681)
-       86937  17.595  '\r'        -> <id 1046>       (1.595)
+   11896  17.72  '.verbose'    -> 'arg'          (1.72)     from the 1065 chunk
+   27404  18.09  '.stdin'      -> <id 11078>     (2.09)     from the 792 chunk
+   24390  17.48  ' printf'     -> <id 2173>      (1.48)     from the 6.24 chunk
+   89888  17.78  ' '           -> ' decision'    (1.90)     from the 4.3M chunk
 ```
 
-The top-1 tokens are unrelated to progress bars, to the surrounding text, and in
-several cases do not occur anywhere in the corpus. Each carries about 1.7 nats
-(p ~ 0.19) while the token that is actually there carries 17.7 (p ~ 2e-8). The
-8192 chunk's MEDIAN token is at 15.66 nats. This is not a hard span; it is a
-collapse, and it covers most of the chunk rather than a handful of positions.
+The signature is identical in the healthy chunk and the catastrophic one. Only
+the rate differs.
 
-Note the units: `ln(248320) = 12.42` nats is what a uniform distribution over
-this vocabulary would cost. The collapsed chunk is three nats WORSE than
-knowing nothing at all.
+### The rate is a property of the chunk, and it is CONSTANT across it
 
-### What distinguishes a collapsing chunk from a healthy one, on identical text
+The obvious story — the model meets something it cannot handle, collapses, and
+stays collapsed — is refuted by its own measurement. Mean NLL in sixteen
+successive slices of the scored range, **in position order**, for the worst
+chunk in the corpus:
 
-The two 2048 chunks at 86017..87039 and 87041..88063 are 1023 tokens of the same
-progress bar, adjacent, differing only in where the chunk boundary fell:
+```
+   86017..90111   12.84 13.16 12.68 13.34 13.55 11.98 13.81 13.99
+                  13.89 13.23 13.53 13.20 13.06 13.71 13.73 12.86
+   % misfiring    38.0  39.5  35.2  43.8  47.7  39.8  49.2  45.7
+                  48.0  40.6  48.4  46.1  41.8  46.5  48.0  43.8
+```
 
-- **86017..87039 collapses** (mean 11.98). Its in-chunk history, corpus
-  84992..86016, is ~290 tokens of prose about a Maven artifact followed by ~730
-  tokens of progress bar: **the chunk contains the transition into the
-  repetitive run.**
-- **87041..88063 does not** (mean 0.121). Its history, corpus 86016..87040, is
-  1023 tokens of nothing but progress bar: **the chunk starts already inside
-  the run.**
+Flat. It is already at 12.8 nats and 38 % misfires in the FIRST bin — the first
+256 tokens it scores — and never gets meaningfully worse or better. The same is
+true of the other two high-rate chunks, which open at 5.51 and 4.03 nats. There
+is no entry point to find, because whatever determines the rate has already
+happened before the first scored token: a chunk scores its top half, so its
+entire first half is history.
 
-The 8192 chunk that collapses, 86017..90111, also contains that transition — and
-it then stays collapsed across all 4095 scored tokens, including the ones the
-2048 arm predicts at 0.096 nats. **Once entered, the state persists to the end of
-the chunk.**
+Misfires are also close to INDEPENDENT rather than bursty. Counting maximal runs
+of consecutive misfires against what independence predicts at the same rate:
 
-That is a mechanism, and it makes the depth effect a consequence rather than a
-fact of its own: a longer chunk is likelier to contain such a transition, and
-once collapsed it poisons four times as many scored tokens. It is a hypothesis
-with one instance behind it, not a result — see "still open" below.
+```
+   chunk            misfire %   runs observed   expected   longest run
+    8193..12287        31.23         759          879.8         9
+   16385..20479        23.81         620          743.1        12
+   12289..16383        11.77         289          425.4        10
+   20481..24575         5.54         182          214.5         6
+   28673..32767         7.16         233          272.1         6
+   86017..90111        82.27        2018         2314.6        39
+```
+
+1.15x to 1.47x more clustered than chance, longest run 6 to 39 tokens out of
+4095. That is a mild tendency to arrive together, not a state the model enters
+and sits in.
+
+### The same tokens, two chunk boundaries, two answers
+
+What the rate DOES depend on is the chunk, and the clearest case is the
+progress-bar region, where the same text is scored at two depths:
+
+- **corpus 87041..88063 at n_ctx 2048** — in-chunk history is corpus
+  86016..87040, which is 1023 tokens of nothing but the repeating progress bar.
+  Mean NLL **0.121**, zero misfires, eight of eleven deciles exactly 0.0. The
+  model knows the next line before it starts.
+- **the same tokens inside the 8192 chunk 86017..90111** — in-chunk history is
+  corpus 81920..86016, which is ~290 tokens of prose about a Maven artifact
+  followed by ~730 tokens of progress bar. Bins 4 and 5, which cover those same
+  tokens, read **13.55 and 11.98**.
+- **corpus 86017..87039 at n_ctx 2048** — history is that same mixed prefix,
+  cut at 2048. Mean NLL **11.98**, 26.5 % misfires.
+
+So the chunk whose history is homogeneous predicts perfectly, and the two whose
+history spans a boundary between kinds of text misfire on ~30-45 % of tokens —
+including tokens the first chunk gets for free. **What is in the history sets
+the rate for the whole chunk.** That is one region measured three ways, not a
+law; §3f's earlier draft called it a collapse that is "entered and persists",
+which the positional profile above refutes.
 
 ### Two corrections to §3e, both from data that was already on disk
 
@@ -1152,23 +1211,58 @@ feature was which rotation the cell came from.**
 
 ### What this settles and what it opens
 
-- **Settled: the token map.** Exact, verified against perplexity's own array,
-  and cheap to redo for any corpus — one killed pass.
+- **Settled: the token map.** Exact, verified element by element against
+  perplexity's own array, and cheap to redo for any corpus — one killed pass.
 - **Settled: chunk isolation.** Any chunk at any depth costs one model load, and
-  the arm's number is the control. Six for six.
-- **Settled: the collapse is real and is not a scoring artefact.** The isolated
-  8192 chunk reproduces 4,312,987.94 against the arm's 4,313,018.09, and the
-  per-token records show the failure is spread over most of the chunk.
-- **Open: whether "the chunk contains a transition into a degenerate run"
-  generalises.** It is one span, measured at two depths. The test is cheap now:
-  isolate the F=4096 cliff chunks and their F=0 neighbours — `--chunk
-  8192:4096:3 --chunk 8192:8192:3` gives three cliff and three healthy chunks,
-  interleaved over the same region, in two passes.
-- **Open: why the nonzero-filler rotation is worse at every depth.** Both
-  rotations score in-chunk positions `N/2+1 .. N-1` with the same distribution
-  of true history, so there is no structural difference to point at, and yet the
-  sign is the same three times and the magnitude grows with the filler. Until
-  that is explained, an 8192 per-span number should carry its rotation.
+  the arm's number is the control. Thirteen for thirteen, including one chunk
+  measured twice in different runs to the same 4,312,987.9359.
+- **Settled: what a cliff IS.** A per-token misfire rate. Perplexity orders
+  monotonically with it across seven chunks and six orders of magnitude, the
+  rate is flat across a chunk's scored range, and misfires are near-independent.
+  There is no cliff in the underlying quantity — the rate runs 5.5 % to 82 % —
+  and `exp(mean NLL)` manufactures one.
+- **Refuted, by its own measurement: "the model collapses and stays collapsed".**
+  The worst chunk in the corpus is already at 12.8 nats and 38 % misfires in its
+  first 256 scored tokens. Whatever sets the rate has happened before the first
+  scored token.
+- **Open: what sets the rate.** "The chunk's history spans a boundary between
+  kinds of text" fits the one region measured three ways, and nothing else has
+  been tested. Five content features do not separate high-rate spans from
+  low-rate ones (below), and neither does perplexity at 2048 — Pearson -0.30
+  over thirty spans.
+- **Open, and now sharper: the rotation.** The F=4096 chunks reproduce their arm
+  numbers exactly under isolation, so their higher rates are real inference
+  behaviour on those tokens and not an artefact of the arm files or the
+  indexing. Why that tiling lands on higher-rate content, at every depth, with
+  the same sign and a magnitude that grows with the filler, is unexplained.
+
+### Three defects in this instrument, all found by running it
+
+Recorded because two of the three fail silently, which is the class this
+document keeps paying for.
+
+- **A slice that ends in a newline loses its last token, and perplexity does not
+  complain.** `arg.cpp:1791-1800` pops one trailing `\n` from a `-f` file;
+  `n_chunk` is `min(--chunks, tokens/n_ctx)`, so the run scores K-1 chunks and
+  exits 0. The `8192:4096:3` slice ended in a newline, announced two chunks, and
+  the third was simply absent from the analysis. Fixed by appending a newline
+  unconditionally so the pop always takes that byte, plus a hard error when the
+  logits header's chunk count is not K.
+- **A backtick in the staged Python was shell command substitution.** The block
+  was interpolated into a double-quoted `python -c "..."`, so the word `sl` in
+  backticks ran as a command (`line 245: sl: command not found`) and the empty
+  result was spliced into the source. It landed in a comment, so nothing was
+  corrupted — luck, not design. Fixed structurally: the stage is now
+  `scripts/ppl_cliff_stage.py`, a file, and the shell parses only arguments.
+- **The EXIT trap did not restart llama, three runs out of three.** The last
+  line of output was always the log-prob cleanup and `restore` printed neither
+  of its messages; the third run had an explicit `restore` call *after* the
+  cleanup and it still did not run, which places the kill inside that step — a
+  `docker run` deleting several GiB across the 9p mount. The restart now happens
+  BEFORE the analysis, which is where it belonged anyway: the passes are done,
+  the card is free, and the analysis needs no GPU (it can also then reach a
+  server to detokenize ids the corpus lacks). The trap stays for the abnormal
+  path.
 
 ## 4. Reproducing any of it
 
@@ -1199,11 +1293,10 @@ stops nothing. The log-probs are deleted after the analysis unless
 `n_vocab` is 248,320 and the record is `2*((n_vocab+1)/2)+4` uint16 per scored
 token.
 
-**On 2026-08-24 that run's EXIT trap did not fire** — the script's last line of
-output is the log-prob cleanup, no restart line was printed, and `qwen38-llama`
-sat stopped for 24 minutes until it was started by hand. Whatever killed the
-shell did not deliver EXIT/INT/TERM. **Check `docker ps` after any run of this
-script rather than trusting the trap.**
+**The restart happens before the analysis, not from the EXIT trap**, because on
+2026-08-24 the trap did not fire three runs out of three and left
+`qwen38-llama` stopped each time; see §3f's defect list. Checking `docker ps`
+after a run is still worth the two seconds.
 
 `llama-perplexity` loads its own copy of the weights, so `qwen38-llama` must be
 stopped for the run; the script does that itself and restarts it on any exit

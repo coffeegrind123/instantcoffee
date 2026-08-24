@@ -26,6 +26,10 @@ WHAT IT PINS
   merge_across_tools    two user turns either side of a tool-call/tool-result
                         pair stay separate, adjacent ones still merge, and
                         FORGE_MERGE_ACROSS_TOOLS=1 restores the old behaviour
+  anthropic_reasoning   on the ANTHROPIC wire reasoning is on a top-level key
+                        and NEVER in `content` — the block type prinny forwards
+                        — and stop_reason is the backend's rather than
+                        "end_turn"
 
 The last one is checked in both directions on purpose. A test that only proves
 the new behaviour cannot tell a working flag from a flag that is never read.
@@ -136,6 +140,69 @@ def main() -> int:
     os.environ.pop("FORGE_MERGE_ACROSS_TOOLS", None)
     importlib.reload(llamafile)
     eq("...and clearing it restores the patched behaviour", len(llamafile._merge_consecutive(tool_pair)), 4)
+
+    # ── anthropic_reasoning ───────────────────────────────────────────────
+    #
+    # The assertion that matters is the NEGATIVE one: nothing carrying the
+    # reasoning may appear anywhere inside `content`, on either the block list
+    # or the SSE deltas. vendor/prinny-channel allowlists `text` blocks, so a
+    # regression here does not throw or log — it forwards the model's private
+    # deliberation to a Matrix room and looks like a normal answer.
+    import json as _json
+    from forge.proxy.convert_anthropic import (
+        _anthropic_stop_reason, text_response_to_anthropic, text_to_anthropic_sse,
+        tool_calls_to_anthropic, tool_calls_to_anthropic_sse,
+    )
+
+    SECRET = "PRIVATE-DELIBERATION-MARKER"
+    atc = ToolCall(tool="Bash", args={"command": "ls"}, reasoning=SECRET)
+
+    r = tool_calls_to_anthropic([atc], reasoning_replay="full")
+    eq("anthropic tool-call content holds only tool_use blocks",
+       sorted({b["type"] for b in r["content"]}), ["tool_use"])
+    check("anthropic tool-call reasoning is NOT anywhere in content",
+          SECRET not in _json.dumps(r["content"]))
+    eq("anthropic tool-call reasoning is on reasoning_content",
+       r.get("reasoning_content"), SECRET)
+    check("reasoning_replay=none drops it entirely",
+          "reasoning_content" not in tool_calls_to_anthropic([atc], reasoning_replay="none"))
+
+    t = text_response_to_anthropic("the answer", reasoning=SECRET, finish_reason="length")
+    check("anthropic text reasoning is NOT anywhere in content",
+          SECRET not in _json.dumps(t["content"]))
+    eq("anthropic text reasoning is on reasoning_content", t.get("reasoning_content"), SECRET)
+    eq("anthropic text stop_reason is the backend's", t["stop_reason"], "max_tokens")
+    # The old three-argument call is still how several call sites reach it.
+    plain = text_response_to_anthropic("the answer")
+    eq("anthropic text default stop_reason unchanged", plain["stop_reason"], "end_turn")
+    check("no reasoning_content key when there is no reasoning",
+          "reasoning_content" not in plain)
+
+    ev = tool_calls_to_anthropic_sse([atc], reasoning_replay="full")
+    check("anthropic SSE tool-call opens no text block",
+          not any(e.get("content_block", {}).get("type") == "text" for e in ev))
+    check("anthropic SSE tool-call reasoning is NOT in any event delta",
+          not any(SECRET in _json.dumps(e.get("delta", {})) for e in ev))
+    eq("anthropic SSE tool-call reasoning rides on message_start",
+       ev[0]["message"].get("reasoning_content"), SECRET)
+
+    ev2 = text_to_anthropic_sse("the answer", reasoning=SECRET, finish_reason="length")
+    check("anthropic SSE text reasoning is NOT in any event delta",
+          not any(SECRET in _json.dumps(e.get("delta", {})) for e in ev2))
+    eq("anthropic SSE text reasoning rides on message_start",
+       ev2[0]["message"].get("reasoning_content"), SECRET)
+    eq("anthropic SSE text stop_reason is the backend's",
+       [e for e in ev2 if e["type"] == "message_delta"][0]["delta"]["stop_reason"],
+       "max_tokens")
+
+    # An unmapped finish_reason is the one case the schema cannot express. It
+    # is pinned so that a change to the fallback is a test failure rather than a
+    # silent "the model finished naturally".
+    for fr, want in (("stop", "end_turn"), ("length", "max_tokens"),
+                     ("tool_calls", "tool_use"), ("function_call", "tool_use"),
+                     ("content_filter", "refusal"), (None, "end_turn"),
+                     ("a_reason_forge_invented", "end_turn")):
+        eq(f"stop_reason map {fr!r}", _anthropic_stop_reason(fr), want)
 
     total = PASSED + FAILED
     print(f"\n{PASSED}/{total} passed", end="")

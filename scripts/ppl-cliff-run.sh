@@ -236,6 +236,7 @@ build_inputs() {
   echo
   echo "==> stage 1: token->byte map and slice files (llama is still up; it owns the tokenizer)"
   stage_script "${REPO_ROOT}/scripts/ppl_tokens.py"
+  stage_script "${REPO_ROOT}/scripts/ppl_cliff_stage.py"
   local specs; specs="$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)"
   local net; net="$(llama_network)"
   [[ -n "$net" ]] || die "could not read ${LLAMA_CT}'s network; is it running?"
@@ -243,46 +244,11 @@ build_inputs() {
   # 9p bind of a Windows directory: a write from the image's own uid is EACCES,
   # and it surfaces as a traceback three quarters of the way through the map.
   docker run --rm --network "$net" --user 0:0 \
-    -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" -c "
-import json, os, sys
-sys.path.insert(0, '${SCRIPT_STAGE}')
-import ppl_tokens as P
-
-outdir = '${OUTDIR}'
-os.makedirs(outdir, exist_ok=True)
-raw = P.strip_trailing_newline(open('${CORPUS}', 'rb').read())
-pieces = P.tokenize_with_pieces(raw.decode('utf-8'), '${LLAMA_URL}')
-ids = [i for i, _ in pieces]
-offs = P.byte_offsets([p for _, p in pieces], raw)
-print(f'    map           {len(ids)} tokens, {offs[-1]} bytes, reconstruction EXACT')
-mp = os.path.join(outdir, '${CORPUS_BASE}.tokmap.json')
-json.dump({'corpus': '${CORPUS}', 'ids': ids, 'byte_offsets': offs}, open(mp, 'w'))
-print(f'    wrote         {mp}')
-
-bad = 0
-for spec in '${specs}'.split(','):
-    n, a, k = (int(x) for x in spec.split(':'))
-    span = k * n if k > 2 else 2 * n
-    if a + span > len(ids):
-        print(f'    {spec:<20} REFUSED: [{a}, {a+span}) runs past the corpus ({len(ids)} tokens)')
-        bad = 1
-        continue
-    sl = raw[offs[a]:offs[a + span]]
-    # A BPE cut is not automatically a token boundary in the re-tokenized text:
-    # the slice has no left context, so its first merge can differ. Checked
-    # rather than assumed, because the failure is a file that looks right.
-    got = [i for i, _ in P.tokenize_with_pieces(sl.decode('utf-8'), '${LLAMA_URL}')]
-    want = ids[a:a + span]
-    if got != want:
-        d = next((i for i in range(min(len(got), len(want))) if got[i] != want[i]), None)
-        print(f'    {spec:<20} MISMATCH: {len(got)} tokens against {len(want)}, first difference at {d}')
-        bad = 1
-        continue
-    p = os.path.join(outdir, '${CORPUS_BASE}-c%d-a%d-k%d.txt' % (n, a, k))
-    open(p, 'wb').write(sl)
-    print(f'    {spec:<20} {len(sl)} bytes, {len(want)} tokens, re-tokenizes EXACT -> {os.path.basename(p)}')
-sys.exit(1 if bad else 0)
-" || die "stage 1 failed; nothing was stopped"
+    -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" \
+    "${SCRIPT_STAGE}/ppl_cliff_stage.py" \
+      --corpus "$CORPUS" --corpus-base "$CORPUS_BASE" --outdir "$OUTDIR" \
+      --url "$LLAMA_URL" --specs "$specs" \
+    || die "stage 1 failed; nothing was stopped"
 }
 
 # ---------------------------------------------------------------------------
@@ -431,6 +397,21 @@ main_run() {
       "${OUTDIR}/${CORPUS_BASE}-${SPEC_NAME}.logits" "${SPEC_NAME}.log" || failed=1
   done
 
+  # RESTART BEFORE THE ANALYSIS, AND NOT FROM THE TRAP. Three runs on
+  # 2026-08-24 all ended with qwen38-llama stopped: the last line of output was
+  # the log-prob cleanup, restore printed neither of its two messages, and the
+  # container sat Exited until it was started by hand. The third run had an
+  # explicit restore call AFTER analyse and it still did not run, which places
+  # the kill inside the final step — a docker run that deletes several GiB
+  # across the 9p mount and takes minutes. So the restart must not sit behind
+  # anything slow.
+  #
+  # It belongs here on the merits anyway: the passes are done, the card is free,
+  # and the analysis needs no GPU. It also LETS the analysis reach a server, so
+  # a token id that does not occur in the corpus can be detokenized instead of
+  # printing as <id N>. The trap stays for the abnormal path, and docker start
+  # on a running container is a no-op that returns 0.
+  restore
   analyse "$LOCAL_LOGDIR"
   return $failed
 }

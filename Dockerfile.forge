@@ -82,9 +82,22 @@ RUN pip install --no-cache-dir \
 # still happen; the cross-tool case is opt-in via FORGE_MERGE_ACROSS_TOOLS=1.
 # Applied AFTER forge_merge_consecutive.py, which patches a different line of
 # the same function. See patches/forge_merge_across_tools.py.
+# The sixth patch closes patch three's hole on the ANTHROPIC wire, where it was
+# not merely absent but inverted. tool_calls_to_anthropic emitted the model's
+# reasoning as a `text` block — the one block type vendor/prinny-channel
+# forwards to a Matrix room — and text_response_to_anthropic had neither a
+# `reasoning` nor a `finish_reason` parameter at all, so a reasoning-only turn
+# lost everything and every response claimed "end_turn" whether it finished or
+# was cut at max_tokens. Reasoning now lands on a top-level reasoning_content
+# key, mirroring the OpenAI wire; NOT as an Anthropic `thinking` block, because
+# that carries a `signature` the API issues and verifies and this proxy cannot
+# mint one — a fabricated signature is a forged attestation in a durable
+# transcript. Applied LAST: it edits the _emit_text that
+# forge_reasoning_passthrough.py rewrites, so it must see the patched text.
+# See patches/forge_anthropic_reasoning.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
-     patches/forge_merge_across_tools.py \
+     patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -92,6 +105,7 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE" \
     && python /tmp/patches/forge_toolcall_content.py "$SITE" \
     && python /tmp/patches/forge_merge_across_tools.py "$SITE" \
+    && python /tmp/patches/forge_anthropic_reasoning.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"

@@ -131,6 +131,30 @@ def decile_profile(values: list) -> list:
     return [round(s[min(n - 1, int(q * n / 10))], 4) for q in range(11)] if n else []
 
 
+def positional_bins(values: list, bins: int = 16) -> list:
+    """Mean NLL in each successive slice of the SCORED range, in order.
+
+    THE DECILES CANNOT ANSWER THE QUESTION THEY LOOK LIKE THEY ANSWER. A chunk
+    whose median token sits at 15.66 nats could be one that was hopeless
+    throughout, or one that was fine until something happened and never
+    recovered. Sorting destroys exactly the axis that separates those, and they
+    are different findings: the second says a collapse is ENTERED at a point and
+    PERSISTS, which is the §3f hypothesis, and the first refutes it.
+
+    Reported in position order, never sorted.
+    """
+    n = len(values)
+    if not n:
+        return []
+    out = []
+    for b in range(bins):
+        lo = (b * n) // bins
+        hi = ((b + 1) * n) // bins
+        seg = values[lo:hi]
+        out.append(round(sum(seg) / len(seg), 3) if seg else None)
+    return out
+
+
 def analyse_spec(outdir: str, corpus_base: str, spec: str, mp: dict, pieces: Pieces,
                  arms: list, worst: int) -> dict:
     n_ctx, a, k = (int(x) for x in spec.split(":"))
@@ -147,6 +171,16 @@ def analyse_spec(outdir: str, corpus_base: str, spec: str, mp: dict, pieces: Pie
                      "n_chunk": body.n_chunk, "scored_per_chunk": body.scored}
     if body.n_ctx != n_ctx:
         out["error"] = f"header says n_ctx={body.n_ctx}, spec says {n_ctx}"
+        return out
+    # A SHORT CHUNK COUNT IS AN ERROR, NOT A SMALLER REPORT. perplexity takes
+    # min(--chunks, tokens/n_ctx) and says nothing when the second wins, so a
+    # slice one token short silently scores K-1 chunks and the analysis looks
+    # complete. This is the check that turns that into a failure.
+    if body.n_chunk != k:
+        out["error"] = (f"asked for {k} chunks, the logits header says "
+                        f"{body.n_chunk}: the staged slice was short of "
+                        f"{k * n_ctx} tokens, so perplexity capped n_chunk at "
+                        f"tokens/n_ctx and scored fewer chunks without saying so")
         return out
 
     # The staged file's own token array must be the corpus slice it claims to
@@ -179,6 +213,12 @@ def analyse_spec(outdir: str, corpus_base: str, spec: str, mp: dict, pieces: Pie
                  round(sat["ceiling_max"], 4)],
             "deciles_nll": decile_profile([r["nll"] for r in rows]),
             "deciles_nll_unsaturated": decile_profile(exact),
+            "bins_nll": positional_bins([r["nll"] for r in rows]),
+            "bins_saturated_pct": positional_bins(
+                [100.0 if r["saturated"] else 0.0 for r in rows]),
+            # The whole series, rounded, so the 1.9 GiB of log-probs behind it
+            # can be deleted and this question never needs the GPU again.
+            "nll_series": [round(r["nll"], 3) for r in rows],
         }
         match = [r for r in arms if r["scored"][0] == lo and r["scored"][1] == hi]
         if match:
@@ -325,6 +365,10 @@ def print_spec(res: dict, pieces: Pieces):
               f"{rec['saturated']} of {res['header']['scored_per_chunk']} tokens "
               f"({rec['saturated_pct']}%) {where})")
         print(f"      NLL deciles   {rec['deciles_nll']}")
+        print(f"      NLL by position across the scored range, 16 bins in ORDER:")
+        print(f"        {rec['bins_nll']}")
+        print(f"      % at ceiling, same bins:")
+        print(f"        {[None if v is None else round(v, 1) for v in rec['bins_saturated_pct']]}")
         print(f"      worst tokens (actual -> what the model wanted):")
         for w in rec["worst"]:
             print(f"        {w['corpus_pos']:>7}  {w['nll']:>7.3f}"

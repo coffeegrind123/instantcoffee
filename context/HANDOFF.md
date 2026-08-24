@@ -1,3 +1,248 @@
+# Handoff — 2026-08-24e (the cliff answered: a misfire rate; §3e corrected twice; the forge image REBUILT)
+
+## Read this first
+
+**One thing on the stack DID change, and it is running.** `Dockerfile.forge`
+gained a sixth patch, the image `qwen38-forge/proxy:0.9.0` was rebuilt, and
+`qwen38-forge` was recreated onto it. `.env`, `docker-compose.yml` and `modes/`
+are untouched; `git diff` over them across the session is empty. The patch is
+`patches/forge_anthropic_reasoning.py` and §6 below is why. `scripts/
+test_forge_patches.py` runs 44/44 inside the rebuilt image.
+
+Everything else is tooling, tests and documents. Three GPU runs happened, all
+inside `ppl-cliff-run.sh`, which stops llama and restarts it. llama is up and
+healthy; nothing is running.
+
+---
+
+## 1. What makes a span a cliff: a per-token MISFIRE RATE
+
+`kv-cache-fidelity-measured.md` §3f is new and is the headline. §3e left this
+open with one refuted hypothesis and a named blocker.
+
+**The blocker was one flag, not a missing instrument.** §3e's token->byte map
+was `/tokenize` SCALED by the ratio of two totals (157,626 against 161,254),
+drifting ~2,000 tokens. The two totals are one tokenizer and one flag:
+perplexity calls `common_tokenize(ctx, prompt, true)` whose fourth argument
+defaults to `parse_special=FALSE`; llama-server defaults it TRUE. Set it and
+the counts agree exactly. Then, because a matching count is not a matching
+array — §3e's own 414-byte corruption produced identical COUNTS — the arrays
+were compared element by element against the one perplexity itself writes:
+
+    n_ctx 256, n_chunk 629 -> 161,024 tokens; mismatches 0; IDENTICAL
+
+**A chunk is reproducible on its own.** `perplexity.cpp:547` clears the memory
+per batch, so chunk 10 of an arm is chunk 0 of a slice file: one model load
+(2m51s) instead of a whole arm. Thirteen chunks isolated, thirteen reproduced
+their arm to within its four-decimal rounding, one of them twice in different
+runs to the same 4,312,987.9359.
+
+**The answer.** Split per-token NLL at 10 nats. Above it the model is not
+uncertain — it has put ~0.2 probability on an unrelated token while the token
+actually there costs ~17 nats. Call that a misfire.
+
+       scored corpus        arm PPL   mean NLL   misfire %   of total NLL
+       20481..24575            6.24      1.746       5.54        44.6 %
+       28673..32767           10.92      2.315       7.16        42.3 %
+       12289..16383           18.25      2.622      11.77        67.0 %
+       16385..20479          275.45      4.911      23.81        73.1 %
+       24577..28671          792.45      5.769      29.52        77.6 %
+        8193..12287        1,065.10      5.992      31.23        79.2 %
+       86017..90111    4,313,018.09     13.285      82.27        93.4 %
+
+**Perplexity orders monotonically with the rate over six orders of magnitude.**
+A cliff chunk and a healthy one are the same failure at five times the rate, and
+42-93 % of every chunk's NLL comes from that minority of tokens. The tokens that
+do not misfire differ by under 2x across the first six rows while their
+perplexities differ by 170x. **There is no cliff in the underlying quantity;
+`exp(mean NLL)` manufactures one.**
+
+**The rate is constant across a chunk.** Sixteen positional bins of the worst
+chunk read 12.84, 13.16, 12.68, 13.34, ... 12.86 — flat, already at 38 %
+misfires in the first 256 scored tokens. Misfires are 1.15-1.47x more clustered
+than independence predicts, longest run 6-39 of 4095. So there is no state that
+gets entered: whatever sets the rate has happened before the first scored token,
+which is what a chunk's own first half is.
+
+**What it depends on, one region measured three ways.** The same progress-bar
+tokens cost 0.121 nats with 1023 tokens of homogeneous history and ~13 nats when
+the history spans a prose/progress boundary. That is a hypothesis with one
+instance, not a law.
+
+---
+
+## 2. §3e is corrected twice, from data that was already on disk
+
+**"149,597x" is a ratio of exponentials and should not be quoted.** In NLL that
+span moves 4.54x (delta 11.92 nats/token); the median span moves 1.18 and the
+maximum 5.94; corpus-wide the cost is 1.72x TOTAL NLL rather than 6.47x.
+**The standing rule becomes: quote the median span ratio IN NLL, with the delta
+in nats.**
+
+**The span map at grid 4096 is rotation-confounded at n_ctx 8192.** The rotation
+design guarantees the UNION of two rotations covers every token once — true of
+the arm aggregate, false of a per-span map at grid 4096, where an 8192 chunk
+scores 4095 tokens so each cell is fed by exactly ONE rotation.
+
+       8192 rotation F=4096   n=15   median delta-NLL  2.597
+       8192 rotation F=0      n=15   median delta-NLL  0.365
+
+Nine of the ten highest come from F=4096 (hypergeometric p ~ 0.003). It appears
+as a period-2 lag-1 autocorrelation of -0.34 that the rotation-BALANCED 2048 and
+4096 series (+0.09, +0.01) do not have, and document difficulty does not
+alternate. The arm aggregates carry the same asymmetry at every depth, same
+sign, growing with the filler: 8.6 %, 110 %, 212 %. **It reproduces under
+isolation**, so it is real inference behaviour on those tokens, not an indexing
+or arm-file artefact. Forward-pointers were added at the head of §3e's two
+affected subsections.
+
+---
+
+## 3. Repetitiveness is refuted a second time, on exact offsets
+
+Splitting the thirty spans at delta-NLL >= 2: bytes/token 3.684 against 3.607,
+zlib 0.361 against 0.340, CR fraction 0 against 0, digits 1.08 % against 1.61 %,
+distinct-token ratio 0.244 against 0.214. Indistinguishable on all five.
+Perplexity at 2048 does not predict it either (Pearson -0.30 over thirty spans).
+The one span extreme on every feature is the 82 %-misfire progress-bar chunk,
+and the other nine high-delta spans are ordinary prose and code.
+
+---
+
+## 4. New tooling
+
+    scripts/ppl_tokens.py         the map, the _logits_ header, per-token NLL,
+                                  and top-1 decode out of the log-prob body
+    scripts/ppl-cliff-run.sh      stage the slices, run the passes, one llama stop
+    scripts/ppl_cliff_stage.py    stage 1 as a FILE, not an interpolated -c block
+    scripts/ppl_cliff_analyse.py  the control, deciles, positional bins, top-1
+    scripts/test_ppl_tokens.py    20 tests
+
+`result.json` now carries the whole rounded per-token NLL series, so the GiB of
+log-probs behind it are deleted and that question never needs the GPU again.
+
+---
+
+## 5. What I got wrong, and what caught it
+
+- **"The model collapses at a transition and stays collapsed."** I wrote it into
+  §3f on the strength of a 2048 comparison, then measured the positional profile
+  and it is FLAT from the first bin. Rewritten. The comparison it rested on is
+  still good evidence for what sets the rate; it was never evidence for a
+  within-chunk dynamic, and I did not have that axis until I added it.
+- **The analyser printed record 0's NLL as "the chunk's ceiling".** The ceiling
+  is `16 + log_sum_exp`, per RECORD, and varies across a chunk; record 0 is only
+  the ceiling if record 0 is saturated. Caught before shipping, by the numbers
+  not adding up against the worst-token list. Now reports min/median/max of the
+  ceilings actually hit, with a test built so a single-number report cannot pass.
+- **A slice ending in a newline silently lost a chunk.** `-f` pops one trailing
+  `\n`; `n_chunk` is `min(--chunks, tokens/n_ctx)`; the run scored K-1 chunks
+  and exited 0. Caught by reading "calculating perplexity over 2 chunks" in a
+  log for a `--chunks 3` pass. Fixed both ways: append a newline for the pop,
+  and make a short chunk count a hard error.
+- **A backtick in staged Python was shell command substitution.** `sl` in
+  backticks ran as a command and the empty result was spliced into the source.
+  It landed in a comment, so nothing was corrupted — luck. Fixed structurally by
+  making the stage a file.
+- **The EXIT trap did not restart llama, three runs out of three.** An explicit
+  `restore` call AFTER the analysis did not run either, which places the kill
+  inside the multi-GiB cleanup. The restart now happens BEFORE the analysis,
+  where it belonged anyway.
+
+---
+
+## 6. `convert_anthropic.py`: the decision, made
+
+§5 of the previous handoff left this to you. Taken, and implemented as
+`patches/forge_anthropic_reasoning.py`: **reasoning goes on a top-level
+`reasoning_content` key, never into `content`, and never as a `thinking` block.**
+
+- A `thinking` block carries a `signature` Anthropic ISSUES and VERIFIES, which
+  a proxy in front of a local model cannot mint. A fabricated one is a forged
+  attestation in a durable transcript that a later session can replay against
+  the real API — the only option that cannot be walked back. A `thinking` block
+  with no signature is rejected by the real API on replay: it looks native and
+  is not.
+- The `text` block it used was the safety inversion: `text` is exactly what
+  `vendor/prinny-channel` forwards to Matrix.
+- Any in-`content` block would make the safety property depend on prinny's
+  allowlist — another repo's code — staying as it is. Off `content` it holds
+  regardless, and it mirrors patch 4's OpenAI decision: one rule, two wires.
+
+The patch also fixes all four emitters (both protocols, streaming and not) and
+adds the finish_reason -> stop_reason table, so a response truncated at
+`max_tokens` stops claiming `end_turn`. An unmapped reason still becomes
+`end_turn` because the schema has no "unknown"; the table is written out rather
+than hidden behind a bare `.get` so a new upstream value is visible in review.
+Applied LAST in the Dockerfile because it edits the `_emit_text` patch 4
+rewrites. 20 assertions added to `test_forge_patches.py`; 44/44 in the image.
+
+**Still not carried anywhere: reasoning and finish_reason on the OpenAI SSE
+path.** Named, not fixed.
+
+---
+
+## 7. Standing rules this session paid for
+
+- **A matching count is not a matching array, and a matching array is worth
+  getting.** Both halves cost one killed pass here.
+- **`exp(mean NLL)` is not the quantity.** Any ratio of perplexities is
+  `exp(delta mean NLL)`; report the delta in nats and let the reader exponentiate
+  if they want to.
+- **A per-span map must say which rotation fed each cell**, or it reports a
+  rotation as a property of the span.
+- **Sorting destroys the axis that separates "hopeless throughout" from "entered
+  and persisted".** Deciles cannot answer a question about position; bins in
+  position order can, and both readings were live until they were measured.
+- **A number that varies per record must not be printed once per chunk.**
+- **Interpolating a script into `python -c "..."` is a quoting minefield.** A
+  backtick executes and a double quote ends the string. Stage a file.
+- **A step that must happen does not belong only in an EXIT trap**, and it does
+  not belong behind anything slow.
+
+---
+
+## 8. Still open, in value-per-hour order
+
+1. **What sets the misfire rate.** The instrument is now cheap: one model load
+   per chunk, and the per-token series is kept. The one hypothesis standing is
+   "the chunk's history spans a boundary between kinds of text", tested on one
+   region. Content features and 2048-perplexity both fail to predict it.
+2. **Why the nonzero-filler rotation is worse at every depth.** Both rotations
+   score in-chunk positions `N/2+1 .. N-1` with the same distribution of true
+   history, so there is no structural difference to point at, and yet the sign
+   is the same three times and the magnitude grows with the filler.
+3. **Tighten the acceptance null.** Unchanged: one depth, one workload,
+   detection floor 6.9 % relative. `--workload repeat` and
+   `--bench-args '--prompt-len 60000'`. Cheap.
+4. **`eval_expr` at `--repeat 20`, two levels.** Unchanged.
+5. **Yours rather than mine.** `FORGE_MERGE_ACROSS_TOOLS=1` at real depth; the
+   four `s735f17` records on the tape; a GPU-heavy foreground VRAM floor.
+
+---
+
+## 9. Reproducing any of it
+
+```sh
+   # the cliff instrument: stage 1 needs llama UP, the passes stop it
+   ./scripts/ppl-cliff-run.sh --corpus /captures/corpus/deep-plus-pi.txt \
+       --from-run .ppl-depth-logs/20260824T142049Z \
+       --chunk 8192:4096:3 --chunk 8192:8192:3
+
+   # --chunk N:A:K isolates K chunks of n_ctx N from corpus token A.
+   # --skip-tokens skips re-verifying the corpus token array (one model load).
+   # --keep-logits keeps the log-probs: 2.0 GiB per 8192 chunk on this model.
+
+   # the depth ladder and its analyser, unchanged
+   ./scripts/ppl-depth-run.sh --analyse-only .ppl-depth-logs/<stamp> --window-hi 131072
+   python3 scripts/ppl_depth_analyse.py --logdir <dir> --window 8192,131072 --spans 2048
+
+   # the forge patches, in the built image
+   docker compose build forge
+   docker run --rm --entrypoint python qwen38-forge/proxy:0.9.0 \
+       /work/scripts/test_forge_patches.py
+```
+
 # Handoff — 2026-08-24d (the depth question, answered on two corpora; one retraction; three carried items closed)
 
 ## Read this first
