@@ -744,6 +744,57 @@ rotation spread 9 %, 22 %, 1441 %. There is not enough document.
 4096 arm's 12.24 (medians 18.3, 44.0, 275.5, 59.9). The trend continues past
 4096. Its size is not determined.
 
+### The longer corpus was tried, and its alignment control FAILED
+
+2026-08-24, same day. §3e's own recommendation was a longer corpus, so
+`deep-s26b5bb` and `pi-150turn` were concatenated — 161,254 tokens under
+perplexity's own tokenizer — giving **64 / 32 / 16 chunks** per rotation at
+2048 / 4096 / 8192, double this section's sample at every depth. All three
+fillers came back exact off the error path, and the first eight chunks of the
+8192 pass reproduced the `deep-s26b5bb` run **byte for byte**, which they must:
+that corpus is the concatenation's first 65,536 tokens.
+
+**And then the whole-chunk alignment control failed, at 871.8x the printing
+floor.** So none of the numbers it produced are readable, and they are recorded
+here only so nobody re-runs it expecting different:
+
+```
+   n_ctx    PPL        tokens scored    rotation spread    <- NOT READABLE
+    2048    13.1588      122,760              6.0 %
+    4096    27.6989      122,820             98.2 %
+    8192    85.0210      122,850            204.2 %
+```
+
+**The failure is informative and is not a wrong filler.** A filler off by even
+one token shifts every chunk boundary, so every one of the 64 pairs would
+disagree. Only **four** do — and they are the extreme ones (10.3, 8.3 and 4.9
+nats per token), while the other sixty agree at 0.1-0.8x the floor:
+
+```
+   pair            a_nll      b_nll     relative    x floor
+   a36 / b37      10577.40    9703.35    8.3e-2      871.8
+   a42 / b43       8515.44    7745.74    9.0e-2      740.2
+   a62 / b63       5019.95    4795.91    4.5e-2      206.7
+   a45 / b46       5928.32    5956.44    4.7e-3       25.7
+   …sixty others   …          …          <1e-3       <1
+```
+
+Those two passes score **identical token sequences** — the control's whole
+construction — with `llama_memory_clear` at the top of every chunk. And this
+engine is deterministic: two independent runs of the same pass have already
+reproduced each other digit for digit. Identical input and a deterministic
+engine cannot give different output, so either the inputs are not identical or
+something survives the clear. **That is being measured, not guessed** — the
+same pass is being re-run against itself, which separates engine
+non-determinism on near-zero-probability tokens from state that outlives
+`llama_memory_clear`.
+
+Until it is settled, note what it does NOT touch: §3e's 2048-vs-4096 result on
+`deep-s26b5bb` stands on a control that passed at 0.72x the floor over 32
+pairs, and the 8192 control on the same corpus passed at 0.5x over 8. Whatever
+this is, it did not fire there — and the pairs it fires on here are more
+extreme than anything that corpus contains.
+
 ### What this does and does not settle
 
 - **It settles that the depth effect is real** rather than a partition artefact,
