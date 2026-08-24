@@ -23,13 +23,13 @@ The short version, and it is not the one §4 expected:
   a filler prefix rather than by placing a region in it — gives 6.35 at n_ctx
   2048 and 12.24 at 4096. x1.93 in perplexity for x2 in history, with the
   instrument's own alignment control passing at 0.72x its printing floor.
-- **And 8192 has no number, for a reason that is the corpus's and not the
-  instrument's.** Four rotations there span 14.77 to 227.67, per-chunk
-  perplexity spans 2.54 to 1065.10, and the mean and the median disagree about
-  which of two partitions of the same tokens is larger — six or seven chunks
-  from a tail that heavy cannot produce an arm figure. §2's limit (1) caps a
-  captured corpus at the server's own window, so this one can never give more
-  than 8 chunks at that depth.
+- **And the degradation is a CLIFF, not a slope — so quote the distribution,
+  not the mean.** On a 161,254-token corpus with 64/32/16 chunks per rotation
+  and a control passing at 0.8x its floor, the aggregate goes 13.32 / 28.54 /
+  86.14 — but across thirty spans the 8192/2048 ratio has a **median of 1.74**,
+  sixteen of thirty move less than 2x, nine move more than 10x, and one moves
+  149,597x. Dropping that one span takes the 8192 aggregate from 86.14 to
+  59.32.
 - **Three limits, read out of the tool's source, retire the plan §6 had
   priced.** The deepest arm a real workstream can support here is CTX_SIZE/2;
   the ceiling is host RAM sized on `n_ctx * n_vocab`, not VRAM; and perplexity
@@ -744,7 +744,7 @@ rotation spread 9 %, 22 %, 1441 %. There is not enough document.
 4096 arm's 12.24 (medians 18.3, 44.0, 275.5, 59.9). The trend continues past
 4096. Its size is not determined.
 
-### The longer corpus was tried, and its alignment control FAILED
+### The longer corpus, first attempt: the control failed, and it was right to
 
 2026-08-24, same day. §3e's own recommendation was a longer corpus, so
 `deep-s26b5bb` and `pi-150turn` were concatenated — 161,254 tokens under
@@ -755,8 +755,9 @@ fillers came back exact off the error path, and the first eight chunks of the
 that corpus is the concatenation's first 65,536 tokens.
 
 **And then the whole-chunk alignment control failed, at 871.8x the printing
-floor.** So none of the numbers it produced are readable, and they are recorded
-here only so nobody re-runs it expecting different:
+floor.** It was right to: the corpus builder had been rewriting the corpus. The
+numbers below are NOT READABLE and are kept only so the failure is on the
+record next to the fix; the section after this one is the corrected run.
 
 ```
    n_ctx    PPL        tokens scored    rotation spread    <- NOT READABLE
@@ -807,6 +808,72 @@ it, because otherwise the test passes for no reason.
 text mode and binary mode agree on it byte for byte — which is exactly why this
 survived every earlier run and appeared the moment a second corpus arrived. The
 2048-vs-4096 result stands.
+
+### The longer corpus, with the control passing: it is a cliff, not a slope
+
+Re-run 2026-08-24 after the builder fix. `deep-s26b5bb` + `pi-150turn`, 161,254
+tokens under perplexity's own tokenizer, window corpus `[8192, 131072)` —
+**64 / 32 / 16 chunks** per rotation, double §3e's sample at every depth. All
+three fillers exact off the error path, and **the alignment control passes at
+1.80e-3 relative, 0.8x the printing floor, over 64 chunk pairs.**
+
+```
+   n_ctx    PPL        tokens scored    missed    rotation spread
+    2048    13.3188      122,760         119          8.6 %
+    4096    28.5385      122,820          59        110.4 %
+    8192    86.1443      122,850          29        212.3 %
+```
+
+**x2.14 from 2048 to 4096 replicates §3e's x1.93 on a different, larger corpus
+with its own passing control**, and the ladder now extends: x3.02 again from
+4096 to 8192.
+
+**But the aggregate is the wrong summary, and the per-span map says why.** Over
+thirty 4096-token spans, the 8192/2048 ratio has a **median of 1.74** and an
+upper quartile of 18.9. Sixteen of thirty spans move less than 2x; **nine move
+more than 10x**, and one moves 149,597x:
+
+```
+   span                  2048        4096          8192      8192/2048
+   86016..90111         28.83     2812.23   4,313,018.09      149597x
+   24576..28671          3.08        7.39         792.45         258x
+   8192..12287           4.63       15.41        1065.10         230x
+   49152..53247          3.34        3.29         523.79         157x
+   …                                                                 
+   77824..81919          2.87        3.13           3.18           1.1x
+   118784..122879        3.54        3.84           3.85           1.1x
+   126976..131071       14.03       14.75          13.51           1.0x
+```
+
+Dropping that single worst span moves the 8192 aggregate from **86.14 to
+59.32** while barely touching 2048 (13.32 to 12.97). One span of thirty is
+worth a third of the headline.
+
+**So the model does not degrade smoothly with context; it falls off a cliff on
+particular content, and the cliffs dominate any average.** At 15.3 nats per
+token that worst span is the model assigning ~2e-7 to the tokens that actually
+occurred — a collapse, not a drift. It is fully deterministic: the engine
+reproduced a 64-chunk pass with a worst relative difference of exactly **0**.
+
+This also retires §3e's "too few chunks" reading of the 8192 problem as
+incomplete. More chunks did tame the rotation disagreement — 1441 % on eight
+chunks, 212 % on sixteen — but the heavy tail is a property of the CONTENT, not
+of the sample size, and no corpus length makes a mean over cliff-prone spans
+into a stable number. **Quote the median span ratio and the distribution, not
+the aggregate.**
+
+### The two controls catch different things, and neither substitutes for the other
+
+Worth stating because this run proved it the hard way. The corrupted build and
+the correct one produced **identical token counts** — 162,278 / 163,302 /
+165,350, deltas exactly 1024 / 2048 / 4096 in both — because the 414 rewritten
+bytes happened not to change how many tokens the corpus makes.
+
+So the error-path probe, which is the control for the filler's LENGTH, passed
+on a corpus that had been silently altered in 414 places. Only the alignment
+control, which is the control for the corpus being the SAME TOKENS shifted by a
+whole chunk, could see it. A run with just one of them is a run with a hole in
+it.
 
 ### What this does and does not settle
 
