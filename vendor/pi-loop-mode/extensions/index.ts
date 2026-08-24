@@ -2402,6 +2402,26 @@ export default function (pi: ExtensionAPI) {
         state.checkErrorStreak = 0;
         state.lastCheckError = "";
         state.rescueActive = false;
+        // DELIBERATELY NO `resetTurnBuffers()` HERE, and the omission has been
+        // re-listed as an open item for five passes because it reads like one.
+        // Two reasons, either of which is enough:
+        //
+        //   There is nothing left to drain. `agent_end` returns at its first
+        //   line when `state.active` is false, which is why `stop`, `end` and
+        //   the idle `finish` must drain for themselves (X4). Every OTHER way
+        //   the loop deactivates — the provider pause, the check pause, the
+        //   operator abort, the iteration cap and both completions — happens
+        //   inside `agent_end` BELOW the drain at the top of it.
+        //
+        //   And draining here would be a defect. This line is also how an
+        //   operator UNDOES a soft stop, and a soft stop is requested mid-turn:
+        //   `/loop finish` on a busy loop only sets the flag below, and the turn
+        //   keeps running. Clearing the buffers would throw away the tool count
+        //   and text of a turn still in flight, and `agent_end` would then read
+        //   a turn that used tools as one that used none — X4's own failure,
+        //   arriving through the fix for X4.
+        //
+        // Both directions are pinned in `tests/deactivation-drain.test.ts`.
         state.softStopRequested = false;
         state.lastNotice = "Resumed by operator.";
         persistState(pi);
