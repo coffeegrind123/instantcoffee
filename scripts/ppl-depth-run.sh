@@ -87,6 +87,7 @@ OUT_SUBDIR="ppl-depth"
 DRY=0
 SKIP_BUILD=0
 REUSE_FILLER=0
+PROBE_CTX=40960
 ANALYSE_ONLY=""
 UNPINNED=0
 BATCH=2048
@@ -99,6 +100,7 @@ while [[ $# -gt 0 ]]; do
     --depths=*) DEPTHS="${1#*=}"; shift ;;
     --rotations) ROTATIONS="${2:-}"; shift 2 || die "--rotations needs a value" ;;
     --rotations=*) ROTATIONS="${1#*=}"; shift ;;
+    --probe-ctx) PROBE_CTX="${2:-}"; shift 2 || die "--probe-ctx needs a value" ;;
     --window-hi) WIN_HI="${2:-}"; shift 2 || die "--window-hi needs a value" ;;
     --window-hi=*) WIN_HI="${1#*=}"; shift ;;
     --out-subdir) OUT_SUBDIR="${2:-}"; shift 2 || die "--out-subdir needs a value" ;;
@@ -409,8 +411,16 @@ run_perplexity() {
 }
 
 # The probe context. Must satisfy 2*PROBE_CTX > (corpus + largest filler), or
-# the "probe" turns into a real scored run of unknown length.
-PROBE_CTX=40960
+# the "probe" turns into a real scored run of unknown length — which is why
+# probe_tokens() refuses when it sees a scoring header instead of the error.
+#
+# It is a flag rather than a constant because the requirement scales with the
+# CORPUS, and the corpus is what you cannot measure until the probe has run.
+# 40960 covers anything up to ~82k tokens, which is every corpus a single
+# captured workstream can produce (limit (1)); a concatenation of two needs
+# more. The KV allocation is q8_0 and this stack serves 98,304 at q8_0, so
+# there is room.
+PROBE_CTX="${PROBE_CTX:-40960}"
 
 # Sets PROBE_COUNT rather than echoing it: run_perplexity prints the command it
 # is about to run, and a command substitution would swallow that into the value.
@@ -425,7 +435,7 @@ probe_tokens() {
   # A probe that SCORED instead of erroring is the dangerous failure: it means
   # PROBE_CTX was too small for the file and a long run just happened silently.
   if [[ -z "$PROBE_COUNT" ]] && grep -q 'calculating perplexity over' "${LOCAL_LOGDIR}/${log}"; then
-    die "probe on ${file} SCORED instead of hitting the error path: PROBE_CTX ${PROBE_CTX} is too small"
+    die "probe on ${file} SCORED instead of hitting the error path: --probe-ctx ${PROBE_CTX} is too small for this corpus (it must exceed half the token count). Raise it and re-run."
   fi
 }
 
