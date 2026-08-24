@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ppl_depth_analyse import (  # noqa: E402
     PassLog, _fmt_arm, _fmt_span_map, alignment_control, asymmetry_bound_pct,
-    chunks_in_window, combine_arm, parse_log, scored_corpus_range, span_map)
+    chunks_in_window, combine_arm, parse_log, partition_pairs,
+    scored_corpus_range, span_map)
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +38,18 @@ def positional_nll(corpus_pos: int, history: int) -> float:
 def history_nll(corpus_pos: int, history: int) -> float:
     """Depends on how much history the token carries. The control's control."""
     return positional_nll(corpus_pos, history) + 0.0004 * history
+
+
+def boundary_nll(corpus_pos: int, history: int) -> float:
+    """Depends on WHERE THE CHUNK STARTED, not on the token or its history.
+
+    A scored token at corpus position `p` carrying `h` tokens of history sits in
+    a chunk that began at corpus position `p - h`. So an NLL written as a
+    function of `p - h` is exactly a chunk-boundary-placement effect and nothing
+    else — which is the alternative reading of the 8192 result, expressed as
+    something the comparison has to be able to detect.
+    """
+    return 1.5 + 2.0 * (((corpus_pos - history) // 2048) % 2)
 
 
 FILLER_NLL = 4.0
@@ -350,6 +363,46 @@ class TestSpanMap(unittest.TestCase):
         seen = {tuple(v["rotations"]) for r in rows for v in r["by_depth"].values()}
         self.assertTrue(any(len(t) == 1 for t in seen),
                         "a cell fed by one rotation is exactly the 8192 case")
+
+
+class TestPartitionPairs(unittest.TestCase):
+    """Two partitions of the same tokens at one depth: content vs boundary."""
+
+    WIN = (8192, 65536)
+    N = 8192
+
+    def _logs(self, nll_fn):
+        return [(self.N, f, parse_log(synth_log(self.N, f, 8, nll_fn),
+                                      f"arm-{self.N}-f{f}.log"))
+                for f in (0, 2048, 4096, 6144)]
+
+    def test_the_partitions_agree_when_nll_is_positional(self):
+        rep = partition_pairs(self._logs(positional_nll), self.N, *self.WIN)
+        self.assertEqual(len(rep["pairs"]), 2)
+        self.assertAlmostEqual(rep["worst_ratio"], 1.0, places=2, msg=str(rep))
+
+    def test_the_partitions_agree_when_nll_depends_on_history(self):
+        """Same depth means the same history distribution, so this must NOT split them."""
+        rep = partition_pairs(self._logs(history_nll), self.N, *self.WIN)
+        self.assertAlmostEqual(rep["worst_ratio"], 1.0, places=2, msg=str(rep))
+
+
+    def test_the_partitions_split_on_a_boundary_placement_effect(self):
+        """The control for the control: an effect this comparison must catch."""
+        rep = partition_pairs(self._logs(boundary_nll), self.N, *self.WIN)
+        self.assertGreater(rep["worst_ratio"], 1.5, str(rep))
+
+    def test_one_pair_is_not_a_comparison(self):
+        logs = [(self.N, f, parse_log(synth_log(self.N, f, 8, positional_nll),
+                                      f"arm-{self.N}-f{f}.log")) for f in (0, 4096)]
+        rep = partition_pairs(logs, self.N, *self.WIN)
+        self.assertEqual(rep["pairs"], [])
+
+    def test_both_pairs_score_comparable_token_counts(self):
+        rep = partition_pairs(self._logs(positional_nll), self.N, *self.WIN)
+        counts = [o["tokens"] for o in rep["pairs"]]
+        self.assertLess(abs(counts[0] - counts[1]) / max(counts), 0.15,
+                        f"the tightened window should leave them close: {counts}")
 
 
 class TestAsymmetryBound(unittest.TestCase):

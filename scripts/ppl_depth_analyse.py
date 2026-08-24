@@ -395,6 +395,79 @@ def span_map(logs: list, grid: int, win_lo: int, win_hi: int) -> list:
     return out
 
 
+def partition_pairs(logs: list, n_ctx: int, win_lo: int, win_hi: int) -> dict:
+    """Complementary rotation pairs at ONE depth, each of which tiles the corpus.
+
+    THE QUESTION THIS ANSWERS. `F` and `F + N/2` score exact complements, so any
+    such pair covers every corpus token once. Two different pairs — {0, N/2} and
+    {N/4, 3N/4} — are therefore two independent partitions of the SAME tokens at
+    the SAME depth, differing only in where the chunk boundaries fall.
+
+    If perplexity is a property of the content, the two partitions must agree.
+    If it is a property of where the boundary fell, they will not. That is the
+    only thing that separates the two readings of the 2026-08-24 8192 result,
+    where one rotation returned 14.77 and its partner 227.67.
+
+    The pairs cannot cover exactly the same range — they are offset by N/4 — so
+    the window is tightened to the intersection of what every pair can tile with
+    whole chunks, and the surviving token count is reported per pair so a
+    residual mismatch is visible rather than assumed away.
+    """
+    by_filler = {f: lg for n, f, lg in logs if n == n_ctx}
+    half = n_ctx // 2
+    pairs = [(f, f + half) for f in sorted(by_filler) if f < half and f + half in by_filler]
+    if len(pairs) < 2:
+        return {"n_ctx": n_ctx, "pairs": [], "note": "fewer than two complementary pairs"}
+
+    def measure(pair, lo_bound, hi_bound):
+        nll = 0.0
+        count = 0
+        lo_seen, hi_seen = None, None
+        for f in pair:
+            lg = by_filler[f]
+            per = lg.per_chunk_nll()
+            for i, v in per.items():
+                lo, hi = scored_corpus_range(n_ctx, f, i - 1)
+                if lo < lo_bound or hi >= hi_bound:
+                    continue
+                nll += v
+                count += lg.scored_per_chunk
+                lo_seen = lo if lo_seen is None else min(lo_seen, lo)
+                hi_seen = hi if hi_seen is None else max(hi_seen, hi)
+        return nll, count, lo_seen, hi_seen
+
+    first = [measure(pr, win_lo, win_hi) for pr in pairs]
+    if any(m[1] == 0 for m in first):
+        return {"n_ctx": n_ctx, "pairs": [], "note": "a pair covered nothing in this window"}
+    lo_bound = max(m[2] for m in first)
+    hi_bound = min(m[3] for m in first) + 1
+
+    out = []
+    for pr in pairs:
+        nll, count, lo_seen, hi_seen = measure(pr, lo_bound, hi_bound)
+        out.append({"rotations": list(pr), "tokens": count,
+                    "ppl": math.exp(nll / count) if count else None,
+                    "covers": [lo_seen, hi_seen]})
+    ppls = [o["ppl"] for o in out if o["ppl"]]
+    return {"n_ctx": n_ctx, "window": [lo_bound, hi_bound], "pairs": out,
+            "worst_ratio": (max(ppls) / min(ppls)) if len(ppls) >= 2 else None}
+
+
+def _fmt_partitions(rep: dict) -> str:
+    if not rep.get("pairs"):
+        return f"  n_ctx {rep['n_ctx']}: {rep.get('note', 'nothing to compare')}"
+    lines = [f"  n_ctx {rep['n_ctx']}  over corpus [{rep['window'][0]}, {rep['window'][1]})"]
+    for o in rep["pairs"]:
+        lines.append(f"      rotations {o['rotations']}  PPL {o['ppl']:>10.4f}  "
+                     f"{o['tokens']} tokens  covers {o['covers'][0]}..{o['covers'][1]}")
+    r = rep["worst_ratio"]
+    lines.append(f"      widest disagreement between partitions: {r:.3f}x")
+    lines.append("      Two partitions of the SAME tokens at the SAME depth. They")
+    lines.append("      differ only in where the chunk boundaries fall, so agreement")
+    lines.append("      means the effect is content and disagreement means it is not.")
+    return "\n".join(lines)
+
+
 def _fmt_span_map(rows: list) -> str:
     straddled = [r for r in rows if "straddled" in r]
     rows = [r for r in rows if "span" in r]
@@ -461,6 +534,10 @@ def main() -> int:
                     help="also print a per-span map on a grid of this many "
                          "corpus tokens (e.g. 4096). The aggregate cannot show a "
                          "rotation that disagrees with its own partner; this can.")
+    ap.add_argument("--partitions", action="store_true",
+                    help="compare complementary rotation pairs at one depth — two "
+                         "independent partitions of the same tokens, differing "
+                         "only in where the chunk boundaries fall")
     ap.add_argument("--json", default=None)
     args = ap.parse_args()
 
@@ -524,6 +601,15 @@ def main() -> int:
         report["span_map"] = rows
         print(f"==> per-span map, grid {args.spans}")
         print("\n".join("    " + line for line in _fmt_span_map(rows).split("\n")))
+
+    if args.partitions:
+        flat = [(n, f, lg) for n, v in arms.items() for f, lg in v]
+        report["partitions"] = []
+        print("==> complementary partitions")
+        for n in sorted(arms):
+            rep = partition_pairs(flat, n, win_lo, win_hi)
+            report["partitions"].append(rep)
+            print(_fmt_partitions(rep))
 
     if args.control:
         a, b, off = args.control.split(",")
