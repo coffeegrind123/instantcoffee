@@ -224,14 +224,27 @@ itself just as hard.
    also captures the engine's own memory breakdown per arm, so a VRAM difference
    between two loads of the SAME config becomes visible instead of inferred.
 
-2. **The second corpus.** `pi-150turn` degrades in the same direction under
-   §3d's confounded ladder and has never been through the rotation instrument.
-   `--reuse-filler` exists precisely so this costs one run rather than two:
+2. **A LONGER corpus, which is what 8192 actually needs** — and the cheapest one
+   is already on the tape. `deep-s26b5bb` is 70,053 tokens under perplexity's own
+   tokenizer and `pi-150turn` is ~88k, so **concatenating them gives ~158k** and a
+   window of 131,072 — which is **16 chunks at 8192**, 32 at 4096 and 64 at 2048,
+   twice what this session had at every depth. The rotation instrument does not
+   care that the document is two sessions joined: it fixes the token set, and the
+   set is identical across depths either way. That is the run that would put a
+   number on 8192, and it is the one worth doing first.
+
+   Replicating on `pi-150turn` ALONE is the weaker version — 10 chunks at 8192
+   against 8 — but it is a second corpus, which the property does not yet have:
 
    ```
       ./scripts/ppl-depth-run.sh --corpus /captures/corpus/pi-150turn.txt \
         --unpinned --reuse-filler
    ```
+
+   `--reuse-filler` exists so either costs one run rather than two: it
+   concatenates the already-calibrated prefixes without contacting llama, and
+   stage 1's error-path probe still verifies every arm file's exact length under
+   perplexity's own tokenizer, which is the stronger check anyway.
 
    `--unpinned` is correct here and not a shortcut: that corpus declares
    `system_prompt` and `tool_schemas` gaps and a -5,979 token delta, which
