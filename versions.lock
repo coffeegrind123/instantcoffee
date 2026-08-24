@@ -562,8 +562,8 @@ depth_ppl           = MEASURED 2026-08-24 ON A MATCHED TOKEN SET, which is what
                         n_ctx    PPL      tokens    history      rotation spread
                          2048    6.3521   57,288   1025..2047          9.0 %
                          4096   12.2366   57,316   2049..4095         22.1 %
-                         8192   57.9907   57,330   4097..8191       1441 %  <-- NOT
-                                                              A NUMBER, see below
+                         8192   57.9907   57,330   4097..8191       1441 %  <-- 8
+                                                              chunks only; see below
                       READ IT AS: 2048 -> 4096 is x1.93 in perplexity for x2 in
                       history on a token set that is 99.93 % identical. THE DEPTH
                       EFFECT IS REAL AND NOT A PARTITION ARTEFACT.
@@ -589,32 +589,50 @@ depth_ppl           = MEASURED 2026-08-24 ON A MATCHED TOKEN SET, which is what
                       four decimals; and every one of its eight per-chunk running
                       values is byte-identical across two separate runs.
                       (4) All passes report batch_size=2048, n_seq=1.
-                      AND 8192 HAS NO NUMBER, for a reason that belongs to the
-                      corpus rather than the instrument. Four rotations there
-                      (F = 0, 2048, 4096, 6144 — so {0,4096} and {2048,6144} are
-                      two INDEPENDENT PARTITIONS of the same tokens) give arm
-                      figures 14.77 / 36.58 / 227.67 / 48.98, and per-chunk
-                      perplexity spans 2.54 to 1065.10 over six or seven chunks
-                      per rotation. The two partitions disagree by a factor that
-                      depends on the window and REVERSES DIRECTION between the
-                      mean and the median (46.78 vs 41.85 aggregate; 35.66 vs
-                      59.93 median) — the signature of too few draws from a heavy
-                      tail, not of a resolved effect. So neither "history hurts
-                      predictable text" nor "the chunk boundary fell badly" is
-                      separable here.
-                      IT IS NOT THE INSTRUMENT: the whole-chunk alignment control
-                      was run again AT 8192 and passed at 1.36e-5 relative, 0.5x
-                      the printing floor — tighter than the 2048 control — and
-                      two rotations were re-run from scratch and reproduced their
-                      eight per-chunk values BYTE FOR BYTE.
-                      IT IS THE CORPUS. Limit (1) caps a captured workstream at
-                      the server's own window, so 70,053 tokens give 34 chunks at
-                      2048, 17 at 4096 and 8 at 8192, and the rotation spread
-                      tracks that exactly: 9 % / 22 % / 1441 %. A number at 8192
-                      needs a LONGER CORPUS, not a better instrument.
-                      What survives: all four rotations exceed the 4096 arm's
-                      12.24, so the trend continues past 4096 with its size
-                      undetermined.
+                      AND 8192 IS ANSWERED, ON A LONGER CORPUS, BUT NOT WITH A
+                      SINGLE NUMBER. deep-s26b5bb alone gives only 8 chunks at
+                      that depth and its four rotations spanned 14.77 to 227.67,
+                      which is no arm figure at all. Concatenated with
+                      pi-150turn — 161,254 tokens, window [8192, 131072),
+                      64/32/16 chunks per rotation, ALIGNMENT CONTROL PASSING at
+                      0.8x its printing floor over 64 pairs:
+                        n_ctx    PPL       tokens     rotation spread
+                         2048   13.3188   122,760          8.6 %
+                         4096   28.5385   122,820        110.4 %
+                         8192   86.1443   122,850        212.3 %
+                      x2.14 from 2048 to 4096 REPLICATES the x1.93 above on a
+                      different, larger corpus with its own passing control.
+                      THE DEGRADATION IS A CLIFF, NOT A SLOPE, and this is the
+                      part to quote. Across thirty 4096-token spans the
+                      8192/2048 ratio has a MEDIAN of 1.74 and an upper quartile
+                      of 18.9: sixteen spans move less than 2x, NINE MOVE MORE
+                      THAN 10x, and one moves 149,597x (28.83 -> 4,313,018).
+                      Dropping that single span takes the 8192 aggregate from
+                      86.14 to 59.32 while 2048 barely moves. The model does not
+                      degrade smoothly with context — it falls off a cliff on
+                      particular content, and the cliffs dominate any average.
+                      QUOTE THE MEDIAN SPAN RATIO AND THE DISTRIBUTION, NOT THE
+                      AGGREGATE. A mean over cliff-prone spans is not made stable
+                      by a longer corpus; more chunks tamed the rotation
+                      disagreement (1441 % on eight chunks, 212 % on sixteen) and
+                      did not tame the tail, because the tail is content.
+                      A BUG THIS RUN FOUND, AND THE CONTROL THAT FOUND IT.
+                      ppl_depth_build.py read and wrote corpora in Python TEXT
+                      MODE, whose universal-newline translation turns "\r\n" into
+                      "\n" and a bare "\r" into "\n" and does not undo it on
+                      write. pi-150turn.txt holds 414 carriage returns;
+                      deep-s26b5bb.txt holds none, which is why every earlier run
+                      was unaffected. The first long-corpus attempt therefore
+                      scored a corpus altered in 414 places and its alignment
+                      control failed at 871.8x the floor, on exactly the four
+                      chunks containing changed bytes. Corpora are now read and
+                      written as bytes, pinned by test_ppl_depth_build.py.
+                      THE TWO CONTROLS ARE NOT INTERCHANGEABLE, and this proved
+                      it: the corrupted and the correct build produced IDENTICAL
+                      token counts, so the error-path probe — the control for the
+                      filler's LENGTH — passed on the altered corpus. Only the
+                      alignment control, which asks whether the corpus is the
+                      SAME TOKENS shifted by a whole chunk, could see it.
                       MEMORY, MEASURED RATHER THAN DERIVED: at n_ctx 8192 the
                       preflight predicts 3880 MiB resident and the container's
                       cgroup showed 4198 MiB anon (+8.2 %) plus 2737 MiB of
