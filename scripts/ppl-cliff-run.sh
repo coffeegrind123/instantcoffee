@@ -1,0 +1,490 @@
+#!/usr/bin/env bash
+#
+# What makes a span a cliff: perplexity's own token array, and per-token NLL.
+#
+#   ./scripts/ppl-cliff-run.sh --corpus /captures/corpus/deep-plus-pi.txt \
+#       --from-run .ppl-depth-logs/20260824T142049Z \
+#       --chunk 8192:81920:1 --chunk 2048:84992:3 --chunk 2048:86016:2
+#
+#   ./scripts/ppl-cliff-run.sh ... --dry-run        print every command, stop nothing
+#   ./scripts/ppl-cliff-run.sh --analyse-only DIR   re-read a finished run
+#
+# THE QUESTION. kv-cache-fidelity-measured.md §3e: the depth effect is a CLIFF,
+# not a slope — median span ratio 1.74, one span at 149,597x — and what makes a
+# span a cliff was left open with one refuted hypothesis (repetitiveness; zlib
+# says 0.345 against 0.364, indistinguishable and slightly the wrong way).
+#
+# TWO THINGS AN AGGREGATE CANNOT SAY, and this script gets both.
+#
+#   1. WHICH TOKENS. A chunk's perplexity is one number over 4095 scored
+#      tokens. `--kl-divergence-base` writes a log-prob record per scored token,
+#      so the per-token NLL behind that number is readable — and so is the token
+#      the model wanted instead (scripts/ppl_tokens.py, LogitsBody.top1).
+#
+#   2. WHERE THEY ARE IN THE FILE. Span boundaries are token offsets, and §3e's
+#      token->byte mapping was llama-server's /tokenize SCALED by the ratio of
+#      two totals, drifting up to ~2,000 tokens. The scaling was never needed:
+#      the two totals differ by ONE flag (`parse_special`), and with it set the
+#      way perplexity sets it the counts agree exactly. See ppl_tokens.py.
+#      This script proves that agreement element by element rather than by
+#      length, because §3e itself records a corpus altered in 414 places that
+#      produced identical token COUNTS.
+#
+# ISOLATION IS EXACT, AND THAT IS WHY THIS IS CHEAP. perplexity.cpp:547 clears
+# the memory before every batch of chunks:
+#       llama_memory_clear(llama_get_memory(ctx), true)
+# so a chunk's result depends on nothing but its own n_ctx tokens at positions
+# 0..n_ctx-1. Chunk 10 of a 16-chunk arm is therefore reproducible as chunk 0 of
+# a file that starts at that chunk's first token — one model load and one chunk
+# of decode instead of the whole arm, and 1.24 GiB of log-probs instead of 20.
+#
+# AND THE CONTROL IS FREE. If the isolation is sound, the isolated chunk's PPL
+# must equal the source arm's per-chunk PPL, which `--from-run` reads out of the
+# arm logs rather than being typed in. A mismatch means the slice is not the
+# chunk and every per-token number behind it is about some other text.
+#
+# --chunk N:A:K  isolate K chunks of n_ctx N starting at corpus token A. The
+#                staged file holds corpus tokens [A, A + max(K,2)*N) — max(K,2)
+#                because perplexity refuses a file shorter than 2*n_ctx
+#                (perplexity.cpp:480) and returns without scoring anything.
+#
+# COSTS. One model load per pass (2m51s measured on this box with
+# --load-mode none) plus seconds of decode. The log-probs are
+# n_chunk * (n_ctx - 1 - n_ctx/2) * nv * 2 bytes on the tape: 1.24 GiB for one
+# 8192 chunk of this model, 311 MiB for one at 2048.
+#
+# --load-mode none IS NOT OPTIONAL, same as kld-run.sh and for the same reason:
+# demand-paging the GGUF through the 9p bind mount ran at 6.4 MB/s and is
+# indistinguishable from a hang.
+set -uo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_cmd docker
+
+CORPUS=""
+FROM_RUN=""
+CHUNK_SPECS=()
+OUT_SUBDIR="ppl-cliff"
+DRY=0
+SKIP_TOKENS=0
+TOKEN_CTX=256
+ANALYSE_ONLY=""
+KEEP_LOGITS=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --corpus) CORPUS="${2:-}"; shift 2 || die "--corpus needs a value" ;;
+    --from-run) FROM_RUN="${2:-}"; shift 2 || die "--from-run needs a value" ;;
+    --chunk) CHUNK_SPECS+=("${2:-}"); shift 2 || die "--chunk needs N:A:K" ;;
+    --out-subdir) OUT_SUBDIR="${2:-}"; shift 2 || die "--out-subdir needs a value" ;;
+    --token-ctx) TOKEN_CTX="${2:-}"; shift 2 || die "--token-ctx needs a value" ;;
+    --skip-tokens) SKIP_TOKENS=1; shift ;;
+    --keep-logits) KEEP_LOGITS=1; shift ;;
+    --analyse-only) ANALYSE_ONLY="${2:-}"; shift 2 || die "--analyse-only needs a directory" ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown argument '$1'" ;;
+  esac
+done
+
+LLAMA_TAG_V="$(env_get LLAMA_TAG)";      : "${LLAMA_TAG_V:=server-cuda-b10573}"
+GGUF="$(env_get GGUF_FILE)";             [[ -n "$GGUF" ]] || die "GGUF_FILE is not set in .env"
+MODELS="$(env_get MODELS_DIR)";          [[ -n "$MODELS" ]] || die "MODELS_DIR is not set in .env"
+CAPS="$(env_get CAPTURES_DIR)";          [[ -n "$CAPS" ]] || die "CAPTURES_DIR is not set in .env"
+LLAMA_PORT_V="$(env_get LLAMA_PORT)";    : "${LLAMA_PORT_V:=8080}"
+NGL="$(env_get NGL)";                    : "${NGL:=999}"
+IMAGE="ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG_V}"
+SIDECAR_IMAGE="qwen38-forge/proxy:$(env_get FORGE_VERSION)"
+LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
+# The tokenizer is reached over the compose network by its alias rather than
+# over a published port: ppl_depth_build.py already does exactly this, and a
+# published port is a property of docker-compose.yml that a sibling container
+# has no reason to depend on.
+LLAMA_URL="${LLAMA_URL:-http://llama:${LLAMA_PORT_V}}"
+OUTDIR="/captures/${OUT_SUBDIR}"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+LOCAL_LOGDIR="${REPO_ROOT}/.ppl-cliff-logs/${STAMP}"
+RUNNER_CT="ppl-cliff-pass-$$"
+
+if [[ -n "$ANALYSE_ONLY" ]]; then
+  [[ -d "$ANALYSE_ONLY" ]] || die "no such log directory: $ANALYSE_ONLY"
+else
+  [[ -n "$CORPUS" ]] || die "--corpus is required (a /captures/... path)"
+  case "$CORPUS" in
+    /captures/*) ;;
+    *) die "--corpus must be a /captures/... path: the runner mounts \$CAPTURES_DIR there" ;;
+  esac
+  (( ${#CHUNK_SPECS[@]} )) || die "at least one --chunk N:A:K is required"
+fi
+CORPUS_BASE="$(basename "${CORPUS:-none}" .txt)"
+
+# spec -> the four numbers, validated. A malformed spec that reaches the tape
+# builder becomes a file of the wrong length and a pass that scores the wrong
+# text, which is exactly the failure this whole script exists to rule out.
+parse_spec() {
+  local spec="$1"
+  IFS=':' read -r SPEC_N SPEC_A SPEC_K <<<"$spec"
+  [[ "$SPEC_N" =~ ^[0-9]+$ && "$SPEC_A" =~ ^[0-9]+$ && "$SPEC_K" =~ ^[0-9]+$ ]] \
+    || die "--chunk '$spec' is not N:A:K with three integers"
+  (( SPEC_N > 0 && SPEC_K > 0 )) || die "--chunk '$spec': N and K must be positive"
+  (( SPEC_N % 2 == 0 )) || die "--chunk '$spec': n_ctx $SPEC_N is odd; n_ctx/2 has to be exact"
+  SPEC_SPAN=$(( SPEC_K > 2 ? SPEC_K * SPEC_N : 2 * SPEC_N ))
+  SPEC_NAME="c${SPEC_N}-a${SPEC_A}-k${SPEC_K}"
+}
+
+# The compose network, read rather than assumed: the project name is derived
+# from the directory and a rename would silently break a hardcoded string.
+llama_network() {
+  docker inspect "$LLAMA_CT" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}' 2>/dev/null
+}
+
+# ---------------------------------------------------------------------------
+preflight() {
+  echo "==> preflight"
+  docker image inspect "$IMAGE" >/dev/null 2>&1 \
+    || die "image $IMAGE is not present locally; pull it before stopping the server"
+  docker image inspect "$SIDECAR_IMAGE" >/dev/null 2>&1 \
+    || die "image $SIDECAR_IMAGE is not present locally (capture.sh builds it)"
+  docker run --rm -v "${MODELS}:/models:ro" alpine test -f "/models/${GGUF}" \
+    || die "/models/${GGUF} is not readable through the MODELS_DIR mount"
+  docker run --rm -v "${CAPS}:/captures" alpine test -f "$CORPUS" \
+    || die "corpus $CORPUS is not readable through the CAPTURES_DIR mount"
+
+  local nvocab; nvocab="$(gguf_n_vocab "$MODELS" "$GGUF" "$SIDECAR_IMAGE")"
+  [[ "$nvocab" =~ ^[0-9]+$ ]] || die "could not read n_vocab from the GGUF: ${nvocab}"
+  echo "    n_vocab       ${nvocab} (read from the GGUF, not assumed)"
+
+  # ---- host memory ---------------------------------------------------------
+  #
+  # A --kl-divergence-base pass holds TWO big host buffers, not the one
+  # ppl-depth-run.sh guards, and the second is the one that is easy to forget:
+  #
+  #   perplexity.cpp:512  if (num_batches > 1) logits.reserve(n_ctx * n_vocab)
+  #                       resident part is (n_ctx/2) * n_vocab * 4 bytes
+  #   perplexity.cpp:526  log_probs.resize(n_ctx * nv), nv = 2*((n_vocab+1)/2)+4
+  #                       n_ctx * nv * 2 bytes, ALLOCATED IN FULL
+  #
+  # At n_ctx 8192 on this model that is 2.49 GiB + 2.49 GiB. The 10 % margin is
+  # the one ppl-depth-run.sh calibrated against a measured arm (+8.2 % over the
+  # arithmetic), not a round number.
+  local avail_mb; avail_mb="$(docker run --rm alpine free -m | awk '/^Mem:/{print $4}')"
+  echo "    host memory   ${avail_mb} MiB FREE (swap deliberately not counted)"
+  local nv=$(( 2 * ((nvocab + 1) / 2) + 4 ))
+  local blocked=0 spec need_mb logits_mb probs_mb bytes
+  local total_bytes=0
+  for spec in "${CHUNK_SPECS[@]}"; do
+    parse_spec "$spec"
+    logits_mb=0
+    (( SPEC_N > 2048 )) && logits_mb=$(( (SPEC_N / 2) * nvocab * 4 / 1048576 ))
+    probs_mb=$(( SPEC_N * nv * 2 / 1048576 ))
+    need_mb=$(( (logits_mb + probs_mb) * 110 / 100 ))
+    bytes=$(( SPEC_K * (SPEC_N - 1 - SPEC_N / 2) * nv * 2 ))
+    total_bytes=$(( total_bytes + bytes ))
+    if (( need_mb > avail_mb )); then
+      printf '    %-22s REFUSED: ~%s MiB resident against %s MiB free\n' "$SPEC_NAME" "$need_mb" "$avail_mb"
+      blocked=1
+    else
+      printf '    %-22s ok: ~%s MiB resident (%s logits + %s log_probs, +10%%), %s MiB on the tape\n' \
+        "$SPEC_NAME" "$need_mb" "$logits_mb" "$probs_mb" "$(( bytes / 1048576 ))"
+    fi
+  done
+  (( blocked )) && { (( DRY )) || return 1; }
+
+  local free; free="$(docker run --rm -v "${CAPS}:/captures" alpine df -Pm /captures | awk 'NR==2{print $4}')"
+  echo "    free on tape  ${free} MiB against $(( total_bytes / 1048576 )) MiB of log-probs"
+  if (( free < total_bytes / 1048576 + 1024 )); then
+    echo "    REFUSING: the log-probs do not fit with a GiB to spare."
+    (( DRY )) || return 1
+  fi
+
+  local recent
+  recent="$(docker logs --since 10m "$LLAMA_CT" 2>&1 | grep -cE 'slot launch_slot_|prompt processing' || true)"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$LLAMA_CT"; then
+    echo "    llama         NOT RUNNING — stage 1 needs its tokenizer. Start it first."
+    (( DRY )) || return 1
+    recent=0
+  fi
+  echo "    llama traffic ${recent} task lines in the last 10 minutes"
+  if (( recent > 0 )); then
+    if (( DRY )); then
+      echo "    (a dry run stops nothing, so this is a note rather than a refusal)"
+    else
+      echo "    REFUSING: something is using the server; stopping it would kill that"
+      echo "    session mid-turn."
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Stage a script into the captures mount so a container can run it. Same reason
+# as ppl-depth-run.sh: the repo is a 9p bind of a Windows directory and
+# `-v <repo>/scripts:/scripts` mounts a DIFFERENT, empty view.
+# ---------------------------------------------------------------------------
+SCRIPT_STAGE="${OUTDIR}/_scripts"
+stage_script() {
+  local src="$1" name; name="$(basename "$1")"
+  docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
+    "mkdir -p '${SCRIPT_STAGE}' && cat > '${SCRIPT_STAGE}/${name}'" < "$src" \
+    || die "could not stage ${name} into ${SCRIPT_STAGE}"
+}
+
+# ---------------------------------------------------------------------------
+# Stage 1: the map, and the slice files, both proved while llama is still up.
+# ---------------------------------------------------------------------------
+build_inputs() {
+  echo
+  echo "==> stage 1: token->byte map and slice files (llama is still up; it owns the tokenizer)"
+  stage_script "${REPO_ROOT}/scripts/ppl_tokens.py"
+  local specs; specs="$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)"
+  local net; net="$(llama_network)"
+  [[ -n "$net" ]] || die "could not read ${LLAMA_CT}'s network; is it running?"
+  # --user 0:0 because the sidecar image runs unprivileged and /captures is a
+  # 9p bind of a Windows directory: a write from the image's own uid is EACCES,
+  # and it surfaces as a traceback three quarters of the way through the map.
+  docker run --rm --network "$net" --user 0:0 \
+    -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" -c "
+import json, os, sys
+sys.path.insert(0, '${SCRIPT_STAGE}')
+import ppl_tokens as P
+
+outdir = '${OUTDIR}'
+os.makedirs(outdir, exist_ok=True)
+raw = P.strip_trailing_newline(open('${CORPUS}', 'rb').read())
+pieces = P.tokenize_with_pieces(raw.decode('utf-8'), '${LLAMA_URL}')
+ids = [i for i, _ in pieces]
+offs = P.byte_offsets([p for _, p in pieces], raw)
+print(f'    map           {len(ids)} tokens, {offs[-1]} bytes, reconstruction EXACT')
+mp = os.path.join(outdir, '${CORPUS_BASE}.tokmap.json')
+json.dump({'corpus': '${CORPUS}', 'ids': ids, 'byte_offsets': offs}, open(mp, 'w'))
+print(f'    wrote         {mp}')
+
+bad = 0
+for spec in '${specs}'.split(','):
+    n, a, k = (int(x) for x in spec.split(':'))
+    span = k * n if k > 2 else 2 * n
+    if a + span > len(ids):
+        print(f'    {spec:<20} REFUSED: [{a}, {a+span}) runs past the corpus ({len(ids)} tokens)')
+        bad = 1
+        continue
+    sl = raw[offs[a]:offs[a + span]]
+    # A BPE cut is not automatically a token boundary in the re-tokenized text:
+    # the slice has no left context, so its first merge can differ. Checked
+    # rather than assumed, because the failure is a file that looks right.
+    got = [i for i, _ in P.tokenize_with_pieces(sl.decode('utf-8'), '${LLAMA_URL}')]
+    want = ids[a:a + span]
+    if got != want:
+        d = next((i for i in range(min(len(got), len(want))) if got[i] != want[i]), None)
+        print(f'    {spec:<20} MISMATCH: {len(got)} tokens against {len(want)}, first difference at {d}')
+        bad = 1
+        continue
+    p = os.path.join(outdir, '${CORPUS_BASE}-c%d-a%d-k%d.txt' % (n, a, k))
+    open(p, 'wb').write(sl)
+    print(f'    {spec:<20} {len(sl)} bytes, {len(want)} tokens, re-tokenizes EXACT -> {os.path.basename(p)}')
+sys.exit(1 if bad else 0)
+" || die "stage 1 failed; nothing was stopped"
+}
+
+# ---------------------------------------------------------------------------
+# One llama-perplexity invocation.
+# ---------------------------------------------------------------------------
+pass() {
+  local file="$1" nctx="$2" chunks="$3" logits="$4" log="$5"
+  local cmd=(
+    docker run --rm --gpus all --name "$RUNNER_CT"
+      -v "${MODELS}:/models:ro" -v "${CAPS}:/captures"
+      --entrypoint /app/llama "$IMAGE" perplexity
+      -m "/models/${GGUF}" -f "$file"
+      -c "$nctx" -b 2048 -ub 512
+      -ngl "$NGL" -fa on -ctk f16 -ctv f16 -kvu -np 1
+      --load-mode none
+      --chunks "$chunks"
+      --kl-divergence-base "$logits"
+  )
+  echo
+  echo "--- ${log}   n_ctx=${nctx} chunks=${chunks}"
+  printf '   '; printf ' %q' "${cmd[@]}"; echo
+  (( DRY )) && return 0
+  docker rm -f "$RUNNER_CT" >/dev/null 2>&1
+  "${cmd[@]}" > "${LOCAL_LOGDIR}/${log}" 2>&1
+  local rc=$?
+  echo "    exit ${rc}"
+  grep -oE '\[[0-9]+\][0-9.]+' "${LOCAL_LOGDIR}/${log}" | sed 's/^/    | /'
+  return $rc
+}
+
+# The token-array pass. n_ctx is small so n_chunk*n_ctx covers nearly the whole
+# corpus, and the run is KILLED the moment the array is on disk: the write at
+# perplexity.cpp:525 happens before the first llama_decode, so nothing is
+# computed and nothing is lost. It costs one model load.
+token_pass() {
+  local logits="${OUTDIR}/${CORPUS_BASE}.tokens.logits"
+  local log="tokens.log"
+  local cmd=(
+    docker run --rm --gpus all --name "$RUNNER_CT"
+      -v "${MODELS}:/models:ro" -v "${CAPS}:/captures"
+      --entrypoint /app/llama "$IMAGE" perplexity
+      -m "/models/${GGUF}" -f "$CORPUS"
+      -c "$TOKEN_CTX" -b 2048 -ub 512
+      -ngl "$NGL" -fa on -ctk q8_0 -ctv q8_0 -kvu -np 1
+      --load-mode none
+      --kl-divergence-base "$logits"
+  )
+  echo
+  echo "--- ${log}   n_ctx=${TOKEN_CTX}, killed as soon as the token array lands"
+  printf '   '; printf ' %q' "${cmd[@]}"; echo
+  (( DRY )) && return 0
+  docker rm -f "$RUNNER_CT" >/dev/null 2>&1
+  docker run --rm -v "${CAPS}:/captures" alpine rm -f "$logits" >/dev/null 2>&1
+  "${cmd[@]}" > "${LOCAL_LOGDIR}/${log}" 2>&1 &
+  local runner_pid=$!
+  # Wait for the array, then kill. The waiter reads the header for itself rather
+  # than being told how big the file will be: n_chunk is min(n_chunks, corpus /
+  # n_ctx) and computing it here would duplicate perplexity's own arithmetic.
+  docker run --rm --user 0:0 -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" -c "
+import os, struct, sys, time
+path = '$logits'
+deadline = time.time() + 1800
+head = None
+while time.time() < deadline:
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        time.sleep(2); continue
+    if head is None and size >= 20:
+        with open(path, 'rb') as f:
+            h = f.read(20)
+        if h[:8] != b'_logits_':
+            print('BAD HEADER ' + h[:20].hex()); sys.exit(1)
+        head = struct.unpack('<iii', h[8:20])
+        print('    header        n_ctx=%d n_vocab=%d n_chunk=%d -> %d tokens' % (head[0], head[1], head[2], head[2] * head[0]))
+    if head is not None and size >= 20 + head[2] * head[0] * 4:
+        print('    array         %d bytes on disk; killing the pass' % size)
+        sys.exit(0)
+    time.sleep(2)
+print('TIMED OUT waiting for the token array'); sys.exit(1)
+"
+  local waiter_rc=$?
+  docker kill "$RUNNER_CT" >/dev/null 2>&1
+  wait "$runner_pid" 2>/dev/null
+  if (( waiter_rc )); then
+    echo "    the token pass did not produce an array; see ${LOCAL_LOGDIR}/${log}"
+    tail -n 20 "${LOCAL_LOGDIR}/${log}" | sed 's/^/    | /'
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+main_run() {
+  mkdir -p "$LOCAL_LOGDIR"
+  echo "cliff probe   ${STAMP}"
+  echo "  image       ${IMAGE}"
+  echo "  corpus      ${CORPUS}"
+  echo "  logs        ${LOCAL_LOGDIR}"
+  echo "  chunks      ${CHUNK_SPECS[*]}"
+  echo
+
+  preflight || die "preflight failed; nothing was stopped"
+  (( DRY )) || build_inputs
+
+  if (( DRY )); then
+    echo
+    echo "==> dry run: the passes that WOULD run"
+    (( SKIP_TOKENS )) || echo "    (token pass at n_ctx ${TOKEN_CTX}, killed after the header)"
+    local spec
+    for spec in "${CHUNK_SPECS[@]}"; do
+      parse_spec "$spec"
+      pass "${OUTDIR}/${CORPUS_BASE}-${SPEC_NAME}.txt" "$SPEC_N" "$SPEC_K" \
+        "${OUTDIR}/${CORPUS_BASE}-${SPEC_NAME}.logits" "${SPEC_NAME}.log"
+    done
+    echo
+    echo "dry run only; ${LLAMA_CT} was not touched."
+    rmdir "$LOCAL_LOGDIR" 2>/dev/null || true
+    exit 0
+  fi
+
+  echo
+  echo "==> stopping ${LLAMA_CT} (it holds the card; a cold reload follows this run)"
+  docker stop "$LLAMA_CT" >/dev/null || die "could not stop ${LLAMA_CT}"
+  restore() {
+    docker kill "$RUNNER_CT" >/dev/null 2>&1
+    echo
+    echo "==> restarting ${LLAMA_CT}"
+    docker start "$LLAMA_CT" >/dev/null && echo "    started; the model is now reading off disk" \
+      || echo "    FAILED to start ${LLAMA_CT} — start it by hand with ./scripts/up.sh"
+  }
+  trap restore EXIT INT TERM
+
+  local failed=0
+  if (( SKIP_TOKENS )); then
+    echo
+    echo "==> --skip-tokens: the corpus token array is not being re-read this run"
+  else
+    token_pass || failed=1
+  fi
+
+  local spec
+  for spec in "${CHUNK_SPECS[@]}"; do
+    parse_spec "$spec"
+    pass "${OUTDIR}/${CORPUS_BASE}-${SPEC_NAME}.txt" "$SPEC_N" "$SPEC_K" \
+      "${OUTDIR}/${CORPUS_BASE}-${SPEC_NAME}.logits" "${SPEC_NAME}.log" || failed=1
+  done
+
+  analyse "$LOCAL_LOGDIR"
+  return $failed
+}
+
+# The analyser runs in the sidecar rather than on this side, because the logits
+# files are on the tape and only a container can see them.
+analyse() {
+  local dir="$1"
+  stage_script "${REPO_ROOT}/scripts/ppl_tokens.py"
+  stage_script "${REPO_ROOT}/scripts/ppl_cliff_analyse.py"
+  stage_script "${REPO_ROOT}/scripts/ppl_depth_analyse.py"
+  local armdir="/captures/${OUT_SUBDIR}/_arms"
+  if [[ -n "$FROM_RUN" ]]; then
+    [[ -d "$FROM_RUN" ]] || die "--from-run ${FROM_RUN} is not a directory"
+    docker run --rm -v "${CAPS}:/captures" alpine sh -c "rm -rf '${armdir}' && mkdir -p '${armdir}'"
+    local f
+    for f in "$FROM_RUN"/arm-*.log; do
+      [[ -e "$f" ]] || continue
+      docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
+        "cat > '${armdir}/$(basename "$f")'" < "$f"
+    done
+  fi
+  # The isolated run's own logs have to cross the same mount: the analyser is in
+  # a container and the repo's .ppl-cliff-logs is not visible to it. Without
+  # them the control has only one side and prints nothing.
+  local isodir="/captures/${OUT_SUBDIR}/_iso"
+  docker run --rm -v "${CAPS}:/captures" alpine sh -c "rm -rf '${isodir}' && mkdir -p '${isodir}'"
+  local g
+  for g in "$dir"/c*.log; do
+    [[ -e "$g" ]] || continue
+    docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
+      "cat > '${isodir}/$(basename "$g")'" < "$g"
+  done
+  echo
+  echo "==> analysis"
+  docker run --rm --user 0:0 -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" \
+    "${SCRIPT_STAGE}/ppl_cliff_analyse.py" \
+      --outdir "$OUTDIR" --corpus "$CORPUS" --corpus-base "$CORPUS_BASE" \
+      --specs "$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)" \
+      --logdir "$isodir" \
+      $( [[ -n "$FROM_RUN" ]] && echo --arms "$armdir" ) \
+      --json "${OUTDIR}/result.json" | tee "${dir}/analysis.txt"
+  docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
+    "cat '${OUTDIR}/result.json'" > "${dir}/result.json" 2>/dev/null || true
+  if (( ! KEEP_LOGITS )); then
+    echo
+    echo "==> removing the log-probs (they are GiB; --keep-logits keeps them)"
+    docker run --rm -v "${CAPS}:/captures" alpine sh -c \
+      "rm -f ${OUTDIR}/${CORPUS_BASE}-*.logits ${OUTDIR}/${CORPUS_BASE}.tokens.logits"
+  fi
+}
+
+if [[ -n "$ANALYSE_ONLY" ]]; then
+  analyse "$ANALYSE_ONLY"
+  exit 0
+fi
+main_run

@@ -929,6 +929,247 @@ it.
 - **It matters for the server**, which runs a 98,304-token window — four times
   the deepest arm here, on the arm of the curve that is getting worse.
 
+## 3f. What makes a span a cliff: the model's distribution leaves the text
+
+`scripts/ppl-cliff-run.sh`, `scripts/ppl_tokens.py`, `scripts/ppl_cliff_analyse.py`.
+
+### The blocker in §3e was never real: it was one flag
+
+§3e closed with "exact token offsets" as the thing standing between it and an
+answer, because the token->byte map was llama-server's `/tokenize` **scaled** by
+the ratio of two totals (157,626 against 161,254) and drifted up to ~2,000
+tokens across the file. The two totals are not two tokenizers. They are one
+tokenizer and one flag:
+
+```
+   perplexity.cpp:473   common_tokenize(ctx, params.prompt, true)
+                        -> add_special = true, parse_special = FALSE
+                           (the default 4th argument of common_tokenize)
+
+   llama-server /tokenize   parse_special defaults to TRUE
+```
+
+Measured on `deep-plus-pi.txt`, 571,603 bytes:
+
+```
+   /tokenize  defaults                       157,626 tokens
+   /tokenize  parse_special = true           157,626
+   /tokenize  parse_special = FALSE          161,254   <- perplexity's count
+   perplexity's own probe                    161,254
+```
+
+`add_special` is a no-op here: Qwen3 sets `add_bos = false`, and true and false
+both return 157,626.
+
+**A matching count is not a matching array, and this document already knows
+why** — the corpus altered in 414 places produced identical token counts
+(§3e). So the arrays were compared element by element.
+`--kl-divergence-base` writes perplexity's token array to disk **before the
+first `llama_decode`** (perplexity.cpp:525), so a pass at `-c 256` killed the
+moment the file reaches `20 + n_chunk*n_ctx*4` bytes costs one model load and no
+inference at all:
+
+```
+   n_ctx 256, n_vocab 248320, n_chunk 629 -> 161,024 tokens written
+   compared 161,024 against the /tokenize map, mismatches 0  ->  IDENTICAL
+```
+
+The 230 tokens not compared are the corpus's final partial chunk, which
+perplexity drops. The scaling is retired; every offset below is exact.
+
+### The instrument: any chunk is reproducible on its own, and it is controlled
+
+`perplexity.cpp:547` clears the memory before every batch of chunks, so a
+chunk's result depends on nothing but its own `n_ctx` tokens at positions
+`0..n_ctx-1`. Chunk 10 of a 16-chunk arm is therefore chunk 0 of a file that
+starts at that chunk's first token — one model load and one chunk of decode
+instead of a whole arm, and the arm's own per-chunk number is the control.
+
+All six chunks isolated on 2026-08-24 reproduced their arm:
+
+```
+   n_ctx  scored corpus      isolated PPL      arm PPL          rel diff
+    2048  86017..87039     506,623.5305    506,630.8692        1.45e-05
+    2048  88065..89087           1.0986          1.0985        1.03e-04
+    2048  90113..91135           1.8897          1.8901        1.95e-04
+    2048  87041..88063           1.1283          1.1281        1.94e-04
+    2048  89089..90111           1.1005          1.1005        5.66e-06
+    8192  86017..90111   4,312,987.9359  4,313,018.0902        6.99e-06
+```
+
+The arm prints a four-decimal RUNNING estimate, so its per-chunk value is a
+difference of two rounded logs; those relative differences are that rounding,
+not a discrepancy. **The isolation is exact**, and the staged slice's own token
+array matched the corpus map with zero mismatches in every case.
+
+### The answer: the same text is trivial at 2048 and catastrophic at 8192
+
+The 149,597x span is `deep-plus-pi` corpus 86016..90111 — a `git checkout`
+progress bar, `Updating files:  34% (215/631)<CR>` repeated for thousands of
+tokens. Per-token log-probs over that text, at two depths:
+
+```
+   chunk                        mean NLL   at their own ceiling   NLL deciles (0..100%)
+   2048  87041..88063             0.121     0 of 1023            0,0,0,0,0,0,0,0.0001,0.0004,0.033,7.03
+   2048  89089..90111             0.096     0 of 1023            0,0,0,0,0,0,0,0,0,0.022,3.04
+   2048  88065..89087             0.094     0 of 1023            0,0,0,0,0,0,0,0,0.0002,0.028,4.63
+   2048  86017..87039            11.982   271 of 1023  (26.5 %)
+   8192  86017..90111            13.285  1797 of 4095  (43.9 %)  0,6.01,10.63,12.76,14.35,15.66,16.01,16.09,16.27,16.60,17.78
+```
+
+**The healthy chunks predict this text essentially perfectly.** Eight of eleven
+deciles are exactly 0.0 — the model knows the next line before it starts — and
+the worst tokens are the counter digits, which are genuinely unpredictable:
+`'7' -> '8'` at 4.63 nats, `'9' -> '1'` at 4.34. That is the correct behaviour
+and the whole chunk costs 0.1 nats/token.
+
+**The failing chunks are not confidently wrong about the next progress line.
+The distribution has left the text.**
+
+```
+   corpus pos    NLL   actual        what the model wanted
+       86452  17.667  'Updating'  -> ' api'          (1.667)
+       86165  17.666  ' files'    -> ' subset'       (1.666)
+       89888  17.782  ' '         -> ' decision'     (1.904)
+       88834  17.680  '7'         -> <id 87939>      (1.681)
+       86937  17.595  '\r'        -> <id 1046>       (1.595)
+```
+
+The top-1 tokens are unrelated to progress bars, to the surrounding text, and in
+several cases do not occur anywhere in the corpus. Each carries about 1.7 nats
+(p ~ 0.19) while the token that is actually there carries 17.7 (p ~ 2e-8). The
+8192 chunk's MEDIAN token is at 15.66 nats. This is not a hard span; it is a
+collapse, and it covers most of the chunk rather than a handful of positions.
+
+Note the units: `ln(248320) = 12.42` nats is what a uniform distribution over
+this vocabulary would cost. The collapsed chunk is three nats WORSE than
+knowing nothing at all.
+
+### What distinguishes a collapsing chunk from a healthy one, on identical text
+
+The two 2048 chunks at 86017..87039 and 87041..88063 are 1023 tokens of the same
+progress bar, adjacent, differing only in where the chunk boundary fell:
+
+- **86017..87039 collapses** (mean 11.98). Its in-chunk history, corpus
+  84992..86016, is ~290 tokens of prose about a Maven artifact followed by ~730
+  tokens of progress bar: **the chunk contains the transition into the
+  repetitive run.**
+- **87041..88063 does not** (mean 0.121). Its history, corpus 86016..87040, is
+  1023 tokens of nothing but progress bar: **the chunk starts already inside
+  the run.**
+
+The 8192 chunk that collapses, 86017..90111, also contains that transition — and
+it then stays collapsed across all 4095 scored tokens, including the ones the
+2048 arm predicts at 0.096 nats. **Once entered, the state persists to the end of
+the chunk.**
+
+That is a mechanism, and it makes the depth effect a consequence rather than a
+fact of its own: a longer chunk is likelier to contain such a transition, and
+once collapsed it poisons four times as many scored tokens. It is a hypothesis
+with one instance behind it, not a result — see "still open" below.
+
+### Two corrections to §3e, both from data that was already on disk
+
+**"149,597x" is a ratio of exponentials and should not be quoted.** Perplexity
+is `exp(mean NLL)`, so a span ratio is `exp(mean8 - mean2)` and is exponentially
+sensitive to a difference in the additive quantity. In NLL, over the same tokens:
+
+```
+                          PPL ratio     NLL ratio    delta nats/token
+   the 149,597x span      149,597.4          4.54              11.92
+   median of 30 spans           1.74          1.18
+   maximum of 30 spans    149,597.4          5.94
+   corpus-wide             6.4679       1.7223               1.867
+      total NLL   2048: 317,848 over 122,760 tokens (mean 2.5892)
+                  8192: 547,423 over 122,850 tokens (mean 4.4560)
+```
+
+The corpus-wide depth cost is **1.72x the total NLL**, not 6.47x, and the span
+distribution has a median of 1.18 and a maximum of 5.94 — skewed, but nothing
+like five orders of magnitude. **The standing rule becomes: quote the median
+span ratio IN NLL, and give the delta in nats.**
+
+**The span map at grid 4096 is rotation-confounded at n_ctx 8192.** The rotation
+design's guarantee is that the UNION of the two rotations covers every token
+once — true of the ARM aggregate, and false of a per-span map at grid 4096,
+where an 8192-deep chunk scores 4095 tokens and each cell is therefore fed by
+**exactly one** rotation. Splitting the thirty cells by which rotation fed them:
+
+```
+   8192 rotation F=4096   n=15   median delta-NLL  2.597
+   8192 rotation F=0      n=15   median delta-NLL  0.365
+```
+
+Nine of the ten highest-delta spans come from F=4096 (hypergeometric p ~ 0.003
+one-sided). The tenth is the collapsed progress-bar span, which is F=0. The
+alternation is visible as a period-2 component in the lag-1 autocorrelation, and
+the rotation-BALANCED instruments do not have it:
+
+```
+   nll/tok @2048  (both rotations per cell)   lag-1 autocorr  +0.085
+   nll/tok @4096  (both rotations per cell)                   +0.013
+   nll/tok @8192  (ONE rotation per cell)                     -0.278
+   delta-NLL 8192-2048                                        -0.338
+```
+
+Document difficulty is positively autocorrelated between adjacent blocks; an
+alternating sign is not something content does. The same asymmetry is present in
+the arm aggregates, same direction at every depth, growing with the filler:
+
+```
+   n_ctx   F=0 arm PPL   F=N/2 arm PPL   spread
+    2048        12.78          13.88      8.6 %
+    4096        19.67          41.40    110.4 %
+    8192        48.75         152.23    212.3 %
+```
+
+**This does not overturn §3e's headline** — the depth effect survives as a total
+NLL ratio of 1.72 corpus-wide, and both rotations contribute to that. It does
+mean the per-span map at 8192 was reporting a rotation as if it were a property
+of the span, and that "nine spans move more than 10x" was nine spans from one
+rotation.
+
+### Repetitiveness is refuted a second time, now on exact offsets
+
+§3e's zlib test is repeated on exact span boundaries and with four more
+features, splitting the thirty spans at delta-NLL >= 2:
+
+```
+                       delta >= 2 (n=10)   delta < 2 (n=20)
+   bytes per token             3.684              3.607
+   zlib ratio                  0.361              0.340
+   carriage returns            0.000 %            0.000 %
+   digits                      1.08  %            1.61  %
+   distinct-token ratio        0.244              0.214
+```
+
+Indistinguishable on all five. The one span that IS extreme on every one of them
+(86016: 1.69 bytes/token, zlib 0.145, 3.1 % CR, 28 % digits, and only 0.6 %
+distinct tokens) is the collapsed one — but it is one span, and the other nine
+high-delta spans are ordinary prose and code that no content feature separates
+from the twenty low ones. **What predicted a "cliff" better than any content
+feature was which rotation the cell came from.**
+
+### What this settles and what it opens
+
+- **Settled: the token map.** Exact, verified against perplexity's own array,
+  and cheap to redo for any corpus — one killed pass.
+- **Settled: chunk isolation.** Any chunk at any depth costs one model load, and
+  the arm's number is the control. Six for six.
+- **Settled: the collapse is real and is not a scoring artefact.** The isolated
+  8192 chunk reproduces 4,312,987.94 against the arm's 4,313,018.09, and the
+  per-token records show the failure is spread over most of the chunk.
+- **Open: whether "the chunk contains a transition into a degenerate run"
+  generalises.** It is one span, measured at two depths. The test is cheap now:
+  isolate the F=4096 cliff chunks and their F=0 neighbours — `--chunk
+  8192:4096:3 --chunk 8192:8192:3` gives three cliff and three healthy chunks,
+  interleaved over the same region, in two passes.
+- **Open: why the nonzero-filler rotation is worse at every depth.** Both
+  rotations score in-chunk positions `N/2+1 .. N-1` with the same distribution
+  of true history, so there is no structural difference to point at, and yet the
+  sign is the same three times and the magnitude grows with the filler. Until
+  that is explained, an 8192 per-span number should carry its rotation.
+
 ## 4. Reproducing any of it
 
 ```
@@ -939,6 +1180,30 @@ it.
 One base pass writes the logits; the null control and the q8_0 arm both read
 that same file. `--keep-logits` keeps it (17.3 GB at 4096 for this model) so it
 can be sized and inspected. `--dry-run` prints every command and stops nothing.
+
+
+The §3f instrument, which needs llama UP for stage 1 (it owns the tokenizer) and
+stops it for the passes:
+
+```
+   ./scripts/ppl-cliff-run.sh --corpus /captures/corpus/deep-plus-pi.txt \
+       --from-run .ppl-depth-logs/20260824T142049Z \
+       --chunk 2048:84992:3 --chunk 2048:86016:2 --chunk 8192:81920:1
+```
+
+`--chunk N:A:K` isolates K chunks of n_ctx N starting at corpus token A;
+`--from-run` supplies the arm logs the isolated numbers are checked against, so
+the control is read rather than typed. `--dry-run` prints every command and
+stops nothing. The log-probs are deleted after the analysis unless
+`--keep-logits` is given: 1.9 GiB for one 8192 chunk of this model, because
+`n_vocab` is 248,320 and the record is `2*((n_vocab+1)/2)+4` uint16 per scored
+token.
+
+**On 2026-08-24 that run's EXIT trap did not fire** — the script's last line of
+output is the log-prob cleanup, no restart line was printed, and `qwen38-llama`
+sat stopped for 24 minutes until it was started by hand. Whatever killed the
+shell did not deliver EXIT/INT/TERM. **Check `docker ps` after any run of this
+script rather than trusting the trap.**
 
 `llama-perplexity` loads its own copy of the weights, so `qwen38-llama` must be
 stopped for the run; the script does that itself and restarts it on any exit

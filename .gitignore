@@ -35,3 +35,4 @@ results/
 .kld-logs/
 .ppl-stride-logs/
 .ppl-depth-logs/
+.ppl-cliff-logs/
