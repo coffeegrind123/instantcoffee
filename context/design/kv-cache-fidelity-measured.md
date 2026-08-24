@@ -1236,6 +1236,29 @@ feature was which rotation the cell came from.**
   indexing. Why that tiling lands on higher-rate content, at every depth, with
   the same sign and a magnitude that grows with the filler, is unexplained.
 
+### What a depth ladder does NOT measure, and it matters for reading all of §3d-§3f
+
+Every number in §3d, §3e and §3f is about **window size**, not about position in
+a conversation. perplexity clears the memory before every chunk
+(`perplexity.cpp:547`), so a token scored "at n_ctx 8192" sits at in-chunk
+position 4097-8191 with an empty cache behind position 0. The server does not
+work like that: one conversation occupies positions 0..98303 continuously, and a
+token at position 90,000 has 90,000 tokens of real attention history.
+
+So "the misfire rate rises with n_ctx" is a statement about how the model does
+when its whole world is an 8192-token window, and it does NOT license "the
+server misfires more at position 90,000". The one direct evidence about the
+server at real depth points the other way: `scripts/ctx_needle.py` planted a
+distinct nonce at each end of a 90,055-token document and the server retrieved
+both, which is what promoted CTX_SIZE to 98,304 in the first place.
+
+What DOES transfer is anything the two configurations share. The rope is
+identical — the GGUF reports `n_ctx_train = 262144`, `rope scaling = linear`,
+`freq_scale_train = 1`, so no YaRN is engaged at either 8192 or 98,304 and there
+is no scaling difference to account for. The KV cache type is NOT shared unless
+the passes are told to match it, which is what `--kv` is for: the server runs
+`-ctk q8_0 -ctv q8_0` and this instrument defaults to f16.
+
 ### Three defects in this instrument, all found by running it
 
 Recorded because two of the three fail silently, which is the class this
@@ -1263,6 +1286,91 @@ document keeps paying for.
   the card is free, and the analysis needs no GPU (it can also then reach a
   server to detokenize ids the corpus lacks). The trap stays for the abnormal
   path.
+
+## 3g. q8_0 KV at depth: measured, and it costs under 1 %
+
+**Why this needed doing.** §3a priced q8_0 against f16 by KL divergence at
+**n_ctx 4096** and found it acceptable. Everything since — §3d, §3e, §3f — says
+4096 is the shallow end of the only axis that matters. Meanwhile §2's retraction
+removed q8_0's throughput justification entirely, leaving 1.7 GiB of VRAM as the
+sole surviving benefit. And §3f's failure signature, the model putting ~0.2
+probability on an unrelated token, is exactly what a degraded cache produces.
+
+**And every §3f number was measured at f16**, while the server runs
+`-ctk q8_0 -ctv q8_0`. So the instrument was describing a configuration this
+stack does not serve. `--kv` fixes that; `--no-logits` makes it cheap.
+
+Seven chunks, spanning misfire rates from 5.5 % to 82 % and perplexities from
+6.2 to 4.3 million:
+
+```
+   scored corpus   misfire %        f16 PPL       q8_0 PPL     ratio   d nats/token
+    8193..12287       31.23      1,065.0920     1,097.1268   1.0301x       +0.02963
+   16385..20479       23.81        275.4538       267.3355   0.9705x       -0.02992
+   24577..28671       29.52        792.4512       823.1713   1.0388x       +0.03803
+   12289..16383       11.77         18.2526        17.7177   0.9707x       -0.02974
+   20481..24575        5.54          6.2353         6.2914   1.0090x       +0.00896
+   28673..32767        7.16         10.9237        10.8455   0.9928x       -0.00718
+   86017..90111       82.27  4,312,987.9359 4,559,069.1634   1.0571x       +0.05549
+
+   n = 7    mean +0.00932 nats/token    four worse, three better
+            largest |delta| 0.055, against a between-chunk spread of
+            1.75 to 13.29 nats/token
+            pooled effect on perplexity: 1.0094x
+```
+
+**Under 1 %, and the sign is not consistent.** Three of seven chunks are BETTER
+under q8_0. There is no relationship with the misfire rate either: the two
+largest positive deltas sit at 29.5 % and 82.3 %, but a -0.030 sits at 23.8 %
+and another at 11.8 %.
+
+**This is not "no difference detected".** The instrument reproduces to seven
+significant figures across processes — the same isolated chunk returned
+4,312,987.9359 in two different runs — so 0.03 nats is about a thousand times
+its noise floor. These are real, measured differences. They are simply tiny and
+bidirectional, which is the shape of a rounding perturbation rather than a
+systematic loss of information.
+
+**Two conclusions.**
+
+- **q8_0 KV stays, and now for a tested reason.** Its throughput claim is
+  retracted and its fidelity is measured at the depth where this model actually
+  misbehaves, not only at 4096. The 1.7 GiB of VRAM is free.
+- **The cache is not what drives the misfire rate.** Whatever makes the model
+  put 0.2 probability on an unrelated token 31 % of the time in one 8192-token
+  window and 5.5 % in another, KV quantisation is not it. §3f's open question
+  survives intact and is now one candidate narrower.
+
+**The comparison is labelled in the tool, not just here.** `--from-run` points
+at f16 arm logs, so a q8_0 run's arm comparison is the EXPERIMENT rather than a
+control; `ppl_cliff_analyse.py` prints it as `q8_0 vs f16: +0.05548 nats/token —
+a MEASUREMENT, not a control` instead of reporting a failed control, because
+that is precisely the misreading a future session would otherwise make.
+
+### What this run cost, and what the previous ones cost needlessly
+
+`--no-logits` exists because of what the earlier runs did to the machine.
+`--kl-divergence-base` writes one log-prob record per scored token, and a record
+is `2*((n_vocab+1)/2)+4` uint16 — on this model's 248,320-token vocabulary that
+is **496,648 bytes per token**, or 2.0 GiB per 8192 chunk, across the 9p bind of
+a Windows drive. §3d's D1 already established that omitting it is byte-identical
+in the printed perplexity and ~10x faster, so a comparison that reads only chunk
+numbers should never pay for it.
+
+```
+   the f16 runs (three of them)    ~11 model loads, ~280 GB read
+                                   ~25 GB of log-probs written
+   this run                        2 model loads, ~35 GB read, ZERO written
+```
+
+Three things made the earlier runs worse than they had to be, all avoidable and
+all mine: dropping the page cache four times, so every subsequent 17.5 GB model
+read came off the physical disk again; restarting llama while a pass was
+loading, putting two of those reads in contention; and leaving an orphaned pass
+container holding 17.5 GB of VRAM for 25 minutes after its `docker run` client
+died. **None of this is visible in `/proc/diskstats`** — the 9p mount is not a
+block device in the container, it is served host-side, which is exactly why it
+surfaces as lag on the Windows machine rather than as load in here.
 
 ## 4. Reproducing any of it
 

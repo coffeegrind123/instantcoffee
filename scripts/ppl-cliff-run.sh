@@ -64,6 +64,18 @@ CORPUS=""
 FROM_RUN=""
 CHUNK_SPECS=()
 OUT_SUBDIR="ppl-cliff"
+# The KV type the PASSES use. Default f16 because a fidelity question wants the
+# unquantised reference; set it to compare. The server runs q8_0/q8_0, so an
+# f16-only run measures a configuration this stack does not serve.
+KV_TYPE="f16"
+# --kl-divergence-base is what makes a pass expensive: one log-prob record is
+# 2*((n_vocab+1)/2)+4 uint16 per scored token, which on this model's 248,320
+# vocabulary is 496,648 bytes A TOKEN — 2.0 GiB per 8192 chunk, written across
+# the 9p bind of a Windows drive. §3d's D1 established that omitting it is
+# byte-identical in the printed perplexity and ~10x faster. So a comparison that
+# only needs the CHUNK number (arm control, KV-type deltas) should not pay for
+# per-token records it will not read.
+NO_LOGITS=0
 DRY=0
 SKIP_TOKENS=0
 TOKEN_CTX=256
@@ -76,6 +88,8 @@ while [[ $# -gt 0 ]]; do
     --from-run) FROM_RUN="${2:-}"; shift 2 || die "--from-run needs a value" ;;
     --chunk) CHUNK_SPECS+=("${2:-}"); shift 2 || die "--chunk needs N:A:K" ;;
     --out-subdir) OUT_SUBDIR="${2:-}"; shift 2 || die "--out-subdir needs a value" ;;
+    --kv) KV_TYPE="${2:-}"; shift 2 || die "--kv needs a value (f16, q8_0, ...)" ;;
+    --no-logits) NO_LOGITS=1; shift ;;
     --token-ctx) TOKEN_CTX="${2:-}"; shift 2 || die "--token-ctx needs a value" ;;
     --skip-tokens) SKIP_TOKENS=1; shift ;;
     --keep-logits) KEEP_LOGITS=1; shift ;;
@@ -101,6 +115,7 @@ LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
 # has no reason to depend on.
 LLAMA_URL="${LLAMA_URL:-http://llama:${LLAMA_PORT_V}}"
 OUTDIR="/captures/${OUT_SUBDIR}"
+[[ "$KV_TYPE" == "f16" ]] || OUTDIR="/captures/${OUT_SUBDIR}-${KV_TYPE}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOCAL_LOGDIR="${REPO_ROOT}/.ppl-cliff-logs/${STAMP}"
 RUNNER_CT="ppl-cliff-pass-$$"
@@ -176,8 +191,9 @@ preflight() {
     logits_mb=0
     (( SPEC_N > 2048 )) && logits_mb=$(( (SPEC_N / 2) * nvocab * 4 / 1048576 ))
     probs_mb=$(( SPEC_N * nv * 2 / 1048576 ))
-    need_mb=$(( (logits_mb + probs_mb) * 110 / 100 ))
     bytes=$(( SPEC_K * (SPEC_N - 1 - SPEC_N / 2) * nv * 2 ))
+    if (( NO_LOGITS )); then probs_mb=0; bytes=0; fi
+    need_mb=$(( (logits_mb + probs_mb) * 110 / 100 ))
     total_bytes=$(( total_bytes + bytes ))
     if (( need_mb > avail_mb )); then
       printf '    %-22s REFUSED: ~%s MiB resident against %s MiB free\n' "$SPEC_NAME" "$need_mb" "$avail_mb"
@@ -262,13 +278,13 @@ pass() {
       --entrypoint /app/llama "$IMAGE" perplexity
       -m "/models/${GGUF}" -f "$file"
       -c "$nctx" -b 2048 -ub 512
-      -ngl "$NGL" -fa on -ctk f16 -ctv f16 -kvu -np 1
+      -ngl "$NGL" -fa on -ctk "$KV_TYPE" -ctv "$KV_TYPE" -kvu -np 1
       --load-mode none
       --chunks "$chunks"
-      --kl-divergence-base "$logits"
   )
+  (( NO_LOGITS )) || cmd+=(--kl-divergence-base "$logits")
   echo
-  echo "--- ${log}   n_ctx=${nctx} chunks=${chunks}"
+  echo "--- ${log}   n_ctx=${nctx} chunks=${chunks} kv=${KV_TYPE}"
   printf '   '; printf ' %q' "${cmd[@]}"; echo
   (( DRY )) && return 0
   docker rm -f "$RUNNER_CT" >/dev/null 2>&1
@@ -349,6 +365,8 @@ main_run() {
   echo "  corpus      ${CORPUS}"
   echo "  logs        ${LOCAL_LOGDIR}"
   echo "  chunks      ${CHUNK_SPECS[*]}"
+  echo "  KV type     ${KV_TYPE} (the server runs $(env_get CACHE_TYPE_K)/$(env_get CACHE_TYPE_V))"
+  (( NO_LOGITS )) && echo "  log-probs   NOT written (--no-logits): chunk numbers only, no per-token data"
   echo
 
   preflight || die "preflight failed; nothing was stopped"
@@ -451,7 +469,7 @@ analyse() {
     "${SCRIPT_STAGE}/ppl_cliff_analyse.py" \
       --outdir "$OUTDIR" --corpus "$CORPUS" --corpus-base "$CORPUS_BASE" \
       --specs "$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)" \
-      --logdir "$isodir" \
+      --logdir "$isodir" --kv "$KV_TYPE" \
       $( [[ -n "$FROM_RUN" ]] && echo --arms "$armdir" ) \
       --json "${OUTDIR}/result.json" | tee "${dir}/analysis.txt"
   docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \

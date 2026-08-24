@@ -1,4 +1,4 @@
-# Handoff — 2026-08-24e (the cliff answered: a misfire rate; §3e corrected twice; the forge image REBUILT)
+# Handoff — 2026-08-24e (the cliff answered: a misfire rate; q8_0 KV priced at depth; §3e corrected twice; the forge image REBUILT)
 
 ## Read this first
 
@@ -68,6 +68,62 @@ which is what a chunk's own first half is.
 tokens cost 0.121 nats with 1023 tokens of homogeneous history and ~13 nats when
 the history spans a prose/progress boundary. That is a hypothesis with one
 instance, not a law.
+
+---
+
+## 1b. q8_0 KV at depth: under 1 %, and it is NOT the misfire mechanism
+
+`kv-cache-fidelity-measured.md` §3g. The one live setting whose justification
+was weakest: adopted on throughput, throughput retracted last session, fidelity
+measured only at n_ctx 4096 — the shallow end of the only axis that matters.
+And every §3f number was taken at f16 while the server runs q8_0, so the
+instrument was describing a configuration this stack does not serve.
+
+Seven chunks spanning misfire rates 5.5 % to 82 % and perplexities 6.2 to 4.3
+million:
+
+       n = 7    mean +0.00932 nats/token    four worse, three better
+                largest |delta| 0.055 against a 1.75-13.29 nats/token spread
+                pooled effect on perplexity  1.0094x
+
+Three of seven are BETTER under q8_0, and there is no relationship with the
+misfire rate. It is not "no difference detected" — the instrument reproduces to
+seven significant figures, so 0.03 nats is ~1000x its floor. The differences are
+real, tiny and bidirectional: a rounding perturbation, not a loss of
+information.
+
+**q8_0 stays, now for a tested reason, and the 1.7 GiB is free. The cache is not
+what drives the misfire rate**, so §3f's open question survives one candidate
+narrower.
+
+`--kv` and `--no-logits` are new flags on `ppl-cliff-run.sh`. A q8_0 run's arm
+comparison is the EXPERIMENT rather than a control, and the analyser now says so
+in those words rather than printing a failed control.
+
+---
+
+## 1c. This instrument can lag the WINDOWS machine, and it did
+
+`--kl-divergence-base` writes 496,648 bytes PER SCORED TOKEN on this model's
+248,320 vocabulary — 2.0 GiB per 8192 chunk, across the 9p bind of a Windows
+drive. The three f16 runs did ~11 model loads (~280 GB read) and ~25 GB of
+writes; this one did 2 loads, ~35 GB, and zero writes.
+
+**None of it shows in `/proc/diskstats`** — the 9p mount is not a block device
+in the container, it is served host-side, which is why it surfaces as lag on
+Windows rather than load in here. Load average inside the container is a bad
+proxy: the box has 16 cores, and the CPU during the complaint was a `cc1plus`
+build, an `eslint` run and a node test suite in OTHER sessions.
+
+Three avoidable mistakes, all mine: dropping the page cache four times so every
+17.5 GB model read came off the disk again; restarting llama while a pass was
+loading, putting two of those reads in contention; and leaving an orphaned pass
+container holding 17.5 GB of VRAM for 25 minutes after its `docker run` client
+died with the script.
+
+**Rules: use `--no-logits` unless per-token data will actually be read. Batch
+chunks into one pass. Do not drop caches. Do not touch llama while a pass holds
+the card. Check `docker ps` after every run.**
 
 ---
 

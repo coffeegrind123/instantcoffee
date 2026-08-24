@@ -163,7 +163,14 @@ def analyse_spec(outdir: str, corpus_base: str, spec: str, mp: dict, pieces: Pie
     out = {"spec": spec, "n_ctx": n_ctx, "corpus_start": a, "chunks": k,
            "logits": logits}
     if not os.path.exists(logits):
-        out["error"] = f"missing {logits}"
+        # --no-logits is a legitimate run, not a broken one: the chunk numbers
+        # still come from the pass's own running estimate and the arm control
+        # still works. Say which it is rather than reporting a missing file.
+        out["logprobs"] = "absent (--no-logits, or the pass did not get that far)"
+        out["by_chunk"] = [{"chunk": j,
+                            "scored_corpus": [a + j * n_ctx + n_ctx // 2 + 1,
+                                              a + j * n_ctx + n_ctx - 1]}
+                           for j in range(k)]
         return out
 
     body = P.LogitsBody(logits)
@@ -272,6 +279,11 @@ def main():
     ap.add_argument("--logdir", help="the isolated run's own logs, for the PPL control")
     ap.add_argument("--url", default=os.environ.get("LLAMA_URL"),
                     help="a llama-server, used only to detokenize ids the corpus lacks")
+    ap.add_argument("--kv", default="f16",
+                    help="the KV type these passes used. When it is not the "
+                         "arms' own type the arm comparison stops being a "
+                         "control and becomes the measurement, and is labelled "
+                         "as such instead of PASS/FAIL.")
     ap.add_argument("--worst", type=int, default=8)
     ap.add_argument("--json", help="write the full report here")
     args = ap.parse_args()
@@ -316,13 +328,26 @@ def main():
         if args.logdir:
             iso = iso_chunk_ppls(args.logdir, spec)
             for rec in res.get("by_chunk", []):
+                if "arm" not in rec and arms:
+                    lo, hi = rec["scored_corpus"]
+                    m = [r for r in arms
+                         if r["scored"][0] == lo and r["scored"][1] == hi]
+                    if m:
+                        rec["arm"] = min(m, key=lambda r: abs(r["n_ctx"] - res["n_ctx"]))
                 if rec["chunk"] in iso:
                     rec["iso_ppl_from_log"] = iso[rec["chunk"]]
                     if rec.get("arm"):
                         armppl = rec["arm"]["ppl"]
                         rel = abs(iso[rec["chunk"]] - armppl) / armppl if armppl else None
                         rec["control_rel_diff"] = rel
-                        rec["control"] = "PASS" if (rel is not None and rel <= 1e-3) else "FAIL"
+                        if args.kv != "f16":
+                            # The arms were f16. Comparing a q8_0 pass against
+                            # them is the EXPERIMENT, and calling it a failed
+                            # control would invite exactly the wrong reading.
+                            rec["kv_arm"] = args.kv
+                            rec["kv_delta_nats"] = math.log(iso[rec["chunk"]]) - math.log(armppl)
+                        else:
+                            rec["control"] = "PASS" if (rel is not None and rel <= 1e-3) else "FAIL"
         report["specs"].append(res)
         print_spec(res, pieces)
 
@@ -341,8 +366,12 @@ def print_spec(res: dict, pieces: Pieces):
     if "error" in res:
         print(f"    ERROR: {res['error']}")
         return
-    sm = res["slice_matches_corpus"]
-    print(f"    slice vs map  compared {sm['covered']}, mismatches {sm['mismatches']}  ->  {sm['verdict']}")
+    if "logprobs" in res:
+        print(f"    log-probs     {res['logprobs']}")
+    else:
+        sm = res["slice_matches_corpus"]
+        print(f"    slice vs map  compared {sm['covered']}, mismatches "
+              f"{sm['mismatches']}  ->  {sm['verdict']}")
     for rec in res["by_chunk"]:
         lo, hi = rec["scored_corpus"]
         print(f"    chunk {rec['chunk']}  scores corpus {lo}..{hi}")
@@ -350,12 +379,21 @@ def print_spec(res: dict, pieces: Pieces):
             line = f"      isolated PPL {rec['iso_ppl_from_log']:.4f}"
             if rec.get("arm"):
                 line += (f"   arm {rec['arm']['log']} chunk {rec['arm']['chunk0']} "
-                         f"PPL {rec['arm']['ppl']:.4f}   {rec.get('control', '?')}"
-                         f" (rel {rec.get('control_rel_diff', float('nan')):.2e})")
+                         f"PPL {rec['arm']['ppl']:.4f}")
+                if "kv_delta_nats" in rec:
+                    line += (f"   {rec['kv_arm']} vs f16: "
+                             f"{rec['kv_delta_nats']:+.5f} nats/token "
+                             f"({rec['iso_ppl_from_log'] / rec['arm']['ppl']:.4f}x) "
+                             f"— a MEASUREMENT, not a control")
+                else:
+                    line += (f"   {rec.get('control', '?')}"
+                             f" (rel {rec.get('control_rel_diff', float('nan')):.2e})")
             print(line)
         elif rec.get("arm"):
             print(f"      arm {rec['arm']['log']} chunk {rec['arm']['chunk0']} "
                   f"PPL {rec['arm']['ppl']:.4f}")
+        if "mean_nll_from_logprobs" not in rec:
+            continue
         ceil = rec["ceiling_hit"]
         where = ("none at their ceiling" if not ceil else
                  f"at ceilings spanning {ceil[0]:.2f}..{ceil[2]:.2f} nats "
