@@ -1,0 +1,89 @@
+{
+  "label": "kvaccept-64k-f16",
+  "settings": "CTX_SIZE=65536,CACHE_TYPE_K=f16,CACHE_TYPE_V=f16",
+  "loaded": true,
+  "server_n_ctx": "65536",
+  "vram_used_mib": "23014",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "1085",
+  "bench": "prefill",
+  "measured_utc": "2026-08-24T09:05:29Z",
+  "pins": {
+    "llama_tag": "server-cuda-b10573",
+    "llama_digest": "sha256:f74f5805191a8030bff26e2a7890d737fc2b5d0931220c953d25e1b7d7613ef5",
+    "model_repo": "unsloth/Qwen3.8-27B-GGUF",
+    "gguf_file": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+    "gguf_size": "17559178144",
+    "gguf_mtime": "1787404836"
+  },
+  "result": {
+    "model": "qwen3.8-27b",
+    "rows": [
+      {
+        "requested": 32000,
+        "status": 200,
+        "wall_s": 21.35,
+        "prompt_n": 32029,
+        "prompt_tps": 2061.711003205311,
+        "predicted_n": 256,
+        "predicted_tps": 45.219925779028486,
+        "cache_n": 0,
+        "draft_n": 426,
+        "draft_accepted": 167,
+        "draft_acceptance": 0.392
+      },
+      {
+        "requested": 32000,
+        "status": 200,
+        "wall_s": 19.21,
+        "prompt_n": 32029,
+        "prompt_tps": 2119.64320056395,
+        "predicted_n": 256,
+        "predicted_tps": 64.1183761002902,
+        "cache_n": 0,
+        "draft_n": 345,
+        "draft_accepted": 183,
+        "draft_acceptance": 0.53
+      },
+      {
+        "requested": 32000,
+        "status": 200,
+        "wall_s": 19.33,
+        "prompt_n": 32029,
+        "prompt_tps": 2137.199977766554,
+        "predicted_n": 256,
+        "predicted_tps": 60.38219800198859,
+        "cache_n": 0,
+        "draft_n": 274,
+        "draft_accepted": 181,
+        "draft_acceptance": 0.661
+      },
+      {
+        "requested": 32000,
+        "status": 200,
+        "wall_s": 20.33,
+        "prompt_n": 32029,
+        "prompt_tps": 2101.263185296918,
+        "predicted_n": 256,
+        "predicted_tps": 51.390640817107155,
+        "cache_n": 0,
+        "draft_n": 395,
+        "draft_accepted": 165,
+        "draft_acceptance": 0.418
+      },
+      {
+        "requested": 32000,
+        "status": 200,
+        "wall_s": 19.57,
+        "prompt_n": 32029,
+        "prompt_tps": 2126.7435292986497,
+        "predicted_n": 256,
+        "predicted_tps": 58.16964092222833,
+        "cache_n": 0,
+        "draft_n": 295,
+        "draft_accepted": 171,
+        "draft_acceptance": 0.58
+      }
+    ]
+  }
+}

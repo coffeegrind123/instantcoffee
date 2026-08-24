@@ -189,17 +189,97 @@ Three things keep this from being an alarm:
   alike. Details and limits in `versions.lock:literal_fidelity`. This does not
   make q8_0 KV free — it says the exposure is not manifesting on the failure
   mode the article named, at the depths this stack runs at.
+
+  **The hybrid fact makes this result stronger, not weaker.** Verbatim recall
+  from depth is the task a fixed-size recurrent state is worst at: attention can
+  address an exact token anywhere in its window, a compressed state cannot. On
+  this architecture 48 of 64 layers are carrying the document in exactly such a
+  state, and 224 literals still came back exact at up to 90k. Whatever the SSM
+  layers are losing at depth — and §3d of `kv-cache-fidelity-measured.md`
+  suspects they are losing something — it is not literal copy fidelity.
 - **The alternative may not exist on this box.** f16 KV at 96K is +3,264 MiB
   against a measured in-use floor of 1,500.8 MiB (§5a of
   `vram-floor-and-the-shared-desktop.md`). It does not fit, and it is not close.
   So the real question is never "q8_0 or f16 at 96K"; it is **"96K at q8_0 or
   ~48-64K at f16"** — and nobody has priced the two against each other.
 
+  **CHECKED 2026-08-24, and it survives the hybrid fact.** The 2026-08-24
+  handoff flagged this bullet as possibly priced on a VRAM figure that assumed a
+  dense model; it is not. `versions.lock:vram_note` was **measured from the
+  engine at `-lv 5`**, not computed from a layer count, and its own row reads
+  `main KV 3264 (16 layers q8_0)` — the hybrid is already in the number. The
+  arithmetic, restated so nobody has to re-derive it:
+
+  ```
+     96K q8_0   model 16053 + KV 3264 + compute 560 + draft 384/164 = 20426
+     96K f16    main KV doubles 3264 -> 6528 (draft KV is already F16)  = 23690
+                card 24564, so 874 MiB free against a 1500.8 MiB floor
+                -> SHORT BY ~627 MiB. Does not fit, as stated.
+     64K f16    main KV 2176 -> 4352                                    = 21193
+                3371 MiB free against the same floor -> fits, ~1870 spare.
+  ```
+
+  So the trade really is 96K at q8_0 against ~64K at f16, and the hybrid fact
+  changes neither side of it. What the hybrid fact DOES change is the size of
+  the prize: since only 16 layers have a KV cache, f16 buys back a quarter of
+  the state, not all of it.
+
 **That trade is currently decided by default, in one direction, without a
 fidelity measurement on the axis that would settle it.** What exists now is a
 strong result on one failure mode (literals into tool arguments) and nothing on
 the others (prose, reasoning, long-horizon coherence). It should not be
 re-decided without a measurement either. See §6.
+
+### 4b. The third axis: q8_0 KV costs no measurable draft acceptance
+
+Added 2026-08-24. Until now the trade had two measured axes — fidelity (§3a of
+`kv-cache-fidelity-measured.md`) and VRAM (`vram_note`) — and a throughput
+assumption nobody had tested on the *speculative* path. The 2026-08-24 HN thread
+supplied the hypothesis worth testing (Refefer): *"KLD matters a lot when it
+comes to its performance and it especially manifests with MTP/DFlash acceptance
+rate."* If that transfers to KV quantisation, the **4.7% of tokens whose top-1
+q8_0 KV moves** should show up as drafts the target rejects — handing back part
+of what q8_0 buys.
+
+Both arms at `CTX_SIZE=65536`, production spec config untouched, the only
+difference `-ctk/-ctv`. 64K rather than 96K because **f16 does not fit at 96K**,
+which is this section's whole point:
+
+```
+   n=30 runs/arm, 32,000-tok prompt      f16      q8_0    q8_0 - f16
+   draft acceptance                     0.481    0.499     +0.0175   (1.05 SE)
+     per-run sd                        ±0.061   ±0.068
+   decode tok/s                          54.2     51.5       -2.7    (-5.0 %)
+   prefill tok/s                         2141     2087        -54    (-2.6 %)
+   VRAM, whole-device MiB               23014    21369    f16 +1645
+```
+
+**No measurable penalty, and the sign is backwards for the claim** — q8_0
+accepted slightly *more*. Replicated at n=5 the same afternoon: +0.0192, same
+sign, same size.
+
+**The floor is the result, not the point estimate.** At n=30 this design
+resolves an acceptance shift of **0.033 absolute (6.9% relative) or larger**; a
+penalty smaller than ~3.3 points would not have been seen. Stated so nobody
+reads "no difference" as "no difference of any size". The n=5 pass could only
+have resolved 20.7%, which is why it was re-run rather than published.
+
+So the 4.7% top-1 flip rate does **not** propagate into the speculative path at
+a magnitude this instrument can see. That does not make q8_0 KV free — §3a's
+tail is still real — but it removes one of the ways it could have been costing
+something silently.
+
+**Two honest caveats.** The fidelity number is at n_ctx 4096/8192 and this is at
+64K with a 32K prompt, so the two are not at the same depth. And Refefer's claim
+was about **weight** quantisation, which this box cannot vary at all — there is
+no 8-bit alternative that leaves room for a 96K window. What was tested is the
+KV half of the claim, which is the half this stack has a knob for.
+
+**One thing did not resolve and is consistently signed**: decode is 3-5% *lower*
+at q8_0 in both passes (1.8 SE at n=30), and prefill 2.6% lower. Inside the ±6%
+decode variance `spec_variance_note` documents, so it is not a result — but it
+is the arm to re-run if anyone wants the throughput side settled, and it points
+the opposite way to the reason q8_0 was adopted.
 
 ## 5. Gap 2 — "output is unchanged" is true of the distribution and false of the arithmetic
 
@@ -434,3 +514,44 @@ Recorded as `spec_logprobs_note` in `versions.lock`.
   proposed for this stack, §1's part-3.11 numbers are the relevant prior:
   Heretic-ARA and Huihui preserved stock behaviour on long-context technical
   work; Blackfrost and AEON produced reproducible operational damage.
+
+  **Corroborated, contested, and now testable — 2026-08-24 HN thread on the XDA
+  reverse-engineering piece.** The thread argues abliteration both ways and the
+  disagreement is worth carrying intact rather than quoting the half that
+  agrees with §1:
+
+  - *Against.* Aurornis — the same commenter whose quant-revision point is
+    cited in `lib.sh:hf_file_revision` — notes the restrictions are not one
+    removable check, that the altered weights "might be involved in other tasks,
+    so altering them can interfere with interactions that aren't obviously
+    related", and that degradation "ranges from subtle to obviously broken, but
+    it's not free". willy_k gives the mechanism: orthogonalising the refusal
+    direction out of the residual stream has knock-on effects on everything that
+    shared those directions.
+  - *For.* timmmmmmay: "Early attempts at this sort of thing definitely did
+    [degrade quality], but these days the impact is minimal." InvertedRhodium:
+    "altered, sure. I think inherent degradation is a step too far."
+
+  **trollbridge supplies the one quantified estimate, and it is quantified in a
+  unit this stack now measures**: abliteration costs "around the same jump as
+  going from 5 bit to 4 bit". That is no longer an opinion this repo has to take
+  on trust — `scripts/kld-run.sh` measures exactly that kind of distance, with
+  an exact f16-vs-f16 null control under it (§3 of
+  `kv-cache-fidelity-measured.md`). Any abliterated tune proposed for this stack
+  should be made to produce its own KLD and same-top-1 numbers against stock on
+  the `deep-s26b5bb` corpus before it is argued about. The instrument exists and
+  the corpus is pinned; there is no reason to settle this one by anecdote.
+
+  **And the thread's own article is evidence the question may not arise.** Its
+  author ran the *stock* model — noting it "recognizes common jailbreak attempts"
+  — and it still completed an end-to-end commercial-licence reverse-engineering
+  job, including the online licence check that he reports tripping up every
+  other local model he had tried. Whatever the refusal training costs on this
+  stack's actual workload, it did not cost that.
+
+- **One outside evaluation of this exact model is worth knowing about**, though
+  it changes nothing here: `alexander-hanel.github.io/StressingLLMs` (posted to
+  the same thread by its author) ranks Deepseek-v4-flash above Qwen 3.8 27B on
+  reverse-engineering tasks. It is a model-selection datapoint, not a
+  configuration one, and this stack's weights are constrained by 24 GiB before
+  they are constrained by any benchmark.

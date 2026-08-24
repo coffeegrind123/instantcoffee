@@ -1,0 +1,522 @@
+ Container qwen38-llama Recreate 
+ Container qwen38-llama Recreated 
+ Container qwen38-llama Starting 
+ Container qwen38-llama Started 
+ Container qwen38-llama Waiting 
+ Container qwen38-llama Healthy 
+
+===== llama startup log (kvaccept30-64k-q8_0) =====
+qwen38-llama  | warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+qwen38-llama  | 0.00.202.715 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+qwen38-llama  | 0.00.467.982 W srv  llama_server: -----------------
+qwen38-llama  | 0.00.468.012 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+qwen38-llama  | 0.00.468.013 W srv  llama_server: this can be a security risk (cross-origin attacks)
+qwen38-llama  | 0.00.468.013 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+qwen38-llama  | 0.00.468.013 W srv  llama_server: -----------------
+qwen38-llama  | 0.00.469.570 I srv    load_model: loading model '/models/Qwen3.8-27B-UD-Q4_K_XL.gguf'
+qwen38-llama  | 2.58.510.928 I cmn          init: llama threadpool init, n_threads = 8
+qwen38-llama  | 2.58.616.470 I common_speculative_init_result: creating MTP draft context against the target model '/models/Qwen3.8-27B-UD-Q4_K_XL.gguf'
+qwen38-llama  | 2.58.762.715 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+qwen38-llama  | 2.58.826.132 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+qwen38-llama  | 2.58.986.402 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+qwen38-llama  | 2.58.986.477 I srv  llama_server: model loaded
+qwen38-llama  | 2.58.986.481 I srv  llama_server: listening on http://0.0.0.0:8080
+qwen38-llama  | 2.58.986.482 W srv  llama_server: NOTICE: server default port will be changed to :9931 in a future release
+qwen38-llama  | 2.58.986.482 W srv  llama_server:         ref: https://github.com/ggml-org/llama.cpp/pull/26508
+ Image qwen38-forge/proxy:0.9.0 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 588B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 8.21kB 0.1s done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.1s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.0s done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+#6 resolve docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 0.0s done
+#6 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 952B 0.2s done
+#5 DONE 0.2s
+
+#7 [2/8] RUN test -n "0.9.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#7 CACHED
+
+#8 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.0"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#8 CACHED
+
+#9 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && rm -rf /tmp/patches
+#9 CACHED
+
+#10 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py      /tmp/patches/
+#10 CACHED
+
+#11 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/test_forge_patches.py /work/scripts/
+#11 CACHED
+
+#12 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:80d04f23bbde46c79149b83d918b500080735ac0e567d028dabc0fa6c9decee3 done
+#14 exporting config sha256:0cf9511afe8b4bf5f4f400d20f1826d207910c1473f7801c69403c7b8c6283fe done
+#14 exporting attestation manifest sha256:d1722a80eba9cce6e4b31725c8583095f64f794bb39ab19c5d53c6f07034a546 0.0s done
+#14 exporting manifest list sha256:b97ca94a414afac802c7de7c294e6aa1c24cbfdea4de22097dd69c533d8ddf4b
+#14 exporting manifest list sha256:b97ca94a414afac802c7de7c294e6aa1c24cbfdea4de22097dd69c533d8ddf4b 0.0s done
+#14 naming to docker.io/qwen38-forge/proxy:0.9.0 done
+#14 unpacking to docker.io/qwen38-forge/proxy:0.9.0 0.0s done
+#14 DONE 0.1s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image qwen38-forge/proxy:0.9.0 Built 
+ Container qwen38-forge-bench-run-67d31de5fcf1 Creating 
+ Container qwen38-forge-bench-run-67d31de5fcf1 Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=32000  prompt=32029  prefill=  2035.2 tok/s  decode=  40.4 tok/s  wall= 22.21s draft=158/422 (37% accepted)
+  pp=32000  prompt=32029  prefill=  2099.8 tok/s  decode=  47.5 tok/s  wall= 23.01s draft=165/384 (43% accepted)
+  pp=32000  prompt=32029  prefill=  2107.1 tok/s  decode=  43.9 tok/s  wall= 22.41s draft=163/419 (39% accepted)
+  pp=32000  prompt=32029  prefill=  2109.2 tok/s  decode=  49.6 tok/s  wall= 21.76s draft=173/317 (55% accepted)
+  pp=32000  prompt=32029  prefill=  2101.9 tok/s  decode=  62.1 tok/s  wall= 20.92s draft=179/286 (63% accepted)
+  pp=32000  prompt=32029  prefill=  2098.3 tok/s  decode=  57.7 tok/s  wall= 21.14s draft=179/359 (50% accepted)
+  pp=32000  prompt=32029  prefill=  2068.1 tok/s  decode=  55.4 tok/s  wall= 21.64s draft=172/296 (58% accepted)
+  pp=32000  prompt=32029  prefill=  2092.9 tok/s  decode=  48.7 tok/s  wall= 22.37s draft=170/379 (45% accepted)
+  pp=32000  prompt=32029  prefill=  2097.3 tok/s  decode=  57.1 tok/s  wall= 21.20s draft=177/348 (51% accepted)
+  pp=32000  prompt=32030  prefill=  2088.7 tok/s  decode=  40.7 tok/s  wall= 23.31s draft=161/351 (46% accepted)
+  pp=32000  prompt=32030  prefill=  2078.9 tok/s  decode=  47.7 tok/s  wall= 22.78s draft=170/352 (48% accepted)
+  pp=32000  prompt=32030  prefill=  2097.3 tok/s  decode=  55.6 tok/s  wall= 21.63s draft=176/402 (44% accepted)
+  pp=32000  prompt=32030  prefill=  2083.9 tok/s  decode=  51.4 tok/s  wall= 21.80s draft=171/290 (59% accepted)
+  pp=32000  prompt=32030  prefill=  2102.4 tok/s  decode=  56.1 tok/s  wall= 21.26s draft=176/325 (54% accepted)
+  pp=32000  prompt=32030  prefill=  2084.6 tok/s  decode=  50.1 tok/s  wall= 21.92s draft=167/296 (56% accepted)
+  pp=32000  prompt=32030  prefill=  2080.7 tok/s  decode=  56.3 tok/s  wall= 21.43s draft=183/374 (49% accepted)
+  pp=32000  prompt=32030  prefill=  2069.2 tok/s  decode=  52.6 tok/s  wall= 21.99s draft=175/363 (48% accepted)
+  pp=32000  prompt=32030  prefill=  2106.0 tok/s  decode=  56.4 tok/s  wall= 21.22s draft=181/395 (46% accepted)
+  pp=32000  prompt=32030  prefill=  2063.2 tok/s  decode=  55.6 tok/s  wall= 21.71s draft=184/299 (62% accepted)
+  pp=32000  prompt=32030  prefill=  1983.6 tok/s  decode=  57.8 tok/s  wall= 22.11s draft=181/316 (57% accepted)
+  pp=32000  prompt=32030  prefill=  2057.9 tok/s  decode=  47.0 tok/s  wall= 22.54s draft=172/363 (47% accepted)
+  pp=32000  prompt=32030  prefill=  2074.5 tok/s  decode=  49.1 tok/s  wall= 22.50s draft=170/382 (44% accepted)
+  pp=32000  prompt=32030  prefill=  2093.5 tok/s  decode=  56.2 tok/s  wall= 21.53s draft=176/328 (54% accepted)
+  pp=32000  prompt=32030  prefill=  2102.3 tok/s  decode=  48.0 tok/s  wall= 22.08s draft=173/349 (50% accepted)
+  pp=32000  prompt=32030  prefill=  2112.3 tok/s  decode=  49.4 tok/s  wall= 21.75s draft=165/401 (41% accepted)
+  pp=32000  prompt=32030  prefill=  2107.2 tok/s  decode=  47.5 tok/s  wall= 22.02s draft=164/363 (45% accepted)
+  pp=32000  prompt=32030  prefill=  2120.2 tok/s  decode=  52.4 tok/s  wall= 21.45s draft=170/298 (57% accepted)
+  pp=32000  prompt=32030  prefill=  2093.3 tok/s  decode=  49.0 tok/s  wall= 22.04s draft=166/395 (42% accepted)
+  pp=32000  prompt=32030  prefill=  2086.6 tok/s  decode=  55.1 tok/s  wall= 21.61s draft=179/313 (57% accepted)
+  pp=32000  prompt=32030  prefill=  2101.5 tok/s  decode=  49.3 tok/s  wall= 22.00s draft=166/334 (50% accepted)
+
+best prefill: 2120.2 tok/s     best decode: 62.1 tok/s
+MTP draft acceptance: 5162/10499 = 49.2% across 30 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.21,
+      "prompt_n": 32029,
+      "prompt_tps": 2035.2238800279715,
+      "predicted_n": 256,
+      "predicted_tps": 40.363352481918795,
+      "cache_n": 0,
+      "draft_n": 422,
+      "draft_accepted": 158,
+      "draft_acceptance": 0.374
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 23.01,
+      "prompt_n": 32029,
+      "prompt_tps": 2099.8275963461206,
+      "predicted_n": 256,
+      "predicted_tps": 47.500982618365924,
+      "cache_n": 0,
+      "draft_n": 384,
+      "draft_accepted": 165,
+      "draft_acceptance": 0.43
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.41,
+      "prompt_n": 32029,
+      "prompt_tps": 2107.0740163281953,
+      "predicted_n": 256,
+      "predicted_tps": 43.871956512052144,
+      "cache_n": 0,
+      "draft_n": 419,
+      "draft_accepted": 163,
+      "draft_acceptance": 0.389
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.76,
+      "prompt_n": 32029,
+      "prompt_tps": 2109.159907167726,
+      "predicted_n": 256,
+      "predicted_tps": 49.58821364002574,
+      "cache_n": 0,
+      "draft_n": 317,
+      "draft_accepted": 173,
+      "draft_acceptance": 0.546
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 20.92,
+      "prompt_n": 32029,
+      "prompt_tps": 2101.8766741957284,
+      "predicted_n": 256,
+      "predicted_tps": 62.14495127104703,
+      "cache_n": 0,
+      "draft_n": 286,
+      "draft_accepted": 179,
+      "draft_acceptance": 0.626
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.14,
+      "prompt_n": 32029,
+      "prompt_tps": 2098.294438880992,
+      "predicted_n": 256,
+      "predicted_tps": 57.718725108799795,
+      "cache_n": 0,
+      "draft_n": 359,
+      "draft_accepted": 179,
+      "draft_acceptance": 0.499
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.64,
+      "prompt_n": 32029,
+      "prompt_tps": 2068.0603577384773,
+      "predicted_n": 256,
+      "predicted_tps": 55.35698198075965,
+      "cache_n": 0,
+      "draft_n": 296,
+      "draft_accepted": 172,
+      "draft_acceptance": 0.581
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.37,
+      "prompt_n": 32029,
+      "prompt_tps": 2092.8853203524654,
+      "predicted_n": 256,
+      "predicted_tps": 48.69347761369879,
+      "cache_n": 0,
+      "draft_n": 379,
+      "draft_accepted": 170,
+      "draft_acceptance": 0.449
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.2,
+      "prompt_n": 32029,
+      "prompt_tps": 2097.3098329512263,
+      "predicted_n": 256,
+      "predicted_tps": 57.126048963072606,
+      "cache_n": 0,
+      "draft_n": 348,
+      "draft_accepted": 177,
+      "draft_acceptance": 0.509
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 23.31,
+      "prompt_n": 32030,
+      "prompt_tps": 2088.675116138944,
+      "predicted_n": 256,
+      "predicted_tps": 40.70443250518702,
+      "cache_n": 0,
+      "draft_n": 351,
+      "draft_accepted": 161,
+      "draft_acceptance": 0.459
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.78,
+      "prompt_n": 32030,
+      "prompt_tps": 2078.857834097539,
+      "predicted_n": 256,
+      "predicted_tps": 47.672515616955266,
+      "cache_n": 0,
+      "draft_n": 352,
+      "draft_accepted": 170,
+      "draft_acceptance": 0.483
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.63,
+      "prompt_n": 32030,
+      "prompt_tps": 2097.2679205748987,
+      "predicted_n": 256,
+      "predicted_tps": 55.561583805824675,
+      "cache_n": 0,
+      "draft_n": 402,
+      "draft_accepted": 176,
+      "draft_acceptance": 0.438
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.8,
+      "prompt_n": 32030,
+      "prompt_tps": 2083.903701398135,
+      "predicted_n": 256,
+      "predicted_tps": 51.3982231533475,
+      "cache_n": 0,
+      "draft_n": 290,
+      "draft_accepted": 171,
+      "draft_acceptance": 0.59
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.26,
+      "prompt_n": 32030,
+      "prompt_tps": 2102.3865533377702,
+      "predicted_n": 256,
+      "predicted_tps": 56.135784317070765,
+      "cache_n": 0,
+      "draft_n": 325,
+      "draft_accepted": 176,
+      "draft_acceptance": 0.542
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.92,
+      "prompt_n": 32030,
+      "prompt_tps": 2084.628090438365,
+      "predicted_n": 256,
+      "predicted_tps": 50.0678370105378,
+      "cache_n": 0,
+      "draft_n": 296,
+      "draft_accepted": 167,
+      "draft_acceptance": 0.564
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.43,
+      "prompt_n": 32030,
+      "prompt_tps": 2080.671593759362,
+      "predicted_n": 256,
+      "predicted_tps": 56.27650789040779,
+      "cache_n": 0,
+      "draft_n": 374,
+      "draft_accepted": 183,
+      "draft_acceptance": 0.489
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.99,
+      "prompt_n": 32030,
+      "prompt_tps": 2069.1925588140366,
+      "predicted_n": 256,
+      "predicted_tps": 52.62944987158414,
+      "cache_n": 0,
+      "draft_n": 363,
+      "draft_accepted": 175,
+      "draft_acceptance": 0.482
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.22,
+      "prompt_n": 32030,
+      "prompt_tps": 2106.0161840406977,
+      "predicted_n": 256,
+      "predicted_tps": 56.36593561153393,
+      "cache_n": 0,
+      "draft_n": 395,
+      "draft_accepted": 181,
+      "draft_acceptance": 0.458
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.71,
+      "prompt_n": 32030,
+      "prompt_tps": 2063.2037309010334,
+      "predicted_n": 256,
+      "predicted_tps": 55.57330511226462,
+      "cache_n": 0,
+      "draft_n": 299,
+      "draft_accepted": 184,
+      "draft_acceptance": 0.615
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.11,
+      "prompt_n": 32030,
+      "prompt_tps": 1983.6177819350696,
+      "predicted_n": 256,
+      "predicted_tps": 57.79002775281098,
+      "cache_n": 0,
+      "draft_n": 316,
+      "draft_accepted": 181,
+      "draft_acceptance": 0.573
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.54,
+      "prompt_n": 32030,
+      "prompt_tps": 2057.9227842699397,
+      "predicted_n": 256,
+      "predicted_tps": 47.0316655904715,
+      "cache_n": 0,
+      "draft_n": 363,
+      "draft_accepted": 172,
+      "draft_acceptance": 0.474
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.5,
+      "prompt_n": 32030,
+      "prompt_tps": 2074.5049750554217,
+      "predicted_n": 256,
+      "predicted_tps": 49.06345559497522,
+      "cache_n": 0,
+      "draft_n": 382,
+      "draft_accepted": 170,
+      "draft_acceptance": 0.445
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.53,
+      "prompt_n": 32030,
+      "prompt_tps": 2093.5129009219368,
+      "predicted_n": 256,
+      "predicted_tps": 56.23096416477833,
+      "cache_n": 0,
+      "draft_n": 328,
+      "draft_accepted": 176,
+      "draft_acceptance": 0.537
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.08,
+      "prompt_n": 32030,
+      "prompt_tps": 2102.3291483440335,
+      "predicted_n": 256,
+      "predicted_tps": 47.97679052204393,
+      "cache_n": 0,
+      "draft_n": 349,
+      "draft_accepted": 173,
+      "draft_acceptance": 0.496
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.75,
+      "prompt_n": 32030,
+      "prompt_tps": 2112.326715676867,
+      "predicted_n": 256,
+      "predicted_tps": 49.41707233884221,
+      "cache_n": 0,
+      "draft_n": 401,
+      "draft_accepted": 165,
+      "draft_acceptance": 0.411
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.02,
+      "prompt_n": 32030,
+      "prompt_tps": 2107.1521401343666,
+      "predicted_n": 256,
+      "predicted_tps": 47.451015200514036,
+      "cache_n": 0,
+      "draft_n": 363,
+      "draft_accepted": 164,
+      "draft_acceptance": 0.452
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.45,
+      "prompt_n": 32030,
+      "prompt_tps": 2120.247068690577,
+      "predicted_n": 256,
+      "predicted_tps": 52.37306463555022,
+      "cache_n": 0,
+      "draft_n": 298,
+      "draft_accepted": 170,
+      "draft_acceptance": 0.57
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.04,
+      "prompt_n": 32030,
+      "prompt_tps": 2093.3000087117357,
+      "predicted_n": 256,
+      "predicted_tps": 48.96583202645768,
+      "cache_n": 0,
+      "draft_n": 395,
+      "draft_accepted": 166,
+      "draft_acceptance": 0.42
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.61,
+      "prompt_n": 32030,
+      "prompt_tps": 2086.561760534368,
+      "predicted_n": 256,
+      "predicted_tps": 55.12020202959069,
+      "cache_n": 0,
+      "draft_n": 313,
+      "draft_accepted": 179,
+      "draft_acceptance": 0.572
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 22.0,
+      "prompt_n": 32030,
+      "prompt_tps": 2101.5027811614545,
+      "predicted_n": 256,
+      "predicted_tps": 49.282952369669296,
+      "cache_n": 0,
+      "draft_n": 334,
+      "draft_accepted": 166,
+      "draft_acceptance": 0.497
+    }
+  ]
+}

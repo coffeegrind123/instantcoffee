@@ -1,0 +1,176 @@
+ Container qwen38-llama Recreate 
+ Container qwen38-llama Recreated 
+ Container qwen38-llama Starting 
+ Container qwen38-llama Started 
+ Container qwen38-llama Waiting 
+ Container qwen38-llama Healthy 
+
+===== llama startup log (kvaccept-64k-f16) =====
+qwen38-llama  | warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+qwen38-llama  | 0.00.343.178 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+qwen38-llama  | 0.00.632.658 W srv  llama_server: -----------------
+qwen38-llama  | 0.00.632.687 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+qwen38-llama  | 0.00.632.687 W srv  llama_server: this can be a security risk (cross-origin attacks)
+qwen38-llama  | 0.00.632.687 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+qwen38-llama  | 0.00.632.687 W srv  llama_server: -----------------
+qwen38-llama  | 0.00.634.488 I srv    load_model: loading model '/models/Qwen3.8-27B-UD-Q4_K_XL.gguf'
+qwen38-llama  | 0.03.713.745 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 999, abort
+qwen38-llama  | 3.04.790.591 I cmn          init: llama threadpool init, n_threads = 8
+qwen38-llama  | 3.04.909.918 I common_speculative_init_result: creating MTP draft context against the target model '/models/Qwen3.8-27B-UD-Q4_K_XL.gguf'
+qwen38-llama  | 3.05.056.039 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+qwen38-llama  | 3.05.122.652 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+qwen38-llama  | 3.05.267.887 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+qwen38-llama  | 3.05.267.985 I srv  llama_server: model loaded
+qwen38-llama  | 3.05.267.990 I srv  llama_server: listening on http://0.0.0.0:8080
+qwen38-llama  | 3.05.267.991 W srv  llama_server: NOTICE: server default port will be changed to :9931 in a future release
+qwen38-llama  | 3.05.267.991 W srv  llama_server:         ref: https://github.com/ggml-org/llama.cpp/pull/26508
+ Image qwen38-forge/proxy:0.9.0 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 588B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 36B 0.0s
+#2 transferring dockerfile: 8.21kB 0.1s done
+#2 DONE 0.2s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.0s done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+#6 resolve docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91
+#6 resolve docker.io/library/python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91 0.0s done
+#6 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 952B 0.3s done
+#5 DONE 3.3s
+
+#7 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py      /tmp/patches/
+#7 CACHED
+
+#8 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && rm -rf /tmp/patches
+#8 CACHED
+
+#9 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/test_forge_patches.py /work/scripts/
+#9 CACHED
+
+#10 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#10 CACHED
+
+#11 [2/8] RUN test -n "0.9.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#11 CACHED
+
+#12 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.0"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:80d04f23bbde46c79149b83d918b500080735ac0e567d028dabc0fa6c9decee3 0.1s done
+#14 exporting config sha256:0cf9511afe8b4bf5f4f400d20f1826d207910c1473f7801c69403c7b8c6283fe
+#14 exporting config sha256:0cf9511afe8b4bf5f4f400d20f1826d207910c1473f7801c69403c7b8c6283fe 0.0s done
+#14 exporting attestation manifest sha256:4acdfe9e53da4bfe0bc680121779eaaa5045419e8225ac480e46f1e127ba412c 0.0s done
+#14 exporting manifest list sha256:dee83b88e5153e9a037386348e4af8e6331f0fc4b31e43d65a418e3e98a607c9 0.0s done
+#14 naming to docker.io/qwen38-forge/proxy:0.9.0 done
+#14 unpacking to docker.io/qwen38-forge/proxy:0.9.0
+#14 unpacking to docker.io/qwen38-forge/proxy:0.9.0 0.0s done
+#14 DONE 0.3s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image qwen38-forge/proxy:0.9.0 Built 
+ Container qwen38-forge-bench-run-9a70e12d55f6 Creating 
+ Container qwen38-forge-bench-run-9a70e12d55f6 Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=32000  prompt=32029  prefill=  2061.7 tok/s  decode=  45.2 tok/s  wall= 21.35s draft=167/426 (39% accepted)
+  pp=32000  prompt=32029  prefill=  2119.6 tok/s  decode=  64.1 tok/s  wall= 19.21s draft=183/345 (53% accepted)
+  pp=32000  prompt=32029  prefill=  2137.2 tok/s  decode=  60.4 tok/s  wall= 19.33s draft=181/274 (66% accepted)
+  pp=32000  prompt=32029  prefill=  2101.3 tok/s  decode=  51.4 tok/s  wall= 20.33s draft=165/395 (42% accepted)
+  pp=32000  prompt=32029  prefill=  2126.7 tok/s  decode=  58.2 tok/s  wall= 19.57s draft=171/295 (58% accepted)
+
+best prefill: 2137.2 tok/s     best decode: 64.1 tok/s
+MTP draft acceptance: 867/1735 = 50.0% across 5 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 21.35,
+      "prompt_n": 32029,
+      "prompt_tps": 2061.711003205311,
+      "predicted_n": 256,
+      "predicted_tps": 45.219925779028486,
+      "cache_n": 0,
+      "draft_n": 426,
+      "draft_accepted": 167,
+      "draft_acceptance": 0.392
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 19.21,
+      "prompt_n": 32029,
+      "prompt_tps": 2119.64320056395,
+      "predicted_n": 256,
+      "predicted_tps": 64.1183761002902,
+      "cache_n": 0,
+      "draft_n": 345,
+      "draft_accepted": 183,
+      "draft_acceptance": 0.53
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 19.33,
+      "prompt_n": 32029,
+      "prompt_tps": 2137.199977766554,
+      "predicted_n": 256,
+      "predicted_tps": 60.38219800198859,
+      "cache_n": 0,
+      "draft_n": 274,
+      "draft_accepted": 181,
+      "draft_acceptance": 0.661
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 20.33,
+      "prompt_n": 32029,
+      "prompt_tps": 2101.263185296918,
+      "predicted_n": 256,
+      "predicted_tps": 51.390640817107155,
+      "cache_n": 0,
+      "draft_n": 395,
+      "draft_accepted": 165,
+      "draft_acceptance": 0.418
+    },
+    {
+      "requested": 32000,
+      "status": 200,
+      "wall_s": 19.57,
+      "prompt_n": 32029,
+      "prompt_tps": 2126.7435292986497,
+      "predicted_n": 256,
+      "predicted_tps": 58.16964092222833,
+      "cache_n": 0,
+      "draft_n": 295,
+      "draft_accepted": 171,
+      "draft_acceptance": 0.58
+    }
+  ]
+}
