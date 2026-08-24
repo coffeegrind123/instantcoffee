@@ -315,13 +315,45 @@ and accumulating. That goes away with the first patch, for free.
 including the real tool call.
 
 **What is deliberately still not touched.** `forge/proxy/convert_anthropic.py`
-has the same hole as §1 in a starker form: it appends the reasoning as a `text`
-block and never emits the model's content at all. This stack's client speaks
-OpenAI, and doing it right on the Anthropic wire means deciding how a `thinking`
-block is shaped and signed. Prompt-mode extraction is left alone for a different
-reason: with `FORGE_CAPABILITY=native` it is not on this stack's path, and in
-prompt mode the call was parsed OUT of the text, so "the content that came with
-it" is a genuinely different question.
+has the same hole as §1 in a starker form. Read out of the patched image on
+2026-08-24 rather than from memory, it is **three** defects and not one:
+
+```
+   tool_calls_to_anthropic()                        convert_anthropic.py:246
+      blocks.append({"type": "text", "text": tool_calls[0].reasoning})
+      #  …and tool_calls[0].content is never read at all.
+
+   text_response_to_anthropic(text, model, usage)   convert_anthropic.py:267
+      #  no `reasoning` parameter, no `finish_reason` parameter.
+```
+
+1. **The reasoning is promoted into a `text` block**, which is the exact
+   inversion of patch 4's safety argument. That argument turns on `text` being
+   the one block type downstream consumers forward — `vendor/prinny-channel`
+   allowlists `text` and nothing else — so on the Anthropic wire the model's
+   private deliberation is what reaches a Matrix room.
+2. **`ToolCall.content` is never emitted.** Patch 5 added that field precisely
+   because the response builder had nothing to put in `content` and filled the
+   hole with the reasoning; the Anthropic builder still does the filling and
+   still ignores the field.
+3. **`text_response_to_anthropic` has no `reasoning` and no `finish_reason`
+   parameter at all**, so patch 4 is entirely absent on this path: a
+   reasoning-only turn is still `content: [{"type": "text", "text": ""}]` with a
+   hardcoded `stop_reason: "end_turn"`. Both halves of §1 are unfixed here.
+
+**The decision that blocks it is real and is not about effort.** Anthropic's
+extended-thinking content block carries a `signature` that the API issues and
+verifies. A proxy fronting a local model has none, so the choice is between
+emitting a block without one, emitting a placeholder, or keeping the reasoning
+off the `content` array entirely — and the third is the only option with no
+chance of a transcript being replayed into the real API carrying a fabricated
+signature. **Whatever is chosen, it must not be a `text` block**, which is the
+one thing this section can already say without deciding anything.
+
+Prompt-mode extraction is left alone for a different reason: with
+`FORGE_CAPABILITY=native` it is not on this stack's path, and in prompt mode the
+call was parsed OUT of the text, so "the content that came with it" is a
+genuinely different question.
 
 ## 6. How to reproduce any of it
 
