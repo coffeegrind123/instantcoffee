@@ -95,9 +95,28 @@ RUN pip install --no-cache-dir \
 # transcript. Applied LAST: it edits the _emit_text that
 # forge_reasoning_passthrough.py rewrites, so it must see the patched text.
 # See patches/forge_anthropic_reasoning.py.
+# The seventh patch closes patch three's hole on the path an AGENT turn takes.
+# handler.py hands a text response back in two places; patch three fixed the
+# first and did not touch the second, four lines below it — the `except
+# ToolCallError` passthrough, which emitted the text alone with no `reasoning`
+# and no `finish_reason`. That branch is not an edge case: forge counts a bare
+# text reply as a validation failure whenever the request carries tools, and
+# FORGE_MAX_RETRIES=0 sends it straight here, so with pi (which sends tools every
+# turn) it is the MAJORITY path. Measured as a 2x2 with a no-tools control,
+# identical bodies, same minute: reasoning_content came back 193/161 chars
+# through forge without tools and 0/0 with them, while llama-server returned
+# 156/146 and 192/155 across the same four cells. The visible symptom was a turn
+# that stopped mid-word with "Reasoning budget reached..." — llama's
+# --reasoning-budget-message, injected before the end-of-thinking tag — stapled
+# to the end of the CONTENT, reported as finish_reason "stop", with the tool call
+# that llama had actually emitted gone. pi records that as a clean completed turn,
+# so nothing retries and the loop stops. Applied AFTER forge_reasoning_passthrough.py,
+# whose TextResponse fields it carries; it verifies that ordering and refuses to
+# run otherwise. See patches/forge_toolcall_passthrough.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
+     patches/forge_toolcall_passthrough.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -106,6 +125,7 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_toolcall_content.py "$SITE" \
     && python /tmp/patches/forge_merge_across_tools.py "$SITE" \
     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE" \
+    && python /tmp/patches/forge_toolcall_passthrough.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"

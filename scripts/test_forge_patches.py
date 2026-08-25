@@ -23,6 +23,10 @@ WHAT IT PINS
                         finish_reason is the backend's rather than "stop"
   toolcall_content      on a tool-call turn the model's CONTENT is content and
                         its REASONING is reasoning_content — never swapped
+  toolcall_passthrough  on the branch an AGENT turn takes — a text reply to a
+                        request carrying tools, which forge counts as a
+                        validation failure — the reasoning survives and the
+                        finish_reason is the backend's rather than "stop"
   merge_across_tools    two user turns either side of a tool-call/tool-result
                         pair stay separate, adjacent ones still merge, and
                         FORGE_MERGE_ACROSS_TOOLS=1 restores the old behaviour
@@ -106,6 +110,62 @@ def main() -> int:
     eq("a reasoning-only turn is not destroyed", msg.get("reasoning_content"), "ONLY-REASONING")
     eq("reasoning is NOT merged into content", msg.get("content"), "")
     eq("finish_reason is the backend's, not a hardcoded stop", out["choices"][0]["finish_reason"], "length")
+
+    print("\npatches/forge_toolcall_passthrough.py")
+    from forge.core.inference import _ToolCallExhausted
+    from forge.errors import ToolCallError
+    from forge.proxy import handler
+
+    # 1. The carrier. `usage` was already carried across this exception; the
+    #    other two things the final attempt knew were dropped on the floor.
+    exhausted = _ToolCallExhausted(
+        "exhausted", raw_response="TEXT", usage=None,
+        reasoning="THINKING", finish_reason="length",
+    )
+    eq("the exhaustion carrier keeps the reasoning", exhausted.reasoning, "THINKING")
+    eq("...and the real finish_reason", exhausted.finish_reason, "length")
+    eq("...and still the text", exhausted.raw_response, "TEXT")
+
+    # 2. The handler reads them with getattr because the `except` clause catches
+    #    the PUBLIC error, which any other caller may raise without these. If
+    #    that ever became a plain attribute access it would be an AttributeError
+    #    on a live request, so the defensive read is pinned rather than assumed.
+    plain = ToolCallError("no fields here", raw_response="TEXT")
+    eq("a plain ToolCallError has no reasoning", getattr(plain, "reasoning", None), None)
+    eq("...and no finish_reason", getattr(plain, "finish_reason", None), None)
+
+    # 3. The emitter. This is the call the passthrough branch makes, with the
+    #    arguments it now supplies.
+    out = handler._emit_text(
+        "TEXT", "m", "openai", False, usage=None,
+        reasoning="THINKING", finish_reason="length",
+    )
+    msg = out["choices"][0]["message"]
+    eq("an exhausted turn keeps its reasoning", msg.get("reasoning_content"), "THINKING")
+    eq("reasoning is NOT merged into content", msg.get("content"), "TEXT")
+    eq(
+        "a truncated agent turn is not reported as a natural stop",
+        out["choices"][0]["finish_reason"],
+        "length",
+    )
+
+    # 4. The wiring, which is the half the three above cannot see: the branch
+    #    has to actually PASS them. Same shape as the cached_tokens check below —
+    #    a source assertion where driving the real path would need a backend, a
+    #    validator and an error budget.
+    hsrc = open(handler.__file__).read()
+    branch = hsrc[hsrc.index("except ToolCallError as exc:"):]
+    branch = branch[: branch.index("# run_inference returns None")]
+    check(
+        "the passthrough branch forwards the reasoning",
+        'reasoning = getattr(exc, "reasoning", None)' in branch
+        and "reasoning=reasoning" in branch,
+    )
+    check(
+        "the passthrough branch forwards the finish_reason",
+        'finish_reason = getattr(exc, "finish_reason", None)' in branch
+        and "finish_reason=finish_reason" in branch,
+    )
 
     print("\npatches/forge_cached_tokens.py")
     src = open(convert.__file__).read()
