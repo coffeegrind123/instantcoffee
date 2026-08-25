@@ -120,6 +120,24 @@ quietly when an **existing** agent home is relocated — the crypto snapshot's
 IndexedDB key above all — and why the one-bot-per-Matrix-account lock cannot see
 across two containers' home directories.
 
+**`scripts/pi-container.sh`, the same day.** The container is plumbing, so it
+should not be something you drive: the launcher creates it on first use, reuses
+it after, and delegates to `pi-local.sh` inside, so the flags, the banner and
+the session are the ones already documented. It is a no-op wrapper when already
+inside one — the image sets `PI_AGENT_CONTAINER=1` — which is what makes an
+alias to it safe everywhere.
+
+Three of its behaviours were bugs first and are worth keeping in mind. `docker
+inspect` on a missing container exits non-zero **and** prints a newline, so the
+obvious `... || echo absent` yields a value matching neither branch and docker
+gets asked to start something that does not exist. A note printed on a function's
+stdout is captured into the path it returns, and arrives as docker's
+`Cwd must be an absolute path`. And "does this directory exist in the container"
+is a false positive for `/tmp`, `/usr` and `/`, which exist on both sides and
+mean different things — so the working-directory search is scoped to the
+container's home, and running from the host's `/tmp` falls back with a note
+instead of silently landing pi in an empty directory that looks fine.
+
 ---
 
 [← back to the README](../README.md)

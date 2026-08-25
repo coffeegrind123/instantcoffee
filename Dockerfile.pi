@@ -85,6 +85,11 @@ ENV CHROME_PATH=/usr/bin/google-chrome
 # rtk's telemetry is opt-in and off by default; pinned off here too because this
 # stack is meant to run with the network unplugged.
 ENV RTK_TELEMETRY_DISABLED=1
+# Marker. scripts/pi-container.sh tests this to know it is already inside and
+# should just run pi rather than reach for docker. A purpose-built variable
+# rather than sniffing for /opt/zendriver-mcp or a PINNED_* value: those are
+# implementation details that would make the test wrong the day they move.
+ENV PI_AGENT_CONTAINER=1
 # Recorded in the image so `docker inspect` answers "what is actually installed"
 # without cross-referencing .env.
 ENV PINNED_RTK_VERSION=${RTK_VERSION} \
@@ -280,6 +285,13 @@ cat > /root/start.sh << 'INNER'
 #!/bin/bash
 # First-run seeding plus the checks that would otherwise fail silently later.
 
+# Readiness marker. Cleared here and written at the very end, so a launcher can
+# wait on a FACT rather than on a string in the log: `docker start` re-runs this
+# script and re-appends to a log that already contains the previous run's banner,
+# so grepping it reports ready before anything has happened.
+READY=/tmp/.pi-agent-ready
+rm -f "$READY"
+
 # --- seed defaults into the mounted volume if missing -----------------------
 if [ ! -f /home/piuser/.bashrc ]; then
     cp /root/defaults/.bashrc /home/piuser/.bashrc
@@ -384,6 +396,8 @@ echo "Chrome:  $(google-chrome --version 2>/dev/null || echo 'not found')"
 echo "Browser: /opt/zendriver-mcp (ZENDRIVER_MCP_DIR)"
 echo
 echo "cd into a project and run:  qpi"
+
+: > "$READY"
 
 exec bash
 INNER

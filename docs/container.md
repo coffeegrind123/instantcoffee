@@ -54,7 +54,64 @@ They are also written into the image as `PINNED_*` environment variables and as
 OCI labels, so `docker inspect` answers "what is actually installed" without
 cross-referencing `.env`.
 
-## Run
+## Run it without thinking about it
+
+`scripts/pi-container.sh` is `scripts/pi-local.sh` with a container around it,
+and the container is meant to be invisible: same flags, same banner, same
+session. It creates the container on first use, reuses it after, and delegates
+to `pi-local.sh` inside — so everything the launcher knows about the stack stays
+in one place.
+
+Set one key in `.env.local` — the agent home **as the docker daemon sees it**,
+which this shell cannot derive because the daemon is what resolves bind sources:
+
+```bash
+PI_CONTAINER_HOME_HOST=/path/to/pi-home     # //c/path/to/pi-home on Docker Desktop
+```
+
+Then:
+
+```bash
+./scripts/pi-container.sh                 # a session
+./scripts/pi-container.sh -p "summarize"  # any pi flag passes through
+./scripts/pi-container.sh -C myproj       # work on <container home>/myproj
+./scripts/pi-container.sh --shell         # a shell in there instead of pi
+./scripts/pi-container.sh --status        # what is running, and against what
+./scripts/pi-container.sh --stop          # state is all on the mount
+./scripts/pi-container.sh --recreate      # adopt a rebuilt image
+```
+
+One alias and the container stops existing as far as you are concerned:
+
+```bash
+echo "alias qpi='~/qwen3.8-forge/scripts/pi-container.sh'" >> ~/.bashrc
+```
+
+That alias is safe to use everywhere, including from a shell **inside** the
+container: the image sets `PI_AGENT_CONTAINER=1`, and the script sees it and
+just runs `pi-local.sh` instead of trying to start a container from inside one.
+
+**Which directory pi works on.** pi works on the current directory, and yours is
+not necessarily one the container has. So the script tests candidates *inside*
+the container rather than translating by rule, and says which it picked: your
+`$PWD` if it is under the container's home, otherwise the same path relative to
+your `$HOME` (`~/proj` → `<container home>/proj`), otherwise the container home
+with a note. It deliberately will **not** accept a `$PWD` outside that home even
+when the path exists in both — `/tmp`, `/usr` and `/` exist on both sides and
+mean different things, and silently landing pi in the container's empty `/tmp`
+looks like a perfectly normal session.
+
+The container is long-lived and reused rather than created per session, because
+the browser server and its Chrome live in it and are stateful — a throwaway
+container per session relaunches Chrome every time, which is the mistake
+`scripts/browser.sh` exists to avoid.
+
+Rebuilding the image does **not** touch a container already created from the old
+one, so the script compares the two and warns; `--recreate` adopts the new
+build. Without that check a fix is present in the Dockerfile and absent from
+every session, with nothing anywhere saying why.
+
+## Run it by hand
 
 Pick a directory on the host to be the container's home. Everything pi writes —
 `~/.pi`, the checkout, caches — lives there and nowhere else.

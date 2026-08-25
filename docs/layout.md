@@ -106,6 +106,10 @@ scripts/
   mode.sh               switch between the regimes in modes/
   download_model.py     resumable GGUF fetch
   pi-local.sh           launch pi against the stack (the only client)
+  pi-container.sh       the same, in the Dockerfile.pi container; creates it
+                        on first use, reuses it after, and delegates to
+                        pi-local.sh inside. A no-op wrapper when already in
+                        one, so an alias to it is safe everywhere
   mcp.sh                call an MCP server as a CLI (wraps mcp2cli)
   browser.sh            drive Chrome as a CLI (resolves .env, runs browser_cli.py)
   browser_cli.py        the client: server lifecycle, tool discovery, tool calls

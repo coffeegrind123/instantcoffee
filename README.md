@@ -98,6 +98,7 @@ cd ~/my-project && qpi
 | `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `cd <project> && ~/instantcoffee/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
+| `./scripts/pi-container.sh` | The same, in a container with its own home and the browser stack ([docs/container.md](docs/container.md)) |
 
 That is the whole day-to-day surface. The three dozen measurement and tuning
 commands — sweeps, capacity probes, perplexity-at-depth, VRAM floors, capture —
