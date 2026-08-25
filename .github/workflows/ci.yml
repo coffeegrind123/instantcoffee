@@ -37,7 +37,8 @@ jobs:
                    scripts/download_model.py scripts/browser_cli.py \
                    scripts/test_browser_cli.py scripts/capture_proxy.py \
                    scripts/capture_sessions.py scripts/test_capture_proxy.py \
-                   scripts/test_forge_patches.py; do
+                   scripts/test_forge_patches.py \
+                   scripts/test_download_verify.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
@@ -129,6 +130,14 @@ jobs:
 
       - name: CJK leak detector unit tests
         run: python scripts/test_cjk_detector.py
+
+      # download_model.py's content check only fires on a BAD download, which is
+      # the one case running the real script on a good file cannot reach. These
+      # fixtures are a few bytes each so the failure paths are actually
+      # exercised — including size-matches-but-content-does-not, which the
+      # size-only comparison this replaced could never catch.
+      - name: Model download verification unit tests
+        run: python scripts/test_download_verify.py
 
       # The capture proxy sits in the production path between forge and llama, so
       # two of its promises are the kind that fail silently and both have a
