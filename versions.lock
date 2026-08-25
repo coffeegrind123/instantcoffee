@@ -53,7 +53,20 @@ model_repo_modified = 2026-08-20T12:04:25.000Z
 # --spec-type draft-mtp).
 prose_model_repo    = mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF
 prose_model_file    = Qwen3.8-27B-OBLITERATED.i1-Q4_K_M.gguf
-prose_model_size    = 16810714400
+prose_model_size    = 16810715616
+prose_model_sha256  = 2a815b3875c31584c3494e91bd593228136c6ad2395f73f6fb27b904b7048039
+                      DOWNLOADED AND VERIFIED 2026-08-25T09:01:29Z. Size and
+                      SHA-256 both match what the Hub serves — the Hub's LFS
+                      oid and SHA-256 of the file on disk are the same string
+                      above. 16810715616 bytes.
+                      CORRECTION: this field first read 16810714400, which is
+                      huihui-ai/...-abliterated-Q4_K.gguf's size, not this
+                      file's. Both render as "16.81 GB" in a rounded listing
+                      and the wrong one was carried across. The download was
+                      always correct; the record was not. The 714 MiB-smaller
+                      claim in the README, docs/modes.md and modes/prose.env
+                      was re-checked against the true size and still holds:
+                      17559178144 - 16810715616 = 713.8 MiB.
                       SELECTED 2026-08-25 over JonathanColetti (the incumbent)
                       and three others. Reasoning and the full comparison live
                       in modes/prose.env; the short version is that it is the
@@ -66,9 +79,6 @@ prose_model_size    = 16810714400
                       nextn_predict_layers=1, blk.64.nextn.* all four present.
                       714 MiB SMALLER than the coding model, so the 96K VRAM
                       figures in vram_note are an upper bound for this mode.
-                      sha256 NOT YET RECORDED — fill it in from the downloaded
-                      file, the download was still in flight when this was
-                      written.
 prose_model_prev    = JonathanColetti/Qwen3.8-27B-Uncensored-GGUF ::
                       Qwen3.8-27B-Uncensored-IQ4_XS.gguf, 15309039008 bytes,
                       sha256 53adc4bbed67044d662273356bbf3a50fdec667ac21bbf18d
