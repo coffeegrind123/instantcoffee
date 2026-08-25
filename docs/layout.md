@@ -9,6 +9,7 @@ Every file and directory, and what it is for.
 versions.lock           what update.sh last verified (generated)
 docker-compose.yml      llama + forge, plus tools-profile one-shots
 Dockerfile.forge        forge proxy image, pinned to FORGE_VERSION
+Dockerfile.pi           optional: pi + the browser stack in a container of its own
 .github/workflows/ci.yml  CI pipeline (lint, build, verify)
 badges/ci.json          shield.io endpoint JSON for the CI badge
 README.md               what this is, how to run it, and where to read more
@@ -20,6 +21,7 @@ docs/                   public documentation, split out of the README 2026-08-25
   quants.md             what fits in 24 GiB and what each step down costs
   benchmarking.md       verifying it works; every measurement command; capture
   troubleshooting.md    symptoms, in the order you are likely to hit them
+  container.md          running pi in a container; mount rules; moving a home
   layout.md             this file
   changelog.md          what changed, and when
 prompts/

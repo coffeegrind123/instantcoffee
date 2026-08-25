@@ -1,0 +1,411 @@
+# syntax=docker/dockerfile:1.4-labs
+#
+# The pi agent container. Optional — nothing else in this repo depends on it,
+# and scripts/pi-local.sh works exactly the same on the host.
+#
+# It gives a pi session a home directory of its own, so it cannot see another
+# agent's ~/.pi, caches or scratch files, and brings the browser stack with it.
+# docs/container.md is the long form; this header is the operating manual.
+#
+#   Build:
+#     docker build -f Dockerfile.pi -t pi-agent:latest .
+#
+#   Run:
+#     docker run -it --name pi \
+#       -v /path/to/pi-home:/home/piuser \
+#       -v /var/run/docker.sock:/var/run/docker.sock \
+#       --add-host host.docker.internal:host-gateway \
+#       --shm-size=2g \
+#       pi-agent:latest
+#
+# On Docker Desktop for Windows the bind SOURCE must be the Windows path in
+# docker's form (`//c/path/to/pi-home`), never a WSL path and never a relative
+# `./` one: Docker Desktop resolves bind sources on the Windows side, and a
+# WSL-style source silently mounts an EMPTY directory instead of failing. Same
+# rule the compose file already follows for MODELS_DIR.
+#
+# --shm-size=2g is for Chrome. The default 64 MB /dev/shm makes renderer
+# processes die under memory pressure, which surfaces as pages that half-load
+# or navigate calls that time out - i.e. as "the browser is broken".
+#
+# ---------------------------------------------------------------------------
+# What this image does and does not run
+# ---------------------------------------------------------------------------
+# It runs pi and everything pi reaches for. It does NOT run llama-server or
+# forge: those stay in the compose stack on the host GPU, brought up through the
+# mounted docker socket exactly as they are without a container.
+#
+#     ./scripts/up.sh          -> docker compose, over /var/run/docker.sock
+#     ./scripts/pi-local.sh    -> pi, in THIS container
+#     pi  ->  http://host.docker.internal:8081  ->  forge  ->  llama
+#
+# pi-local.sh already detects /.dockerenv and swaps localhost for
+# host.docker.internal, so nothing in the repo needs changing to run from here.
+# Docker Desktop proxies that name to the host, and forge's published port is
+# reachable through it even bound to 127.0.0.1.
+#
+# Ghidra and GhidraMCP are deliberately absent - ~3 GB of JDK and Ghidra for a
+# server mcp/servers.json does not register. Add the blocks and a `ghidra`
+# entry to mcp/servers.json if you want it.
+#
+# ---------------------------------------------------------------------------
+# Before the first session
+# ---------------------------------------------------------------------------
+#   PI_SESSIONS_DIR, MODELS_DIR and CAPTURES_DIR in .env are handed to docker
+#   compose, which resolves them on the HOST. They are host paths and they do
+#   NOT follow this container's home. A stale one fails as a FileNotFoundError
+#   on a path that plainly exists - the container simply has no view of it.
+#
+#   So point PI_SESSIONS_DIR at this home's .pi/agent/sessions, as the host
+#   sees it. start.sh prints the value at every start, and will check it for
+#   you if you set PI_HOME_HOSTPATH to this home's host path:
+#     docker run -e PI_HOME_HOSTPATH=//c/path/to/pi-home ...
+#
+#   MODELS_DIR and CAPTURES_DIR are usually worth sharing - the GGUF is ~18 GB
+#   and there is no reason for two copies.
+# ---------------------------------------------------------------------------
+
+FROM node:22
+
+# Pins. Every one of these is a version the stack is tested against; .env holds
+# the same numbers and scripts/pi-local.sh warns when the two drift apart.
+ARG PI_VERSION=latest
+ARG RTK_VERSION=0.45.0
+ARG MCP_ADAPTER_VERSION=2.26.0
+ARG MCP2CLI_VERSION=3.3.1
+ARG MCP_SDK_VERSION=1.29.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_OPTIONS="--experimental-global-webcrypto"
+ENV IS_SANDBOX=1
+ENV TZ="Europe/Helsinki"
+ENV HOME="/home/piuser"
+ENV DISPLAY=:99
+ENV CHROME_PATH=/usr/bin/google-chrome
+# rtk's telemetry is opt-in and off by default; pinned off here too because this
+# stack is meant to run with the network unplugged.
+ENV RTK_TELEMETRY_DISABLED=1
+# Recorded in the image so `docker inspect` answers "what is actually installed"
+# without cross-referencing .env.
+ENV PINNED_RTK_VERSION=${RTK_VERSION} \
+    PINNED_MCP_ADAPTER_VERSION=${MCP_ADAPTER_VERSION} \
+    PINNED_MCP2CLI_VERSION=${MCP2CLI_VERSION} \
+    PINNED_MCP_SDK_VERSION=${MCP_SDK_VERSION}
+ENV PATH="/home/piuser/.local/bin:/usr/local/bin:$PATH"
+
+# ── APT packages ─────────────────────────────────────────────────────────────
+# x11-utils is load-bearing, not incidental: scripts/browser.sh probes the
+# display with xdpyinfo before launching Chrome. Without it the probe falls back
+# to a pgrep that a stale /tmp/.X11-unix socket satisfies, Chrome drops to
+# headless, and headless is what Bing and most news sites block or stall.
+RUN apt-get update && apt-get install -y \
+    git \
+    git-lfs \
+    curl \
+    wget \
+    build-essential \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python-is-python3 \
+    nano \
+    jq \
+    procps \
+    openssh-client \
+    keychain \
+    sudo \
+    lsof \
+    net-tools \
+    iproute2 \
+    unzip \
+    xvfb \
+    x11-utils \
+    xauth \
+    ca-certificates \
+    gnupg \
+    dos2unix \
+    bsdextrautils \
+    xxd \
+    gettext-base \
+    ripgrep \
+    dnsutils \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Google Chrome (stable) ───────────────────────────────────────────────────
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
+      | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+      > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── Docker CLI + Compose plugin ──────────────────────────────────────────────
+# This is how the container drives the stack: scripts/up.sh, down.sh, logs.sh,
+# mode.sh and smoke-test.sh all shell out to `docker compose` against the
+# mounted socket. Without the compose PLUGIN they fail with "unknown command",
+# which reads like a broken script rather than a missing binary.
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
+      | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian bookworm stable" \
+      > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && apt-get install -y docker-ce-cli docker-compose-plugin && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── GitHub CLI ───────────────────────────────────────────────────────────────
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && apt-get install -y gh && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── uv ───────────────────────────────────────────────────────────────────────
+# Installed into the IMAGE, not into $HOME. $HOME is the bind mount, so
+# anything the build writes there is thrown away the moment the volume is
+# attached — the classic way a "built-in" tool turns out to be missing at run
+# time. Same reasoning for rtk and mcp2cli below.
+RUN curl -LsSf https://astral.sh/uv/install.sh \
+      | env UV_INSTALL_DIR=/usr/local/bin INSTALLER_NO_MODIFY_PATH=1 sh && \
+    /usr/local/bin/uv --version
+
+# ── mcp2cli (scripts/mcp.sh) ─────────────────────────────────────────────────
+# The mcp SDK pin is load-bearing rather than caution: mcp2cli 3.3.1 reads
+# result.structuredContent, which the 1.x SDK does not populate the same way, so
+# an unpinned resolve silently changes what every MCP call returns. Kept in step
+# with MCP2CLI_VERSION / MCP_SDK_VERSION in .env.
+#
+# scripts/mcp.sh looks at ${HOME}/.local/bin/mcp2cli first and falls back to
+# `command -v mcp2cli`, so /usr/local/bin is found by the second branch and
+# `./scripts/mcp.sh --install` still works if you ever want a different pin.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin
+RUN uv tool install "mcp2cli==${MCP2CLI_VERSION}" --with "mcp==${MCP_SDK_VERSION}" && \
+    mcp2cli --version
+
+# ── rtk ──────────────────────────────────────────────────────────────────────
+# Pinned binary rather than an unpinned installer: rtk shipped 45 minor versions
+# in its first seven months and its filters are what decides what a bash command
+# REPORTS to the model. An unpinned filter set can change that between two
+# sessions with nothing in the checkout to show for it.
+#
+# scripts/pi-local.sh checks `command -v rtk` before ${HOME}/.local/bin/rtk, so
+# /usr/local/bin wins and survives the home mount. Verify with
+# `./scripts/rtk.sh --status` and re-measure with `./scripts/rtk.sh --check`.
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64|amd64)  asset=rtk-x86_64-unknown-linux-musl.tar.gz ;; \
+      aarch64|arm64) asset=rtk-aarch64-unknown-linux-gnu.tar.gz ;; \
+      *) echo "no rtk release build for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    base="https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}"; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSL --max-time 120 -o "$tmp/$asset" "$base/$asset"; \
+    if curl -fsSL --max-time 30 -o "$tmp/checksums.txt" "$base/checksums.txt"; then \
+      want="$(awk -v a="$asset" '$2 == a || $2 == "*"a {print $1; exit}' "$tmp/checksums.txt")"; \
+      got="$(sha256sum "$tmp/$asset" | awk '{print $1}')"; \
+      if [ -n "$want" ] && [ "$want" != "$got" ]; then \
+        echo "checksum mismatch for $asset: expected $want, got $got" >&2; exit 1; \
+      fi; \
+      [ -n "$want" ] && echo "rtk sha256 verified"; \
+    else \
+      echo "warn: checksums.txt unavailable - installing an unverified rtk" >&2; \
+    fi; \
+    tar xzf "$tmp/$asset" -C "$tmp"; \
+    found="$(find "$tmp" -type f -name rtk | head -n1)"; \
+    [ -n "$found" ] || { echo "no rtk binary inside $asset" >&2; exit 1; }; \
+    install -m 0755 "$found" /usr/local/bin/rtk; \
+    rm -rf "$tmp"; \
+    rtk --version
+
+# ── pi (the agent itself) ────────────────────────────────────────────────────
+# --ignore-scripts matches how scripts/pi-local.sh installs and updates pi, so
+# the image and the auto-updater cannot disagree about what a pi install is.
+# Global npm, NOT $HOME/.npm-global: a user-level prefix would land on the
+# bind mount and be shadowed away at run time.
+RUN npm install -g --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}" && \
+    pi --version
+
+# ── Zendriver-MCP ────────────────────────────────────────────────────────────
+# /opt/zendriver-mcp is the exact path ZENDRIVER_MCP_DIR defaults to in .env,
+# and the first candidate both scripts/browser.sh and scripts/pi-local.sh probe.
+#
+# The checkout has to SUPPORT --transport, not merely exist: a clone from before
+# the HTTP transport passes an `-f run.py` test perfectly well and then serves
+# stdio only, 63 tools short — a wrong answer that looks like a working one. The
+# build asserts it here so an image can never ship that clone.
+RUN git clone https://github.com/coffeegrind123/Zendriver-MCP-fork.git /opt/zendriver-mcp && \
+    grep -q -- "--transport" /opt/zendriver-mcp/run.py \
+      || { echo "the Zendriver MCP checkout predates the HTTP transport" >&2; exit 1; } && \
+    cd /opt/zendriver-mcp && \
+    pip install --no-cache-dir --break-system-packages -e .
+
+# ── Defaults seeded into the home mount on first start ───────────────────────
+RUN <<'DEFAULTS_EOF'
+mkdir -p /root/defaults
+cat > /root/defaults/.bashrc << 'INNER'
+export PATH="/home/piuser/.local/bin:/usr/local/bin:$PATH"
+export CHROME_PATH=/usr/bin/google-chrome
+export DISPLAY=:99
+export RTK_TELEMETRY_DISABLED=1
+
+# Ensure Xvfb is running (survives docker exec, bash restarts, a crashed X).
+# Probed, not assumed: /tmp/.X11-unix/X99 OUTLIVES the process that created it,
+# so the socket existing proves nothing. scripts/browser.sh does the same check
+# for the same reason.
+if ! xdpyinfo -display :99 >/dev/null 2>&1; then
+    rm -f /tmp/.X11-unix/X99 2>/dev/null
+    Xvfb :99 -screen 0 1920x1080x24 -ac -nolisten tcp -dpi 96 >/tmp/xvfb99.log 2>&1 &
+    disown
+fi
+
+# pi works on your CURRENT directory, so cd to the project first.
+alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'
+alias stack='~/qwen3.8-forge/scripts'
+alias docker-compose="docker compose"
+INNER
+
+# No .ssh/config default, and no credentials of any kind seeded here. This
+# container is deliberately credential-free: no SSH keys, no gh auth, no
+# .gitconfig, no git credential store, no host-bridge token. It reads and writes
+# the checkout under its own home and talks to forge; it does not push anywhere
+# and cannot reach the Windows host. Adding any of that is a decision to make
+# on purpose, not something the image should arrange behind your back.
+DEFAULTS_EOF
+
+# ── Startup script ───────────────────────────────────────────────────────────
+RUN <<'STARTUP_EOF'
+cat > /root/start.sh << 'INNER'
+#!/bin/bash
+# First-run seeding plus the checks that would otherwise fail silently later.
+
+# --- seed defaults into the mounted volume if missing -----------------------
+if [ ! -f /home/piuser/.bashrc ]; then
+    cp /root/defaults/.bashrc /home/piuser/.bashrc
+    echo "Seeded .bashrc from defaults"
+fi
+mkdir -p /home/piuser/.pi/agent /home/piuser/.local/bin
+
+# --- X display ---------------------------------------------------------------
+if ! xdpyinfo -display :99 >/dev/null 2>&1; then
+    rm -f /tmp/.X11-unix/X99 2>/dev/null
+    Xvfb :99 -screen 0 1920x1080x24 -ac -nolisten tcp -dpi 96 >/tmp/xvfb99.log 2>&1 &
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 0.5
+        xdpyinfo -display :99 >/dev/null 2>&1 && break
+    done
+fi
+xdpyinfo -display :99 >/dev/null 2>&1 \
+    && echo "Display: :99 (Xvfb, listening)" \
+    || echo "Display: :99 NOT reachable - Chrome will fall back to headless (see /tmp/xvfb99.log)"
+
+# --- pi-mcp-adapter ----------------------------------------------------------
+# Installed at RUN time, not build time: pi keeps it under
+# ~/.pi/agent/npm/node_modules, which is on the bind mount and therefore does
+# not exist during the build. Idempotent - a no-op once it is there.
+ADAPTER_PKG="/home/piuser/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json"
+if [ ! -r "$ADAPTER_PKG" ] && [ -n "$PINNED_MCP_ADAPTER_VERSION" ]; then
+    echo "Installing pi-mcp-adapter@${PINNED_MCP_ADAPTER_VERSION} (first run, ~30s)"
+    timeout 300 pi install "npm:pi-mcp-adapter@${PINNED_MCP_ADAPTER_VERSION}" </dev/null \
+        || echo "warn: pi install pi-mcp-adapter failed - the browser falls back to the CLI path"
+fi
+
+# --- find the checkout, and check the knobs that do NOT follow this home -----
+# PI_SESSIONS_DIR, MODELS_DIR and CAPTURES_DIR are handed to docker compose,
+# which resolves them on the WINDOWS side. They do not move with this
+# container's HOME, and a stale one fails as a FileNotFoundError on a path that
+# plainly exists - the container simply has no view of it.
+REPO=""
+for cand in /home/piuser/qwen3.8-forge /home/piuser/instantcoffee; do
+    [ -f "$cand/docker-compose.yml" ] && { REPO="$cand"; break; }
+done
+if [ -n "$REPO" ]; then
+    echo "Stack checkout: $REPO"
+    SESS="$(grep -E '^[[:space:]]*PI_SESSIONS_DIR=' "$REPO/.env" 2>/dev/null | tail -n1 | cut -d= -f2-)"
+    # Always PRINT it. The container cannot derive a host path from its own
+    # HOME, so without PI_HOME_HOSTPATH the honest thing is to show the value
+    # and let the operator recognise it, not to guess and be confidently wrong.
+    if [ -z "$SESS" ]; then
+        echo "warn: PI_SESSIONS_DIR is unset in $REPO/.env"
+    elif [ -n "${PI_HOME_HOSTPATH:-}" ]; then
+        case "$SESS" in
+            "$PI_HOME_HOSTPATH"*) echo "PI_SESSIONS_DIR: $SESS (under this home)" ;;
+            *) echo "warn: PI_SESSIONS_DIR=$SESS is not under PI_HOME_HOSTPATH=$PI_HOME_HOSTPATH."
+               echo "      capture.sh import-pi would read ANOTHER home's transcripts."
+               echo "      Set it to ${PI_HOME_HOSTPATH%/}/.pi/agent/sessions" ;;
+        esac
+    else
+        echo "PI_SESSIONS_DIR: $SESS   (host path - it does not follow this"
+        echo "                 container's home; pass -e PI_HOME_HOSTPATH=... to have this checked)"
+    fi
+else
+    echo "No stack checkout found under /home/piuser."
+    echo "  git clone <repo> ~/qwen3.8-forge   then edit .env (PI_SESSIONS_DIR) and run ./scripts/setup.sh"
+fi
+
+# --- the docker socket -------------------------------------------------------
+# Every stack script goes through it. Saying so now beats "permission denied"
+# from inside up.sh, which reads as a broken script.
+if docker version >/dev/null 2>&1; then
+    echo "Docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null) (socket reachable)"
+else
+    echo "warn: the docker socket is not reachable - ./scripts/up.sh cannot start the stack."
+    echo "      Run with: -v /var/run/docker.sock:/var/run/docker.sock"
+fi
+
+# --- forge, if it is already up ----------------------------------------------
+# Two probes, never one: /forge/health is forge's own liveness, /health is the
+# BACKEND's readiness forwarded. Conflating them reports "forge is down" for the
+# whole ~25 minute cold load of a model that is loading perfectly normally.
+if curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/forge/health 2>/dev/null; then
+    if curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/health 2>/dev/null; then
+        echo "forge: up, model loaded (host.docker.internal:8081)"
+    else
+        echo "forge: up, model still loading (watch it with ./scripts/logs.sh llama)"
+    fi
+else
+    echo "forge: not answering on host.docker.internal:8081 - start it with ./scripts/up.sh"
+fi
+
+# --- git ---------------------------------------------------------------------
+# Said out loud rather than discovered at the first commit. This container
+# carries no identity and no credentials by design; git works locally and
+# nothing can push.
+if [ -z "$(git config --global user.email 2>/dev/null)" ]; then
+    echo "git:     no identity or credentials in this container (local commits will be refused)"
+fi
+
+echo "pi:      $(pi --version 2>/dev/null || echo 'not found')"
+echo "rtk:     $(rtk --version 2>/dev/null || echo 'not found')"
+echo "mcp2cli: $(mcp2cli --version 2>/dev/null || echo 'not found')"
+echo "uv:      $(uv --version 2>/dev/null || echo 'not found')"
+echo "Chrome:  $(google-chrome --version 2>/dev/null || echo 'not found')"
+echo "Browser: /opt/zendriver-mcp (ZENDRIVER_MCP_DIR)"
+echo
+echo "cd into a project and run:  qpi"
+
+exec bash
+INNER
+chmod +x /root/start.sh
+STARTUP_EOF
+
+# ── Root's bashrc (sources the user one) ─────────────────────────────────────
+RUN echo 'cd /home/piuser && [ -f .bashrc ] && source .bashrc' > /root/.bashrc
+
+# ── Ownership and working directory ──────────────────────────────────────────
+RUN mkdir -p /home/piuser && chown -R root:root /home/piuser && git lfs install && groupadd -f docker
+
+LABEL org.opencontainers.image.title="instantcoffee pi agent" \
+      org.opencontainers.image.description="pi coding agent + Zendriver browser stack, in a home of its own" \
+      pi.rtk.version="${RTK_VERSION}" \
+      pi.mcp_adapter.version="${MCP_ADAPTER_VERSION}" \
+      pi.mcp2cli.version="${MCP2CLI_VERSION}"
+
+WORKDIR /home/piuser
+
+# tini reaps Xvfb, Chrome and the browser server. Without a real PID 1 those
+# become zombies that pile up across a long session and, in Chrome's case, hold
+# their profile locks so the next launch fails.
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/bin/bash", "/root/start.sh"]

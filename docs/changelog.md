@@ -92,4 +92,34 @@ and it must be run on a quiet box.
 
 ---
 
+**`Dockerfile.pi` — pi in a container of its own, 2026-08-26.** Optional, and
+nothing else in this repo depends on it. It carries pi, Chrome + the Zendriver
+MCP server, `rtk`, `mcp2cli`, `uv` and a docker client, so a session can be given
+its own home directory. llama and forge stay in the compose stack on the host
+GPU, driven through a mounted docker socket; `pi-local.sh` already swaps
+`localhost` for `host.docker.internal` when it sees `/.dockerenv`, so no script
+changed.
+
+Three things it does deliberately, each paid for elsewhere in this stack:
+every tool is installed into the **image** rather than `$HOME`, because `$HOME`
+is the bind mount and anything the build writes there is shadowed the moment the
+volume is attached; `x11-utils` is a hard dependency, because `browser.sh`'s
+display probe otherwise falls back to a `pgrep` that a stale
+`/tmp/.X11-unix/X99` socket satisfies and Chrome drops silently to headless; and
+the image seeds **no credentials** of any kind, saying so at startup rather than
+letting it be found at the first commit.
+
+**Verified on the box:** the built image reaches forge at
+`host.docker.internal:8081` and completes a real pi turn with a tool call; the
+Zendriver server comes up with **98 tools** and drives a headed Chrome on Xvfb
+through `navigate` + `get_text_content`; `scripts/browser.sh up/status/navigate/down`
+works from inside against the read-only checkout.
+
+`docs/container.md` also records the three absolute-path dependencies that break
+quietly when an **existing** agent home is relocated — the crypto snapshot's
+IndexedDB key above all — and why the one-bot-per-Matrix-account lock cannot see
+across two containers' home directories.
+
+---
+
 [← back to the README](../README.md)

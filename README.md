@@ -190,6 +190,7 @@ be the wrong trade.
 | [docs/quants.md](docs/quants.md) | What fits in 24 GiB and what each step down costs |
 | [docs/benchmarking.md](docs/benchmarking.md) | Verifying it works, every measurement command, capture |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Symptoms, in the order you are likely to hit them |
+| [docs/container.md](docs/container.md) | Running pi in a container: `Dockerfile.pi`, the mount rules, moving an agent home |
 | [docs/layout.md](docs/layout.md) | Every file and directory, and what it is for |
 | [docs/changelog.md](docs/changelog.md) | What changed, and when |
 | `versions.lock` | **The authority on what is pinned right now.** Not prose — the record of what was verified working |
