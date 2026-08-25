@@ -293,11 +293,30 @@ rename. All three fail quietly.
 
 Copy the built `channels/prinny/runtime` along with the checkout and it stays
 valid — the stamp is a content fingerprint of `vendor/prinny-channel/server/src`,
-not a path — so `--staged` reports `current` and no rebuild is needed. Verify it
-rather than assume:
+not a path — so `--staged` reports `current` and no rebuild is needed.
+
+**But `--staged` is not proof the channel can start.** If `PRINNY_BOT_PATH`
+points at a local `prinny-bot` checkout, the runtime's
+`node_modules/@prinny/bot` is a **symlink into it**, and node resolves *through*
+the symlink to the real path — so `matrix-js-sdk` and the rest are looked up in
+**that checkout's** `node_modules`, not the runtime's. Copy the bot checkout
+without its `node_modules` and everything reports healthy right up until the
+sidecar starts, at which point the log shows:
+
+```
+unhandled rejection: Error [ERR_MODULE_NOT_FOUND]:
+  Cannot find package 'matrix-js-sdk' imported from .../prinny-bot/dist/index.js
+```
+
+and the session says only *"the channel is up but has not logged into Matrix
+yet"* — because the sidecar IS up, and is holding the account lock, having
+failed one import. So verify the thing that actually matters, which is that the
+module loads:
 
 ```bash
-node vendor/prinny-channel/server/bin/prinny-channel.mjs --staged
+node vendor/prinny-channel/server/bin/prinny-channel.mjs --staged   # source fingerprint
+node -e "import('<runtime>/node_modules/@prinny/bot/dist/index.js')
+           .then(() => console.log('bot module loads'))"            # dependency tree
 ```
 
 ## One bot per Matrix account, and containers cannot see each other

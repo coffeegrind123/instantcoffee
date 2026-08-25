@@ -147,6 +147,19 @@ question that was actually being asked: it keeps `/tmp` and `/usr` out and lets
 a mounted project in. The fallback also says which mount is missing and prints
 the `-v` line to add, rather than one dim line about not being visible.
 
+**A relocated agent home needs `prinny-bot`'s `node_modules` too, 2026-08-26.**
+`docs/container.md` said to copy the built runtime and verify with `--staged`,
+which reports `current` and proves the source fingerprint matches. It does not
+prove the channel can start. Where `PRINNY_BOT_PATH` names a local checkout the
+runtime's `node_modules/@prinny/bot` is a symlink into it, and node resolves
+through the symlink to the real path — so the bot's dependencies are looked up
+in that checkout, not in the runtime. Omit them and every reader says healthy
+until the sidecar throws `ERR_MODULE_NOT_FOUND` on `matrix-js-sdk`, which the
+session surfaces as the far less specific "the channel is up but has not logged
+into Matrix yet" — because the sidecar is up, and holding the account lock,
+having failed a single import. The doc now says to import the module as the
+check, rather than to trust the fingerprint.
+
 ---
 
 [← back to the README](../README.md)
