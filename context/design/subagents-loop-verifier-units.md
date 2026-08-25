@@ -1742,7 +1742,7 @@ Three habits fall out of it, and they are the transferable part:
 ## 15. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-subagents-lite && npm test && node tests/lint.mjs )   # 182 + 70/70

@@ -1622,7 +1622,7 @@ so each is its own control.
 ## 10. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-subagents-lite && npm test && node tests/lint.mjs )   # 207 + 71/71

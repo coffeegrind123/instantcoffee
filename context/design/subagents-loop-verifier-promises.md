@@ -2593,7 +2593,7 @@ exit non-zero if an expectation fails.
 ### 12.3 Re-running everything
 
 ```sh
-   cd ~/qwen3.8-forge
+   cd ~/instantcoffee
    for d in vendor/pi-loop-mode vendor/pi-subagents-lite vendor/prinny-channel \
             .pi/extensions/compaction-guard; do (cd $d && npm test && npm run lint); done
    (cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)

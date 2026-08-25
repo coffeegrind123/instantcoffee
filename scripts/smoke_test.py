@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""End-to-end verification of the qwen3.8-forge stack.
+"""End-to-end verification of the instantcoffee stack.
 
 Runs inside the compose network (`docker compose --profile tools run --rm
 smoketest`), so it exercises the same service names the proxy itself uses.
@@ -320,7 +320,7 @@ def _check_content_repeats(content: str, label: str) -> None:
 
 
 def main() -> int:
-    print(f"\nqwen3.8-forge smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
+    print(f"\ninstantcoffee smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
 
     print("Reachability")
     llama_up = wait_for(f"{LLAMA_URL}/health", "llama-server")

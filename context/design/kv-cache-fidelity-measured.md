@@ -1403,10 +1403,10 @@ token.
 
 **The restart happens before the analysis, not from the EXIT trap**, because on
 2026-08-24 the trap did not fire three runs out of three and left
-`qwen38-llama` stopped each time; see §3f's defect list. Checking `docker ps`
+`instantcoffee-llama` stopped each time; see §3f's defect list. Checking `docker ps`
 after a run is still worth the two seconds.
 
-`llama-perplexity` loads its own copy of the weights, so `qwen38-llama` must be
+`llama-perplexity` loads its own copy of the weights, so `instantcoffee-llama` must be
 stopped for the run; the script does that itself and restarts it on any exit
 path. **`--load-mode none` is not optional** for any direct `docker run` of the
 llama image here — without it, demand-paging the GGUF through the 9p bind mount

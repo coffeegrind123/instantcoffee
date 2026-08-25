@@ -59,7 +59,7 @@
 #      larger N, which is exactly the confound this exists to remove.
 #
 # WHAT IT COSTS. llama-perplexity loads its own copy of the weights, so
-# qwen38-llama must be STOPPED for the probe and pass stages. ~3.5 min per load,
+# instantcoffee-llama must be STOPPED for the probe and pass stages. ~3.5 min per load,
 # ~13 min of scoring, eleven loads: about an hour, then one cold reload.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -143,8 +143,8 @@ MODELS="$(env_get MODELS_DIR)";          [[ -n "$MODELS" ]] || die "MODELS_DIR i
 CAPS="$(env_get CAPTURES_DIR)";          [[ -n "$CAPS" ]] || die "CAPTURES_DIR is not set in .env"
 NGL="$(env_get NGL)";                    : "${NGL:=999}"
 IMAGE="ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG_V}"
-SIDECAR_IMAGE="qwen38-forge/proxy:$(env_get FORGE_VERSION)"
-LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
+SIDECAR_IMAGE="instantcoffee/proxy:$(env_get FORGE_VERSION)"
+LLAMA_CT="${LLAMA_CONTAINER:-instantcoffee-llama}"
 OUTDIR="/captures/${OUT_SUBDIR}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOCAL_LOGDIR="${REPO_ROOT}/.ppl-depth-logs/${STAMP}"

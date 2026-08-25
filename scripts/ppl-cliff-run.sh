@@ -107,8 +107,8 @@ CAPS="$(env_get CAPTURES_DIR)";          [[ -n "$CAPS" ]] || die "CAPTURES_DIR i
 LLAMA_PORT_V="$(env_get LLAMA_PORT)";    : "${LLAMA_PORT_V:=8080}"
 NGL="$(env_get NGL)";                    : "${NGL:=999}"
 IMAGE="ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG_V}"
-SIDECAR_IMAGE="qwen38-forge/proxy:$(env_get FORGE_VERSION)"
-LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
+SIDECAR_IMAGE="instantcoffee/proxy:$(env_get FORGE_VERSION)"
+LLAMA_CT="${LLAMA_CONTAINER:-instantcoffee-llama}"
 # The tokenizer is reached over the compose network by its alias rather than
 # over a published port: ppl_depth_build.py already does exactly this, and a
 # published port is a property of docker-compose.yml that a sibling container
@@ -416,7 +416,7 @@ main_run() {
   done
 
   # RESTART BEFORE THE ANALYSIS, AND NOT FROM THE TRAP. Three runs on
-  # 2026-08-24 all ended with qwen38-llama stopped: the last line of output was
+  # 2026-08-24 all ended with instantcoffee-llama stopped: the last line of output was
   # the log-prob cleanup, restore printed neither of its two messages, and the
   # container sat Exited until it was started by hand. The third run had an
   # explicit restore call AFTER analyse and it still did not run, which places

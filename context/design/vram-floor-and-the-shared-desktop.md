@@ -58,7 +58,7 @@ The GPU performance counters are not subject to that limitation:
 ```
 
 `vmwp` is the Hyper-V worker process hosting the WSL2 / Docker Desktop VM.
-**`qwen38-llama` is the only GPU-enabled container on this box** — re-checked this
+**`instantcoffee-llama` is the only GPU-enabled container on this box** — re-checked this
 session across all 17 running containers' `HostConfig.DeviceRequests`, and one
 of them (`xgb-daemon`, image `tennis-xgboost-gpu`) is named as though it were a
 counter-example and is not: no devices, not privileged, and no `/dev/dxg`

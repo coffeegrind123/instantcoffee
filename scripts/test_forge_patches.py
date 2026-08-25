@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Do the build-time forge patches actually BEHAVE? Runs inside the built image.
 
-    docker run --rm --entrypoint python qwen38-forge/proxy:ci /work/scripts/test_forge_patches.py
+    docker run --rm --entrypoint python instantcoffee/proxy:ci /work/scripts/test_forge_patches.py
 
 WHY THIS EXISTS, GIVEN THE PATCHES ALREADY FAIL THE BUILD
 

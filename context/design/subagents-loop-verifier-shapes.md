@@ -1872,7 +1872,7 @@ print BEFORE and NOW, so each is now its own control.
 ## 11. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-subagents-lite && npm test && node tests/lint.mjs )   # 193 + 70/70

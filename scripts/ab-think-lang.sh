@@ -61,16 +61,16 @@ if (( SAVE )); then
 fi
 
 set +e
-compose "${cmd[@]}" "${PASSTHRU[@]}" 2>&1 | tee /tmp/qwen38-ab-think-lang.txt
+compose "${cmd[@]}" "${PASSTHRU[@]}" 2>&1 | tee /tmp/instantcoffee-ab-think-lang.txt
 STATUS="${PIPESTATUS[0]}"
 set -e
 
 if (( SAVE )); then
   # The container cannot write to the repo, so the JSON block is lifted out of
   # the captured output rather than mounted back.
-  python3 - "$REPO_ROOT/results/think-lang-ab.json" <<'PY' || warn "could not extract JSON — see /tmp/qwen38-ab-think-lang.txt"
+  python3 - "$REPO_ROOT/results/think-lang-ab.json" <<'PY' || warn "could not extract JSON — see /tmp/instantcoffee-ab-think-lang.txt"
 import json, re, sys
-text = open("/tmp/qwen38-ab-think-lang.txt", encoding="utf-8", errors="replace").read()
+text = open("/tmp/instantcoffee-ab-think-lang.txt", encoding="utf-8", errors="replace").read()
 m = re.search(r"```json\s*\n(.*?)\n```", text, re.S)
 if not m:
     raise SystemExit("no JSON block in output")

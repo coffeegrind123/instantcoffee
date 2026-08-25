@@ -27,7 +27,7 @@
 #   \GPU Adapter Memory(*)\Dedicated Usage   whole device
 #   \GPU Process Memory(*)\Dedicated Usage   per process, by pid
 #
-# `vmwp` is the Hyper-V worker process hosting the WSL2/Docker VM. qwen38-llama
+# `vmwp` is the Hyper-V worker process hosting the WSL2/Docker VM. instantcoffee-llama
 # is the only GPU-enabled container on this box (checked across every running
 # container's HostConfig.DeviceRequests), so vmwp's dedicated usage IS llama's,
 # and:

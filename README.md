@@ -1,6 +1,6 @@
-# qwen3.8-forge
+# instantcoffee
 
-[![CI](https://img.shields.io/badge/ci-passing-brightgreen?logo=githubactions&style=flat)](https://github.com/coffeegrind123/qwen3.8-forge/actions)
+[![CI](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coffeegrind123/instantcoffee/main/badges/ci.json)](https://github.com/coffeegrind123/instantcoffee/actions)
 
 Reproducible Docker Compose stack running **Qwen3.8-27B** on a single **RTX 4090**,
 behind the **forge** guardrail proxy, driven by the **pi** coding agent. One
@@ -117,7 +117,7 @@ that port is exposed only for debugging and metrics.
 (2026-08-12): it cost a launcher, an Anthropic-wire smoke test, a Harbor agent
 subclass, an SDK dependency, and a set of `.env` keys, all to serve a client
 whose fixed prompt-and-tool-schema overhead is the worst possible fit for a
-32K local window. forge still *serves* `/v1/messages`, so an Anthropic-shaped client
+single-user local window. forge still *serves* `/v1/messages`, so an Anthropic-shaped client
 would work — it is simply not what anything here is tuned, measured, or
 documented for.
 
@@ -135,7 +135,7 @@ documented for.
 ## Quick start
 
 ```bash
-git clone <this repo> && cd qwen3.8-forge
+git clone <this repo> && cd instantcoffee
 
 # Edit MODELS_DIR in .env first if D: is not where you want ~18 GB to land.
 ./scripts/setup.sh
@@ -150,13 +150,13 @@ project you want it to work on and call the launcher by absolute path:
 
 ```bash
 cd ~/my-project
-~/qwen3.8-forge/scripts/pi-local.sh
+~/instantcoffee/scripts/pi-local.sh
 ```
 
 Add the alias once and you never type the path again:
 
 ```bash
-echo "alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
+echo "alias qpi='~/instantcoffee/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
 cd ~/my-project && qpi
 ```
 
@@ -170,7 +170,7 @@ cd ~/my-project && qpi
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
 | `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
-| `cd <project> && ~/qwen3.8-forge/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
+| `cd <project> && ~/instantcoffee/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
@@ -196,7 +196,7 @@ cd ~/my-project && qpi
 | `./scripts/capture.sh index` | What workstreams are on the tape, rebuilt from a flat log by longest-common-prefix over per-message hashes. `rw` counts history REWRITES — a turn whose prompt was not the previous one plus a suffix |
 | `./scripts/capture.sh export s7f3a91 --out /captures/corpus/deep.txt` | Turn one workstream into a `llama-perplexity --kl-divergence-base` corpus, rendered through the server's own `/apply-template` and checked against the token count the server itself reported for that request |
 | `./scripts/capture.sh import-pi ~/.pi/agent/sessions/<slug>/*.jsonl` | Read pi's own transcripts into the same shape — real sessions already on disk. They carry no system prompt and no tool schemas, so every record is stamped `gaps` and refused for a corpus without `--allow-gaps` |
-| `docker run --rm --entrypoint python qwen38-forge/proxy:${FORGE_VERSION} /work/scripts/test_forge_patches.py` | Do the five build-time forge patches actually BEHAVE? The patches already fail the build when forge's source moves — that is a check on the input. This drives the patched functions inside the image: content vs reasoning_content on a tool-call turn, a reasoning-only turn surviving, the cross-tool merge staying off, and `FORGE_MERGE_ACROSS_TOOLS=1` putting it back |
+| `docker run --rm --entrypoint python instantcoffee/proxy:${FORGE_VERSION} /work/scripts/test_forge_patches.py` | Do the five build-time forge patches actually BEHAVE? The patches already fail the build when forge's source moves — that is a check on the input. This drives the patched functions inside the image: content vs reasoning_content on a tool-call turn, a reasoning-only turn surviving, the cross-tool merge staying off, and `FORGE_MERGE_ACROSS_TOOLS=1` putting it back |
 | `./scripts/capture.sh self-test` | 98 checks over the recorder and the session rebuilder, no server needed. Includes the two controls that can fail: an unbuffered-stream check and a recorder that raises on every write |
 | `./scripts/bench-literal.sh --sweep 2000,16000,48000,90000 --repeat 3` | The same probe as a depth sweep. Reports per-field exact-match rates and classifies each miss — `tail_swap` and `dropped_head` are flipped tokens, `truncated` and `missing` are usually the model declining to copy |
 | `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
@@ -365,17 +365,45 @@ deleted along with the rest of the eval harness rather than left to rot.
 `prose` moved model as well as version. There is no 3.8 Fable-Fusion — DavidAU
 had published one 3.8 model at migration time, with no GGUF — so the whole
 Fable-Fusion card, including its `temp <= 1` MTP ceiling and its rep-pen ban,
-is gone with it. The replacement is
+is gone with it.
+
+Since **2026-08-25** the model is
+[`mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF`](https://huggingface.co/mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF)
+(`i1-Q4_K_M`), an imatrix requant of
+[`OBLITERATUS/Qwen3.8-27B-OBLITERATED`](https://huggingface.co/OBLITERATUS/Qwen3.8-27B-OBLITERATED),
+which publishes no GGUF itself. It was picked over five candidates because it is
+the only 3.8 decensored build that removes **soft deflections** — the
+safety-lecture-instead-of-substance answer — and not just hard refusals, while
+still measuring what that cost: MMLU **84.5 -> 82.3**, a real **-2.1pp** that
+sits outside the reported stderr. The damage is not uniform, and that is the
+whole reason it is acceptable here: **STEM -3.3pp** against **humanities
+-1.0pp**. A fiction regime spends its capability in humanities and pays in STEM,
+which is the cheapest place on this model to take the hit — and exactly why it
+must not be promoted to `coding`. It is also 714 MiB *smaller* than the coding
+model, so it improves VRAM headroom rather than eating it. Weaker part of the
+evidence, stated plainly: its refusal claim rests on manual auditing, not on a
+held-out prompt set with a published count.
+
+The runner-up is kept documented in `modes/prose.env` and `.env` rather than
+discarded:
 [`JonathanColetti/Qwen3.8-27B-Uncensored-GGUF`](https://huggingface.co/JonathanColetti/Qwen3.8-27B-Uncensored-GGUF),
-picked because it publishes numbers instead of adjectives: Heretic
-refusal-direction removal at bf16, **12/100 refusals against the base model's
-98/100** at KL 0.1191, a mean 0-shot capability delta of **-0.5** across
-MMLU/ARC-C/HellaSwag/Winogrande (all inside stderr), and MTP tensors grafted
-back after abliteration and verified file by file. That last point is the
-one that matters operationally — abliteration silently drops `blk.64` while
-`config.json` still advertises it, so most decensored 3.8 GGUFs are 64 blocks
-and cannot do MTP at all. This one is 65, checked here from the GGUF header
-before it was chosen.
+which has the best *evidence* of the field — Heretic refusal-direction removal
+merged at bf16 (no quantized round trip), **12/100 refusals against the base
+model's 98/100** at KL 0.1191 off a published 23-point Pareto front, and a mean
+0-shot capability delta of **-0.5** across MMLU/ARC-C/HellaSwag/Winogrande, every
+delta inside stderr. It keeps more capability and refuses more often. **If one
+model ever has to serve both regimes, use that one, not OBLITERATUS.**
+
+Operationally the thing to check in any replacement is the MTP head: abliteration
+re-saves through transformers, which silently drops `blk.64` while `config.json`
+still advertises it, and `--spec-type draft-mtp` then dies on a file that looks
+correct. Read the GGUF header off the Hub *before* downloading — 866 tensors,
+`block_count=65`, `nextn_predict_layers=1`, `blk.64.nextn.*` present. This README
+used to claim most decensored 3.8 GGUFs fail that check; re-measured on
+2026-08-25 across the five most popular (JonathanColetti, huihui `UD-Q4_K_XL`,
+huihui `Q4_K`, HauhauCS `Q4_K_P`, mradermacher OBLITERATED `i1-Q4_K_M`), **all
+five passed**. The check is still worth running on anything new — the failure is
+silent — but it is not the common case it was written up as.
 
 DRY stays at 0.8 in `prose` as a preference now, not as a card requirement: it
 penalises repeated *sequences* rather than repeated tokens, which is what keeps
@@ -499,14 +527,14 @@ from anywhere:
 
 ```bash
 cd ~/my-project
-~/qwen3.8-forge/scripts/pi-local.sh
+~/instantcoffee/scripts/pi-local.sh
 ```
 
 pi then reads and edits files under `~/my-project`. Worth adding to your shell
 so you stop typing the path:
 
 ```bash
-echo "alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
+echo "alias qpi='~/instantcoffee/scripts/pi-local.sh'" >> ~/.bashrc && . ~/.bashrc
 cd ~/my-project && qpi
 ```
 
@@ -555,7 +583,7 @@ with `, /stack` when it is active.
 > `/stack` is forwarded to the model as plain text, you get a confident,
 > invented answer instead of an error. If you launch `pi` directly rather than
 > through `pi-local.sh`, pass
-> `-e ~/qwen3.8-forge/.pi/extensions/stack.ts` yourself.
+> `-e ~/instantcoffee/.pi/extensions/stack.ts` yourself.
 
 ```
 /stack                     model, context, slots, throughput, GPU, forge, settings
@@ -1294,9 +1322,13 @@ see the note on `CACHE_RAM` above and run `/free`.
 
 pi is minimal by design: **no MCP** (its README says so outright — "build CLI
 tools with READMEs, or build an extension that adds MCP support"), no
-sub-agents. On a 32K local window that is the feature, not the limitation. A
+sub-agents. On a local window that is the feature, not the limitation. A
 single MCP server can publish hundreds of tool schemas that load before your
 first message, and that budget is gone before the model has read anything.
+(This section was written against a 32K window. `CTX_SIZE` has been **98304**
+since 2026-08-23, so the pressure is a third of what it was — the argument is
+weaker than it reads, but it points the same way: standing cost you never chose
+is the expensive kind.)
 
 What you give up is real and worth stating: no MCP servers, no sub-agent
 fan-out, and no ecosystem of Claude Code plugins. What you get back is nearly
@@ -1375,8 +1407,8 @@ Two things that were measured rather than assumed, on 2026-08-12:
 
 ## Shorter bash output
 
-Same arithmetic as the MCP section, pointed at the other big consumer of a 32K
-window. [rtk](https://github.com/rtk-ai/rtk) is a Rust binary that filters a
+Same arithmetic as the MCP section, pointed at the other big consumer of the
+context window. [rtk](https://github.com/rtk-ai/rtk) is a Rust binary that filters a
 command's output before the client reads it — `git status` compacted, test
 runners reduced to their failures. `scripts/rtk.sh` installs a pinned build;
 `vendor/rtk-pi` is the pi extension that decides what gets filtered.
@@ -1599,7 +1631,9 @@ nothing pinned.
 ### The context arithmetic, again
 
 Wiring these 98 tools into a client that loads schemas costs **76,893 bytes —
-about 19k tokens, 60% of a 32K window** — before the first message. Neither mode
+about 19k tokens** — before the first message. That was **60% of the 32K window**
+this was measured on; at today's `CTX_SIZE=98304` it is **about 20%**. Still a
+fifth of the window spent before the model has read anything. Neither mode
 pays that. Adapter mode buys back 5 tools and a search hop for 2,178 tokens; CLI
 mode pays almost nothing standing and charges for discovery instead:
 
@@ -1619,7 +1653,7 @@ proxy and the CLI both do better.
 ### Nothing to manage
 
 The model is never told to start, stop or check anything, and neither skill
-mentions a lifecycle command. That is not politeness — on a 32K window, every
+mentions a lifecycle command. That is not politeness — every
 sentence about operating a service is context that could have been the page it
 was asked to read, and a model that believes it must repair the browser will
 spend a turn trying.
@@ -1905,7 +1939,7 @@ mmap'd load, which this is not.)
 `init: true` means llama-server is **PID 7**, not PID 1:
 
 ```bash
-docker exec qwen38-llama sh -c 'grep ^rchar /proc/7/io; cat /proc/7/wchan'
+docker exec instantcoffee-llama sh -c 'grep ^rchar /proc/7/io; cat /proc/7/wchan'
 ```
 
 Sample it twice and divide. `State: D` with `wchan: p9_client_rpc` is the

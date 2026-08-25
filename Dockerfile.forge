@@ -110,7 +110,7 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"
 # without cross-referencing .env.
-LABEL org.opencontainers.image.title="qwen3.8-forge proxy" \
+LABEL org.opencontainers.image.title="instantcoffee proxy" \
       org.opencontainers.image.description="forge-guardrails proxy in front of llama-server" \
       forge.version="${FORGE_VERSION}"
 

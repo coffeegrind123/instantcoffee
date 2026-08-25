@@ -9,8 +9,8 @@ find out what happened.
 
 
 **One thing on the stack DID change, and it is running.** `Dockerfile.forge`
-gained a sixth patch, the image `qwen38-forge/proxy:0.9.0` was rebuilt, and
-`qwen38-forge` was recreated onto it. `.env`, `docker-compose.yml` and `modes/`
+gained a sixth patch, the image `instantcoffee/proxy:0.9.0` was rebuilt, and
+`instantcoffee-forge` was recreated onto it. `.env`, `docker-compose.yml` and `modes/`
 are untouched; `git diff` over them across the session is empty. The patch is
 `patches/forge_anthropic_reasoning.py` and §6 below is why. `scripts/
 test_forge_patches.py` runs 44/44 inside the rebuilt image.
@@ -301,7 +301,7 @@ path.** Named, not fixed.
 
    # the forge patches, in the built image
    docker compose build forge
-   docker run --rm --entrypoint python qwen38-forge/proxy:0.9.0 \
+   docker run --rm --entrypoint python instantcoffee/proxy:0.9.0 \
        /work/scripts/test_forge_patches.py
 ```
 
@@ -1191,7 +1191,7 @@ If a run has already taken the machine down, the next thing to run is nothing.
 `.ppl-stride-logs/20260824T073747Z/w2048.log` is kept LOCALLY (the directory is
 gitignored, same as `.kld-logs/`): it is the evidence for the
 144.35 s/pass figure and the 70,053-token count. The scratchpad probe script was
-deleted. `qwen38-llama` is up and healthy; no orphan perplexity containers
+deleted. `instantcoffee-llama` is up and healthy; no orphan perplexity containers
 remain. `gguf_n_vocab()` moved from `kld-run.sh` into `lib.sh` and now takes
 `<models_dir> <gguf_file> <sidecar_image>`; `kld-run.sh`'s single call site was
 updated and it still parses.
@@ -1415,7 +1415,7 @@ truncated file, kept deliberately as the evidence for §3b. The 17.3 GB
 and the q8_0 arm), `diag-*` (D1), `batchctl-*` (C1, C2), `depthctl-*` (C3, C4),
 `depthctl2-*` (C5, C6, C7).
 
-The recorder is out of the path and `.env.local` is untouched. `qwen38-llama`
+The recorder is out of the path and `.env.local` is untouched. `instantcoffee-llama`
 was stopped and restarted five times over the session and is back up.
 
 ## Still open, carried
@@ -1642,7 +1642,7 @@ in the same window describes reaping a stray process, not stopping containers.
 from an accident, and the next person to lose two hours of a GPU run to it will
 have no way to tell either.
 
-`qwen38-llama` was then down for ~2 hours: the failed no-mmap load, the KLD run
+`instantcoffee-llama` was then down for ~2 hours: the failed no-mmap load, the KLD run
 itself, and the reload after. It is back, and `smoke-test.sh` is **11/11** on the
 restored stack. No throwaway containers left; `capture.sh status` reports the
 recorder out of the path; `//d/llm-captures/kld/` is empty because the runner
@@ -2011,7 +2011,7 @@ pi session — it was already 62 messages deep when forge came back from the las
 one, and llama's log shows a ten-minute gap in its big prompts spanning three
 restarts. One of its turns also ran under `keep-last` because it landed inside
 the comparison window. **Check for a running session before touching forge**:
-`docker logs --since 5m qwen38-forge | grep messages=` answers it in one line,
+`docker logs --since 5m instantcoffee-forge | grep messages=` answers it in one line,
 and ten minutes of quiet is not the same as nobody being there.
 
 ---
@@ -2106,7 +2106,7 @@ given"* is corrected to the narrower claim §11.7 already made.
 
 **`< /dev/null`.** `./scripts/pi-local.sh -p …` from a harness that hands fd 0 a
 socket **hangs before `exec pi`** — nine minutes, no model request, no output.
-Indistinguishable from a slow model. Check `docker logs qwen38-llama` for a
+Indistinguishable from a slow model. Check `docker logs instantcoffee-llama` for a
 request before concluding the stack is slow.
 
 **A relocated install has no npm packages**, so `pi-mcp-adapter` is absent and pi
@@ -2494,7 +2494,7 @@ because they were written from memory rather than read off the probes.
 
 Headless against the local model, child parked in one `bash` call so it does not
 hold the llama slot. The evidence is the session transcript
-(`~/.pi/agent/sessions/--home-claudeuser-qwen3.8-forge--/*.jsonl`), which records
+(`~/.pi/agent/sessions/--home-claudeuser-instantcoffee--/*.jsonl`), which records
 every tool call with its arguments — not the final answer text.
 
 ```
@@ -3958,7 +3958,7 @@ docker run --rm --gpus all --entrypoint nvidia-smi \
 Observed across ONE morning: **1,405 / 1,536 / 1,881 / 1,905 / 1,961 / 2,027
 MiB** — a 622 MiB swing.
 
-**It is not another container.** `qwen38-llama` is the only GPU-enabled
+**It is not another container.** `instantcoffee-llama` is the only GPU-enabled
 container on this box (checked via `HostConfig.DeviceRequests` across every
 running container). `nvidia-smi --query-compute-apps` from inside the container
 shows only pid 7, itself — a PID-namespace artefact, not evidence of absence.
@@ -4562,7 +4562,7 @@ time)`).
 The reconstruction is evidenced rather than remembered — the load-bearing
 argument is that `spec-sweep.sh` rewrites only the three `SPEC_*` keys and never
 `LLAMA_TAG`, `CTX_SIZE` or `CACHE_TYPE_*`, so those four pins *cannot* have
-varied across a run. Corroborated by the exited `qwen38-llama` container, which
+varied across a run. Corroborated by the exited `instantcoffee-llama` container, which
 still exists and whose `docker inspect` gives b10573 / `-c 65536` / `-ctk -ctv
 q8_0` / the V3 gguf, created the same minute the last result was written.
 

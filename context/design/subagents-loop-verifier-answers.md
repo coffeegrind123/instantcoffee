@@ -1850,7 +1850,7 @@ Two probes and one source comment were corrected rather than added:
 ## 10. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-subagents-lite && npm test && node tests/lint.mjs )   # 226 + 77/77

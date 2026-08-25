@@ -1,4 +1,4 @@
-name: qwen38-forge
+name: instantcoffee
 
 services:
   # ---------------------------------------------------------------------------
@@ -6,7 +6,7 @@ services:
   # ---------------------------------------------------------------------------
   llama:
     image: ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}
-    container_name: qwen38-llama
+    container_name: instantcoffee-llama
     restart: unless-stopped
     gpus: all
     # llama-server runs as PID 1 and does not reap children. Twice on this box a
@@ -142,8 +142,8 @@ services:
       dockerfile: Dockerfile.forge
       args:
         FORGE_VERSION: ${FORGE_VERSION}
-    image: qwen38-forge/proxy:${FORGE_VERSION}
-    container_name: qwen38-forge
+    image: instantcoffee/proxy:${FORGE_VERSION}
+    container_name: instantcoffee-forge
     restart: unless-stopped
     ports:
       - "${BIND_ADDR}:${FORGE_PORT}:8081"
@@ -178,7 +178,7 @@ services:
   # ---------------------------------------------------------------------------
   downloader:
     profiles: ["tools"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -209,7 +209,7 @@ services:
   # ---------------------------------------------------------------------------
   smoketest:
     profiles: ["tools"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -229,7 +229,7 @@ services:
   # ---------------------------------------------------------------------------
   bench:
     profiles: ["tools"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -262,7 +262,7 @@ services:
   # ---------------------------------------------------------------------------
   ab-think-lang:
     profiles: ["tools"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -295,7 +295,7 @@ services:
   # ---------------------------------------------------------------------------
   literal:
     profiles: ["tools"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -332,13 +332,13 @@ services:
   # ---------------------------------------------------------------------------
   capture:
     profiles: ["capture"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
       args:
         FORGE_VERSION: ${FORGE_VERSION}
-    container_name: qwen38-capture
+    container_name: instantcoffee-capture
     restart: unless-stopped
     # root, for the same reason the downloader is run --user 0:0 against
     # MODELS_DIR: Docker Desktop presents a bind mount as root:root 0755, and
@@ -384,7 +384,7 @@ services:
   # ---------------------------------------------------------------------------
   sessions:
     profiles: ["tools"]
-    image: qwen38-forge/proxy:${FORGE_VERSION}
+    image: instantcoffee/proxy:${FORGE_VERSION}
     build:
       context: .
       dockerfile: Dockerfile.forge
@@ -410,4 +410,4 @@ services:
 # ---------------------------------------------------------------------------
 volumes:
   slot-cache:
-    name: qwen38-slot-cache
+    name: instantcoffee-slot-cache

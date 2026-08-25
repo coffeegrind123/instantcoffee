@@ -2199,7 +2199,7 @@ document's arithmetic.
 ## 12. The evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates — check the TEST COUNT as well as the failure count
 ( cd vendor/pi-loop-mode       && npm test && npm run lint )   # 235

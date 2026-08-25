@@ -34,7 +34,48 @@ model_file_sha256   = 3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72b
                       the rollback: sha256 bee238bbeb3dc0a34bde4d0dedbaee1f98c0
                       09e8bb4226f03070054c12fb1372, 17923394624 bytes, mtime
                       1786799731. 17.9 GB; delete when satisfied with V3.
-model_repo_modified = 2026-08-15T05:48:44.000Z
+model_repo_modified = 2026-08-20T12:04:25.000Z
+                      Read from the Hub API on 2026-08-25. This field had read
+                      2026-08-15T05:48:44.000Z, which was stale by five days —
+                      it is the REPO's mtime, not the file's, and it moves when
+                      unsloth touches anything in the repo. It is advisory only.
+                      The load-bearing identity is model_file_sha256 above, and
+                      that was re-verified on 2026-08-25 three ways: the Hub's
+                      LFS oid, this lock, and SHA-256 of the file on disk all
+                      read 3f22707900...4a72bc8b01e. The rollback file also
+                      re-verified: bee238bbeb...c12fb1372.
+
+# --- prose regime -----------------------------------------------------------
+# The prose model was UNPINNED until 2026-08-25 — no repo, no file, no hash —
+# which mattered because these repos ship near-identically named variants that
+# differ in the one way this stack cannot tolerate (JonathanColetti publishes
+# both `X.gguf` and `X-noMTP.gguf`; a noMTP file loads fine and silently kills
+# --spec-type draft-mtp).
+prose_model_repo    = mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF
+prose_model_file    = Qwen3.8-27B-OBLITERATED.i1-Q4_K_M.gguf
+prose_model_size    = 16810714400
+                      SELECTED 2026-08-25 over JonathanColetti (the incumbent)
+                      and three others. Reasoning and the full comparison live
+                      in modes/prose.env; the short version is that it is the
+                      only 3.8 decensored build that removes soft deflections
+                      as well as hard refusals AND measures the cost (MMLU
+                      84.5 -> 82.3, -2.1pp, concentrated in STEM at -3.3pp and
+                      lightest in humanities at -1.0pp).
+                      MTP VERIFIED from the GGUF header off the Hub before
+                      download: 866 tensors, block_count=65,
+                      nextn_predict_layers=1, blk.64.nextn.* all four present.
+                      714 MiB SMALLER than the coding model, so the 96K VRAM
+                      figures in vram_note are an upper bound for this mode.
+                      sha256 NOT YET RECORDED — fill it in from the downloaded
+                      file, the download was still in flight when this was
+                      written.
+prose_model_prev    = JonathanColetti/Qwen3.8-27B-Uncensored-GGUF ::
+                      Qwen3.8-27B-Uncensored-IQ4_XS.gguf, 15309039008 bytes,
+                      sha256 53adc4bbed67044d662273356bbf3a50fdec667ac21bbf18d
+                      13e5815fbccc7f5. Kept as the documented alternative and
+                      the pick if one model ever has to serve both regimes —
+                      MMLU -0.2, mean -0.5, all inside stderr, but 12/100
+                      residual refusals. Never downloaded to this box.
 context_size        = 98304 (CHANGED 2026-08-23, was 65536; MEASURED both ways)
                       Proven by scripts/ctx_needle.py, not by /props: a 90055-
                       token document with a distinct nonce planted at EACH END
@@ -125,7 +166,7 @@ spec_config         = ngram-simple,draft-mtp at n-max 4 / p-min 0.40 — the
                       that Q4_K crosses MMVQ -> MMQ at ne11 > 7 on this card. So
                       which CUDA GEMM computes the logits depends on how many
                       tokens the drafter proposed. Measured on the live server:
-                      `docker logs qwen38-llama | grep 'draft acceptance'` gives
+                      `docker logs instantcoffee-llama | grep 'draft acceptance'` gives
                       mean len 3.70-4.75 (verify batch 5-6, MMVQ) for ordinary
                       work, while bench_repeat.py's file-rewrite shape drafts
                       21-25 per cycle (MMQ). The kernel therefore switches

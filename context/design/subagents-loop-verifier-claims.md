@@ -1927,7 +1927,7 @@ the behaviour.** The executed evidence is `r2`, which is where it belongs.
 ## 13. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates — check the TEST COUNT as well as the failure count
 ( cd vendor/pi-loop-mode       && npm test && npm run lint )

@@ -1522,7 +1522,7 @@ All thirty-nine probes run clean — `g1`–`g3`, `verify-prior-fixes`, `h1`–`
 ## 10. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-subagents-lite && npm test && node tests/lint.mjs )   # 215 + 73/73

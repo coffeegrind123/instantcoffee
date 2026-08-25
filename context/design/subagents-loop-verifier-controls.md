@@ -1677,7 +1677,7 @@ test that pins an absence can only be wrong about whether.
 ## 13. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates — check the TEST COUNT as well as the failure count
 ( cd vendor/pi-loop-mode       && npm test && npm run lint )

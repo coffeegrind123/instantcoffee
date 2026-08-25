@@ -445,7 +445,7 @@ jobs:
           file: Dockerfile.forge
           build-args: FORGE_VERSION=${{ steps.forge.outputs.version }}
           load: true
-          tags: qwen38-forge/proxy:ci
+          tags: instantcoffee/proxy:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -456,12 +456,12 @@ jobs:
       # every defect they exist to fix. This drives the patched functions.
       - name: Forge patch behaviour
         run: |
-          docker run --rm --entrypoint python qwen38-forge/proxy:ci \
+          docker run --rm --entrypoint python instantcoffee/proxy:ci \
             /work/scripts/test_forge_patches.py
 
       - name: Verify scripts in image
         run: |
-          docker run --rm --entrypoint ls qwen38-forge/proxy:ci /work/scripts/ \
+          docker run --rm --entrypoint ls instantcoffee/proxy:ci /work/scripts/ \
             | tee /dev/stderr \
             | grep -q smoke_test.py
 
@@ -469,15 +469,15 @@ jobs:
       # COPY would only surface as a run-time crash on a machine with a GPU.
       - name: Verify prompt fragments in image
         run: |
-          docker run --rm --entrypoint ls qwen38-forge/proxy:ci /work/prompts/ \
+          docker run --rm --entrypoint ls instantcoffee/proxy:ci /work/prompts/ \
             | tee /dev/stderr \
             | grep -q think-zh.md
-          docker run --rm --entrypoint python qwen38-forge/proxy:ci \
+          docker run --rm --entrypoint python instantcoffee/proxy:ci \
             /work/scripts/ab_think_lang.py --help > /dev/null && echo "ab harness: OK"
 
       - name: Verify smoke_test.py imports and has check_for_repeats
         run: >
-          docker run --rm --entrypoint python qwen38-forge/proxy:ci
+          docker run --rm --entrypoint python instantcoffee/proxy:ci
           -c "import ast; tree=ast.parse(open('/work/scripts/smoke_test.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('smoke_test fns:',fns); assert 'check_for_repeats' in fns"
 
       # ── badge (main push only) ────────────────────────────────────────

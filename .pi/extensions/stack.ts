@@ -693,7 +693,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 			description: "Control the forge + llama.cpp stack (unavailable: repo not found)",
 			handler: async (_args, ctx) => {
 				ctx.ui.notify(
-					"qwen3.8-forge repo not found from this directory — /stack needs docker-compose.yml, .env and scripts/lib.sh.",
+					"instantcoffee repo not found from this directory — /stack needs docker-compose.yml, .env and scripts/lib.sh.",
 					"error",
 				);
 			},

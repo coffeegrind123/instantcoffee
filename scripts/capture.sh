@@ -157,12 +157,12 @@ cmd_status() {
   printf 'forge backend      %s' "$backend"
   if [[ "$backend" == "$(capture_url)" ]]; then printf '   <- RECORDING\n'; else printf '   (recorder not in the path)\n'; fi
   printf 'tape directory     %s\n' "$(env_get CAPTURES_DIR)"
-  running="$(docker ps --filter name=qwen38-capture --format '{{.Status}}' 2>/dev/null)"
+  running="$(docker ps --filter name=instantcoffee-capture --format '{{.Status}}' 2>/dev/null)"
   printf 'capture container  %s\n' "${running:-not running}"
   if [[ -n "$running" ]]; then
     # /capture/health is answered by the recorder itself and never forwarded, so
     # this says nothing about whether llama is up — deliberately.
-    docker exec qwen38-capture python -c "
+    docker exec instantcoffee-capture python -c "
 import json,urllib.request
 d=json.load(urllib.request.urlopen('http://127.0.0.1:8082/capture/health',timeout=4))
 print(f\"  tape           {d['tape']}\")

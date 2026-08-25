@@ -15,8 +15,8 @@ re-learn expensively.
 **Highest value because it will cost you an hour of confusion otherwise.**
 
 `scripts/ppl-cliff-run.sh` finished four runs on 2026-08-24. Every one of them
-ended with `qwen38-llama` STOPPED, and the last two also skipped the analysis.
-The final run exited **1** having printed neither `==> restarting qwen38-llama`
+ended with `instantcoffee-llama` STOPPED, and the last two also skipped the analysis.
+The final run exited **1** having printed neither `==> restarting instantcoffee-llama`
 nor `==> analysis`, with no error anywhere in its log.
 
 What is known, so you do not re-check it:

@@ -1791,7 +1791,7 @@ could not be tested at all:
 ## 13. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-loop-mode       && npm test && npm run lint )          # 187

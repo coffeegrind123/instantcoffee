@@ -131,7 +131,7 @@
 # WHAT IT COSTS. Every chunk is a full W-token prefill from a cleared cache, so
 # an arm costs n_chunk * W tokens of prefill — ~1.0M tokens at W=8192 on a
 # 70k-token corpus. llama-perplexity loads its own copy of the weights, so
-# qwen38-llama is stopped for the whole run and restarted by a trap on every
+# instantcoffee-llama is stopped for the whole run and restarted by a trap on every
 # exit path. --load-mode none is NOT optional; see kld-run.sh's header.
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -182,8 +182,8 @@ MODELS="$(env_get MODELS_DIR)";          [[ -n "$MODELS" ]] || die "MODELS_DIR i
 CAPS="$(env_get CAPTURES_DIR)";          [[ -n "$CAPS" ]] || die "CAPTURES_DIR is not set in .env"
 NGL="$(env_get NGL)";                    : "${NGL:=999}"
 IMAGE="ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG_V}"
-SIDECAR_IMAGE="qwen38-forge/proxy:$(env_get FORGE_VERSION)"
-LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
+SIDECAR_IMAGE="instantcoffee/proxy:$(env_get FORGE_VERSION)"
+LLAMA_CT="${LLAMA_CONTAINER:-instantcoffee-llama}"
 ANALYSER="${REPO_ROOT}/scripts/ppl_stride_analyse.py"
 
 # --analyse-only re-reads an earlier run's logs. It exists because the arms are
@@ -373,7 +373,7 @@ sys.exit(0 if (verdict == 'OK' and not gaps) else 1)
   local swap_mb;  swap_mb="$(docker run --rm alpine free -m | awk '/^Swap:/{print $4}')"
 
   # THE SERVER'S OWN MEMORY IS ABOUT TO BE RELEASED, and not counting it turns a
-  # runnable window into a refusal. This script stops qwen38-llama before the
+  # runnable window into a refusal. This script stops instantcoffee-llama before the
   # first arm, so whatever it is holding right now is headroom the arms will
   # actually have. It is added EXPLICITLY and printed on its own line rather than
   # folded into `avail_mb`, because "free memory" that depends on an action this

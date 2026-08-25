@@ -726,7 +726,7 @@ curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
   || die "forge is up but the model is not loaded yet at ${BASE} — llama-server is
 still reading the GGUF. Watch it with ./scripts/logs.sh llama, or measure real
 progress with:
-  docker exec ${LLAMA_CONTAINER:-qwen38-llama} sh -c 'grep ^rchar /proc/7/io'
+  docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
 echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"

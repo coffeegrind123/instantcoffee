@@ -58,7 +58,10 @@ single-user 4090 will not exercise.
 
 **`ghcr.io/ggml-org/llama.cpp`, pinned to an immutable per-build tag.** The floating
 `server-cuda` tag pointed at build `b10200` (built 2026-07-31T08:46Z) at the time of
-writing, and moves without warning. `.env` pins `server-cuda-b10200`; `update.sh`
+writing, and moves without warning. `.env` pins an immutable per-build tag —
+`server-cuda-b10200` when this was written, `server-cuda-b10573` since 2026-08-22
+(see the entry for that date); read `LLAMA_TAG` in `.env` for the live pin rather
+than trusting a build number quoted in prose here. `update.sh`
 reads the floating tag's `org.opencontainers.image.version` annotation to discover
 the newest build and then pins *that* immutable tag. Reading the annotation beats
 paging the tag list — the tags endpoint returns an unordered 100-tag page whose
@@ -344,7 +347,7 @@ Combined with `--cache-reuse 64` and `--slot-prompt-similarity 0.20`: the engine
 compares incoming prompts against cached entries and reuses matching KV segments
 instead of recomputing. The similarity threshold is tuned per sasasin's config.
 
-Slot files are stored in a Docker named volume (`qwen38-slot-cache`) so they survive
+Slot files are stored in a Docker named volume (`instantcoffee-slot-cache`) so they survive
 container rebuilds but don't pollute the model directory.
 
 Caveat: `--cache-prompt` uses the `--cache-ram` budget (default 8192 MiB). At 64K
@@ -7276,7 +7279,7 @@ They carry `pins_source: "backfilled-2026-08-22"`, and `--report` prints
 `(reconstructed, not stamped at run time)` beside them every time. This is
 evidence, not recall:
 
-- The exited `qwen38-llama` container from the end of that sweep still exists.
+- The exited `instantcoffee-llama` container from the end of that sweep still exists.
   `docker inspect` gives image `server-cuda-b10573`, `-c 65536`, `-ctk/-ctv
   q8_0`, `-m /models/Qwen3.8-27B-UD-Q4_K_XL.gguf`, created `17:01Z` — the same
   minute the last result file was written.
@@ -8212,7 +8215,7 @@ and no surface anywhere naming which directory answered. §11.7 and
 `./scripts/pi-local.sh -p …` launched from a harness that hands fd 0 a socket
 **hangs before `exec pi`** — no model request, no output, indistinguishable from
 a slow model. `< /dev/null` fixes it. Recorded in §AI.7 with the way to tell the
-two apart: look for a request in `docker logs qwen38-llama` before concluding the
+two apart: look for a request in `docker logs instantcoffee-llama` before concluding the
 stack is slow.
 
 ### The probe count was wrong, and the arithmetic under it was right

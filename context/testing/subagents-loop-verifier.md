@@ -9,7 +9,7 @@ Start a session normally — `SUBAGENTS_ENABLED` and `SUBAGENT_VERIFY` are both 
 by default:
 
 ```
-~/qwen3.8-forge/scripts/pi-local.sh
+~/instantcoffee/scripts/pi-local.sh
 ```
 
 **Two things to know before starting, so normal behaviour is not read as a bug:**
@@ -66,7 +66,7 @@ A **background** one is injected as a message that no hook can see, which is why
 the fork bounds it at the source (`src/spawn/result-cap.ts`).
 
 ```
-Spawn a subagent with run_in_background true. Tell it to run: head -c 40000 ~/qwen3.8-forge/README.md — and return the complete raw output verbatim, no summary. Then poll AgentStatus until it's done and tell me how many characters you got.
+Spawn a subagent with run_in_background true. Tell it to run: head -c 40000 ~/instantcoffee/README.md — and return the complete raw output verbatim, no summary. Then poll AgentStatus until it's done and tell me how many characters you got.
 ```
 
 **Evidence, in order:**
@@ -125,7 +125,7 @@ Start a background subagent that counts slowly from 1 to 500, one number per tur
 the same code path.
 
 ```
-Use the loop tool to iterate until `cd ~/qwen3.8-forge/vendor/pi-subagents-lite && npm run --silent test` passes. Set a check command and a max of 5.
+Use the loop tool to iterate until `cd ~/instantcoffee/vendor/pi-subagents-lite && npm run --silent test` passes. Set a check command and a max of 5.
 ```
 
 **Evidence:** a `loop` **tool call**, not `/loop`, with `action: "start"`, a goal
@@ -190,7 +190,7 @@ it will load and do nothing — the factory guard holds independently.
 ### Pass path — visible in the TUI now, and still checkable headless
 
 ```sh
-~/qwen3.8-forge/scripts/pi-local.sh --mode json \
+~/instantcoffee/scripts/pi-local.sh --mode json \
   -p 'Use a subagent to report the value of DEFAULT_CONCURRENCY_LIMIT.' \
   | grep -o '"verification":"[a-z-]*"'
 ```
@@ -206,7 +206,7 @@ the whole length of the check and a pass rendered nothing at all.
 ### Control — proves the judge is really in the loop
 
 ```sh
-SUBAGENT_VERIFY=0 ~/qwen3.8-forge/scripts/pi-local.sh --mode json \
+SUBAGENT_VERIFY=0 ~/instantcoffee/scripts/pi-local.sh --mode json \
   -p 'Use a subagent to report the value of DEFAULT_CONCURRENCY_LIMIT.' \
   | grep -c verification
 ```
@@ -237,7 +237,7 @@ point of the round budget:
 To watch the loop run longer, raise the budget for one session:
 
 ```sh
-SUBAGENT_VERIFY_ROUNDS=3 ~/qwen3.8-forge/scripts/pi-local.sh
+SUBAGENT_VERIFY_ROUNDS=3 ~/instantcoffee/scripts/pi-local.sh
 ```
 
 Worst case is `1 + 2×rounds` model calls on the one slot, so at 3 the parent can
@@ -1435,7 +1435,7 @@ what that mode does whenever no check is configured.
 `Check: npm test`. And once more headless:
 
 ```
-   ~/qwen3.8-forge/scripts/pi-local.sh -p "start a loop to keep the tests green,
+   ~/instantcoffee/scripts/pi-local.sh -p "start a loop to keep the tests green,
      with npm test as the goal check"
 ```
 
@@ -2117,7 +2117,7 @@ immediately. A child that counted in the model would make this a ten-minute test
 instead of a ninety-second one.
 
 **NOW — what happened**, from the session transcript
-(`~/.pi/agent/sessions/--home-claudeuser-qwen3.8-forge--/*.jsonl`, which records
+(`~/.pi/agent/sessions/--home-claudeuser-instantcoffee--/*.jsonl`, which records
 every tool call with its arguments and is the evidence here, not the final text):
 
 ```
@@ -2348,7 +2348,7 @@ it as a passing probe rather than as a wasted model run.
 process a socket on fd 0 hangs **before** `exec pi` — nine minutes with no model
 request and no output — because the launcher's pre-flight reads stdin. `< /dev/null`
 fixes it. The symptom is indistinguishable from a slow model, which is why it is
-recorded: check `docker logs qwen38-llama` for a request before concluding the
+recorded: check `docker logs instantcoffee-llama` for a request before concluding the
 stack is slow.
 
 *A relocated install has no npm packages.* `pi-mcp-adapter` lives under the agent

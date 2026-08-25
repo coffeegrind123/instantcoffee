@@ -79,7 +79,7 @@ five-plus-three synthetic tasks and only near the top of the window.
 
 ## 3. What this stack already does right, verified rather than assumed
 
-Two controls, run against the live `qwen38-llama` (up 4 h, healthy) before this
+Two controls, run against the live `instantcoffee-llama` (up 4 h, healthy) before this
 was written — neither required touching the server:
 
 **The chat template is the real one, not a ChatML fallback.** The single
@@ -324,7 +324,7 @@ own subject matter, which is that the kernel *is* the variable.
 What the live server says about how often it actually happens:
 
 ```
-   docker logs qwen38-llama | grep 'draft acceptance'
+   docker logs instantcoffee-llama | grep 'draft acceptance'
    mean len = 3.70 … 4.75 across every task sampled     -> verify batch 5-6, MMVQ
    bench_repeat.py, the file-rewrite shape pi produces: draft/cycle ~21-25 -> MMQ
 ```
@@ -365,7 +365,7 @@ the author's own control.
 
 **Feasibility, honestly:**
 
-- It loads its own copy of the model, so `qwen38-llama` must be **stopped** for
+- It loads its own copy of the model, so `instantcoffee-llama` must be **stopped** for
   the run — one ~20-minute cold reload afterwards, over the 9p mount. Both arms
   should therefore run back-to-back inside one stop.
 - VRAM bounds the depth. Model 16,053 MiB + f16 main KV at 34.0/2 KiB/token

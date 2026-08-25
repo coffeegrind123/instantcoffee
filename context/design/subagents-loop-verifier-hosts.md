@@ -2470,7 +2470,7 @@ rule inside it could not be tested at all:
 ## 12. Running the evidence
 
 ```sh
-cd ~/qwen3.8-forge
+cd ~/instantcoffee
 
 # the gates
 ( cd vendor/pi-subagents-lite && npm test && node tests/lint.mjs )   # 266 + 84/84

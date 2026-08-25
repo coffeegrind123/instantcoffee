@@ -33,7 +33,7 @@
 # it does not go through compose.
 #
 # WHAT IT COSTS. llama-perplexity loads its own copy of the weights, so
-# qwen38-llama must be STOPPED for the whole run — one ~20 minute cold reload
+# instantcoffee-llama must be STOPPED for the whole run — one ~20 minute cold reload
 # afterwards over the 9p mount. All four passes therefore run inside ONE stop.
 # 96K at f16 does not fit on this card (§6); 64K does, at ~20.5 GiB.
 #
@@ -116,8 +116,8 @@ NGL="$(env_get NGL)";                    : "${NGL:=999}"
 IMAGE="ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG_V}"
 # The llama.cpp image has no python; the forge image does, and it is already
 # built on this box because capture.sh builds it. Only used to read the sidecar.
-SIDECAR_IMAGE="qwen38-forge/proxy:$(env_get FORGE_VERSION)"
-LLAMA_CT="${LLAMA_CONTAINER:-qwen38-llama}"
+SIDECAR_IMAGE="instantcoffee/proxy:$(env_get FORGE_VERSION)"
+LLAMA_CT="${LLAMA_CONTAINER:-instantcoffee-llama}"
 
 OUTDIR="/captures/${OUT_SUBDIR}"
 REF_TOKENS=""
@@ -529,7 +529,7 @@ if (( DRY )); then
     done
   done
   echo
-  echo "dry run only; qwen38-llama was not touched."
+  echo "dry run only; instantcoffee-llama was not touched."
   exit 0
 fi
 

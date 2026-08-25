@@ -4,7 +4,7 @@
 Runs INSIDE the compose network like bench.py:
 
     docker compose --profile tools run --rm --build \
-        --entrypoint python bench /work/scripts/ctx-needle.py --tokens 90000
+        --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000
 
 WHY A SEPARATE SCRIPT
 ---------------------
