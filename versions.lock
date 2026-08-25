@@ -51,47 +51,69 @@ model_repo_modified = 2026-08-20T12:04:25.000Z
 # differ in the one way this stack cannot tolerate (JonathanColetti publishes
 # both `X.gguf` and `X-noMTP.gguf`; a noMTP file loads fine and silently kills
 # --spec-type draft-mtp).
-prose_model_repo    = mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF
-prose_model_file    = Qwen3.8-27B-OBLITERATED.i1-Q4_K_M.gguf
-prose_model_size    = 16810715616
-prose_model_sha256  = 2a815b3875c31584c3494e91bd593228136c6ad2395f73f6fb27b904b7048039
+prose_model_repo    = orcarouter/Qwen3.8-27B-Uncensored-GGUF
+prose_model_file    = Qwen3.8-27B-Uncensored-Q4_K_M.gguf
+prose_model_size    = 16810714496
+prose_model_sha256  = 3445102e9cde5d562508642c100a2f5ac3368a5a3f748442811d7a95daee3bec
                       DOWNLOADED AND VERIFIED 2026-08-25. The Hub's LFS oid, this
-                      lock, and sha256sum of the file on disk all match. The i1
-                      imatrix requant (319-chunk calibration) of OBLITERATUS's V3
-                      weights; the source repo publishes no imatrix quant of its
-                      own. 16810715616 bytes.
-                      SOURCE-GGUF DETOUR, 2026-08-26 — recorded so it is not
-                      re-attempted. The source repo (OBLITERATUS/Qwen3.8-27B-
-                      OBLITERATED) began shipping its own GGUFs on 2026-08-24;
-                      prose was briefly switched to the author's Q4_K_M for
-                      provenance (downloaded + hash-verified,
-                      sha 1f74330b...e7fe5, 16810705952 bytes, still on disk).
-                      It FAILED the smoke test: the source GGUF bakes a stripped
-                      506-char chat template with no tools/tool_call/reasoning_
-                      effort, which breaks native function calling. mradermacher's
-                      requant of the same weights carries the full 8952-char Qwen3
-                      template, so we rolled straight back. Full autopsy in
-                      modes/prose.env. The source file is kept only as evidence;
-                      it is wired to no mode.
-                      MTP VERIFIED from the GGUF header off the Hub before
-                      selection: 866 tensors, block_count=65,
-                      nextn_predict_layers=1, blk.64.nextn.* all four present.
-                      So --spec-type draft-mtp works in this mode.
-                      714 MiB SMALLER than the coding model (17559178144 -
-                      16810715616 = 713.8 MiB), so the 96K VRAM figures in
-                      vram_note are an upper bound for this mode.
-                      MODEL SELECTION: V3 over JonathanColetti and three others,
-                      2026-08-25. Full comparison in modes/prose.env — the only
-                      3.8 decensored build that removes soft deflections as well
-                      as hard refusals AND measures the cost (MMLU 84.5 -> 82.3,
-                      -2.1pp, STEM -3.3pp, humanities -1.0pp).
-prose_model_prev    = JonathanColetti/Qwen3.8-27B-Uncensored-GGUF ::
+                      lock, and the downloader's own hash of the file on disk all
+                      read 3445102e9c...5daee3bec. 16810714496 bytes.
+                      BACKS BOTH prose AND uc-coding as of 2026-08-25, which is
+                      the property the OBLITERATED build had and briefly lost: one
+                      GGUF, ~16.8 GB, and switching between the two regimes is a
+                      cold load rather than a download.
+                      GATED on the Hub (`gated: auto`). Terms must be accepted
+                      once on the model page; after that the fetch needs HF_TOKEN,
+                      which lives in .env.local (gitignored) and reaches the
+                      downloader via docker-compose.yml. Without it the pull fails
+                      401/403, and neither code reads as an auth problem in the
+                      downloader's log.
+                      TEMPLATE AND MTP VERIFIED from the GGUF header off the Hub
+                      BEFORE download (scripts/gguf_probe.py), then confirmed on
+                      the loaded file: chat template 8952 chars with tools,
+                      tool_call, reasoning_effort and thinking — the check that
+                      rejected the OBLITERATUS source GGUF — and 866 tensors,
+                      block_count=65, nextn_predict_layers=1, blk.64.nextn.* all
+                      four present. llama-server then logged
+                      "creating MTP draft context" at load and the smoke test
+                      measured 78-84% draft acceptance, so --spec-type draft-mtp
+                      really is running rather than merely being configured.
+                      SMOKE TEST 11/11 on 2026-08-25, including the native
+                      OpenAI tool call and both no-repeat-loop checks.
+                      SPEED NOT YET ESTABLISHED. The only load so far happened
+                      while the Windows desktop held the GPU (235 MiB free, a
+                      game plus a dozen browser/Electron clients), so WDDM spilled
+                      to shared system memory and decode measured 0.67 tok/s
+                      against a documented ~44. That is a contention artefact, not
+                      a property of these weights; re-measure on an idle GPU
+                      before recording a figure here.
+                      MODEL SELECTION 2026-08-25, over OBLITERATUS and
+                      JonathanColetti. Full comparison and the three caveats on
+                      its eval table are in modes/uc-coding.env. Short version:
+                      the only one of the three publishing refusal numbers for
+                      thinking ON as well as OFF, which is the mode this stack
+                      runs, and the smallest capability cost of the three
+                      (author's figures, not reproduced here).
+prose_model_prev    = mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF ::
+                      Qwen3.8-27B-OBLITERATED.i1-Q4_K_M.gguf, 16810715616 bytes,
+                      sha256 2a815b3875c31584c3494e91bd593228136c6ad2395f73f6fb27
+                      b904b7048039. What prose ran 2026-08-25 to 2026-08-25, and
+                      still on disk. Chosen for removing soft "safety-lecture"
+                      deflections as well as hard refusals; moved off because its
+                      capability cost is concentrated in STEM (MMLU 84.5 -> 82.3,
+                      -2.1pp overall, -3.3pp STEM) which is the wrong place to pay
+                      for a regime that also has to back uc-coding. The
+                      soft-deflection axis is the one thing the replacement has
+                      NOT been measured on — see modes/prose.env.
+prose_model_prev2   = JonathanColetti/Qwen3.8-27B-Uncensored-GGUF ::
                       Qwen3.8-27B-Uncensored-IQ4_XS.gguf, 15309039008 bytes,
                       sha256 53adc4bbed67044d662273356bbf3a50fdec667ac21bbf18d
-                      13e5815fbccc7f5. What prose ran before 2026-08-25. The
-                      documented pick if one model ever has to serve both regimes
-                      — MMLU -0.2, mean -0.5, all inside stderr, but 12/100
-                      residual refusals. Never downloaded to this box.
+                      13e5815fbccc7f5. What prose ran before 2026-08-25. MMLU
+                      -0.2, mean -0.5, all inside stderr, but 12/100 residual
+                      refusals. Never downloaded to this box; its header was
+                      verified off the Hub on 2026-08-25 (866 tensors,
+                      block_count=65, template 8952 chars) as a control while
+                      checking the replacement.
 context_size        = 98304 (CHANGED 2026-08-23, was 65536; MEASURED both ways)
                       Proven by scripts/ctx_needle.py, not by /props: a 90055-
                       token document with a distinct nonce planted at EACH END
