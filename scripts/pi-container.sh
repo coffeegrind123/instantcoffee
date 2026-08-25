@@ -180,6 +180,25 @@ ensure_up() {
 # mapping that happens to resolve is how you end up editing the wrong checkout.
 in_container_dir() { docker exec "$NAME" test -d "$1" 2>/dev/null; }
 
+# Is this path inside one of the container's bind mounts?
+#
+# This is the predicate that decides whether a directory on both sides is the
+# SAME directory. "Does it exist in there" is not: /tmp, /usr and / exist on
+# both and mean different things. Scoping to the container's HOME instead was
+# the first fix and was too blunt — it also rejected a project deliberately
+# mounted somewhere else, which is the whole point of PI_CONTAINER_EXTRA_ARGS.
+#
+# The docker socket is skipped: it is a mount, it is not a place to work, and
+# `/var/run/...` would otherwise match a caller who happened to be sitting there.
+path_in_mount() {
+  local p="$1" d
+  while read -r d; do
+    [[ -z "$d" || "$d" == "/var/run/docker.sock" ]] && continue
+    [[ "$p" == "$d" || "$p" == "$d"/* ]] && return 0
+  done < <(docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$NAME" 2>/dev/null)
+  return 1
+}
+
 # NOTE: this function's STDOUT is the answer, so every human-facing line inside
 # it goes to stderr. A note printed on stdout is captured into the path, and
 # docker then rejects it with "Cwd must be an absolute path" — which names the
@@ -194,12 +213,8 @@ resolve_workdir() {
     printf '%s' "$want"; return 0
   fi
 
-  # Only inside the container's HOME. "Does this path exist in there" is a false
-  # positive for every system directory: /tmp, /usr and / all exist on both
-  # sides and mean different things, so running from the host's /tmp would have
-  # put pi in the CONTAINER's /tmp — an empty directory, silently, with the
-  # session looking perfectly normal. The container's world is its home.
-  if [[ "$PWD" == "$CHOME" || "$PWD" == "$CHOME"/* ]] && in_container_dir "$PWD"; then
+  # The same absolute path, but only if it is genuinely shared — see path_in_mount.
+  if path_in_mount "$PWD" && in_container_dir "$PWD"; then
     printf '%s' "$PWD"; return 0
   fi
 
@@ -211,8 +226,14 @@ resolve_workdir() {
     fi
   fi
 
-  note "${PWD} is not visible to the container — working on ${CHOME}."
-  note "Pass -C <dir> to choose, or start from a directory under ${HHOME}."
+  # Loud, and with the fix in it. A one-line "not visible" is how you end up in
+  # a session that runs perfectly against the wrong — empty — directory.
+  warn "${PWD} is not mounted into the container, so pi cannot see it."
+  warn "Starting in ${CHOME} instead, which holds:"
+  docker exec "$NAME" sh -c "ls -1 '${CHOME}' 2>/dev/null | head -8 | sed 's/^/       /'" >&2 || true
+  warn "To work on ${PWD}, mount it — in .env.local, and using the host path:"
+  warn "    PI_CONTAINER_EXTRA_ARGS=-v <host path>:${CHOME}/$(basename "$PWD")"
+  warn "then ./scripts/pi-container.sh --recreate. Or pass -C <dir> for somewhere it can already see."
   printf '%s' "$CHOME"
 }
 
@@ -244,6 +265,10 @@ case "$MODE" in
                     || printf 'drift        no\n'
       in_container_dir "$CREPO" && printf 'checkout     present\n' \
                                 || printf 'checkout     MISSING inside the container\n'
+      # The question every confused session actually has: what can pi see?
+      printf 'mounts       '
+      docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$NAME" 2>/dev/null \
+        | grep -v '^/var/run/docker.sock$' | grep -v '^$' | paste -sd' ' -
       if docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/forge/health 2>/dev/null; then
         docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/health 2>/dev/null \
           && printf 'forge        up, model loaded\n' \

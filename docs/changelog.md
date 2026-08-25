@@ -138,6 +138,15 @@ mean different things — so the working-directory search is scoped to the
 container's home, and running from the host's `/tmp` falls back with a note
 instead of silently landing pi in an empty directory that looks fine.
 
+**Corrected the same day:** scoping the working-directory search to the
+container's *home* was too blunt. It also rejected a project deliberately
+mounted somewhere else — which is the entire point of `PI_CONTAINER_EXTRA_ARGS`
+— so launching from a mounted project still fell back to the home. The test is
+now "is this path inside one of the container's bind mounts", which is the
+question that was actually being asked: it keeps `/tmp` and `/usr` out and lets
+a mounted project in. The fallback also says which mount is missing and prints
+the `-v` line to add, rather than one dim line about not being visible.
+
 ---
 
 [← back to the README](../README.md)

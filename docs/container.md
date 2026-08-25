@@ -91,15 +91,44 @@ That alias is safe to use everywhere, including from a shell **inside** the
 container: the image sets `PI_AGENT_CONTAINER=1`, and the script sees it and
 just runs `pi-local.sh` instead of trying to start a container from inside one.
 
-**Which directory pi works on.** pi works on the current directory, and yours is
-not necessarily one the container has. So the script tests candidates *inside*
-the container rather than translating by rule, and says which it picked: your
-`$PWD` if it is under the container's home, otherwise the same path relative to
-your `$HOME` (`~/proj` → `<container home>/proj`), otherwise the container home
-with a note. It deliberately will **not** accept a `$PWD` outside that home even
-when the path exists in both — `/tmp`, `/usr` and `/` exist on both sides and
-mean different things, and silently landing pi in the container's empty `/tmp`
-looks like a perfectly normal session.
+### Which directory pi works on — and mounting your projects
+
+pi works on the current directory, and **the container only sees what is mounted
+into it**. Its home is one mount; a project living in a different home is not
+visible at all, and launching from there lands you in the container home with
+nothing familiar in it.
+
+So mount each project you want it to work on. One `-v` per project, the host
+path on the left, a path under the container home on the right:
+
+```bash
+# .env.local
+PI_CONTAINER_EXTRA_ARGS=-v /host/path/to/proj:/home/piuser/proj
+```
+
+then `./scripts/pi-container.sh --recreate`. Mount **projects**, not a whole home
+directory — a home carries SSH keys, `gh` credentials and tokens, and this
+container is credential-free on purpose.
+
+Keeping the basename identical is what makes it automatic. The launcher tests
+candidates *inside* the container rather than translating paths by rule, and
+says which it picked:
+
+1. your `$PWD`, if that exact path is inside one of the container's bind mounts;
+2. otherwise the same path relative to your `$HOME` — `~/proj` →
+   `<container home>/proj`, which is why the basename matters;
+3. otherwise the container home, with a loud warning that names the mount you
+   are missing.
+
+The test is **"is this path inside a bind mount"**, not "does this path exist in
+there". The latter is a false positive for `/tmp`, `/usr` and `/`, which exist
+on both sides and mean different things — silently landing pi in the container's
+empty `/tmp` looks like a perfectly normal session. Scoping the check to the
+container's *home* was the first fix and was too blunt: it rejected exactly the
+deliberately-mounted project this section is about.
+
+`--status` prints the mount list, which is the fastest answer to "why can't it
+see my code".
 
 The container is long-lived and reused rather than created per session, because
 the browser server and its Chrome live in it and are stateful — a throwaway
