@@ -94,7 +94,24 @@ for k in $(mode_keys "$MODE_FILE"); do
 done
 
 if (( CHANGED == 0 )); then
-  ok "already in $TARGET mode — nothing to do"
+  ok "already in $TARGET mode — no .env changes needed"
+  # `--restart` used to be unreachable from here: this early exit sat ABOVE the
+  # DO_RESTART branch below, so the two-step the message at the bottom of this
+  # script actually recommends —
+  #     ./scripts/mode.sh uc-coding            # edits .env
+  #     ./scripts/mode.sh uc-coding --restart  # apply it
+  # — printed "nothing to do" and left llama running the PREVIOUS weights, with
+  # no error and an exit status of 0. Measured 2026-08-25 during the orcarouter
+  # swap: .env named the new model, the container was still serving the old one,
+  # and nothing said so.
+  #
+  # Whether .env changed on THIS invocation and whether the caller wants the
+  # container recreated are two different questions. The flag answers the second.
+  if (( DO_RESTART )); then
+    info "recreating llama anyway, as asked (expect a ~9-20 minute cold load)"
+    compose up -d --force-recreate llama
+    ok "llama recreated — watch it come up with: ./scripts/logs.sh llama"
+  fi
   exit 0
 fi
 
