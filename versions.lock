@@ -51,50 +51,47 @@ model_repo_modified = 2026-08-20T12:04:25.000Z
 # differ in the one way this stack cannot tolerate (JonathanColetti publishes
 # both `X.gguf` and `X-noMTP.gguf`; a noMTP file loads fine and silently kills
 # --spec-type draft-mtp).
-prose_model_repo    = OBLITERATUS/Qwen3.8-27B-OBLITERATED
-prose_model_file    = Qwen3.8-27B-OBLITERATED-Q4_K_M.gguf
-prose_model_size    = 16810705952
-prose_model_sha256  = 1f74330b211a8253c96f1bf586cba6eb56d37117c97ed9e6eec18c198a4e7fe5
-                      SWITCHED 2026-08-26 to the AUTHOR'S OWN GGUF. This is the
-                      source repo's static Q4_K_M, not mradermacher's i1 requant
-                      that prose ran from 2026-08-25. Operator chose provenance
-                      (the model author's own artifact) over the requant; the
-                      accepted trade is static-vs-imatrix quant quality, spelled
-                      out in modes/prose.env.
-                      DOWNLOADED AND VERIFIED 2026-08-26. The Hub's LFS oid, this
-                      lock, and sha256sum of the 16810705952-byte file on disk all
-                      read 1f74330b...e7fe5. The blob was content-addressed by that
-                      oid during transfer and re-hashed on disk afterward to close
-                      the gate.
-                      MTP VERIFIED off the Hub before the switch (12 MB range
-                      read of the source Q4_K_M, GGUF header parsed): 866 tensors,
-                      general.architecture=qwen35, block_count=65,
-                      nextn_predict_layers=1, and all four blk.64.nextn.* present.
-                      So --spec-type draft-mtp works on it.
+prose_model_repo    = mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF
+prose_model_file    = Qwen3.8-27B-OBLITERATED.i1-Q4_K_M.gguf
+prose_model_size    = 16810715616
+prose_model_sha256  = 2a815b3875c31584c3494e91bd593228136c6ad2395f73f6fb27b904b7048039
+                      DOWNLOADED AND VERIFIED 2026-08-25. The Hub's LFS oid, this
+                      lock, and sha256sum of the file on disk all match. The i1
+                      imatrix requant (319-chunk calibration) of OBLITERATUS's V3
+                      weights; the source repo publishes no imatrix quant of its
+                      own. 16810715616 bytes.
+                      SOURCE-GGUF DETOUR, 2026-08-26 — recorded so it is not
+                      re-attempted. The source repo (OBLITERATUS/Qwen3.8-27B-
+                      OBLITERATED) began shipping its own GGUFs on 2026-08-24;
+                      prose was briefly switched to the author's Q4_K_M for
+                      provenance (downloaded + hash-verified,
+                      sha 1f74330b...e7fe5, 16810705952 bytes, still on disk).
+                      It FAILED the smoke test: the source GGUF bakes a stripped
+                      506-char chat template with no tools/tool_call/reasoning_
+                      effort, which breaks native function calling. mradermacher's
+                      requant of the same weights carries the full 8952-char Qwen3
+                      template, so we rolled straight back. Full autopsy in
+                      modes/prose.env. The source file is kept only as evidence;
+                      it is wired to no mode.
+                      MTP VERIFIED from the GGUF header off the Hub before
+                      selection: 866 tensors, block_count=65,
+                      nextn_predict_layers=1, blk.64.nextn.* all four present.
+                      So --spec-type draft-mtp works in this mode.
                       714 MiB SMALLER than the coding model (17559178144 -
-                      16810705952 = 713.8 MiB), so the 96K VRAM figures in
+                      16810715616 = 713.8 MiB), so the 96K VRAM figures in
                       vram_note are an upper bound for this mode.
-                      MODEL SELECTION (V3 over JonathanColetti and three others,
-                      2026-08-25) is unchanged by this switch — it is the same V3
-                      weights, a different quantizer. Full comparison in
-                      modes/prose.env: only 3.8 decensored build that removes soft
-                      deflections as well as hard refusals AND measures the cost
-                      (MMLU 84.5 -> 82.3, -2.1pp, STEM -3.3pp, humanities -1.0pp).
-prose_model_prev    = mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF ::
-                      Qwen3.8-27B-OBLITERATED.i1-Q4_K_M.gguf, 16810715616 bytes,
-                      sha256 2a815b3875c31584c3494e91bd593228136c6ad2395f73f6fb2
-                      7b904b7048039. The i1 imatrix requant of the SAME V3
-                      weights; prose ran it 2026-08-25 -> 2026-08-26. Downloaded
-                      and verified on this box on 2026-08-25 (still on disk as
-                      the rollback). Higher-quality quant per bit (imatrix vs the
-                      source's static Q4_K_M); kept as the rollback if source
-                      provenance is ever weighed the other way.
-                      EARLIER prose model: JonathanColetti/Qwen3.8-27B-Uncensored
-                      -GGUF :: Qwen3.8-27B-Uncensored-IQ4_XS.gguf, 15309039008
-                      bytes, sha256 53adc4bbed67044d662273356bbf3a50fdec667ac21bb
-                      f18d13e5815fbccc7f5. The documented pick if one model ever
-                      has to serve both regimes — MMLU -0.2, mean -0.5, all inside
-                      stderr, but 12/100 residual refusals. Never downloaded here.
+                      MODEL SELECTION: V3 over JonathanColetti and three others,
+                      2026-08-25. Full comparison in modes/prose.env — the only
+                      3.8 decensored build that removes soft deflections as well
+                      as hard refusals AND measures the cost (MMLU 84.5 -> 82.3,
+                      -2.1pp, STEM -3.3pp, humanities -1.0pp).
+prose_model_prev    = JonathanColetti/Qwen3.8-27B-Uncensored-GGUF ::
+                      Qwen3.8-27B-Uncensored-IQ4_XS.gguf, 15309039008 bytes,
+                      sha256 53adc4bbed67044d662273356bbf3a50fdec667ac21bbf18d
+                      13e5815fbccc7f5. What prose ran before 2026-08-25. The
+                      documented pick if one model ever has to serve both regimes
+                      — MMLU -0.2, mean -0.5, all inside stderr, but 12/100
+                      residual refusals. Never downloaded to this box.
 context_size        = 98304 (CHANGED 2026-08-23, was 65536; MEASURED both ways)
                       Proven by scripts/ctx_needle.py, not by /props: a 90055-
                       token document with a distinct nonce planted at EACH END
