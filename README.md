@@ -50,8 +50,8 @@ documented for.
 
 - Docker Desktop with **GPU support enabled** (Settings → Resources → GPU)
 - NVIDIA driver with CUDA support — verified here on driver `596.36`
-- ~18 GB of disk for the `coding` model, another ~15 GB if you also want
-  `prose`, ~5 GB for images
+- ~18 GB of disk for the `coding` model, another ~16 GB if you also want
+  `prose` (which `uc-coding` shares, so no extra), ~5 GB for images
 - `bash`, `curl`, and `docker` for the scripts (`python3` optional — the scripts fall
   back to a throwaway container when it is missing)
 - `uv` only for one optional extra: MCP-as-a-CLI (`scripts/mcp.sh`). Nothing in
@@ -104,26 +104,32 @@ commands — sweeps, capacity probes, perplexity-at-depth, VRAM floors, capture 
 live in **[docs/benchmarking.md](docs/benchmarking.md)**, because burying
 `up.sh` among them was making the common case hard to find.
 
-## Two modes
+## Three modes
 
-`coding` is the default and runs the stock unsloth weights. `prose` swaps in a
-decensored build and turns on DRY, for fiction rather than code.
+`coding` is the default and runs the stock unsloth weights. `uc-coding` keeps
+coding's exact sampler profile but swaps in a decensored build, for coding work
+the stock model would deflect on. `prose` runs that same decensored model tuned
+for fiction — DRY on, reasoning-language off. `uc-coding` and `prose` share one
+GGUF, so `uc-coding` costs no extra disk once you have `prose`.
 
 ```bash
 ./scripts/mode.sh                 # what is active, and what each mode sets
-./scripts/mode.sh prose           # rewrite .env (nothing is live yet)
+./scripts/mode.sh --list          # coding, uc-coding, prose
+./scripts/mode.sh uc-coding       # rewrite .env (nothing is live yet)
 ./scripts/download-model.sh       # the model has to be on disk first
 docker compose up -d --force-recreate llama
 ```
 
 Switching costs a 9–20 minute cold load, so it is a deliberate act rather than a
-toggle. **`mode.sh` does not download the model for you and does not check that
-it is present** — get the file first, or you will tear down a working container
-for one that cannot start.
+toggle — except between `uc-coding` and `prose`, which share a GGUF, so the
+model stays put and only the samplers change. **`mode.sh` does not download the
+model for you and does not check that it is present** — get the file first, or
+you will tear down a working container for one that cannot start.
 
 Which model each mode uses, why it was chosen, and every sampler value it sets:
-**[docs/modes.md](docs/modes.md)**. The reasoning for the current prose pick over
-its runner-up is in `modes/prose.env`, at length.
+**[docs/modes.md](docs/modes.md)**. The reasoning for the current decensored-model
+pick over its runner-up — and why the model's own author-published GGUF is *not*
+used — is in `modes/prose.env`, at length.
 
 ## Configuration
 
@@ -177,7 +183,7 @@ be the wrong trade.
 
 | Document | What is in it |
 | --- | --- |
-| [docs/modes.md](docs/modes.md) | The two regimes, their models, every sampler value |
+| [docs/modes.md](docs/modes.md) | The three regimes, their models, every sampler value |
 | [docs/pi.md](docs/pi.md) | `/stack`, `/loop`, subagents, `/prinny`, how the provider config is generated, why pi |
 | [docs/context-budget.md](docs/context-budget.md) | MCP without MCP, filtered bash output, the browser — the three big context consumers |
 | [docs/reasoning.md](docs/reasoning.md) | `REASONING_EFFORT` in detail, and reasoning in another language |

@@ -1,6 +1,6 @@
-# Modes: coding and prose
+# Modes: coding, uc-coding, and prose
 
-The two switchable regimes, the model behind each, and every sampler knob
+The three switchable regimes, the model behind each, and every sampler knob
 they set. Applied with `./scripts/mode.sh` or `/stack mode` inside pi.
 
 Nothing in this stack filters content. That was checked rather than assumed, on
@@ -39,10 +39,19 @@ otherwise reach for `read`/`bash`/`edit`/`write`:
 qpi -nt -nc --system-prompt "You are a literary fiction writer. Return only prose."
 ```
 
-## Two modes
+## Three modes
 
-The stack ships two regimes. A mode is just a file of `KEY=VALUE` lines in
-`modes/`; adding one means adding a file.
+The stack ships three regimes. A mode is just a file of `KEY=VALUE` lines in
+`modes/`; adding one means adding a file — `scripts/mode.sh` and pi's
+`/stack mode` both discover `modes/*.env` at runtime, so nothing else needs
+editing.
+
+- **`coding`** — the default. Stock unsloth weights, Qwen's thinking preset.
+- **`uc-coding`** — `coding`'s exact sampler profile on the decensored
+  OBLITERATED model instead of the stock weights. For coding work that the
+  stock model would deflect on. Shares prose's GGUF, so it costs no extra disk.
+- **`prose`** — the same decensored model tuned for fiction (DRY on,
+  `THINK_LANG` off).
 
 ```bash
 ./scripts/mode.sh                    # which preset .env matches, and what differs
@@ -59,15 +68,20 @@ than carrying a second definition of what "prose mode" means:
 /stack mode prose           # switch, then offer the restart it needs
 ```
 
-| | `coding` | `prose` |
-| --- | --- | --- |
-| model | unsloth `UD-Q4_K_XL` | `Qwen3.8-27B-Uncensored` `IQ4_XS` |
-| temperature | 1.0 | 1.0 |
-| DRY | off | 0.8 |
-| `REASONING_EFFORT` | medium | medium |
-| `THINK_LANG` | zh | off |
+| | `coding` | `uc-coding` | `prose` |
+| --- | --- | --- | --- |
+| model | unsloth `UD-Q4_K_XL` | OBLITERATED `i1-Q4_K_M` | OBLITERATED `i1-Q4_K_M` |
+| temperature | 1.0 | 1.0 | 1.0 |
+| DRY | off | off | 0.8 |
+| `REASONING_EFFORT` | medium | medium | medium |
+| `THINK_LANG` | zh | zh | off |
 
-Both modes now sit at temperature 1.0. On 3.6 `coding` ran at 0.6, which was
+`uc-coding` differs from `coding` in exactly one axis — the model — and from
+`prose` in two (DRY off, `THINK_LANG` on). Because it shares `prose`'s GGUF,
+switching between `uc-coding` and `prose` is a sampler-only change with no
+download; only the sampler keys differ.
+
+All three modes now sit at temperature 1.0. On 3.6 `coding` ran at 0.6, which was
 Qwen3.6's separate "precise coding" preset; the 3.8 card publishes a single
 thinking preset and it is 1.0, and the GGUF metadata says the same
 (`general.sampling.temp=1.0`). The old **0.913 / 27-27** scorecard was measured
@@ -82,8 +96,8 @@ is gone with it.
 Since **2026-08-25** the model is
 [`mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF`](https://huggingface.co/mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF)
 (`i1-Q4_K_M`), an imatrix requant of
-[`OBLITERATUS/Qwen3.8-27B-OBLITERATED`](https://huggingface.co/OBLITERATUS/Qwen3.8-27B-OBLITERATED),
-which publishes no GGUF itself. It was picked over five candidates because it is
+[`OBLITERATUS/Qwen3.8-27B-OBLITERATED`](https://huggingface.co/OBLITERATUS/Qwen3.8-27B-OBLITERATED).
+It was picked over five candidates because it is
 the only 3.8 decensored build that removes **soft deflections** — the
 safety-lecture-instead-of-substance answer — and not just hard refusals, while
 still measuring what that cost: MMLU **84.5 -> 82.3**, a real **-2.1pp** that
@@ -95,6 +109,17 @@ must not be promoted to `coding`. It is also 714 MiB *smaller* than the coding
 model, so it improves VRAM headroom rather than eating it. Weaker part of the
 evidence, stated plainly: its refusal claim rests on manual auditing, not on a
 held-out prompt set with a published count.
+
+**Why the mradermacher requant and not the author's own GGUF.** The source repo
+(`OBLITERATUS/Qwen3.8-27B-OBLITERATED`) began shipping its own GGUFs on
+2026-08-24. Prose was briefly switched to the author's static `Q4_K_M` for
+provenance on 2026-08-26, then rolled straight back: that file bakes a stripped
+506-char chat template with **no** tool-calling or `reasoning_effort` support,
+which breaks native function calling — the one thing `uc-coding` most needs.
+mradermacher's requant of the same V3 weights carries the full 8952-char Qwen3
+template *and* is the better quant (imatrix vs the source's static), so it wins
+on every axis. The autopsy lives in `modes/prose.env`; the lesson is that a
+baked chat template is metadata worth dumping and checking, not trusting.
 
 The runner-up is kept documented in `modes/prose.env` and `.env` rather than
 discarded:

@@ -1260,7 +1260,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 		report("stack help", [
 			"/stack [status]           model, context, slots, throughput, GPU, forge, settings",
 			"/stack mode              which preset .env matches, and what differs",
-			"/stack mode coding|prose  switch regime, then offer the restart it needs",
+			"/stack mode coding|uc-coding|prose  switch regime, then offer the restart it needs",
 			"/stack env [FILTER]       every effective setting (.env + .env.local + exported)",
 			"/stack set KEY=VALUE      edit .env, and say exactly what must restart",
 			"/stack up | down          start / stop the stack via scripts/",
