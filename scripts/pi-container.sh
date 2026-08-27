@@ -4,12 +4,13 @@
 #
 #   ./scripts/pi-container.sh                 start a session
 #   ./scripts/pi-container.sh -C myproj       work on <container home>/myproj
+#   ./scripts/pi-container.sh --session <id>  resume a session, in its own directory
 #   ./scripts/pi-container.sh -p "summarize"  any pi flag passes through
 #   ./scripts/pi-container.sh --shell         a shell in the container, not pi
 #   ./scripts/pi-container.sh --status        what is running, and against what
 #   ./scripts/pi-container.sh --stop          stop it (all state is on the mount)
 #   ./scripts/pi-container.sh --recreate      drop and recreate, e.g. after a rebuild
-#   ./scripts/pi-container.sh --print-only    show the docker command and stop
+#   ./scripts/pi-container.sh --print-only    show the docker commands and stop
 #
 # This is scripts/pi-local.sh with a container around it, and the container is
 # meant to be invisible: the same flags, the same banner, the same session. It
@@ -52,7 +53,28 @@ READY_TIMEOUT="$(env_get PI_CONTAINER_READY_TIMEOUT)"; : "${READY_TIMEOUT:=300}"
 MODE=run
 WORKDIR_ARG=""
 PRINT_ONLY=0
+# A session names its own directory, and these are the flags that name a
+# session. They are OBSERVED, not consumed: pi gets them verbatim, and the only
+# thing this script does with them is work out which directory to start in.
+# See workdir_from_session.
+#
+# --continue and --resume are deliberately not here. Both mean "the previous
+# session FOR THIS DIRECTORY", so there is nothing to infer — the current
+# directory is already the answer, and inferring one would change what they mean.
+SESSION_FLAG=""
+SESSION_SEL=""
+SESSION_DIR_ARG=""
 ARGS=()
+# `shift 2` on a flag whose value is missing returns non-zero, and this file runs
+# under `set -e`, so the launcher would exit with no message at all. Take the
+# value only when there is one and let pi report its own missing argument.
+#
+# The explicit `return 0` is the whole point and was learned the expensive way:
+# without it the function returns the failed test's status, and `VAR="$(take_value
+# "$@")"` propagates that under `set -e`. `pi-container.sh --session` with no id
+# printed NOTHING and exited 0 — the precise failure the guard exists to avoid,
+# reintroduced by the guard.
+take_value() { [[ $# -ge 2 ]] && printf '%s' "$2"; return 0; }
 while (( $# )); do
   case "$1" in
     -C|--project)  WORKDIR_ARG="${2:-}"; shift 2 ;;
@@ -61,7 +83,18 @@ while (( $# )); do
     --stop)        MODE=stop; shift ;;
     --recreate)    MODE=recreate; shift ;;
     --print-only)  PRINT_ONLY=1; shift ;;
-    -h|--help)     sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help)     sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    --session|--session-id|--fork)
+                   SESSION_FLAG="$1"; SESSION_SEL="$(take_value "$@")"
+                   ARGS+=("$1"); shift
+                   if (( $# )); then ARGS+=("$1"); shift; fi ;;
+    --session=*|--session-id=*|--fork=*)
+                   SESSION_FLAG="${1%%=*}"; SESSION_SEL="${1#*=}"
+                   ARGS+=("$1"); shift ;;
+    --session-dir) SESSION_DIR_ARG="$(take_value "$@")"
+                   ARGS+=("$1"); shift
+                   if (( $# )); then ARGS+=("$1"); shift; fi ;;
+    --session-dir=*) SESSION_DIR_ARG="${1#*=}"; ARGS+=("$1"); shift ;;
     *)             ARGS+=("$1"); shift ;;
   esac
 done
@@ -205,6 +238,140 @@ path_in_mount() {
 # symptom and nothing about the note that caused it.
 note() { dim "$@" >&2; }
 
+# --- which directory a SESSION belongs to ------------------------------------
+#
+# pi stores a session under `<agent dir>/sessions/<project key>/<stamp>_<uuid>`
+# and looks one up by the key for the CURRENT directory — so `--session <id>`
+# from the wrong directory is not an error, it is a miss: pi starts a new
+# session and the one you asked for sits there untouched. The container makes
+# that easy to hit, because the launcher's default working directory comes from
+# where you typed the command, and the session's comes from where it ran.
+#
+# The answer is in the session file. Its first line is the header pi wrote when
+# the session began:
+#
+#     {"type":"session","version":3,"id":"01a042c0-…","cwd":"/home/piuser"}
+#
+# `cwd` is read from there and nowhere else. The directory NAME is not decoded:
+# the key is the path with every `/` turned into `-`, which is lossy — a
+# directory whose own name contains a dash is indistinguishable from one more
+# level of nesting, and `--home-piuser-qwen3.8-forge--` is a real example of a
+# key that could be read two ways. The header cannot be read two ways.
+#
+# Runs inside the container because that is where the sessions are, and asks
+# lib.sh's `agent_dir` for the root rather than assuming `~/.pi/agent` — that is
+# AO10's rule, and this is a fifth reader of it.
+#
+# Prints the directory on stdout, or nothing. Everything else is stderr.
+session_file_cwd() {
+  local sel="$1" root="$SESSION_DIR_ARG"
+  if [[ -z "$root" ]]; then
+    root="$(docker exec "$NAME" bash -c 'source "$1/scripts/lib.sh"; agent_dir' _ "$CREPO" 2>/dev/null)/sessions"
+  fi
+  docker exec -i "$NAME" python3 - "$sel" "$root" <<'PY_SESSION'
+import glob, json, os, sys
+
+sel, root = sys.argv[1], sys.argv[2]
+
+# A path is a path; anything else is an id or a fragment of one. pi accepts a
+# partial UUID, so this has to match the way pi does — and then REFUSE an
+# ambiguous one rather than pick, because the pick decides a working directory.
+if "/" in sel:
+    matches = [sel] if os.path.isfile(sel) else []
+else:
+    matches = sorted(glob.glob(os.path.join(root, "*", "*" + glob.escape(sel) + "*.jsonl")))
+
+def cwd_of(path):
+    with open(path, encoding="utf-8") as fh:
+        header = json.loads(fh.readline())
+    return header.get("cwd") if header.get("type") == "session" else None
+
+if not matches:
+    print("NONE")
+    raise SystemExit(0)
+
+try:
+    found = [(m, cwd_of(m)) for m in matches]
+except (OSError, ValueError) as exc:
+    print("UNREADABLE\t%s\t%s" % (matches[0], exc))
+    raise SystemExit(0)
+
+# Several matches are only a problem when they disagree about the DIRECTORY.
+# That is the only question being asked here; which of them to open is pi's,
+# and pi is better placed to refuse it — it can see both and this cannot.
+places = {cwd for _, cwd in found}
+if len(places) > 1:
+    print("MANY")
+    for m, cwd in found:
+        print("\t%s\t%s" % (cwd, m))
+    raise SystemExit(0)
+
+path, cwd = found[0]
+if not cwd:
+    print("NOCWD\t%s" % path)
+else:
+    print("OK\t%s\t%s" % (cwd, path))
+PY_SESSION
+}
+
+# The half that talks. Prints the directory to use, or nothing to leave the
+# normal resolution alone.
+workdir_from_session() {
+  local sel="$1" verdict rest cwd path
+  verdict="$(session_file_cwd "$sel" || true)"
+  rest="${verdict#*$'\t'}"
+  case "${verdict%%$'\t'*}" in
+    OK*)
+      cwd="${rest%%$'\t'*}"; path="${rest#*$'\t'}"
+      # A session whose directory is gone is worth stopping for: pi would start
+      # in some other directory, miss the session, and open a new one silently.
+      in_container_dir "$cwd" || die "session '${sel}' belongs to ${cwd}, which the container does not have.
+It was recorded in $(basename "$path").
+Mount it — in .env.local, using the host path:
+    PI_CONTAINER_EXTRA_ARGS=-v <host path>:${cwd}
+then ./scripts/pi-container.sh --recreate. Or pass -C <dir> to start elsewhere."
+      printf '%s' "$cwd"
+      ;;
+    MANY*)
+      die "'${sel}' matches sessions in more than one directory, so which one to
+start in cannot be decided from the id alone:
+$(printf '%s\n' "$verdict" | tail -n +2)
+Pass more of the id, or the file path, or -C <dir> to choose the directory yourself."
+      ;;
+    NOCWD*|UNREADABLE*)
+      warn "the session file for '${sel}' has no usable header ($(printf '%s' "$rest" | tr '\t' ' ')),"
+      warn "so its directory is unknown — falling back to the usual rules."
+      ;;
+    *)
+      # NONE, or the lookup itself could not run. Not fatal: --session-id may
+      # legitimately name a session that does not exist yet, and pi's own error
+      # is better than a guess from here.
+      warn "no session file matches '${sel}' under the container's sessions directory."
+      warn "Starting where the usual rules point; pi looks up sessions by directory,"
+      warn "so if it is somewhere else, pass -C <dir>."
+      ;;
+  esac
+}
+
+# A session selector answers "which directory", and it answers it better than
+# the caller's shell does. -C still wins — it is the explicit one — but when
+# both are present and they disagree, say so: pi looks the session up under the
+# -C directory's key, does not find it, and quietly starts a new one.
+apply_session_workdir() {
+  [[ -n "$SESSION_SEL" && "$MODE" == run ]] || return 0
+  local from; from="$(workdir_from_session "$SESSION_SEL")"
+  if [[ -z "$WORKDIR_ARG" ]]; then
+    [[ -n "$from" ]] || return 0
+    WORKDIR_ARG="$from"
+    note "working on ${from} — where ${SESSION_FLAG} ${SESSION_SEL} was recorded"
+    return 0
+  fi
+  [[ -n "$from" && "$from" != "$WORKDIR_ARG" ]] || return 0
+  warn "-C says ${WORKDIR_ARG}, but ${SESSION_FLAG} ${SESSION_SEL} was recorded in ${from}."
+  warn "pi looks sessions up by directory, so it will not find that one here — it will"
+  warn "start a new session instead. Drop the -C to resume it where it lives."
+}
+
 resolve_workdir() {
   local want="$1"
   if [[ -n "$want" ]]; then
@@ -284,6 +451,16 @@ esac
 if (( PRINT_ONLY )); then
   build_run_cmd
   printf '%q ' "${RUN_CMD[@]}"; echo
+  # The create command is half of it, and the half nobody has to debug. What
+  # decides which directory the session runs in is the exec, so print that too
+  # — but only when the container is already running, because working it out
+  # means asking the container what it can see. This is also how the
+  # session-to-directory inference is checked without starting a session.
+  if [[ "$(state)" == running ]]; then
+    apply_session_workdir
+    printf '%q ' docker exec -it -w "$(resolve_workdir "$WORKDIR_ARG")" "$NAME" \
+                 "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"; echo
+  fi
   exit 0
 fi
 
@@ -294,6 +471,7 @@ in_container_dir "$CREPO" \
      Clone this repo into ${HHOME} (it appears as ${CHOME} in there), or point
      PI_CONTAINER_REPO at wherever it actually is."
 
+apply_session_workdir
 WORKDIR="$(resolve_workdir "$WORKDIR_ARG")"
 
 # -t only when there is a terminal on BOTH ends. `docker exec -it` against a

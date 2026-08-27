@@ -75,11 +75,59 @@ Then:
 ./scripts/pi-container.sh                 # a session
 ./scripts/pi-container.sh -p "summarize"  # any pi flag passes through
 ./scripts/pi-container.sh -C myproj       # work on <container home>/myproj
+./scripts/pi-container.sh --session <id>  # resume one, in its own directory
 ./scripts/pi-container.sh --shell         # a shell in there instead of pi
 ./scripts/pi-container.sh --status        # what is running, and against what
 ./scripts/pi-container.sh --stop          # state is all on the mount
 ./scripts/pi-container.sh --recreate      # adopt a rebuilt image
+./scripts/pi-container.sh --print-only    # the two docker commands, and stop
 ```
+
+## Resuming a session
+
+`--session <id>` is enough. You do not have to be standing anywhere in
+particular, and you do not need `-C`:
+
+```bash
+~/qwen3.8-forge/scripts/pi-container.sh --session 01a042c0
+```
+
+**Why that needs saying.** pi keys sessions on the directory they were started
+in and looks one up by the key for the CURRENT directory, so `--session` from
+the wrong directory is not an error — it is a miss. pi starts a *new* session
+and the one you asked for sits there untouched. The container makes that easy to
+hit, because the launcher's default working directory comes from where you typed
+the command while the session's comes from where it ran; a session recorded in
+the container home while you type from the repo checkout is two different keys.
+
+So the launcher reads the answer out of the session file. Its first line is the
+header pi wrote when the session began —
+`{"type":"session","version":3,"id":"01a042c0-…","cwd":"/home/piuser"}` — and
+`cwd` is where the session starts. Partial ids work, the same ones pi accepts.
+`--session-id` and `--fork` are treated the same way. `--continue` and
+`--resume` are not: both mean "the previous session *for this directory*", so
+there is nothing to infer.
+
+The directory *name* under `sessions/` is deliberately not decoded. The key is
+the path with every `/` turned into `-`, which is lossy — `--home-piuser-qwen3.8-forge--`
+could be read two ways, and one of them is wrong. The header cannot be.
+
+Four things it will say rather than guess:
+
+- the id matches sessions in **more than one directory** — it refuses and lists
+  them with their directories. Several matches in the *same* directory are fine:
+  the directory is not in question, and which session to open is pi's to decide.
+- the session's directory **is not in the container** — it refuses, names the
+  directory, and prints the `PI_CONTAINER_EXTRA_ARGS` line that would mount it.
+- **nothing matches** — a warning, then the usual rules. `--session-id` may
+  legitimately name a session that does not exist yet.
+- **`-C` disagrees** with the session's directory — `-C` still wins, because it
+  is the explicit one, but you are told that pi will not find the session there.
+
+`--print-only` is how to check any of this without starting anything: it prints
+the `docker run` that would create the container and, when the container is
+already up, the `docker exec` that would start the session — working directory
+and all.
 
 One alias and the container stops existing as far as you are concerned:
 
@@ -289,7 +337,10 @@ rename. All three fail quietly.
 3. **`~/.pi/agent/sessions/`.** Session directories are keyed on the working
    directory they were started in, so transcripts recorded under the old home
    are unreachable under the new one. There is nothing to fix; either accept it
-   or keep the home path identical.
+   or keep the home path identical. (`--session <id>` still finds them from
+   anywhere — it reads the directory out of the session header — but it will
+   then refuse, because that directory is exactly what the container no longer
+   has.)
 
 Copy the built `channels/prinny/runtime` along with the checkout and it stays
 valid — the stamp is a content fingerprint of `vendor/prinny-channel/server/src`,

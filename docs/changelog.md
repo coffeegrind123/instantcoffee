@@ -191,6 +191,23 @@ silent:
 Both loop halves are in `vendor/pi-loop-mode` (FORK.md, AP1/AP2). The image was
 rebuilt: `test_forge_patches.py` 70/70, loop suite 295/295, smoke test 11/11.
 
+**`pi-container.sh --session <id>` now starts in the session's own directory,
+2026-08-27.** It used to need `-C /home/piuser` alongside it, and getting that
+wrong was not an error: pi keys sessions on the directory they were started in
+and looks one up by the key for the current directory, so `--session` from the
+wrong place quietly starts a *new* session and leaves the one you asked for
+untouched. The launcher now reads `cwd` out of the session file's own header —
+not out of the directory name under `sessions/`, which is the path with every
+`/` turned into `-` and cannot be decoded back. `--session-id` and `--fork` get
+the same treatment; `--continue` and `--resume` deliberately do not, since both
+already mean "for this directory". It refuses rather than guesses when an id
+spans two directories or when the session's directory is not in the container,
+and `-C` still wins while saying that pi will not find the session there.
+
+`--print-only` now also prints the `docker exec` it would run, working directory
+and all, when the container is already up — the create command was the half
+nobody has to debug.
+
 ---
 
 [← back to the README](../README.md)
