@@ -1,3 +1,146 @@
+# Handoff — 2026-08-27 (the loop that could not get unstuck: two silent forge exits and a ladder pinned at rung 1; the forge image REBUILT)
+
+## Read this first
+
+**The stack changed and is running.** `Dockerfile.forge` gained an eighth and a
+ninth patch, `instantcoffee/proxy:0.9.0` was rebuilt, and `instantcoffee-forge`
+was recreated onto it. `scripts/test_forge_patches.py` runs **70/70** inside the
+rebuilt image (was 60); `./scripts/smoke-test.sh` is **11/11**. `.env` gained a
+comment block and no key changed; `docker-compose.yml` and `modes/` are
+untouched. `vendor/pi-loop-mode` changed and its suite is **295** (was 288).
+
+**The report was "there's an infinite loop stuck problem"** — an unattended
+`/loop` run against this stack that produced nothing for 33 iterations and about
+45 minutes of continuous GPU before the operator stopped it by hand. It was four
+defects in a line, three of them silent, and every one of them was found by
+looking at what the machine actually emitted rather than at what it should have.
+
+---
+
+## 1. What the run looked like, and the two measurements that broke it open
+
+The transcript showed the loop injecting its prompt, the model answering with
+nothing, and the loop injecting again — including its own escalating notices
+("Loop stuck (1x)", "no concrete progress for 8 iterations"), three times, word
+for word. Nothing anywhere reported an error.
+
+**`docker logs instantcoffee-llama`** — every loop turn:
+
+    eval time = 69830.77 ms /  8192 tokens
+    eval time = 84725.43 ms /  8192 tokens
+    eval time = 73826.53 ms /  8192 tokens
+
+Exactly the `-n 8192` cap, every turn, ~85 s each. Meanwhile `n_tokens` grew by
+~260 per turn — the injected prompt and nothing else. **The whole generation was
+reaching the conversation as nothing at all.**
+
+**The pi transcript** said what "nothing" meant:
+
+    {"role":"assistant","content":[],"usage":{"totalTokens":0},"stopReason":"stop"}
+
+A completed, empty, natural-looking turn.
+
+**The control that mattered.** forge logged `<< SSE 2 events` for every one of
+those turns, which read like a smoking gun until a trivial prompt through the
+same proxy produced `<< SSE 2 events` too: forge does not stream token by token,
+so two events is the HEALTHY count. The real signal was the absence of a
+`Retries exhausted` line — forge's only warning on the path a text turn takes —
+which is what pointed at an exit that logs nothing.
+
+## 2. forge had a dead end with no log line (patch 8)
+
+`run_inference` has two budgets and one loop, and the loop is bounded by only
+one of them. `attempt_limit = max_retries + 1`, which `.env`'s
+`FORGE_MAX_RETRIES=0` makes **1**. A `tool_arg_validation` failure spends the
+OTHER budget, `FORGE_MAX_TOOL_ERRORS=2`, which is not exhausted on its first
+occurrence — so forge appended a correction for an attempt it had no budget to
+make, fell out of the bottom of its own loop and returned `None`, which
+`handler.py` turns into `_emit_text("")`: an empty 200, no usage, no
+finish_reason, and the one exit in that function that says nothing on the way
+out.
+
+Reproduced away from the GPU, driving the real `run_inference` with the real
+validator and `ErrorTracker(max_retries=0, max_tool_errors=2)`:
+
+    reasoning-only text     raised _ToolCallExhausted (retry budget)      logged
+    unknown tool            raised _ToolCallExhausted (retry budget)      logged
+    malformed tool args     backend_calls=1  result=None                  SILENT
+    empty tool-call list    InferenceResult(response=[], usage=None)      SILENT
+
+    decode_tool_args('{"cmd": "ls -la /etc')  ->  str, not dict
+
+That last line is the whole mechanism: **a tool call truncated at the token cap
+never parses**, so it arrives as a non-dict and takes the silent path.
+`patches/forge_empty_turn.py` makes exhaustion whichever budget runs out FIRST,
+and makes both remaining empty exits log. Behaviour with retries available is
+unchanged, and the two other kinds still raise on the retry budget — pinned as
+controls in `test_forge_patches.py`.
+
+## 3. And the turns that were not empty lied about why they ended (patch 9)
+
+`handler._emit_text` routes four ways, and its own docstring ended: *"The OpenAI
+SSE path is still the one place neither is carried."* Neither the reasoning nor
+the backend's finish_reason. **OpenAI streaming is what pi uses on every turn.**
+
+    llama:8080  stream=False, max_tokens=220   finish_reason "length"
+    llama:8080  stream=True,  max_tokens=220   finish_reason "length"
+    forge:8081  stream=True,  max_tokens=220   finish_reason "stop"
+
+llama-server is right in both of its cells, so this was forge dropping it at the
+last step: a turn that ran out of budget mid-sentence was indistinguishable from
+one the model chose to end. `patches/forge_text_sse_passthrough.py` gives
+`text_to_sse_events` the two arguments its non-streaming twin already takes.
+Verified live after the rebuild — the same request now returns a
+`reasoning_content` delta and `finish_reason: "length"`.
+
+## 4. The stuck ladder could not climb (vendor/pi-loop-mode, AP1/AP2)
+
+`.pi-loop-log.jsonl` from the wedged session, one column:
+
+    iteration 14  stuck  "stuckStreak":1
+    iteration 17  stuck  "stuckStreak":1
+    iteration 20  stuck  "stuckStreak":1
+    iteration 26/29/32  stuck  "stuckStreak":1
+
+Six interventions, streak 1 every time. `interveneStuck` zeroes
+`turnsWithoutTools`, so the turn right after an intervention CANNOT be flagged by
+the narration-only rule — and that turn cleared the streak. The rescue model (3),
+the HARD RESET block (3) and the compaction (5) were unreachable by any run,
+which is why the operator saw the same notice three times. Now gated on
+`lastStuckWasToolless`: while it stands, only a turn that called a tool clears
+the streak. Separately, an empty turn was counted as one narration turn — three
+were needed before anything fired, at ~85 s of GPU each — and now has its own
+rule that fires on the first one. Full write-up in `vendor/pi-loop-mode/FORK.md`.
+
+## 5. What is verified, and how
+
+- `scripts/test_forge_patches.py` **70/70** in the rebuilt image, and it was run
+  against the UNPATCHED image first: 2 of the new checks fail there
+  (`got returned None`, `got 0, want 2`). A patch test that passes on both
+  columns is not a test.
+- `vendor/pi-loop-mode` **295/295**, lint clean, and the control run is recorded:
+  with both fixes reverted 3 of the 7 new cases fail and the 4 controls stay
+  green.
+- `./scripts/smoke-test.sh` **11/11** against the running stack.
+- The live end-to-end check in §3 was run through the real proxy against the
+  real model after the rebuild.
+
+## 6. What is NOT verified
+
+**No wedged `/loop` run has been re-run end to end.** The four fixes are each
+verified at their own boundary, and the causal chain between them is measured,
+but the thing the operator saw has not been reproduced-then-not-reproduced. That
+is the next session's first job and it costs one unattended run.
+
+Two things are known-unchanged and deliberate. The `result is None` exit is now
+unreachable rather than removed, and the empty-tool-call-list exit still returns
+an empty response — forge cannot invent one — but both now log at ERROR. And a
+loop that reaches rung 5 and stays there still runs forever with a 60 s backoff:
+endless mode is what the operator asked for, and giving the ladder a terminal
+rung is a policy change, not a bug fix.
+
+---
+
 # Handoff — 2026-08-24e (the cliff answered: a misfire rate; q8_0 KV priced at depth; §3e corrected twice; the forge image REBUILT)
 
 ## Read this first

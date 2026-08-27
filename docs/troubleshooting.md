@@ -2,6 +2,37 @@
 
 Symptoms in the order you are likely to hit them.
 
+**An unattended `/loop` run spins forever making no changes, and the transcript
+shows empty assistant turns.**
+Fixed on 2026-08-27; this entry is here because the symptom is so quiet. Every
+turn burned the full generation cap (`eval time = … / 8192 tokens` in
+`./scripts/logs.sh llama`, ~85 s each) and reached pi as an assistant message
+with **no content, no usage and `stopReason: "stop"`** — a completed turn as far
+as anything downstream could tell. forge logged nothing at all for those turns:
+no `Retries exhausted`, no error, just `<< SSE 2 events`.
+
+Two independent causes, both fixed:
+
+- **forge had a silent dead end.** `FORGE_MAX_RETRIES=0` bounds the attempt loop
+  at one, `FORGE_MAX_TOOL_ERRORS=2` bounds tool-error kinds at three — so the
+  first malformed tool call was "not exhausted", forge queued a correction for
+  an attempt it could not make, fell out of its own loop and returned an empty
+  200. A tool call cut off at the token cap is exactly what produces it.
+  `patches/forge_empty_turn.py`, plus `patches/forge_text_sse_passthrough.py` so
+  a truncated turn is reported as `length` rather than `stop`.
+- **the loop's stuck ladder could not climb.** It cleared its "in a row" streak
+  on any turn that was not itself stuck, and an intervention zeroes the very
+  counter the next verdict needs — so the streak never passed 1 and the hard
+  reset, the rescue model and the compaction were unreachable. Empty turns also
+  counted as narration, so three were needed before anything fired. Fixed in
+  `vendor/pi-loop-mode` (AP1/AP2 in `tests/empty-turn-ladder.test.ts`).
+
+If something like this appears again, the two cheap instruments are
+`./scripts/logs.sh llama | grep "eval time"` — a generation that lands on the
+cap every turn is not a model that is thinking hard — and `.pi-loop-log.jsonl`
+in the working directory, whose `stuckStreak` says whether the ladder is
+actually climbing.
+
 **Tool calls never come back / the model "won't use tools".**
 Run `./scripts/smoke-test.sh`. It asserts on `tool_calls` specifically, because
 llama.cpp *silently ignores* the `tools` parameter when `--jinja` is missing — which

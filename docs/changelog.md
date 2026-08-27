@@ -160,6 +160,37 @@ into Matrix yet" — because the sidecar is up, and holding the account lock,
 having failed a single import. The doc now says to import the module as the
 check, rather than to trust the fingerprint.
 
+**An unattended `/loop` could get stuck and stay stuck, 2026-08-27.** A run
+against this stack produced nothing for 33 iterations and ~45 minutes of GPU,
+and the loop's own escalation never fired. Four defects in a line, three of them
+silent:
+
+- **forge returned an empty 200 with no log line.** `FORGE_MAX_RETRIES=0` bounds
+  the attempt loop at one; `FORGE_MAX_TOOL_ERRORS=2` bounds tool-error kinds at
+  three. The second outlived the first, so the first malformed tool call left
+  forge queueing a correction for an attempt it could not make, falling out of
+  its own loop and returning `None` — an empty assistant turn with no usage, no
+  finish_reason and nothing in the log. A tool call cut off at the token cap is
+  exactly what produces it: truncated JSON does not decode to a dict.
+  `patches/forge_empty_turn.py` (patch 8) makes exhaustion whichever budget runs
+  out first, and makes both empty exits loud.
+- **forge reported truncation as a natural stop, and dropped the reasoning, on
+  the one path pi uses.** `_emit_text`'s own docstring said so: the OpenAI SSE
+  path carried neither. llama-server reports `length` for a capped generation,
+  streaming or not; forge said `stop`. `patches/forge_text_sse_passthrough.py`
+  (patch 9).
+- **the loop's stuck ladder could never pass rung 1.** An intervention zeroes the
+  counter the next narration-only verdict needs, and the streak was cleared by
+  any turn without a verdict — so the rescue model (3), the hard reset (3) and
+  the compaction (5) were unreachable. Six interventions in that run, every one
+  logged `stuckStreak: 1`.
+- **an empty turn counted as narration**, so three of them — ~85 s of GPU each,
+  carrying no answer, no tool call and nothing any text rule can read — were
+  needed before anything fired. It now has its own rule and fires on the first.
+
+Both loop halves are in `vendor/pi-loop-mode` (FORK.md, AP1/AP2). The image was
+rebuilt: `test_forge_patches.py` 70/70, loop suite 295/295, smoke test 11/11.
+
 ---
 
 [← back to the README](../README.md)

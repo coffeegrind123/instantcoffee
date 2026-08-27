@@ -10,6 +10,34 @@ re-learn expensively.
 
 ---
 
+## 0. Re-run a real unattended `/loop` — the 2026-08-27 fixes are unproven END TO END
+
+**Cheapest item here and the only one blocking a claim.** Four defects were
+found and fixed on 2026-08-27 (two silent forge exits, two in the loop's stuck
+ladder — `context/HANDOFF.md` §1-§4). Each is verified at its own boundary, with
+a control run in both directions, and the causal chain between them is measured.
+**What has NOT happened is the thing the operator saw: a wedged run reproduced
+and then not reproduced.**
+
+It costs one unattended run. Start a `/loop` on a real goal, leave it, and check
+three things afterwards:
+
+- `.pi-loop-log.jsonl` — does `stuckStreak` ever exceed 1? Before the fix it
+  could not, in any run. A run that never gets stuck proves nothing here; a run
+  that does and climbs is the evidence.
+- `docker logs instantcoffee-llama | grep "eval time"` — a generation landing on
+  the 8,192-token cap every turn is the wedge, not a model thinking hard.
+- `docker logs instantcoffee-forge | grep "EMPTY RESPONSE"` — patch 8 makes both
+  of forge's empty exits loud. Silence here is now meaningful; it was not before.
+
+**Known-unchanged and deliberate, so they are not findings if you see them:** a
+loop that reaches rung 5 keeps going with a 60 s backoff (endless mode is what
+`/loop` promises, and a terminal rung is a policy change), and forge's
+empty-tool-call-list exit still returns an empty response — it cannot invent one
+— but now logs at ERROR.
+
+---
+
 ## 1. The runner exits 1 and skips its own last two steps — UNEXPLAINED
 
 **Highest value because it will cost you an hour of confusion otherwise.**

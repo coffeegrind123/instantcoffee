@@ -458,7 +458,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # The five build-time patches already fail the BUILD when forge's source
+      # The nine build-time patches already fail the BUILD when forge's source
       # text moves. That is a check on the input: a patch can apply cleanly to
       # text that has shifted underneath it and produce a package that imports,
       # starts, serves, and returns the wrong field — which is the shape of

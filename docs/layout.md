@@ -84,7 +84,7 @@ scripts/
                         gaps named
   test_capture_proxy.py the recorder's unit + live-socket suite, including the
                         no-buffering control and the exploding-recorder control
-  test_forge_patches.py behaviour gate for the five build-time forge patches.
+  test_forge_patches.py behaviour gate for the nine build-time forge patches.
                         Runs INSIDE the built image, because it imports the
                         patched package. CI runs it after the image build
   probe_lib.py          shared by ctx_needle.py and bench_literal.py: the nonce,
@@ -140,6 +140,23 @@ patches/
                         which rewrites the prompt PREFIX every agentic turn and
                         pins the KV cache on a template that never needed it.
                         FORGE_MERGE_ACROSS_TOOLS=1 restores the old behaviour
+  forge_anthropic_reasoning.py  the same two losses on the ANTHROPIC wire:
+                        reasoning onto a top-level key rather than a `thinking`
+                        block, and the backend's stop_reason rather than
+                        "end_turn"
+  forge_toolcall_passthrough.py  build-time fix for the branch an AGENT turn
+                        takes — the ToolCallError passthrough, which emitted the
+                        text alone, so the reasoning was discarded and every
+                        turn was reported as a natural "stop"
+  forge_empty_turn.py   build-time fix for forge's one silent exit: the
+                        tool-error budget could outlive the ATTEMPT budget, so a
+                        truncated tool call ended the loop with no verdict and
+                        the client got an empty 200 with no usage, no
+                        finish_reason and no log line
+  forge_text_sse_passthrough.py  build-time fix for the last emitter that
+                        carried neither the reasoning nor the backend's
+                        finish_reason — the OpenAI SSE text path, which is the
+                        one pi takes on every turn
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction
