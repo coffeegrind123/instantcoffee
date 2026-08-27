@@ -113,10 +113,37 @@ RUN pip install --no-cache-dir \
 # so nothing retries and the loop stops. Applied AFTER forge_reasoning_passthrough.py,
 # whose TextResponse fields it carries; it verifies that ordering and refuses to
 # run otherwise. See patches/forge_toolcall_passthrough.py.
+#
+# Patch 8 closes the one exit from run_inference that said NOTHING on the way
+# out. forge has two budgets — FORGE_MAX_RETRIES bounds the attempt loop,
+# FORGE_MAX_TOOL_ERRORS bounds tool-error kinds — and with .env's 0 and 2 the
+# second outlives the first: the first malformed tool call is "not exhausted",
+# so forge appends a correction for an attempt it will never make, falls out of
+# its own loop and returns None, which handler.py turns into an empty 200 with
+# no usage, no finish_reason and no log line. Measured on a live unattended /loop
+# run: 20+ consecutive turns of the full 8,192-token generation cap (~85 s of GPU
+# each) delivered to pi as `content: []` reported as a natural "stop", with the
+# whole run making zero file changes. Truncation is what produces it —
+# decode_tool_args hands back the raw string when a tool call is cut off
+# mid-JSON. Applied AFTER forge_toolcall_passthrough.py, because it sends more
+# turns through the exception that patch taught to carry the reasoning and the
+# real finish_reason; it verifies that ordering and refuses to run otherwise.
+# See patches/forge_empty_turn.py.
+#
+# Patch 9 finishes what patches 3 and 7 started, on the one path that matters
+# most here. `_emit_text` routes four ways and its own docstring ended "The
+# OpenAI SSE path is still the one place neither is carried" — neither the
+# reasoning nor the backend's finish_reason — and OpenAI STREAMING is what pi
+# uses for every turn. Measured against the live pair: llama-server reports
+# finish_reason "length" for a request cut off at max_tokens, streaming and not;
+# forge reported "stop". A turn that ran out of budget mid-sentence was therefore
+# indistinguishable from one the model chose to end, which is exactly how the
+# wedged turns above hid. See patches/forge_text_sse_passthrough.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
-     patches/forge_toolcall_passthrough.py \
+     patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py \
+     patches/forge_text_sse_passthrough.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -126,6 +153,8 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_across_tools.py "$SITE" \
     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE" \
     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE" \
+    && python /tmp/patches/forge_empty_turn.py "$SITE" \
+    && python /tmp/patches/forge_text_sse_passthrough.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"

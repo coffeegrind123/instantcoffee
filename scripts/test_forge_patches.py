@@ -34,6 +34,14 @@ WHAT IT PINS
                         and NEVER in `content` — the block type prinny forwards
                         — and stop_reason is the backend's rather than
                         "end_turn"
+  empty_turn            a validation failure with no attempt left RAISES, so it
+                        reaches the passthrough branch, instead of falling out
+                        of run_inference's loop and returning an empty 200 with
+                        no usage, no finish_reason and no log line
+  text_sse_passthrough  the OpenAI SSE text path — the one pi takes on every
+                        turn — carries the reasoning in its own delta and the
+                        backend's finish_reason, so a truncated turn is not
+                        reported as a natural stop
 
 The last one is checked in both directions on purpose. A test that only proves
 the new behaviour cannot tell a working flag from a flag that is never read.
@@ -263,6 +271,137 @@ def main() -> int:
                      ("content_filter", "refusal"), (None, "end_turn"),
                      ("a_reason_forge_invented", "end_turn")):
         eq(f"stop_reason map {fr!r}", _anthropic_stop_reason(fr), want)
+
+    print("\npatches/forge_empty_turn.py")
+    # Driven, not pinned. The other budget-shaped checks in this file assert
+    # source text because reaching the real path needs a backend, a validator and
+    # an error budget; this one supplies all three. The stub client is the only
+    # double — everything else is the shipped code, and the ONE thing that makes
+    # the defect appear is the pair of budgets .env actually sets.
+    import asyncio
+
+    from forge import Message, MessageMeta, MessageRole, MessageType, TextResponse, ToolCall
+    from forge.core.inference import TOOL_ERROR_KINDS, run_inference
+    from forge.guardrails.error_tracker import ErrorTracker
+    from forge.guardrails.response_validator import ResponseValidator
+
+    eq("only tool_arg_validation spends the tool-error budget",
+       set(TOOL_ERROR_KINDS), {"tool_arg_validation"})
+
+    class _CM:
+        def maybe_compact(self, messages, step_index=None, step_hint=None):
+            return messages
+
+        def check_thresholds(self, messages):
+            return None
+
+        def invalidate_usage(self):
+            pass
+
+        def update_token_count(self, n):
+            pass
+
+    class _Client:
+        api_format = "openai"
+
+        def __init__(self, response):
+            self.response = response
+            self.calls = 0
+
+        async def send(self, api_messages, tools=None, sampling=None, passthrough=None,
+                       inbound_anthropic_body=None, **kw):
+            self.calls += 1
+            return self.response
+
+    class _Spec:
+        def __init__(self, name):
+            self.name = name
+
+    def drive(response):
+        """Returns ('raised', exc) or ('returned', result) plus the call count."""
+        client = _Client(response)
+
+        async def _run():
+            return await run_inference(
+                messages=[Message(MessageRole.USER, "hi", MessageMeta(MessageType.USER_INPUT))],
+                client=client,
+                context_manager=_CM(),
+                # .env's pair, and the pair is the defect: the ATTEMPT budget is
+                # max_retries + 1 = 1, the tool-error budget is 2, and the second
+                # used to outlive the first.
+                validator=ResponseValidator(["bash"], rescue_enabled=True),
+                error_tracker=ErrorTracker(max_retries=0, max_tool_errors=2),
+                tool_specs=[_Spec("bash")],
+            )
+
+        try:
+            return ("returned", asyncio.run(_run()), client.calls)
+        except Exception as exc:  # noqa: BLE001 — the verdict is the exception
+            return ("raised", exc, client.calls)
+
+    # The defect: a tool call whose arguments do not decode to a dict. That is
+    # what a turn cut off at the token cap produces — decode_tool_args hands back
+    # the raw string — and it used to return None here, silently.
+    kind, value, calls = drive([ToolCall(tool="bash", args='{"cmd": "ls -la /etc',
+                                         reasoning="THINKING")])
+    check("a malformed tool call with no attempt left raises rather than vanishing",
+          kind == "raised", f"got {kind} {value!r}")
+    eq("...and it only ever asked the backend once", calls, 1)
+    if kind == "raised":
+        check("...and the exception carries the reasoning to the passthrough branch",
+              getattr(value, "reasoning", None) == "THINKING",
+              f"reasoning={getattr(value, 'reasoning', None)!r}")
+        check("...and says which budget ran out first",
+              "attempt_limit=1" in str(value), str(value))
+
+    # Controls. Both of these already raised before the patch, on the RETRY
+    # budget, and must be untouched by it — a fix that simply raised on
+    # everything would pass the case above and fail nothing here.
+    kind, value, _ = drive(TextResponse(content="", reasoning="THINKING",
+                                        finish_reason="length"))
+    check("control — a reasoning-only text turn still raises on the retry budget",
+          kind == "raised" and "max_retries=0" in str(value), f"{kind}: {value!r}")
+    kind, value, _ = drive([ToolCall(tool="frobnicate", args={"x": 1})])
+    check("control — an unknown tool still raises on the retry budget",
+          kind == "raised" and "max_retries=0" in str(value), f"{kind}: {value!r}")
+
+    # The handler half cannot be driven without an app, so it is pinned. Both
+    # exits are "shouldn't happen" after the fix above; the point of the pin is
+    # that neither may go back to being SILENT about it.
+    from forge.proxy import handler as _handler
+
+    hsrc = open(_handler.__file__).read()
+    eq("both empty exits in the handler are loud", hsrc.count("EMPTY RESPONSE:"), 2)
+
+    print("\npatches/forge_text_sse_passthrough.py")
+    # The emitter, through the router, in the shape pi actually asks for:
+    # protocol "openai", is_stream True. The other three cells are covered
+    # above and are the control — this patch must not have changed them.
+    sse = handler._emit_text(
+        "TEXT", "m", "openai", True, usage=None,
+        reasoning="THINKING", finish_reason="length",
+    )
+    deltas = [c["delta"] for e in sse for c in e.get("choices", [])]
+    eq("streamed text is still the text",
+       "".join(d.get("content") or "" for d in deltas), "TEXT")
+    eq("streamed reasoning rides its own key",
+       "".join(d.get("reasoning_content") or "" for d in deltas), "THINKING")
+    check("reasoning is NOT merged into the streamed content",
+          "THINKING" not in "".join(d.get("content") or "" for d in deltas))
+    eq("a truncated stream is not reported as a natural stop",
+       sse[-1]["choices"][0]["finish_reason"], "length")
+    check("exactly one delta announces the assistant role",
+          sum(1 for d in deltas if d.get("role") == "assistant") == 1,
+          f"roles={[d.get('role') for d in deltas]}")
+
+    # Control: a caller with nothing better to say still gets "stop", and a
+    # response with no reasoning still streams as one content delta.
+    plain = handler._emit_text("TEXT", "m", "openai", True)
+    eq("default finish_reason unchanged", plain[-1]["choices"][0]["finish_reason"], "stop")
+    plain_deltas = [c["delta"] for e in plain for c in e.get("choices", [])]
+    check("no reasoning_content key when there is no reasoning",
+          not any("reasoning_content" in d for d in plain_deltas))
+    eq("...and the first delta still carries the role", plain_deltas[0].get("role"), "assistant")
 
     total = PASSED + FAILED
     print(f"\n{PASSED}/{total} passed", end="")
