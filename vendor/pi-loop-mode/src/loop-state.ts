@@ -49,6 +49,19 @@ export interface LoopState {
   turnsWithoutTools: number;
   toolCallsThisTurn: number;
   consecutiveStuckCount: number;
+  /**
+   * Was the intervention that armed `consecutiveStuckCount` the narration-only
+   * rule? The streak is what every rung of the ladder spends, and `interveneStuck`
+   * zeroes `turnsWithoutTools` — so the turn AFTER an intervention cannot be
+   * stuck under that rule however silent it is, and clearing the streak on any
+   * non-stuck turn retired it before it could ever reach rung 2. Measured on a
+   * live unattended run: six interventions over 33 iterations, every one of them
+   * logged `stuckStreak: 1`, so the hard reset (3), the rescue model (3) and the
+   * compaction (5) were unreachable for the whole run. With this flag standing,
+   * only a turn that called a tool clears the streak; the repetition rules are
+   * unaffected, because a turn that stops repeating is evidence on its own.
+   */
+  lastStuckWasToolless: boolean;
   interventionCount: number;
   /**
    * Consecutive CONTEXT-pressure turns. Named for history; it is the context
@@ -112,6 +125,7 @@ export function defaultState(): LoopState {
     turnsWithoutTools: 0,
     toolCallsThisTurn: 0,
     consecutiveStuckCount: 0,
+    lastStuckWasToolless: false,
     interventionCount: 0,
     consecutiveErrorCount: 0,
     providerErrorStreak: 0,

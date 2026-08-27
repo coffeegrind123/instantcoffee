@@ -2311,3 +2311,81 @@ lifecycle transition of nine that does not clear the turn buffers.
 ## Twenty-fourth pass — the tests
 
 **278, unchanged.**
+
+## The ladder that could not climb, and the turn that was not narration (AP1, AP2)
+
+Found the way the others were not: by watching a real unattended run go nowhere
+for 45 minutes. `/loop` against Qwen3.8-27B, goal "continue GOAL.md", 33
+iterations, **zero file changes**, ended by the operator pressing Esc. The
+operator's report was "there's an infinite loop stuck problem", and the loop's
+own notices agreed with them — three times, identically.
+
+The evidence is in `.pi-loop-log.jsonl` from that session, and it is one column:
+
+```
+iteration 14  stuck  "stuckStreak":1   no tool usage for 3 turns (narration only)
+iteration 17  stuck  "stuckStreak":1   no tool usage for 3 turns (narration only)
+iteration 20  stuck  "stuckStreak":1   no tool usage for 3 turns (narration only)
+iteration 26  stuck  "stuckStreak":1   ...
+iteration 29  stuck  "stuckStreak":1   ...
+iteration 32  stuck  "stuckStreak":1   ...
+```
+
+Six interventions, and **the streak is 1 every single time.** The rescue model
+is at 3, the HARD RESET block is at 3, the compaction is at 5 and the backoff
+doubles with it: none of them could be reached, ever, by any run.
+
+**AP2 — the streak was cleared by a turn the intervention had made un-stuckable.**
+`interveneStuck` sets `turnsWithoutTools = 0`, and `agent_end` cleared
+`consecutiveStuckCount` on any turn `detectStuck` did not flag. The
+narration-only rule needs `MAX_TOOLLESS_TURNS` toolless turns, so the turn right
+after an intervention **cannot** be flagged by it however silent it is — and it
+was the turn that retired the streak. The clear was itself a fix (a healthy
+`LOOP_DONE` turn between two stuck ones used to leave the streak standing, so
+"3 in a row" could span a whole run) and it over-corrected: it clears on the
+absence of a verdict, which the previous line of code had just guaranteed.
+
+It is now gated on `state.lastStuckWasToolless`, recorded in `interveneStuck`
+before the counter it reads is zeroed. While that marker stands, only a turn
+that CALLED A TOOL clears the streak — which is precisely the evidence the
+narration rule says is missing. Every other rule is about what the model *said*,
+and a turn that says something different is evidence on its own, so those clear
+exactly as they always did; the twelfth pass's `LOOP_DONE` test still passes
+unchanged.
+
+**AP1 — an empty turn was counted as one narration turn.** `emptyResponse` — no
+answer, no tool call — is computed in `agent_end` and had exactly one reader: the
+context-pressure rung, which only looks at it above the saturation threshold.
+This run sat at 66% of a 96K window, so every empty turn fell through to the
+ordinary accounting and counted as narration. Three of them were needed before
+anything fired, and on this stack each one cost the **full 8,192-token
+generation cap — about 85 seconds of GPU** — while carrying no information at
+all: no answer, no fingerprint, nothing any text rule can read. It now has its
+own rule in `detectStuck`, ahead of the others, and it fires on the first one.
+
+**The other half is not in this package**, and it is the reason those turns were
+empty. llama-server generated 8,192 tokens every turn; forge returned
+`content: []` with no usage, no finish_reason and **no log line**, because
+`FORGE_MAX_TOOL_ERRORS=2` outlived `FORGE_MAX_RETRIES=0` — forge queued a
+correction for an attempt it had no budget to make, fell out of its own loop and
+returned None. A tool call truncated at the cap is exactly what triggers it:
+`decode_tool_args` hands back the raw string when the JSON does not parse. See
+`patches/forge_empty_turn.py`, and `patches/forge_text_sse_passthrough.py` for
+why the turn also reported `stop` rather than `length`.
+
+Both halves were needed. With only the forge fix, a wedge that produced text
+instead of nothing would still have pinned the ladder at rung 1 forever; with
+only this one, the loop would have escalated correctly against turns that still
+cost 85 seconds each and said nothing.
+
+## AP — the tests
+
+**288 → 295**, in `tests/empty-turn-ladder.test.ts`, with the control run
+recorded: with both fixes reverted, 3 of the 7 fail (`intervenes on the FIRST
+empty turn`, `consecutive empty turns climb the ladder instead of resetting it`,
+`a narration-only run reaches rung 2`) and the four controls stay green, which is
+what makes them controls. One existing expectation was superseded rather than
+weakened: `context-recovery.test.ts`'s "an empty response with room to spare"
+asserted `Status: running` as a proxy for "the context ladder did not claim this
+turn"; it now asserts that half directly (no compaction, no context-pressure
+notice) plus the new verdict.

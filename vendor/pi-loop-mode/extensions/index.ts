@@ -73,6 +73,15 @@ const SIMILARITY_THRESHOLD = 0.8;
 const REPEAT_WINDOW_COUNT = 3;
 /** Turns without any tool call before a stuck intervention fires. */
 const MAX_TOOLLESS_TURNS = 3;
+/**
+ * The narration-only rule's verdict, built here and recognised here.
+ *
+ * Two readers need to agree on which rule fired: `detectStuck` writes the
+ * sentence and the streak-clearing guard in `agent_end` asks whether the streak
+ * it is about to retire was armed by this rule. A string literal in both places
+ * is a pair that can drift; the constant is the pair.
+ */
+const TOOLLESS_REASON_PREFIX = "no tool usage for";
 /** Consecutive stuck interventions before the hard-reset escalation kicks in. */
 const HARD_RESET_AFTER = 3;
 // DEGENERATE_REPEATS is imported from ../src/repetition.ts, not declared here.
@@ -1639,8 +1648,32 @@ async function allowModelCheck(ctx: ExtensionContext, command: string): Promise<
 function detectStuck(
   lastAssistantText: string,
   repetitionTexts: string | readonly string[] = lastAssistantText,
+  emptyTurn = false,
 ): string | undefined {
   const prints = state.lastAssistantFingerprints;
+
+  // An EMPTY turn — no answer, no tool call — is a failed turn, not narration.
+  //
+  // Forge fork. `emptyResponse` is computed in `agent_end` and had exactly one
+  // reader: the context-pressure rung, which only looks at it when the window is
+  // near full. Below that threshold an empty turn fell through to the ordinary
+  // accounting and was counted as one narration turn, so THREE of them were
+  // needed before anything fired.
+  //
+  // They are not narration and three of them is not a cheap wait. Measured on a
+  // live unattended run against the local stack: 20+ consecutive turns where
+  // llama-server generated the full 8,192-token cap (~85 s of GPU each) and forge
+  // returned `content: []` with no usage, no finish_reason and no log line —
+  // the model had been cut off mid-tool-call, and forge's tool-error budget
+  // (`FORGE_MAX_TOOL_ERRORS=2`) outlived its ATTEMPT budget
+  // (`FORGE_MAX_RETRIES=0`), so `run_inference` fell out of its own loop and
+  // returned None. See `patches/forge_empty_turn.py` for that half.
+  //
+  // Nothing a text rule reads exists on such a turn: no fingerprint, no answer,
+  // nothing to compare. So it gets its own rule, and it fires on the FIRST one.
+  if (emptyTurn) {
+    return "the model produced no answer and called no tool (empty turn)";
+  }
 
   // Degenerate generation: one sentence, word, or short phrase repeated many times within a single response.
   for (const text of typeof repetitionTexts === "string" ? [repetitionTexts] : repetitionTexts) {
@@ -1652,7 +1685,7 @@ function detectStuck(
 
   // Narration-only loops: several turns without a single tool call.
   if (state.turnsWithoutTools >= MAX_TOOLLESS_TURNS) {
-    return `no tool usage for ${state.turnsWithoutTools} turns (narration only)`;
+    return `${TOOLLESS_REASON_PREFIX} ${state.turnsWithoutTools} turns (narration only)`;
   }
 
   const lastTwo = prints.slice(-2);
@@ -1875,6 +1908,11 @@ async function interveneStuck(pi: ExtensionAPI, ctx: ExtensionContext, reason: s
   state.interventionCount++;
   state.status = "stuck";
   state.lastNotice = reason;
+  // Which rule armed the streak, recorded before the counter it reads is zeroed
+  // one line down. The streak-clearing guard in `agent_end` is the only reader;
+  // see `LoopState.lastStuckWasToolless` for why the two counters cannot both be
+  // reset here and still add up.
+  state.lastStuckWasToolless = reason.startsWith(TOOLLESS_REASON_PREFIX);
   state.turnsWithoutTools = 0;
   // Fight repetition at the sampling level too (applied via before_provider_request).
   state.penaltyTurnsRemaining = PENALTY_TURNS;
@@ -2038,6 +2076,7 @@ function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   state.startTime = Date.now();
   state.iterationCount = 0;
   state.consecutiveStuckCount = 0;
+  state.lastStuckWasToolless = false;
   state.consecutiveErrorCount = 0;
   state.providerErrorStreak = 0;
   state.totalErrorCount = 0;
@@ -2375,6 +2414,7 @@ export default function (pi: ExtensionAPI) {
         state.active = true;
         state.status = "running";
         state.consecutiveStuckCount = 0;
+        state.lastStuckWasToolless = false;
         state.consecutiveErrorCount = 0;
         // Resume clears the provider streak too, or a resume after
         // `pauseForProviderFailure` re-pauses on the very first error — the
@@ -3402,6 +3442,10 @@ export default function (pi: ExtensionAPI) {
     // --- Rescue turn finished: hand control back to the regular loop model. ---
     if (state.rescueActive) {
       state.consecutiveStuckCount = 0;
+      // The marker belongs to the streak: every path that retires one retires
+      // the other, or the next narration-only turn is judged against a rule that
+      // fired for a run of stuck turns this rescue has already ended.
+      state.lastStuckWasToolless = false;
       // AL2: one stand-down, called from here and from every other path that
       // ends a rescue turn. It clears the two fields synchronously and returns
       // the switch, so this await is the switch and nothing else.
@@ -3468,13 +3512,34 @@ export default function (pi: ExtensionAPI) {
     // rule is skipped by its own length test), and a turn whose only output was
     // reasoning is compared on the reasoning — which is what is in the window and
     // what the model is repeating.
-    const stuckReason = detectStuck(committedText ?? "", turnEmittedTexts);
+    const stuckReason = detectStuck(committedText ?? "", turnEmittedTexts, emptyResponse);
     // The streak is "in a row", and every rung of interveneStuck's ladder spends
     // it — the rescue model at 3, the compaction at 5, the HARD RESET block at 3.
     // It used to be cleared on two of this handler's eighteen exits (the
     // fall-through and the rescue-turn end), so a healthy LOOP_DONE turn between
     // two stuck ones left it standing and "3 in a row" could span a whole run.
-    if (!stuckReason) state.consecutiveStuckCount = 0;
+    //
+    // Forge fork: a turn that is silent in the SAME way does not clear it.
+    //
+    // `interveneStuck` sets `turnsWithoutTools = 0`, so after a narration-only
+    // verdict the very next turn cannot be stuck under that rule however silent
+    // it is — the rule needs MAX_TOOLLESS_TURNS of them and the counter was just
+    // zeroed. Clearing on any non-stuck turn therefore retired the streak one
+    // turn after every intervention, and the ladder could never reach rung 2.
+    // Measured on a live unattended run, `.pi-loop-log.jsonl`: six `stuck`
+    // events over 33 iterations, EVERY one of them `"stuckStreak":1`, with the
+    // hard reset (3), the rescue model (3) and the compaction (5) unreachable
+    // for the whole run while the operator watched the same notice three times.
+    //
+    // The guard is narrow on purpose. It stands only while the streak was armed
+    // by the narration rule, and only until a turn calls a tool — which is
+    // precisely the evidence that rule is missing. Every other rule is about
+    // what the model SAID, and a turn that says something different is evidence
+    // on its own, so those clear exactly as they always did.
+    if (!stuckReason && !(state.lastStuckWasToolless && toolCallsThisTurn === 0)) {
+      state.consecutiveStuckCount = 0;
+      state.lastStuckWasToolless = false;
+    }
 
     // --- Objective goal function (if configured). ---
     let scoreRegressed = false;

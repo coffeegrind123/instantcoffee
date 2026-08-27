@@ -749,14 +749,29 @@ describe("small-window handoff", () => {
     assert.equal(compactRequests.length, 1, "the room is the problem, so take room back");
   });
 
-  test("an empty response with room to spare is left to the ordinary path", async () => {
+  test("an empty response with room to spare is a stuck verdict, not a recovery", async () => {
+    // This test used to assert `Status: running` — a proxy for "the context
+    // ladder did not claim this turn". That half still holds and is what the
+    // compaction assertion below measures.
+    //
+    // What changed is the other half. An empty turn below the pressure
+    // threshold used to fall through to the ordinary accounting and be counted
+    // as ONE narration turn, so three of them were needed before anything
+    // fired. On the local stack an empty turn costs the full generation cap
+    // (~85 s of GPU) and carries no information at all — no answer, no tool
+    // call, no fingerprint for any text rule to read — so it now gets its own
+    // rule in `detectStuck` and fires on the first one.
     contextPercent = 30;
     contextWindow = 32_768;
     await emit("agent_end", emptyTurn);
     await emit("agent_settled", {});
     assert.equal(compactRequests.length, 0, "at 30% full the context is not the explanation");
+    const messages = notifications.map((entry) => entry.message).join("\n");
+    assert.doesNotMatch(messages, /context pressure/i, "the room is not the problem here");
+    assert.match(messages, /empty turn/i, "and an empty turn is not a turn to wait three of");
     const status = await loopStatus();
-    assert.match(status, /Status: running/);
+    assert.match(status, /Status: stuck/);
+    assert.match(status, /stuck streak: 1/);
   });
 
   test("a stuck verdict on a saturated context compacts instead of re-prompting", async () => {
