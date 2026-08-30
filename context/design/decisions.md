@@ -8809,3 +8809,41 @@ marked sent.
 
 601 tests, up from 594. `config.test.ts` changed rather than broke: it pins the
 enum the error message advertises, now `off | result | last | all`.
+
+## 2026-08-30 (later still) — AQ2: two prinny defaults, decided rather than inherited
+
+Asked why `/prinny forward all` was not the default, the honest answer was that
+nobody had decided it wasn't. The only rationale in the tree argued `result`
+against **`off`**, not against `all`; `deliverAs: followUp` had none at all. Both
+moved:
+
+```
+  forward:   'all'      was 'result'
+  deliverAs: 'steer'    was 'followUp'
+```
+
+**`all`**: `result` sends one message at `agent_settled`. On the run that
+prompted this — a ten-tool-call browse hunting a 4chan board — that is several
+minutes of silence and then a wall, and the sender cannot tell working from
+wedged. `all` sends each assistant text message at `message_end`, so "404, huh…
+*tilts head*" arrives while it is still true.
+
+**`steer`**: `followUp` holds an inbound message until every tool call is done, so
+a correction typed mid-browse lands after the browse — a comment on history
+rather than a redirection. The person on Matrix is a participant, not an
+audience; that is the whole reason the channel exists.
+
+**Both costs are recorded rather than waved off.** `all` is N notifications per
+turn, and it fires before `agent_settled`, so a retried or compacted turn can
+leave a superseded intermediate answer standing on somebody's phone — that is the
+property `result` was chosen for, which is why `result` is kept and documented
+rather than deleted. A steer interrupts the loop and a 27B model steered mid-task
+sometimes drops the original goal; on paper the worse failure, in practice the
+better one, because it is visible while a four-minute-late message is
+indistinguishable from an ignored one.
+
+**Thinking is unaffected and that is now asserted, not assumed.** The filter is an
+allowlist on `type === "text"`, so `all` streams more messages and not more kinds
+of message. `tests/config.test.ts` pins both defaults and adds the exclusion
+assertion beside them, because a default of `all` is exactly when a later reader
+would assume the allowlist had been widened too. 603 tests, up from 601.

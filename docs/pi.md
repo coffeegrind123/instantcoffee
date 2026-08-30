@@ -520,14 +520,25 @@ along, and noise if you just want the answer; `forward last` is still there for
 the second case. `vendor/prinny-channel/FORK.md` §AQ1 has the whole account,
 including the correction.
 
-**To follow a long run live, `/prinny forward all`.** `result` batches the whole
-turn into one message when it settles, which on a ten-tool-call browse is a wall
-of text after several minutes of silence. `all` sends each line as it completes,
-so the sender sees "404, huh…" while it is still happening. Pair it with
-`/prinny set deliverAs steer` if you want to redirect mid-run: the default,
-`followUp`, holds an inbound message until the agent has finished every tool
-call, so a correction typed halfway through a browse does not land until the
-browse is over.
+**The defaults are `forward: all` and `deliverAs: steer`** — changed 2026-08-30,
+because neither of the previous two had an argument behind it (§AQ2). `all` sends
+each assistant line at `message_end`, so on a ten-tool-call browse the sender
+reads "404, huh…" while it is still true rather than a wall of text after several
+minutes of silence. `steer` delivers an inbound Matrix message after the current
+turn's tool calls and before the next model call, so a correction typed mid-browse
+redirects it instead of arriving as a comment on history.
+
+Both costs are real and neither is hidden. `all` is N notifications per turn
+instead of one, and it fires at `message_end` rather than `agent_settled`, so a
+turn that is later retried can leave a superseded intermediate answer standing —
+`/prinny forward result` is kept for exactly that. A steer interrupts the loop,
+and a 27B model steered mid-task sometimes drops the original goal;
+`/prinny set deliverAs followUp` restores the wait.
+
+**Thinking is not forwarded in any mode**, and that is worth saying here because
+`all` is the setting that makes people assume otherwise. The filter is an
+allowlist on `type === "text"`, so `thinking` and `toolCall` are excluded by
+construction rather than by a list something new could slip past.
 
 **A Matrix message reads as one line, and there is one tool.** Both were paid for
 on every turn. Upstream's `<channel …>` block carried up to fourteen attributes
