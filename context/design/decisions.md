@@ -8897,3 +8897,47 @@ in-character monologue turns out to be noise on long tasks.
 
 pi-persona v1.1.0. 109 tests, up from 106; five encoded the old default and were
 rewritten to the new intent rather than deleted.
+
+## 2026-08-30 (night) — prinny-channel becomes its own repo, and the tests that read sideways
+
+`vendor/prinny-channel` is now a submodule of
+[pi-prinny-channel](https://github.com/coffeegrind123/pi-prinny-channel), split
+out with `git subtree split` so its 29 commits travelled with it. The existing
+`prinny-channel` repo is the **Claude Code** plugin this was converted from;
+the new name keeps the two apart.
+
+**What the move exposed.** Five suites read ACROSS to another package's *source*
+rather than importing it: the compaction lock (three copies of one protocol), the
+approved-command key shared with `rtk-pi`, the agent-dir rule, the json-store
+rule, and — the fifth — this repo's own `scripts/pi-local.sh`. That is not
+incidental. Vendor packages here must not import each other, which is precisely
+why those literals are duplicated, and reading the neighbour's source is what
+keeps the copies honest.
+
+Those relative paths resolve inside `vendor/` and nowhere else. Standalone they
+were **7 hard failures and 21 suites that never loaded** — a package that looked
+broken because it had been moved.
+
+`siblingPath()` and `stackFile()` now resolve them, and the suites skip with a
+reason when the neighbour is absent — the same shape as `rtk-pi`'s binary suite
+skipping without the rtk binary.
+
+**The half that matters is the other direction.** A silently-skipped agreement
+test is exactly how three copies of a protocol drift apart, so here they must NOT
+skip. Measured both ways:
+
+```
+  standalone clone      593 tests, 0 fail, 2 skipped
+  in vendor/ here       603 tests, 0 fail, 0 skipped   (all five neighbours FOUND)
+```
+
+CI now asserts `# skipped 0` on that suite, not just `# fail 0`. A missing
+sibling would otherwise present as a green run that checked less than it used to.
+
+**The same trap, one directory over, was already caught for `pi-persona`**: with
+its submodule absent, the extension syntax-check loop does not fail — the glob
+does not expand, `$f` stays the literal pattern, the import throws
+ERR_MODULE_NOT_FOUND and that branch deliberately exits 0. A control run printed
+`vendor/pi-persona/extensions/*.ts: OK`. Both repos now have an explicit
+"the submodule is checked out" step, because in both cases absence was quieter
+than presence.

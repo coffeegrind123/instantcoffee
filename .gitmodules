@@ -2,3 +2,7 @@
 	path = vendor/pi-persona
 	url = https://github.com/coffeegrind123/pi-persona.git
 	branch = main
+[submodule "vendor/prinny-channel"]
+	path = vendor/prinny-channel
+	url = https://github.com/coffeegrind123/pi-prinny-channel.git
+	branch = main

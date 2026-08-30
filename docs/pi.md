@@ -446,6 +446,15 @@ It is a conversion of the Claude Code plugin of the same name — the Matrix hal
 is upstream's and unmodified, everything that touched Claude Code was rewritten
 for pi. `vendor/prinny-channel/FORK.md` is the full account.
 
+Like `/persona`, it lives in
+[its own repo](https://github.com/coffeegrind123/pi-prinny-channel) and is a
+**git submodule** here, pinned by commit, installable on its own with
+`pi install git:github.com/coffeegrind123/pi-prinny-channel`. Five of its test
+suites read a SIBLING vendor package's source — that is how the duplicated
+compaction-lock and approved-command literals are kept in agreement, given
+vendor packages here must not import each other. Standalone those skip; here they
+must not, and CI asserts zero skips rather than only zero failures.
+
 **Off by default** (`PRINNY_ENABLED=0`). It is the only part of this stack that
 logs into a remote service and makes the session addressable from the internet,
 which is a decision to take on purpose. Set it to `1` and:

@@ -446,7 +446,16 @@ if [[ "$(env_get PRINNY_ENABLED)" == "1" ]]; then
       PRINNY_NOTE=", /prinny (not configured)"
     fi
   else
-    warn "$PRINNY_DIR is missing — /prinny will not exist this session."
+    # A submodule since 2026-08-30 — vendor/prinny-channel lives in its own repo
+    # (github.com/coffeegrind123/pi-prinny-channel) and is pinned here by commit.
+    # A clone without --recurse-submodules leaves the directory EMPTY rather than
+    # absent, which reads as a broken package instead of a missing flag.
+    if [[ -d "$PRINNY_DIR" ]]; then
+      warn "$PRINNY_DIR is empty — it is a git submodule that was never checked out."
+      warn "Fix it once with: git submodule update --init --recursive"
+    else
+      warn "$PRINNY_DIR is missing — /prinny will not exist this session."
+    fi
   fi
 fi
 

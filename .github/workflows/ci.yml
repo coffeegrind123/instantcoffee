@@ -68,13 +68,15 @@ jobs:
       # ERR_MODULE_NOT_FOUND, and that branch deliberately exits 0. So a missing
       # `submodules: recursive` would present as a green run that checked
       # nothing. A negative result needs a control; this is it.
-      - name: The pi-persona submodule is checked out
+      - name: The submodules are checked out
         run: |
-          test -f vendor/pi-persona/extensions/index.ts \
-            || { echo "vendor/pi-persona is empty — checkout needs submodules: recursive"; exit 1; }
-          test -f vendor/pi-persona/package.json \
-            || { echo "vendor/pi-persona has no package.json"; exit 1; }
-          echo "  vendor/pi-persona: present at $(git -C vendor/pi-persona rev-parse --short HEAD)"
+          for m in pi-persona prinny-channel; do
+            test -f "vendor/$m/package.json" \
+              || { echo "vendor/$m is empty — checkout needs submodules: recursive"; exit 1; }
+            echo "  vendor/$m: present at $(git -C "vendor/$m" rev-parse --short HEAD)"
+          done
+          test -f vendor/pi-persona/extensions/index.ts || { echo "no persona extension"; exit 1; }
+          test -f vendor/prinny-channel/extensions/index.ts || { echo "no prinny extension"; exit 1; }
 
       - name: Extension syntax checks
         run: |
@@ -231,11 +233,25 @@ jobs:
         working-directory: vendor/prinny-channel
         run: node server/bin/prinny-channel.mjs --prepare
 
+      # Five of these suites read ACROSS to a sibling vendor package's source —
+      # the compaction lock, the approved-command key shared with rtk-pi, the
+      # agent-dir rule, the json-store rule — plus one that reads this repo's own
+      # launcher. That is what keeps duplicated protocol literals honest.
+      #
+      # Since the package moved to its own repo they SKIP when the neighbour is
+      # absent, so its standalone CI can be green. Here the neighbours are all
+      # present and a skip would mean the agreement went unchecked — which is
+      # exactly how three copies of a protocol drift apart, silently. So this
+      # asserts zero skips rather than just zero failures.
       - name: Matrix channel unit tests
         working-directory: vendor/prinny-channel
         run: |
           npm run lint
-          npm run test:unit
+          npm run test:unit 2>&1 | tee /tmp/prinny.txt
+          grep -q "^# fail 0" /tmp/prinny.txt
+          grep -q "^# skipped 0" /tmp/prinny.txt \
+            || { echo "a cross-source agreement test skipped — a sibling package is missing"; \
+                 grep "^# skipped" /tmp/prinny.txt; exit 1; }
 
       # Separate, and after pi is installed, so "pi would not install" is not
       # reported as "the extension is broken". This is the step that catches a

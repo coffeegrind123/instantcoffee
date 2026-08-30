@@ -173,7 +173,8 @@ vendor/pi-subagents-lite/  Agent — fork of pi-subagents-lite@1.11.0, in-proces
   src/spawn/result-cap.ts  bounds a BACKGROUND result — the one path the guard
                         cannot see, because pi injects it without a tool_result
   tests/                node --test suite for the cap, plus a lint that works
-vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plugin
+vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plugin.
+                        A GIT SUBMODULE: github.com/coffeegrind123/pi-prinny-channel
   FORK.md               what the conversion changed, and why forwarding exists
   extensions/index.ts   the pi extension: tools, /prinny, forwarding, lifecycle
   src/                  pure modules — client, gate, block renderer, access
