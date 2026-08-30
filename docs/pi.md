@@ -658,19 +658,46 @@ hardcodes `WebSearch` / `WebFetch`, which pi does not have; ported verbatim that
 instructs a model with no fetch tool to produce a link, and the only way to obey
 is to invent one.
 
-### The immersion marker is off
+### The immersion marker, and why it is on
 
-openclaude appends a Chinese instruction block to the first user message. It is
-not decoration — it is a documented DeepSeek-V4 training artefact that re-routes
-that model's `<think>` from "deliberate about whether to comply" to "think in
-character". `auto` resolves to **off** on anything that does not look like
-DeepSeek, which is this whole stack: the markers are exact strings one model
-family was trained on, and injected elsewhere they are just tokens.
+openclaude appends a Chinese instruction block to the first user message of a
+session. It is not decoration — it is a documented DeepSeek-V4 thinking-mode
+control that re-routes the model's `<think>` from "deliberate about the
+character from outside it" to "think as them".
 
-`PERSONA_IMMERSION=immersion` turns it on by hand. It is **unmeasured** on Qwen.
-`THINK_LANG=zh` is already on here, so the model is being asked to reason in
-Chinese anyway — which makes the markers less alien than on a generic setup, and
-is a reason to try it and record what happens rather than a result.
+**This stack gated on DeepSeek until 2026-08-30, and that was wrong.** The
+reasoning — the markers are exact strings one model family was trained on, so
+they are just tokens anywhere else — is true about *training*, and it is not a
+reason to withhold the instruction. It confused "was this trained in" with "will
+this be followed". Read plainly the markers say *think in first person as the
+character* and *do not roleplay in your reasoning*, which any instruction-following
+model can act on.
+
+Then the failure they fix turned up here, on Qwen, with a persona active:
+
+```
+thinking: "Well, the user said 'feel free to use your judgment' ... So
+           participate naturally, stay in character. Probably don't have to
+           claim to be a robot either... actually, the user is asking me to
+           participate — Crystal is an AI assistant."
+```
+
+So nothing gates on the model any more, and `PERSONA_IMMERSION=immersion` is the
+default. `analysis` is the same re-routing with a clean planning trace instead of
+an in-character inner monologue — the better choice on a long engineering task,
+where the bracketed monologue is noise. `off` is one command
+(`/persona immersion off`). `auto` is accepted as a deprecated alias for
+`immersion` so an existing config keeps working, and is not offered.
+
+It costs ~120 tokens, once, on the first message of a session, and it is **still
+unmeasured on Qwen** — on because the failure was observed here and the fix is
+cheap, not because a benchmark said so.
+
+One thing that made the gate look reasonable and was worth writing down: on a
+stack that proxies everything, every model reports the *proxy's* provider id
+(`forge`). openclaude decides with `isDeepSeekProvider()`, which would have
+answered "not DeepSeek" for a DeepSeek model served through forge — the one case
+the gate existed for.
 
 ## The proxy was destroying the model's reasoning
 

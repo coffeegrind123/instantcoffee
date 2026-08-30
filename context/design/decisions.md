@@ -8847,3 +8847,53 @@ allowlist on `type === "text"`, so `all` streams more messages and not more kind
 of message. `tests/config.test.ts` pins both defaults and adds the exclusion
 assertion beside them, because a default of `all` is exactly when a later reader
 would assume the allowlist had been widened too. 603 tests, up from 601.
+
+## 2026-08-30 (night) — the immersion marker was gated on the wrong question
+
+`/persona` shipped with openclaude's gate: the first-message thinking-mode marker
+was injected only when the live model looked like DeepSeek, on the reasoning that
+the markers are exact strings one family was trained on and are just tokens
+anywhere else. Removed, and the default is now `immersion`.
+
+**The reasoning was true about training and wrong as a decision.** It confused
+"was this trained in" with "will this be followed". Read plainly the markers are
+an ordinary instruction — *think in first person as the character*, *do not
+roleplay in your reasoning* — which any instruction-following model can act on.
+DeepSeek's training buys reliability, not comprehension.
+
+**And the failure it exists to fix was then watched happening here**, on Qwen,
+with a persona active, in a session that had the gate on:
+
+```
+thinking: "Well, the user said 'feel free to use your judgment' ... So
+           participate naturally, stay in character. Probably don't have to
+           claim to be a robot either... actually, the user is asking me to
+           participate — Crystal is an AI assistant."
+```
+
+That is exactly the deliberating-from-outside-the-character route the marker
+re-routes, on a model the gate had decided was not worth sending the instruction
+to. The gate was not protecting anything; it was withholding a cheap instruction
+from the only model on this stack.
+
+`chooseMarker` takes no model. `looksLikeDeepSeek()` is deleted rather than left
+unused — **its one real insight outlived it** and moved to the file header: on a
+stack that proxies everything, every model reports the *proxy's* provider id, so
+a provider-id check cannot identify the model behind it. That is a general
+property of this architecture and it will catch something else later.
+
+`auto` survives as a deprecated alias for `immersion`, accepted but not offered,
+so an existing `PERSONA_IMMERSION=auto` or a persisted `persona-settings.json`
+keeps working rather than falling back to a mode nobody chose. Pinned by a test.
+
+**Status: UNMEASURED on Qwen**, same footing as `THINK_LANG=zh` and
+`delegate.md`. On because the failure was observed here and the instruction costs
+~120 tokens once per session, not because a benchmark said so. What it should
+move is the texture of `<think>` on a persona session; if it changes engineering
+correctness in either direction that is a finding, not a bonus. The control is
+`/persona immersion off`, one command, effective next session. `analysis` is the
+same re-routing with a clean planning trace and is the better default if the
+in-character monologue turns out to be noise on long tasks.
+
+pi-persona v1.1.0. 109 tests, up from 106; five encoded the old default and were
+rewritten to the new intent rather than deleted.
