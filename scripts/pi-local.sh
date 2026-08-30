@@ -669,6 +669,34 @@ if [[ -n "$THINK_FILE" ]]; then
   THINK_NOTE=", thinking in $(env_get THINK_LANG)"
 fi
 
+# The delegation nudge, whenever subagents are actually registered.
+#
+# Same lever and same reasoning as the web rules above: --append-system-prompt is
+# the highest-authority place available, and this belongs there rather than in a
+# skill the model may or may not consult — a skill it never opens cannot tell it
+# to delegate.
+#
+# GATED ON SUBAGENTS_ENABLED, not just on SUBAGENT_NUDGE. A fragment describing
+# an `Agent` tool that was never registered is not a harmless no-op: it invites
+# the model to call something that does not exist, and a failed tool call costs
+# a turn and an apology. Both switches must be on.
+#
+# The fragment deliberately carries a THRESHOLD as well as encouragement (~five
+# file reads or three searches). FORK.md measured that a child which grows to
+# ~18k tokens evicts the parent's prefix cache and costs it a full re-prefill —
+# 442 ms to 2,949 ms on a small parent — so "delegate more" without a floor
+# would trade cheap reads for expensive ones. See SUBAGENT_NUDGE in .env.
+DELEGATE_RULES="$REPO_ROOT/prompts/delegate.md"
+DELEGATE_NOTE=""
+if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" && "$(env_get SUBAGENT_NUDGE)" == "1" ]]; then
+  if [[ -r "$DELEGATE_RULES" ]]; then
+    pi_flags+=(--append-system-prompt "$(cat "$DELEGATE_RULES")")
+    DELEGATE_NOTE=", delegation nudge"
+  else
+    warn "$DELEGATE_RULES is missing — subagents are registered with nothing telling the model to use them."
+  fi
+fi
+
 if (( PRINT_ONLY )); then
   printf 'pi'; printf ' %q' "${pi_flags[@]}"; printf '\n'
   exit 0
@@ -729,5 +757,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"
