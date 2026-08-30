@@ -184,8 +184,10 @@ vendor/rtk-pi/          bash output filtering — fork of rtk's own pi extension
   src/gate.ts           what is filtered and what is accepted back (no pi import)
   extensions/index.ts   the pi coupling, and nothing else
   tests/                node --test suite for the gate
-vendor/pi-persona/      /persona — a character voice over invariant engineering,
-                        ported from openclaude's /identity system
+vendor/pi-persona/      /persona — a character voice over invariant engineering.
+                        A GIT SUBMODULE: github.com/coffeegrind123/pi-persona,
+                        pinned here by commit. `git submodule update --init`
+                        after a plain clone, or the directory is empty
   FORK.md               provenance, the six departures, the wire measurements
   src/prompt.ts         the <active_persona> block; names only tools pi says are
                         selected this turn (no pi import)

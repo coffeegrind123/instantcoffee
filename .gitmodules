@@ -1,0 +1,4 @@
+[submodule "vendor/pi-persona"]
+	path = vendor/pi-persona
+	url = https://github.com/coffeegrind123/pi-persona.git
+	branch = main

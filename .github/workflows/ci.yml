@@ -20,6 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # vendor/pi-persona is a submodule. Without this it is an empty
+          # directory, the syntax check silently finds no file to check, and the
+          # persona test step fails on a missing package.json — which reads as a
+          # broken package rather than a missing checkout flag.
+          submodules: recursive
 
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
@@ -56,6 +62,20 @@ jobs:
       # checker, which is the right depth: it catches syntax and any construct a
       # strip-only transpiler cannot handle (parameter properties, enums), while
       # needing no toolchain and no node_modules.
+      # The submodule, asserted rather than assumed. An absent vendor/pi-persona
+      # does not fail the checks below — it fails them UPWARDS: the glob does not
+      # expand, `$f` stays the literal pattern, the import throws
+      # ERR_MODULE_NOT_FOUND, and that branch deliberately exits 0. So a missing
+      # `submodules: recursive` would present as a green run that checked
+      # nothing. A negative result needs a control; this is it.
+      - name: The pi-persona submodule is checked out
+        run: |
+          test -f vendor/pi-persona/extensions/index.ts \
+            || { echo "vendor/pi-persona is empty — checkout needs submodules: recursive"; exit 1; }
+          test -f vendor/pi-persona/package.json \
+            || { echo "vendor/pi-persona has no package.json"; exit 1; }
+          echo "  vendor/pi-persona: present at $(git -C vendor/pi-persona rev-parse --short HEAD)"
+
       - name: Extension syntax checks
         run: |
           for f in .pi/extensions/*.ts vendor/rtk-pi/extensions/*.ts vendor/pi-persona/extensions/*.ts; do
@@ -448,6 +468,12 @@ jobs:
     needs: lint
     steps:
       - uses: actions/checkout@v4
+        with:
+          # vendor/pi-persona is a submodule. Without this it is an empty
+          # directory, the syntax check silently finds no file to check, and the
+          # persona test step fails on a missing package.json — which reads as a
+          # broken package rather than a missing checkout flag.
+          submodules: recursive
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

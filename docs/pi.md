@@ -563,8 +563,16 @@ untrusted-input guideline depends on.
 
 `vendor/pi-persona` gives the assistant a character to be, without giving that
 character any say over the engineering. It is a port of openclaude's `/identity`
-system; `vendor/pi-persona/FORK.md` is the full account, including the six
-places it departs from upstream and why.
+system; `vendor/pi-persona/FORK.md` is the full account, including the six places
+it departs from upstream and why.
+
+It lives in [its own repo](https://github.com/coffeegrind123/pi-persona) and is a
+**git submodule** here, pinned by commit — so this checkout records exactly which
+version it ran, and the package is installable on its own with
+`pi install git:github.com/coffeegrind123/pi-persona`. After a plain `git clone`
+the directory is empty rather than absent, which reads as a broken package
+instead of a missing flag; `git submodule update --init --recursive` fixes it,
+and the launcher says so by name if it ever happens.
 
 **On by default**, because with no persona active it costs nothing at all: the
 `before_agent_start` handler returns `undefined` and the package registers no

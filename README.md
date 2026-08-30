@@ -60,7 +60,7 @@ documented for.
 ## Quick start
 
 ```bash
-git clone <this repo> && cd instantcoffee
+git clone --recurse-submodules <this repo> && cd instantcoffee
 
 # Edit MODELS_DIR in .env first if D: is not where you want ~18 GB to land.
 ./scripts/setup.sh

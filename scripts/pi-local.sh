@@ -565,7 +565,16 @@ if [[ "$(env_get PERSONA_ENABLED)" == "1" ]]; then
       dim "Clear it with /persona clear, or see what it costs with /persona status."
     fi
   else
-    warn "$PERSONA_DIR is missing — /persona will not exist this session."
+    # A submodule, since 2026-08-30 — vendor/pi-persona lives in its own repo
+    # (github.com/coffeegrind123/pi-persona) and is pinned here by commit. A
+    # clone without --recurse-submodules leaves the directory EMPTY rather than
+    # absent, which reads as a broken package instead of a missing flag.
+    if [[ -d "$PERSONA_DIR" ]]; then
+      warn "$PERSONA_DIR is empty — it is a git submodule that was never checked out."
+      warn "Fix it once with: git submodule update --init --recursive"
+    else
+      warn "$PERSONA_DIR is missing — /persona will not exist this session."
+    fi
   fi
 fi
 
