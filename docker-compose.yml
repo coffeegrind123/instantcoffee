@@ -54,6 +54,25 @@ services:
     # silently moves to the CPU. See CACHE_TYPE_K in .env, and llama.cpp#20866.
     # The defaults here are f16/f16 so a .env predating these keys is unchanged.
     #
+    # DRAFT_GGUF_FILE is the speculative DRAFT model, and it is empty by default
+    # so a .env predating this key starts exactly the server it always did.
+    # Set it only for the draft-model spec types (draft-dflash, draft-dspark,
+    # draft-eagle3, draft-simple); draft-mtp reads its head out of the MAIN
+    # GGUF and needs no second file, and ngram-* need no model at all.
+    #
+    # THE FLAG IS GATED ON THE FILENAME, NOT ON SPEC_TYPE, because those are two
+    # different questions and conflating them costs VRAM silently: llama-server
+    # loads --spec-draft-model whether or not the active --spec-type can use it.
+    # Leave DRAFT_GGUF_FILE set while running draft-mtp and you pay ~1.1 GiB of
+    # VRAM for a model nothing reads. spec-sweep.sh varies this key with the
+    # others for exactly that reason.
+    #
+    # --spec-draft-type-k/-v default to EMPTY, i.e. llama.cpp's own default,
+    # rather than inheriting CACHE_TYPE_K/V. The draft has its own KV cache and
+    # its own matched-pair rule (see the -ctk/-ctv note above); the target's
+    # q8_0 pair is a measured choice for the 27B and says nothing about a 1 GiB
+    # draft. Set both or neither.
+    #
     # Do NOT put comments inside the folded block below: `#` is not a comment in
     # a YAML folded scalar, it becomes part of the command line, and compose
     # then rejects the whole service with "invalid command line string".
@@ -79,6 +98,10 @@ services:
       ${SPEC_NGRAM_MIN_HITS:+--spec-ngram-simple-min-hits ${SPEC_NGRAM_MIN_HITS}}
       ${SPEC_NGRAM_SIZE_N:+--spec-ngram-simple-size-n ${SPEC_NGRAM_SIZE_N}}
       ${SPEC_NGRAM_SIZE_M:+--spec-ngram-simple-size-m ${SPEC_NGRAM_SIZE_M}}
+      ${DRAFT_GGUF_FILE:+--spec-draft-model /models/${DRAFT_GGUF_FILE}}
+      ${SPEC_DRAFT_CACHE_TYPE_K:+--spec-draft-type-k ${SPEC_DRAFT_CACHE_TYPE_K}}
+      ${SPEC_DRAFT_CACHE_TYPE_V:+--spec-draft-type-v ${SPEC_DRAFT_CACHE_TYPE_V}}
+      ${SPEC_DRAFT_NGL:+--spec-draft-ngl ${SPEC_DRAFT_NGL}}
       --temp ${TEMPERATURE}
       --top-p ${TOP_P}
       --top-k ${TOP_K}
@@ -189,6 +212,10 @@ services:
       MODEL_REPO: ${MODEL_REPO}
       GGUF_FILE: ${GGUF_FILE}
       MMPROJ_FILE: ${MMPROJ_FILE}
+      # The speculative draft model, when the active spec type needs one on
+      # disk. Both empty by default; the downloader refuses a half-set pair.
+      DRAFT_MODEL_REPO: ${DRAFT_MODEL_REPO:-}
+      DRAFT_GGUF_FILE: ${DRAFT_GGUF_FILE:-}
       HF_TOKEN: ${HF_TOKEN:-}
       # The downloader compares the local file's size against what the Hub
       # currently serves, because repos re-upload under the same filename.

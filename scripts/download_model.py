@@ -198,8 +198,23 @@ def main() -> int:
     mmproj = os.environ.get("MMPROJ_FILE", "").strip()
     token = os.environ.get("HF_TOKEN", "").strip()
 
+    # The speculative DRAFT model, for the draft-* spec types that need a second
+    # file on disk (draft-dflash, draft-dspark, draft-eagle3, draft-simple).
+    # Empty for draft-mtp, which reads its head out of the main GGUF, and for
+    # the ngram-* types, which need no model at all.
+    draft_repo = os.environ.get("DRAFT_MODEL_REPO", "").strip()
+    draft_gguf = os.environ.get("DRAFT_GGUF_FILE", "").strip()
+
     if not repo or not gguf:
         print("MODEL_REPO and GGUF_FILE must be set", file=sys.stderr)
+        return 2
+
+    # Half a draft pin is worse than none: a repo with no filename silently
+    # fetches nothing, and a filename with no repo would be looked for in the
+    # TARGET's repo, where a near-namesake may well exist and load.
+    if bool(draft_repo) != bool(draft_gguf):
+        print("DRAFT_MODEL_REPO and DRAFT_GGUF_FILE must be set together "
+              f"(repo={draft_repo!r}, file={draft_gguf!r})", file=sys.stderr)
         return 2
 
     if not DEST.is_dir():
@@ -215,6 +230,15 @@ def main() -> int:
     else:
         print("[skip] MMPROJ_FILE empty — text-only setup")
 
+    # Tracked so the versions.lock block below can label the draft's hash under
+    # its own keys instead of emitting a second, ambiguous `model_file` line.
+    draft_names: set[str] = set()
+    if draft_gguf:
+        fetch(draft_repo, draft_gguf, token)
+        draft_names.add(draft_gguf)
+    else:
+        print("[skip] DRAFT_GGUF_FILE empty — no speculative draft model")
+
     # The blob cache is a full second copy of every file downloaded this run.
     cache = DEST / ".hf-cache"
     if cache.exists():
@@ -229,10 +253,18 @@ def main() -> int:
         print("\nFor versions.lock — verified against the Hub's LFS oid this run:")
         print(f"  model_repo          = {repo}")
         for name, sha in VERIFIED.items():
+            if name in draft_names:
+                continue
             size = (DEST / name).stat().st_size
             print(f"  model_file          = {name}")
             print(f"  model_file_size     = {size}")
             print(f"  model_file_sha256   = {sha}")
+        for name in sorted(draft_names & VERIFIED.keys()):
+            size = (DEST / name).stat().st_size
+            print(f"  draft_model_repo    = {draft_repo}")
+            print(f"  draft_model_file    = {name}")
+            print(f"  draft_model_size    = {size}")
+            print(f"  draft_model_sha256  = {VERIFIED[name]}")
     else:
         print("\n[warn] nothing was content-verified this run — the Hub published "
               "no sha256, was unreachable, or SKIP_HASH_CHECK was set. Do NOT "

@@ -114,6 +114,33 @@ def main() -> int:
     for f in (p, big):
         f.unlink(missing_ok=True)
 
+    # --- the draft-model pair guard -----------------------------------------
+    # A half-set pair must be refused BEFORE anything is fetched. The failure it
+    # prevents is silent: a DRAFT_GGUF_FILE with no DRAFT_MODEL_REPO would be
+    # looked for in the TARGET's repo, where a near-namesake can exist and load.
+    # These cases return before main() touches /models, so they run anywhere.
+    def main_rc(**env) -> int:
+        saved = {k: os.environ.get(k) for k in
+                 ("MODEL_REPO", "GGUF_FILE", "MMPROJ_FILE",
+                  "DRAFT_MODEL_REPO", "DRAFT_GGUF_FILE")}
+        os.environ.update({"MODEL_REPO": "o/r", "GGUF_FILE": "m.gguf",
+                           "MMPROJ_FILE": "",
+                           "DRAFT_MODEL_REPO": "", "DRAFT_GGUF_FILE": ""})
+        os.environ.update(env)
+        try:
+            return dm.main()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    check("draft repo without draft file is refused",
+          main_rc(DRAFT_MODEL_REPO="o/draft"), 2)
+    check("draft file without draft repo is refused",
+          main_rc(DRAFT_GGUF_FILE="d.gguf"), 2)
+
     total = PASSES + len(FAILURES)
     if FAILURES:
         print(f"{PASSES}/{total} passed — FAILURES:")

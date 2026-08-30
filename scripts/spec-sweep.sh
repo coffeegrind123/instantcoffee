@@ -182,20 +182,34 @@ ONLY=""
 # grid brackets it. Run it on a quiet box — see spec_variance_note in
 # versions.lock.
 #
-# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN
+# The FIFTH field is DRAFT_GGUF_FILE, and empty means "no draft model on disk".
+# It exists because the draft-model spec types (draft-dflash, draft-dspark,
+# draft-eagle3) need a second file that draft-mtp and ngram-* do not, and
+# because --spec-draft-model is loaded whenever it is passed, whatever
+# --spec-type says. Leaving it set across a sweep would make every draft-mtp
+# control arm pay ~1.06 GiB of VRAM for a model it never reads, which is not a
+# control. So it is swept with the rest rather than parked in .env.
+#
+# NOTHING SHIPS A DRAFT ARM TODAY. See the DRAFT_MODEL_REPO block in .env: the
+# DFlash2 draft-KV hole on prefix reuse is warn-only in the merged code and this
+# stack's prompt caching is the trigger. When that clears, an arm looks like
+#   "dflash-n8|ngram-simple,draft-dflash|8|0.40|Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
+# and the file has to be in MODELS_DIR first (./scripts/download-model.sh).
+#
+# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE
 CONFIGS=(
-  "baseline|draft-mtp|2|0.75"
-  "pmin-050|draft-mtp|2|0.50"
-  "pmin-040|draft-mtp|2|0.40"
-  "pmin-040-n3|draft-mtp|3|0.40"
-  "pmin-040-n4|draft-mtp|4|0.40"
-  "pmin-040-n6|draft-mtp|6|0.40"
-  "pmin-040-n8|draft-mtp|8|0.40"
-  "pmin-082-n6|draft-mtp|6|0.82"
-  "ngram-pmin-040-n3|ngram-simple,draft-mtp|3|0.40"
-  "ngram-pmin-040-n4|ngram-simple,draft-mtp|4|0.40"
-  "ngram-pmin-040-n6|ngram-simple,draft-mtp|6|0.40"
-  "ngram-baseline|ngram-simple,draft-mtp|2|0.75"
+  "baseline|draft-mtp|2|0.75|"
+  "pmin-050|draft-mtp|2|0.50|"
+  "pmin-040|draft-mtp|2|0.40|"
+  "pmin-040-n3|draft-mtp|3|0.40|"
+  "pmin-040-n4|draft-mtp|4|0.40|"
+  "pmin-040-n6|draft-mtp|6|0.40|"
+  "pmin-040-n8|draft-mtp|8|0.40|"
+  "pmin-082-n6|draft-mtp|6|0.82|"
+  "ngram-pmin-040-n3|ngram-simple,draft-mtp|3|0.40|"
+  "ngram-pmin-040-n4|ngram-simple,draft-mtp|4|0.40|"
+  "ngram-pmin-040-n6|ngram-simple,draft-mtp|6|0.40|"
+  "ngram-baseline|ngram-simple,draft-mtp|2|0.75|"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -280,7 +294,7 @@ check_stale_env_backup() {
 # The keys this script writes. Anything ELSE that changed between the backup and
 # the live file is somebody else's edit, and the restore is about to throw it
 # away. Kept next to restore_env so the two cannot drift.
-SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN'
+SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN|DRAFT_GGUF_FILE'
 
 restore_env() {
   [[ "$ENV_RESTORED" == 1 ]] && return 0
@@ -405,7 +419,7 @@ select_configs() {
 # would silently bench the wrong server — the one failure mode of this whole
 # script that produces plausible numbers instead of an error.
 live_matches() {
-  local want_type="$1" want_nmax="$2" want_pmin="$3"
+  local want_type="$1" want_nmax="$2" want_pmin="$3" want_draft="$4"
   local cid argv health
 
   cid="$(compose ps -q llama 2>/dev/null | head -n1)" || return 1
@@ -426,6 +440,15 @@ live_matches() {
   # could not be read. Either way: do not guess, just recreate.
   [[ -n "$got_type" && -n "$got_nmax" && -n "$got_pmin" ]] || return 1
 
+  # The draft model is part of the config, so a server holding the wrong one (or
+  # holding one at all when this arm wants none) is NOT a match. Absence is the
+  # empty string on both sides: --spec-draft-model is only passed when
+  # DRAFT_GGUF_FILE is set, so a bare basename compare is the whole test.
+  local got_draft
+  got_draft="$(sed -nE 's|.*--spec-draft-model[[:space:]]+([^[:space:]]+).*|\1|p' <<<"$argv")"
+  got_draft="${got_draft##*/}"
+  [[ "$got_draft" == "$want_draft" ]] || return 1
+
   # Numeric compare so 0.75 and .75 and 0.750 do not read as three configs.
   awk -v a="$got_nmax" -v b="$want_nmax" 'BEGIN{exit !(a+0==b+0)}' || return 1
   awk -v a="$got_pmin" -v b="$want_pmin" 'BEGIN{exit !(a+0==b+0)}' || return 1
@@ -442,10 +465,15 @@ extract_json() {
 
 run_config() {
   local spec="$1"
-  local name="${spec%%|*}"; local rest="${spec#*|}"
-  local stype="${rest%%|*}";  rest="${rest#*|}"
-  local nmax="${rest%%|*}"
-  local pmin="${rest##*|}"
+  # Strict five-field split. The old ${var%%|*} / ${var##*|} chain silently read
+  # the LAST field as p-min, so a five-field row would have taken the draft
+  # filename as a probability and passed it to llama as --spec-draft-p-min.
+  local name stype nmax pmin draft extra
+  IFS='|' read -r name stype nmax pmin draft extra <<<"$spec"
+  if [[ -z "$name" || -z "$stype" || -z "$nmax" || -z "$pmin" || -n "$extra" ]]; then
+    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft): $spec"
+    return 1
+  fi
 
   local raw="$RESULTS_DIR/$name.log"
   local js="$RESULTS_DIR/$name.json"
@@ -469,15 +497,16 @@ run_config() {
     fi
   fi
 
-  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin"
+  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none}"
 
-  if live_matches "$stype" "$nmax" "$pmin"; then
+  if live_matches "$stype" "$nmax" "$pmin" "$draft"; then
     ok "  the running llama already serves this config — benching it as-is (saved a ~27 min reload)"
     # .env is still aligned to it for the same reason, so nothing to write.
   else
     env_set SPEC_TYPE          "$stype"
     env_set SPEC_DRAFT_N_MAX   "$nmax"
     env_set SPEC_DRAFT_P_MIN   "$pmin"
+    env_set DRAFT_GGUF_FILE    "$draft"
 
     info "  recreating llama (cold load is ~27 min on this box) ..."
     if ! compose up -d --force-recreate --wait --wait-timeout "$WAIT_TIMEOUT" llama; then
@@ -522,10 +551,11 @@ run_config() {
   # have made the Aug-16 quarantine a one-line check instead of an mtime hunt.
   local tmp; tmp="$(mktemp)"
   jq --arg n "$name" --arg t "$stype" --arg x "$nmax" --arg p "$pmin" --arg w "$WORKLOAD" \
-     --arg rep "$REPEAT" --arg plen "$PROMPT_LEN" \
+     --arg rep "$REPEAT" --arg plen "$PROMPT_LEN" --arg draft "$draft" \
      --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      --argjson pins "$(capture_pins)" \
      '. + {config: {name: $n, spec_type: $t, n_max: ($x|tonumber), p_min: ($p|tonumber),
+                    draft_gguf: (if $draft == "" then null else $draft end),
                     workload: $w, repeat: ($rep|tonumber),
                     prompt_len: (if $plen == "" then null else ($plen|tonumber) end)},
            pins: $pins,
@@ -732,8 +762,10 @@ main() {
     info "plan — ${#selected[@]} config(s), workload '$WORKLOAD', each a full llama recreate"
     local c
     for c in "${selected[@]}"; do
-      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s\n' \
-        "${c%%|*}" "$(cut -d'|' -f2 <<<"$c")" "$(cut -d'|' -f3 <<<"$c")" "$(cut -d'|' -f4 <<<"$c")"
+      local d; d="$(cut -d'|' -f5 <<<"$c")"
+      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s\n' \
+        "${c%%|*}" "$(cut -d'|' -f2 <<<"$c")" "$(cut -d'|' -f3 <<<"$c")" \
+        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}"
     done
     dim "cold load is ~27 min per config on this box (versions.lock), so this"
     dim "is roughly $(( ${#selected[@]} * 30 )) minutes plus bench time. --resume makes it restartable."
