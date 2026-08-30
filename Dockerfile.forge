@@ -169,7 +169,8 @@ LABEL org.opencontainers.image.title="instantcoffee proxy" \
 # see context/design/decisions.md. Baking them in removes that whole class of
 # bug and makes the image self-contained.
 COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py \
-     scripts/bench.py scripts/bench_repeat.py scripts/bench_quality.py \
+     scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py \
+     scripts/bench_quality.py \
      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py \
      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py \
      scripts/test_forge_patches.py /work/scripts/

@@ -38,6 +38,7 @@ jobs:
                    scripts/test_browser_cli.py scripts/capture_proxy.py \
                    scripts/capture_sessions.py scripts/test_capture_proxy.py \
                    scripts/test_forge_patches.py \
+                   scripts/bench_tools.py \
                    scripts/test_download_verify.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
