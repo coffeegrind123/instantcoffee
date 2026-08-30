@@ -490,6 +490,52 @@ update_sh_rewrite   = 2026-08-30. update.sh no longer rewrites this file.
                       holds a bare value, commentary goes in <key>_note.
                       No owned key carries prose as of this entry, so if
                       lock_has_prose ever fires it means something new.
+forge_patch_10      = 2026-08-30. patches/forge_stream_timeout.py, the tenth
+                      build-time forge patch. A backend read timeout on the
+                      STREAMING path now returns a clean 408.
+                      THE BUG, read out of the installed 0.9.5 module rather
+                      than from the issue text: clients/openai_compat.py has
+                      exactly one httpx.ReadTimeout handler, at line 299, inside
+                      send() (274-328). send_stream() starts at 329 and its
+                      `async with self._http.stream(...)` block and
+                      aiter_lines() loop are unguarded, so a mid-stream timeout
+                      propagates raw. Upstream antoinezambelli/forge#142, OPEN.
+                      WHY IT MATTERS HERE: pi streams every turn and
+                      FORGE_BACKEND_TIMEOUT is 600 against a 27B on one 4090, so
+                      the unguarded path is the only one this stack uses. The
+                      client saw `can only concatenate list (not "str") to list`
+                      -- which is ALSO what patch 1's bug produces, so on this
+                      stack that string was ambiguous between two unrelated
+                      failures and the one that looks like a forge bug was
+                      actually "the backend did not answer in time".
+                      SHAPE: send_stream is an async GENERATOR and the timeout
+                      can surface at stream open OR on any later aiter_lines()
+                      pull, so a try around the `async with` header alone would
+                      miss the second. Wrapping the body means re-indenting ~90
+                      lines of source upstream is still changing. So the
+                      original is renamed _forge_send_stream_inner and a thin
+                      generator takes its name and re-yields through one
+                      try/except -- a two-line edit that covers every raise site
+                      by construction.
+                      ReadTimeout and not TimeoutException, to match send()
+                      exactly, which is what #142 asks for. The broader class
+                      would report ConnectTimeout and PoolTimeout as 408s too.
+                      PROVEN BOTH WAYS. test_forge_patches.py drives a fake
+                      transport that times out on stream open and again
+                      mid-stream: 76/76 with the patch. NEGATIVE CONTROL, built
+                      and run rather than assumed -- the same suite against an
+                      image built WITHOUT patch 10 fails exactly those four
+                      assertions with a raw ReadTimeout escaping on both paths,
+                      and the other 70 still pass. The test is not vacuous and
+                      it isolates this patch.
+                      One assertion was wrong on the first run and the control
+                      caught it: counting "httpx.ReadTimeout" occurrences gave 3,
+                      because the patch's own docstring names the exception. It
+                      counts `except httpx.ReadTimeout` now -- handlers, not
+                      mentions. A test that asserts on prose is not a test.
+                      The patcher REFUSES to run if send()'s is no longer the
+                      only handler, so if upstream fixes #142 the build fails
+                      loudly rather than layering a second wrapper.
 forge_0_9_5         = ADOPTED 2026-08-30, 0.9.0 -> 0.9.5, through update.sh
                       with the smoke test as the gate. 11/11 including a real
                       tool call, and test_forge_patches.py run inside the LIVE

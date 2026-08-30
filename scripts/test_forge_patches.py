@@ -403,6 +403,85 @@ def main() -> int:
           not any("reasoning_content" in d for d in plain_deltas))
     eq("...and the first delta still carries the role", plain_deltas[0].get("role"), "assistant")
 
+    print("\npatches/forge_stream_timeout.py")
+    # DRIVEN, not grepped. A fake transport raises httpx.ReadTimeout from the
+    # streaming read; the patch must turn that into BackendError(408) the same
+    # way send() already does. Without the patch this test sees a raw
+    # httpx.ReadTimeout, which is the bug.
+    import asyncio
+    import httpx as _httpx
+    from forge.clients.openai_compat import OpenAICompatClient
+    from forge.errors import BackendError as _BackendError
+
+    class _TimeoutStream:
+        """Stands in for httpx's stream() context manager, and times out."""
+
+        async def __aenter__(self):
+            raise _httpx.ReadTimeout("simulated backend read timeout")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _LateTimeoutResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            # One good line, THEN the timeout — the mid-stream shape, which a
+            # try around only the stream-open would miss.
+            yield 'data: {"choices":[{"delta":{"content":"hi"}}]}'
+            raise _httpx.ReadTimeout("simulated mid-stream read timeout")
+
+    class _LateStream:
+        async def __aenter__(self):
+            return _LateTimeoutResponse()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeHTTP:
+        def __init__(self, factory):
+            self._factory = factory
+
+        def stream(self, *a, **kw):
+            return self._factory()
+
+    def _drive(factory):
+        client = OpenAICompatClient.__new__(OpenAICompatClient)
+        client._http = _FakeHTTP(factory)
+        client._chat_url = "http://backend/v1/chat/completions"
+        client._request_headers = lambda extra=None: {}
+        client._build_body = lambda *a, **kw: {}
+
+        async def run():
+            async for _ in client.send_stream([{"role": "user", "content": "x"}]):
+                pass
+
+        try:
+            asyncio.run(run())
+        except BaseException as exc:  # noqa: BLE001 - the exception IS the result
+            return exc
+        return None
+
+    for label, factory in (("on stream open", _TimeoutStream),
+                           ("mid-stream", _LateStream)):
+        got = _drive(factory)
+        check(f"a read timeout {label} becomes BackendError, not a raw httpx error",
+              isinstance(got, _BackendError), f"got {type(got).__name__}: {got!r}")
+        if isinstance(got, _BackendError):
+            eq(f"...and it is a 408 {label}", getattr(got, "status_code", None), 408)
+
+    # Control: send()'s handler must still be the only OTHER one, i.e. the patch
+    # wrapped rather than duplicated. Two handlers would mean it ran twice.
+    import forge.clients.openai_compat as _oc
+    _csrc = open(_oc.__file__).read()
+    eq("the original send_stream body survives under its inner name",
+       _csrc.count("async def _forge_send_stream_inner"), 1)
+    # Count HANDLERS, not mentions: the patch's own docstring names the
+    # exception too, so a bare count of "httpx.ReadTimeout" is 3 and asserting
+    # on it tests the prose rather than the code. (It did, first time round.)
+    eq("exactly two ReadTimeout handlers now: send() and the stream wrapper",
+       _csrc.count("except httpx.ReadTimeout"), 2)
+
     total = PASSED + FAILED
     print(f"\n{PASSED}/{total} passed", end="")
     if FAILED:

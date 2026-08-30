@@ -8551,6 +8551,63 @@ The first attempt rolled itself back cleanly. That is the gate doing exactly wha
 it exists for, and it is the reason a bad bump cost ten minutes instead of a
 debugging session.
 
+### A tenth patch: the streaming path never learned what `send()` knows
+
+`OpenAICompatClient.send()` has always converted `httpx.ReadTimeout` into
+`BackendError(408, "Read timeout")`. `send_stream()` never has — read out of the
+installed 0.9.5 module rather than taken from the issue text: the file's only
+`ReadTimeout` handler is at line 299, inside `send()` (274–328), and
+`send_stream()` starts at 329 with its `async with self._http.stream(...)` block
+and `aiter_lines()` loop unguarded. Upstream `antoinezambelli/forge#142`, open.
+
+**This stack uses only the unguarded path.** pi streams every turn, and
+`FORGE_BACKEND_TIMEOUT` is 600s against a 27B on one 4090, so a deep turn at 96K
+can reach it. What arrived instead of a 408 was
+
+    can only concatenate list (not "str") to list
+
+which is *also* what patch 1's bug produces. So on this stack that string was
+genuinely ambiguous between two unrelated failures — and the reading it invites
+("forge is broken") is the wrong one; the real meaning is "your backend did not
+answer in time".
+
+`send_stream` is an async generator, and the timeout can surface at stream open
+*or* on any later `aiter_lines()` pull, so a `try` around the `async with` header
+alone would miss the second. Wrapping the body means re-indenting ~90 lines of
+source upstream is still actively changing — the kind of patch that breaks on the
+next release for no good reason. So the original is renamed
+`_forge_send_stream_inner` and a thin generator takes its name and re-yields
+through one `try`/`except`. Two lines, every raise site covered by construction.
+
+`ReadTimeout` and not `TimeoutException`, to match `send()` exactly, which is
+what #142 asks for; the broader class would report `ConnectTimeout` and
+`PoolTimeout` as 408 read timeouts too, and those mean different things.
+
+**Proven both ways.** The suite drives a fake transport that times out on stream
+open and again mid-stream: 76/76 with the patch. The negative control was built
+and run rather than assumed — the same suite against an image built *without*
+patch 10 fails exactly those four assertions, with a raw `ReadTimeout` escaping
+on both paths, while the other 70 still pass. The test is not vacuous and it
+isolates this patch.
+
+One assertion was wrong on its first run, and the control caught it: counting
+occurrences of `httpx.ReadTimeout` returned 3, because the patch's own docstring
+names the exception. It counts `except httpx.ReadTimeout` now — handlers, not
+mentions. A test that asserts on prose is not a test.
+
+The patcher refuses to run if `send()`'s is no longer the only handler, so when
+upstream fixes #142 the build fails loudly rather than quietly layering a second
+wrapper over theirs.
+
+### Why the patch docstrings said 0.9.0
+
+Eight of them opened `THE BUG (forge-guardrails 0.9.0…)`, which is provenance —
+the version the bug was found on — but reads exactly like a stale version pin,
+and prompted precisely that question. Since all ten patchers were re-verified
+against 0.9.5 this session (clean build, 76/76 inside the image), each now
+records that the bug is *still present* on 0.9.5 with the date. Nothing
+executable changed.
+
 ### update.sh was the most destructive command in the repo, and now is not
 
 Found while planning the forge bump: the record step was a here-doc template that

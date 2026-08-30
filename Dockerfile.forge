@@ -139,11 +139,21 @@ RUN pip install --no-cache-dir \
 # forge reported "stop". A turn that ran out of budget mid-sentence was therefore
 # indistinguishable from one the model chose to end, which is exactly how the
 # wedged turns above hid. See patches/forge_text_sse_passthrough.py.
+#
+# PATCH 10 — a backend read timeout on the STREAMING path returns a clean 408.
+# send() converts httpx.ReadTimeout into BackendError(408); send_stream() never
+# did, so a timeout mid-stream escaped raw and reached the client as
+# "can only concatenate list (not 'str') to list". pi streams every turn and
+# FORGE_BACKEND_TIMEOUT is 600s against a 27B on one 4090, so the unguarded path
+# is the only one this stack uses. Worse, that string is also what patch 1's bug
+# produces, so the message was ambiguous between two unrelated failures.
+# Upstream antoinezambelli/forge#142, still open at 0.9.5.
+# See patches/forge_stream_timeout.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py \
-     patches/forge_text_sse_passthrough.py \
+     patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -155,6 +165,7 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE" \
     && python /tmp/patches/forge_empty_turn.py "$SITE" \
     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE" \
+    && python /tmp/patches/forge_stream_timeout.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"
