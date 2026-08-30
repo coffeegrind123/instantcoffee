@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop forge destroying a reasoning-only turn on the way to the client.
 
-THE BUG (forge-guardrails 0.9.0):
+THE BUG (forge-guardrails 0.9.0; STILL PRESENT ON 0.9.5, re-verified
+2026-08-30 by a clean build plus test_forge_patches.py inside the image):
 
 ``TextResponse`` carries one field. ``ToolCall`` carries ``reasoning``;
 ``TextResponse`` does not, and ``forge/clients/llamafile.py`` says so outright:

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop forge destroying the model's reasoning on the path an agent turn takes.
 
-THE BUG (forge-guardrails 0.9.0, still present with patches 1-6 applied):
+THE BUG (forge-guardrails 0.9.0, still present with patches 1-6 applied, and
+still present on 0.9.5 — re-verified 2026-08-30):
 
 ``handler.py`` has two places that hand a text response back to the client. One
 of them was fixed by ``forge_reasoning_passthrough.py``::

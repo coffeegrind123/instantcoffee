@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop forge dropping llama.cpp's prompt-cache counter on the way to the client.
 
-THE BUG (forge-guardrails 0.9.0):
+THE BUG (forge-guardrails 0.9.0; STILL PRESENT ON 0.9.5, re-verified
+2026-08-30 by a clean build plus test_forge_patches.py inside the image):
 
 llama-server reports how much of the prompt it served from its KV cache:
 

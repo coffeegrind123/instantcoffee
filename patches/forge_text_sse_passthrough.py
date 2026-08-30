@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Carry the reasoning and the real finish_reason on the OpenAI SSE text path.
 
-THE BUG (forge-guardrails 0.9.0, with patches 1-8 applied), and forge says it
+THE BUG (forge-guardrails 0.9.0, with patches 1-8 applied; still present on
+0.9.5, re-verified 2026-08-30), and forge says it
 itself. ``handler._emit_text`` routes four ways and its own docstring ends::
 
     The OpenAI SSE path is still the one place neither is carried.

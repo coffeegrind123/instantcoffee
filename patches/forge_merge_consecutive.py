@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Patch forge's _merge_consecutive() to survive structured message content.
 
-THE BUG (forge-guardrails 0.8.2 AND 0.9.0, clients/llamafile.py):
+THE BUG (forge-guardrails 0.8.2, 0.9.0 AND 0.9.5, clients/llamafile.py —
+re-verified on 0.9.5 on 2026-08-30 by reading the built module, where
+_merge_consecutive() calls the patched helper rather than the raw `+`.
+Upstream forge issues #142 and #151 are the same TypeError, still open):
 
     "content": target.get("content", "") + "\\n\\n" + m.get("content", ""),
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop forge destroying the model's own words on a TOOL-CALL turn.
 
-THE BUG (forge-guardrails 0.9.0):
+THE BUG (forge-guardrails 0.9.0; STILL PRESENT ON 0.9.5, re-verified
+2026-08-30 by a clean build plus test_forge_patches.py inside the image):
 
 A forge ``ToolCall`` carries ``tool``, ``args`` and ``reasoning``. It has no
 field for the assistant text that came WITH the call — so on a turn where the

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop forge folding every user turn into the FIRST user message on this stack.
 
-THE BEHAVIOUR (forge-guardrails 0.9.0, and it is deliberate upstream):
+THE BEHAVIOUR (forge-guardrails 0.9.0, unchanged on 0.9.5 — re-verified
+2026-08-30 — and it is deliberate upstream):
 
 ``forge/clients/llamafile.py::_merge_consecutive`` says what it is for:
 

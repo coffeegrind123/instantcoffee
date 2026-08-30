@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Stop forge answering an agent turn with a silent, well-formed nothing.
 
-THE BUG (forge-guardrails 0.9.0, still present with patches 1-7 applied):
+THE BUG (forge-guardrails 0.9.0, still present with patches 1-7 applied, and
+still present on 0.9.5 — re-verified 2026-08-30):
 
 ``run_inference`` has TWO budgets and one loop, and the loop is bounded by only
 one of them::
