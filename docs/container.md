@@ -188,6 +188,35 @@ one, so the script compares the two and warns; `--recreate` adopts the new
 build. Without that check a fix is present in the Dockerfile and absent from
 every session, with nothing anywhere saying why.
 
+## The container runs its own clone, and it drifts
+
+`pi-container.sh` execs `${PI_CONTAINER_REPO}/scripts/pi-local.sh` **inside** the
+container, so the logic lives in one place. **The files do not.** That path is
+under `PI_CONTAINER_HOME_HOST`, which is a different host directory from the
+repo you edit unless you deliberately made them the same — on this box
+`…/as/data` (host) and `…/as/data2` (container), two independent clones of one
+remote.
+
+They drift the moment you commit on one. Measured 2026-08-30: the container's
+clone was **nine commits behind**, so sessions there ran with no
+`prompts/delegate.md`, no `SUBAGENT_NUDGE`, and without two harness bug fixes —
+while the fixed files sat on the host being read. It is the same failure shape as
+the image drift above, one level down, and it was silent.
+
+`pi-container.sh` now warns at launch when the two HEADs differ, naming both
+commits and both paths. To update:
+
+```bash
+./scripts/pi-container.sh --shell
+cd /home/piuser/qwen3.8-forge && git pull
+```
+
+**Keep that clone's host-specific values in `.env.local`, never as edits to the
+tracked `.env`.** `.env` is committed here, so a one-line local edit to it is
+what blocks the fast-forward — which is exactly why that clone sat nine commits
+behind. `scripts/lib.sh` reads `.env.local` *after* `.env` and the later file
+wins, so an override there survives every pull instead of fighting it.
+
 ## Run it by hand
 
 Pick a directory on the host to be the container's home. Everything pi writes —

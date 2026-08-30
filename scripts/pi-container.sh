@@ -15,8 +15,17 @@
 # This is scripts/pi-local.sh with a container around it, and the container is
 # meant to be invisible: the same flags, the same banner, the same session. It
 # creates the container on first use, reuses it afterwards, and delegates to
-# pi-local.sh inside — so everything pi-local.sh knows about the stack stays in
-# exactly one place.
+# pi-local.sh inside — so the LOGIC stays in exactly one place.
+#
+# THE FILES DO NOT. Corrected 2026-08-30, because the sentence above used to end
+# "so everything pi-local.sh knows about the stack stays in exactly one place",
+# and that reads as a promise the script cannot keep. It execs
+# ${CREPO}/scripts/pi-local.sh, and CREPO lives under PI_CONTAINER_HOME_HOST —
+# a DIFFERENT host directory from this repo unless someone deliberately made
+# them the same. Here they are `…/as/data` and `…/as/data2`: two independent
+# clones of one remote, which drift the moment you commit on one. The container
+# was found nine commits behind, running without prompt fragments and bug fixes
+# that were sitting fixed on the host. warn_repo_drift() now says so at launch.
 #
 # Reusing a long-lived container rather than `docker run --rm` per session is
 # deliberate: the browser server and its Chrome live in there, and they are
@@ -162,6 +171,49 @@ image_drifted() {
   [[ -n "$want" && -n "$have" && "$want" != "$have" ]]
 }
 
+# The checkout the container RUNS, against the checkout you just edited.
+#
+# The header above calls this script "pi-local.sh with a container around it …
+# so everything pi-local.sh knows about the stack stays in exactly one place".
+# That is true of the code PATH and false of the FILES. CREPO lives under
+# PI_CONTAINER_HOME_HOST, which is a DIFFERENT host directory from this repo
+# unless someone deliberately made them the same: on this box they are
+# `…/as/data` (here) and `…/as/data2` (the container), two independent clones of
+# the same remote.
+#
+# Found the hard way on 2026-08-30: the container's clone was NINE commits
+# behind, so a session there ran with no prompts/delegate.md, no
+# SUBAGENT_NUDGE, and without two harness bug fixes — while the operator was
+# reading the fixed files on the host. Exactly the symptom image_drifted() was
+# written for one level up: a fix present in the repo and absent from every
+# session, with nothing anywhere saying why.
+#
+# Fails SOFT in every direction — no git, not a checkout, container not running,
+# detached HEAD, a container whose CREPO does not exist. A drift check must
+# never be the reason a session refuses to start.
+REPO_DRIFT_HERE=""
+REPO_DRIFT_THERE=""
+repo_drifted() {
+  REPO_DRIFT_HERE="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" || return 1
+  REPO_DRIFT_THERE="$(docker exec "$NAME" git -C "$CREPO" rev-parse HEAD 2>/dev/null | tr -d '\r')" || return 1
+  [[ -n "$REPO_DRIFT_HERE" && -n "$REPO_DRIFT_THERE" \
+     && "$REPO_DRIFT_HERE" != "$REPO_DRIFT_THERE" ]]
+}
+
+# Named separately from the test so the message can name BOTH commits. A warning
+# that says "they differ" without saying which is which sends you to the wrong
+# checkout half the time.
+warn_repo_drift() {
+  repo_drifted || return 0
+  warn "the container runs its OWN checkout, and it is not on your commit:"
+  warn "    here (${REPO_ROOT}): ${REPO_DRIFT_HERE:0:9}"
+  warn "    there (${CREPO} in ${NAME}): ${REPO_DRIFT_THERE:0:9}"
+  warn "  Anything you just changed is NOT in this session until that clone is updated:"
+  warn "    ./scripts/pi-container.sh --shell    # then:  cd ${CREPO} && git pull"
+  warn "  Keep host-specific values in .env.local there, not as edits to the tracked"
+  warn "  .env — a modified tracked file is what blocks the fast-forward."
+}
+
 wait_ready() {
   local waited=0
   while (( waited < READY_TIMEOUT )); do
@@ -179,6 +231,7 @@ ensure_up() {
 
   if [[ "$st" == running ]]; then
     image_drifted && warn "the container predates the current ${IMAGE} — ./scripts/pi-container.sh --recreate to adopt it"
+    warn_repo_drift
     return 0
   fi
 
@@ -204,6 +257,9 @@ ensure_up() {
   # surface it, or the container has swallowed the one report that says whether
   # forge is up and the model is loaded.
   docker logs --tail 40 "$NAME" 2>&1 | sed -n '/^Display:/,$p'
+
+  # After the container is up, not before: the check has to exec into it.
+  warn_repo_drift
 }
 
 # --- which directory pi works on --------------------------------------------
