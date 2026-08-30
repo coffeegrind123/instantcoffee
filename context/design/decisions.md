@@ -8644,3 +8644,110 @@ Proving it turned up two more clobbers of the same family:
   keys, and the convention is now explicit: an owned key holds a bare value,
   commentary goes in `<key>_note`. No owned key carries prose as of this entry,
   so if `lock_has_prose` ever fires it means something new needs looking at.
+
+## 2026-08-30 — `/persona`: porting openclaude's identity system, and the four things a verbatim port would have got wrong
+
+**What was asked for:** research
+[`coffeegrind123/openclaude`](https://github.com/coffeegrind123/openclaude)'s
+persona system and bring it to pi as a vendored extension. Delivered as
+`vendor/pi-persona` (103 tests), loaded by `scripts/pi-local.sh`,
+`PERSONA_ENABLED=1` by default.
+
+**What the system is.** Not a system prompt that says "be sassy". Four parts:
+a chara_card_v2 library (chub.ai or hand-dropped `card.json`); an **extraction
+turn** where the MODEL reads the card and writes a 200-500 word voice profile;
+a ~3,600-token `<active_persona>` block placed *in front of* the harness's own
+prompt; and a DeepSeek-specific marker on the first user message.
+
+The extraction turn is the part worth keeping. A card's persona signal is
+scattered — cadence in `mes_example`, register in `scenario`, intended voice
+often only in `creator_notes` — and no field-picker recovers it. It is also
+where the card's *operating directives* die: the prompt's IGNORE list drops
+jailbreaks, output-shape mandates and in-character refusals, so what reaches the
+system prompt is a voice and not somebody else's policy.
+
+The block's own thesis is the reason this is usable on a coding stack: **the
+persona is voice-acting over invariant engineering.** Traits never touch
+thoroughness, investigation depth, tool choice, code quality, test coverage or
+honesty about results. `tests/prompt.test.ts` asserts that sentence survives in
+both prompt modes, because it is the sentence that separates this from a
+novelty.
+
+### Four things a verbatim port would have got wrong
+
+Full account in `vendor/pi-persona/FORK.md`; the short version, because each is
+an instance of a rule this repo already has.
+
+1. **It names tools that do not exist.** openclaude's block instructs the model
+   four separate times to "use WebSearch / WebFetch to find an image". **pi has
+   no web tools** — established by running `buildSystemPrompt()` against the
+   installed 0.84.4 and reading the tool list off a captured request, not from
+   memory. Ported verbatim, that orders a model with no fetch tool to produce a
+   link, and the only way to obey is to **invent a URL** — which the same block
+   forbids two paragraphs later under "Never simulate tool output". Exactly the
+   failure mode in the operating rules: a wrong guess about an external surface
+   fails as a plausible-looking answer rather than as an error. The guidance is
+   now built from `event.systemPromptOptions.selectedTools`, and with no web tool
+   present it says the opposite: *do not produce a link, describe it.*
+2. **A two-word name loses its second word.** `/persona of ([A-Za-z][\w'-]{0,40})/i`
+   stops at the first non-word character, so "Ada Lovelace" is stored, displayed
+   and interpolated into ~40 `${name}` slots as "Ada". Fixed with a wide form
+   first, openclaude's as the fallback.
+3. **The 50 KB inline threshold is a 32k-window disaster.** 50 KB of card is
+   ~12,500 tokens — 40% of the window spent before the model has read the
+   instruction. `inlineThresholdBytes()` now takes 15% of the live window, floors
+   at 2 KB, caps at upstream's 50 KB: 19,660 B at 32k, upstream's own number at
+   96k and above. Unknown window falls back to 8 KB, because guessing large is
+   the expensive mistake and the `jq` path works at every size.
+4. **`auto` cannot see a proxied DeepSeek.** The marker is a real DeepSeek-V4
+   training artefact, and openclaude gates it on `isDeepSeekProvider()` — a
+   provider-id check. Every model on this stack is served under the provider id
+   `forge`, so a genuinely DeepSeek model behind the proxy reads as
+   not-DeepSeek and `auto` never fires for the one case it exists for.
+   `looksLikeDeepSeek()` checks id and base URL too.
+
+One correctness fix came out of the port itself: the extraction turn is
+delivered with `pi.sendUserMessage()` and lands as a **user** message, so without
+a guard it consumes the "first user turn" the marker is documented to attach to,
+and the marker then lands one message late. Fingerprinted and skipped.
+
+### What it costs, measured off the wire
+
+Not estimated from source. A stub OpenAI-compatible provider in `models.json`,
+`pi -p "hi"`, and the request body written to disk:
+
+| | bytes | ~tokens | share of 32,768 |
+| --- | --- | --- | --- |
+| pi's own system prompt (4 tools) | 2,590 | 648 | 2.0% |
+| `<active_persona>`, `full` | 14,729 | 3,683 | 11.2% |
+| `<active_persona>`, `lean` | 9,243 | 2,311 | 7.1% |
+| no persona active | 0 | 0 | 0% |
+
+**On by default is a measured decision, not an oversight.** With no persona
+active the extension registers no tool and returns `undefined` from
+`before_agent_start` — there is no schema to pay for on a turn that never uses
+it, which is the standing charge that kept `SUBAGENTS_ENABLED` and
+`PRINNY_ENABLED` opt-in. The extension test asserts both. Once a persona *is*
+active the block is 5.7× pi's own prompt, and byte-stable across turns, so it
+costs one prefix re-prefill at activation and nothing after.
+
+Because a persona is global to the agent home and survives restarts, a session
+can inherit one adopted days ago and spend 11% of its window on it with nothing
+in the transcript saying so. Three places now say otherwise: the launch banner
+(`/persona (Nadia)`), the TUI status line, and `/persona status` with the live
+token count.
+
+`lean` (`PERSONA_PROMPT_MODE=lean`) drops the four roleplay-specific
+enumerations and keeps everything that fires on engineering work. Both sizes are
+pinned inside a band by a test, so editing the block moves a number in the repo
+rather than moving it silently.
+
+### Status
+
+**UNMEASURED against behaviour**, and on the same footing as `THINK_LANG=zh` and
+`delegate.md`: the mechanism is verified end to end, the effect on output is not.
+What was verified: the block reaches the wire, first, with pi's prompt intact
+behind it; the body is carried verbatim; no phantom tool is named; no marker is
+injected on a forge model. What was not: whether a 27B model actually holds a
+voice across a long session, and whether 3,683 tokens is a good trade for it. The
+control is `/persona clear`, which is one command and takes effect next turn.

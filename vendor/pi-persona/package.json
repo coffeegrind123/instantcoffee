@@ -1,0 +1,37 @@
+{
+  "name": "pi-persona",
+  "version": "1.0.0-forge.1",
+  "type": "module",
+  "description": "A character persona over invariant engineering, for pi. Port of openclaude's /identity system — see FORK.md.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-agent",
+    "pi-coding-agent",
+    "pi-extension",
+    "persona",
+    "identity",
+    "chara-card-v2",
+    "roleplay"
+  ],
+  "license": "SEE FORK.md",
+  "scripts": {
+    "lint": "for file in extensions/index.ts src/*.ts tests/*.ts; do node --check \"$file\" 2>/dev/null || node --experimental-strip-types --no-warnings -e \"import('./$file').catch(e => { if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0); console.error('$file:', e.message); process.exit(1) })\"; done",
+    "test": "node --experimental-strip-types --no-warnings --test tests/*.test.ts"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "FORK.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.84.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  },
+  "private": true
+}

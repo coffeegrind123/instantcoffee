@@ -58,7 +58,7 @@ jobs:
       # needing no toolchain and no node_modules.
       - name: Extension syntax checks
         run: |
-          for f in .pi/extensions/*.ts vendor/rtk-pi/extensions/*.ts; do
+          for f in .pi/extensions/*.ts vendor/rtk-pi/extensions/*.ts vendor/pi-persona/extensions/*.ts; do
             node --experimental-strip-types --no-warnings \
                  -e "import('./$f').catch(e => {
                        if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0);
@@ -100,6 +100,30 @@ jobs:
       - name: rtk gate unit tests
         working-directory: vendor/rtk-pi
         run: node --experimental-strip-types --no-warnings --test tests/*.test.ts
+
+      # /persona is a port carried in this repo (vendor/pi-persona/FORK.md), so
+      # its regressions are ours. Two failure modes make it worth a CI step of
+      # its own, and neither is visible from inside a session:
+      #
+      #   - The block is PREPENDED to pi's system prompt and is ~3,683 tokens of
+      #     every request. An edit that changes that number changes how much of a
+      #     32k window is left for the user's code, silently. The suite pins both
+      #     mode's sizes inside a band.
+      #   - The block builds its tool references from what pi says is selected
+      #     THIS turn. Hardcoding a tool pi does not have is how a model ends up
+      #     inventing a URL rather than fetching one, and it fails as a
+      #     plausible-looking answer rather than as an error.
+      #
+      # Runs after `Install pi`: the extension suite redirects pi's bare
+      # specifier onto the installed package so the factory runs against the same
+      # import a session would. Without pi those tests skip and the source
+      # assertions still run, so this step is green either way — but the point of
+      # putting it here is that they do not skip.
+      - name: Persona port unit tests
+        working-directory: vendor/pi-persona
+        run: |
+          npm run lint
+          npm test
 
       # The other half of the same contract: that the rtk BINARY still behaves
       # the way the allow-list assumes. Filters are upstream's to change and a

@@ -513,6 +513,62 @@ if [[ "$(env_get RTK_ENABLED)" == "1" ]]; then
   fi
 fi
 
+# /persona comes from vendor/pi-persona — a port of openclaude's /identity
+# system (see vendor/pi-persona/FORK.md). Loaded by absolute path like everything
+# above, so the same code runs whatever directory pi was started in.
+#
+# It needs no node_modules: its only bare import is pi's own package, which pi
+# resolves from its own module root.
+#
+# On by DEFAULT, and that is a measured decision rather than an oversight. With
+# no persona active it contributes ZERO tokens — `before_agent_start` returns
+# undefined, and it registers no tool, so there is no schema to pay for on a turn
+# that never uses it. The cost only appears once a persona IS active, and then it
+# is large and worth knowing about: ~3,683 tokens of every request in `full`
+# mode, ~2,311 in `lean`, against a 32,768-token window. `/persona status` prints
+# the live number; the wire measurements are in FORK.md.
+#
+# Loaded AFTER vendor/rtk-pi and everything else, and the order matters for one
+# reason: `before_agent_start` handlers CHAIN, each seeing the previous one's
+# result as `event.systemPrompt`. This one PREPENDS its block, which is where
+# openclaude puts it and why the persona is read as identity rather than as
+# decoration on top of "you are a coding assistant". Running last means it is in
+# front of everything any other extension appended, which is the position the
+# block was written for.
+PERSONA_DIR="$REPO_ROOT/vendor/pi-persona"
+PERSONA_NOTE=""
+if [[ "$(env_get PERSONA_ENABLED)" == "1" ]]; then
+  if [[ -r "$PERSONA_DIR/extensions/index.ts" ]]; then
+    pi_flags+=(-e "$PERSONA_DIR/extensions/index.ts")
+    PERSONA_NOTE=", /persona"
+
+    # Exported rather than passed as a flag: the extension reads both from
+    # `process.env`, and a value that only ever lives in .env is a knob that
+    # silently does nothing. Empty stays unset so the package's own defaults
+    # apply — exporting an empty PERSONA_PROMPT_MODE would be a mode nobody
+    # chose rather than "not configured".
+    PERSONA_PROMPT_VALUE="$(env_get PERSONA_PROMPT_MODE)"
+    [[ -n "$PERSONA_PROMPT_VALUE" ]] && export PERSONA_PROMPT_MODE="$PERSONA_PROMPT_VALUE"
+    PERSONA_IMMERSION_VALUE="$(env_get PERSONA_IMMERSION)"
+    [[ -n "$PERSONA_IMMERSION_VALUE" ]] && export PERSONA_IMMERSION="$PERSONA_IMMERSION_VALUE"
+
+    # Said at launch, where it can be acted on. A persona is global to the agent
+    # home and survives restarts, so a session can inherit one adopted days ago
+    # and pay for it without anything in the transcript saying so. The status
+    # line shows it once the TUI is up; this shows it before the window is spent.
+    PERSONA_ACTIVE_FILE="$(agent_dir)/PERSONA.md"
+    [[ -r "$PERSONA_ACTIVE_FILE" ]] || PERSONA_ACTIVE_FILE="$(agent_dir)/IDENTITY.md"
+    if [[ -r "$PERSONA_ACTIVE_FILE" ]]; then
+      PERSONA_NAME="$(sed -n 's/.*persona of \([^.]*\)\..*/\1/p' "$PERSONA_ACTIVE_FILE" | head -n1)"
+      PERSONA_NOTE=", /persona (${PERSONA_NAME:-active})"
+      dim "A persona is active (${PERSONA_NAME:-unnamed}) — it costs ~2.3-3.7k tokens of every request."
+      dim "Clear it with /persona clear, or see what it costs with /persona status."
+    fi
+  else
+    warn "$PERSONA_DIR is missing — /persona will not exist this session."
+  fi
+fi
+
 # MCP servers, reached as a CLI rather than as MCP. --skill is additive and takes
 # an absolute path, so the skill travels with the repo instead of being installed
 # into ~/.pi — nothing outside this checkout is touched, and it still applies when
@@ -757,5 +813,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE}${PERSONA_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

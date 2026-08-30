@@ -516,6 +516,111 @@ The `[matrix]` marker stays, at about a token, because it is the boundary
 between "the operator typed this" and "a stranger sent this" that every
 untrusted-input guideline depends on.
 
+## A persona for the voice: `/persona`
+
+`vendor/pi-persona` gives the assistant a character to be, without giving that
+character any say over the engineering. It is a port of openclaude's `/identity`
+system; `vendor/pi-persona/FORK.md` is the full account, including the six
+places it departs from upstream and why.
+
+**On by default**, because with no persona active it costs nothing at all: the
+`before_agent_start` handler returns `undefined` and the package registers no
+tool, so there is no schema to pay for on a turn that never uses it. The cost
+arrives with the persona, and then it is the largest single thing in the request.
+
+```
+/persona                    pick a source: local library, chub.ai, search, random
+/persona local              browse the library; activate a cached one for free
+/persona chub trending      browse chub.ai by sort mode
+/persona search <query>     free-text search
+/persona show               read the active persona file
+/persona status             what is active, and what it costs per request
+/persona clear              back to the neutral voice
+/persona prompt full|lean   how much of the persona contract to send
+```
+
+### How one is made
+
+A chara_card_v2 card — from [chub.ai](https://chub.ai) or a `card.json` dropped
+into `~/.pi/agent/personas/` — is staged, and then handed to **the model** as an
+ordinary turn with instructions to write a 200-500 word voice profile:
+cadence, vocabulary tier, verbal tics, mannerisms, emotional defaults, one sample
+line. That is upstream's design and it is the right one. A card's persona signal
+is scattered — cadence hides in `mes_example`, register hides in `scenario`, the
+intended voice is often only in `creator_notes` — and no field-picker recovers
+it.
+
+It is also where the card's **operating directives** are thrown away. Cards carry
+jailbreaks, mandatory output blocks, and in-character refusal instructions; the
+extraction prompt's IGNORE list drops all of it, so what reaches the system
+prompt is a voice rather than somebody else's policy.
+
+The profile lands at `~/.pi/agent/PERSONA.md` and in the library entry, and takes
+effect on the next turn. Re-selecting a card you have already extracted activates
+the cached profile with **no model turn at all** — upstream re-extracts every
+time; the library's copy is the finished artefact.
+
+Cards larger than 15% of the window are never inlined. The model walks them
+field-by-field with `jq`, one Bash call per field, guided by a shape summary that
+reports each field's length so it can skip the empty ones. On a 32k window that
+threshold is 19,660 bytes; upstream's flat 50 KB would be 40% of the window spent
+before the model had read the instruction.
+
+### What it costs
+
+Measured on pi 0.84.4 by capturing a real `POST /v1/chat/completions` off the
+wire — a stub OpenAI-compatible provider in `models.json`, `pi -p "hi"`, and the
+request body written to disk.
+
+| | bytes | ~tokens | share of a 32,768-token window |
+| --- | --- | --- | --- |
+| pi's own system prompt (4 tools) | 2,590 | 648 | 2.0% |
+| `<active_persona>`, `full` | 14,729 | 3,683 | 11.2% |
+| `<active_persona>`, `lean` | 9,243 | 2,311 | 7.1% |
+| no persona active | 0 | 0 | 0% |
+
+The block is byte-stable across turns, so it costs one prefix re-prefill at
+activation and nothing after. `/persona status` prints the live number, and the
+launch banner names the persona when one is already active — a persona is global
+to the agent home and survives restarts, so a session can otherwise inherit one
+adopted days ago and pay for it with nothing in the transcript saying so.
+
+`PERSONA_PROMPT_MODE=lean` drops the four roleplay-specific enumerations and
+keeps every rule that fires on ordinary engineering work.
+
+### The persona has no authority over the work
+
+This is the part that makes it usable on a coding stack rather than a novelty.
+The block says so explicitly, and the tests assert the sentence survives in both
+prompt modes:
+
+> **The persona is voice-acting over invariant engineering.** Personality traits
+> ("lazy", "frugal", "drowsy", "perfectionist", "anxious") NEVER affect:
+> thoroughness, investigation depth, tool/library choice, code quality, test
+> coverage, or honesty about results.
+
+Two more that matter here. The block forbids **simulated tool output** — a URL, a
+file path or a command result that did not come from a call actually made this
+turn — under any persona. And it names only tools pi says are on the surface
+**this turn**, read from `event.systemPromptOptions.selectedTools`. Upstream
+hardcodes `WebSearch` / `WebFetch`, which pi does not have; ported verbatim that
+instructs a model with no fetch tool to produce a link, and the only way to obey
+is to invent one.
+
+### The immersion marker is off
+
+openclaude appends a Chinese instruction block to the first user message. It is
+not decoration — it is a documented DeepSeek-V4 training artefact that re-routes
+that model's `<think>` from "deliberate about whether to comply" to "think in
+character". `auto` resolves to **off** on anything that does not look like
+DeepSeek, which is this whole stack: the markers are exact strings one model
+family was trained on, and injected elsewhere they are just tokens.
+
+`PERSONA_IMMERSION=immersion` turns it on by hand. It is **unmeasured** on Qwen.
+`THINK_LANG=zh` is already on here, so the model is being asked to reason in
+Chinese anyway — which makes the markers less alien than on a generic setup, and
+is a reason to try it and record what happens rather than a result.
+
 ## The proxy was destroying the model's reasoning
 
 `patches/forge_reasoning_passthrough.py`. Empty assistant turns on this stack —
@@ -637,6 +742,10 @@ banner, the command will not exist in that session. `/prinny` means the Matrix
 channel loaded — and it says so with a qualifier when it will not work yet:
 `/prinny (runtime not built)`, `/prinny (runtime stale)` or
 `/prinny (not configured)`.
+`/persona` means the persona extension loaded, and it names the persona when one
+is already active — `/persona (Nadia)` — because a persona is global to the agent
+home and survives restarts, so a session can otherwise inherit one adopted days
+ago and spend 11% of its window on it with nothing in the transcript saying so.
 
 ## Keeping pi current
 

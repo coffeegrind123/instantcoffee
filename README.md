@@ -185,7 +185,7 @@ be the wrong trade.
 | Document | What is in it |
 | --- | --- |
 | [docs/modes.md](docs/modes.md) | The three regimes, their models, every sampler value |
-| [docs/pi.md](docs/pi.md) | `/stack`, `/loop`, subagents, `/prinny`, how the provider config is generated, why pi |
+| [docs/pi.md](docs/pi.md) | `/stack`, `/loop`, subagents, `/prinny`, `/persona`, how the provider config is generated, why pi |
 | [docs/context-budget.md](docs/context-budget.md) | MCP without MCP, filtered bash output, the browser — the three big context consumers |
 | [docs/reasoning.md](docs/reasoning.md) | `REASONING_EFFORT` in detail, and reasoning in another language |
 | [docs/quants.md](docs/quants.md) | What fits in 24 GiB and what each step down costs |

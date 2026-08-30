@@ -184,6 +184,15 @@ vendor/rtk-pi/          bash output filtering — fork of rtk's own pi extension
   src/gate.ts           what is filtered and what is accepted back (no pi import)
   extensions/index.ts   the pi coupling, and nothing else
   tests/                node --test suite for the gate
+vendor/pi-persona/      /persona — a character voice over invariant engineering,
+                        ported from openclaude's /identity system
+  FORK.md               provenance, the six departures, the wire measurements
+  src/prompt.ts         the <active_persona> block; names only tools pi says are
+                        selected this turn (no pi import)
+  src/processor.ts      the extraction turn — inline vs jq walk, sized to the window
+  src/immersion.ts      the DeepSeek first-message marker, off by default here
+  extensions/index.ts   the pi coupling: /persona, before_agent_start, status line
+  tests/                103 tests, incl. the factory against a real pi import
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 mcp/adapter.json        pi-mcp-adapter config: how pi reaches the browser server
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
