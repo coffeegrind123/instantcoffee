@@ -9027,3 +9027,58 @@ fix is not an assertion. It now strips comments before matching, and keeps a
 control asserting the phrase IS still present in the file, so a stripper that
 removed everything would not pass vacuously. 86 tests across the `.pi`
 extensions, up from 81.
+
+## 2026-08-30 (night) — AQ4: the status bubble, and a submodule footgun that bit twice
+
+`vendor/prinny-channel` v1.2.0. The bot's Matrix `status_msg` now follows what
+the session is doing — `thinking…`, `reading src/prompt.ts`, `$ npm test`,
+`browsing boards.4chan.org` — cleared when the run settles. Driven from the turn
+lifecycle, so no tool, no schema, **no tokens**.
+
+**The rate limit is the design, and it was probed before anything was written.**
+Writing at increasing gaps and recording what came back:
+
+| gap since the last write that landed | result |
+| --- | --- |
+| 0s (first) | 200 |
+| 2s | **429**, `retry_after_ms` 7200 |
+| 5s | **429**, `retry_after_ms` 1592 |
+| 8s / 11s / 14s | 200 |
+
+A write lands once roughly 8 seconds have passed — Synapse's `rc_presence`
+bucket. A status following every tool call would spend its budget in the first
+seconds of a turn and be throttled through the rest of it. `StatusThrottle`
+coalesces: offer freely, one write per 12s, always the LATEST value. A realistic
+turn (six offered lines over 26s) produces three writes.
+
+The load-bearing property: **a refused write retries with whatever the status is
+by then**, not the value that was refused — otherwise the bubble publishes
+"reading foo.ts" after the run moved on. Control: offering the value already on
+the server writes nothing, so a throttle that dropped everything cannot pass the
+first test for the wrong reason.
+
+**Two features were rejected on evidence, which is the more useful half of the
+research.** Rich presence (MSC4320) is the nicest option — a Discord-shaped
+activity with an image — and is unreachable: it is written as an MSC4133
+extended profile field and the homeserver advertises neither, reporting Matrix
+**v1.12**. The same gate blocks `m.pronouns`, `m.banner_url`, `m.biography` and
+`m.tz`. And `setMyProfile`'s `description` / `short_description` are available
+today and nearly pointless: reading the client, `description` is consumed only by
+the **server-browser listing** and `short_description` renders **nowhere**.
+
+### The footgun, recorded because it cost two rounds
+
+**A submodule is in detached HEAD after `git submodule update`, and
+`git push origin main` from inside it then pushes the stale local branch and
+exits 0.** It happened twice tonight — AQ3 and AQ4 — and both times the work
+looked shipped: the commit existed locally, `git log` showed it, the push
+succeeded, and the annotated TAG pushed the commit object so even
+`git submodule update` in the container fetched it fine. Only `gh api
+…/commits/main` disagreed, and the first time it surfaced as the container
+failing with `upload-pack: not our ref`.
+
+The check that catches it is `git status -sb | head -1` inside the submodule:
+`## HEAD (no branch)` means a push of `main` will not push what you just
+committed. `git checkout main` before committing in a submodule avoids it
+entirely, and both submodules are now attached to `main` rather than left
+detached at a tag.
