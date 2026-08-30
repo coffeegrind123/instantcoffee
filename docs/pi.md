@@ -549,6 +549,17 @@ and a 27B model steered mid-task sometimes drops the original goal;
 allowlist on `type === "text"`, so `thinking` and `toolCall` are excluded by
 construction rather than by a list something new could slip past.
 
+**The bot wears the active persona.** With `/persona` in use, the Matrix display
+name becomes the persona's name and the avatar becomes the card's image, so the
+person on the other end sees who they are talking to rather than a bot called
+`pi`; clearing the persona puts the original name back.
+`/prinny set personaProfile off` stops it. The persona files are read off disk,
+not imported — `vendor/pi-persona` owns them and vendor packages here do not
+depend on each other — and the tests assert the two still agree about the file
+names, the framing sentence, and that `meta.json` still carries the card's
+`avatarUrl` at all. Matrix will not take an http URL as an avatar, so the image
+is re-uploaded to the homeserver once for an `mxc://`, bounded at 8 MB.
+
 **A Matrix message reads as one line, and there is one tool.** Both were paid for
 on every turn. Upstream's `<channel …>` block carried up to fourteen attributes
 so the model could hand `room_id` back to a tool — 249 chars of wrapper around a

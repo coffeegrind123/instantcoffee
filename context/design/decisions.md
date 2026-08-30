@@ -8941,3 +8941,45 @@ ERR_MODULE_NOT_FOUND and that branch deliberately exits 0. A control run printed
 `vendor/pi-persona/extensions/*.ts: OK`. Both repos now have an explicit
 "the submodule is checked out" step, because in both cases absence was quieter
 than presence.
+
+## 2026-08-30 (night) — AQ3: the bot wears the persona, and the runtime guard caught it being built
+
+`vendor/pi-persona` has stored the card's image URL in `meta.json` since it was
+written — kept at fetch time precisely so it need not be re-fetched — and nothing
+read it. Its FORK.md said so under "what this package does NOT do", naming
+`vendor/prinny-channel` as where the equivalent would live. It now lives there.
+
+`personaProfile`, default `on`: display name and avatar follow the active
+persona, and clearing it restores the name the bot had first.
+
+**Read across, do not import.** The third instance of this repo's standing
+arrangement, after the compaction lock's three copies and `rtk-pi`'s spelling of
+the approved-command key. `src/persona-profile.ts` reads the persona *files*, and
+the tests assert the two packages still agree about the file names, about the
+framing sentence the display name is parsed out of, and — the one that would
+otherwise rot silently — that `meta.json` still carries `avatarUrl` at all.
+
+**Four things that needed deciding, not just coding:**
+
+- Matrix will not take an http URL as an avatar. The card image is fetched and
+  re-uploaded once for an `mxc://`; bounded at 8 MB / 20 s, content type checked,
+  and the returned `content_uri` verified to start with `mxc://` because the
+  SDK's return shape differs across versions and a wrong guess sets somebody's
+  avatar to `[object Object]`.
+- An avatar failure must not cost the display name — separate `try`s.
+- The default name is captured on FIRST APPLICATION, not at connect. At connect
+  the channel may already be wearing a persona from a previous session, and "the
+  name before any persona" would capture the persona, making "clear" restore the
+  wrong thing permanently.
+- `set_profile` with no arguments is a pure read returning JSON, so the extension
+  learns the name to restore without a second tool and without parsing prose.
+
+**The AO5 guard fired, and it was right.** Editing `server/src/server.ts` made the
+staged runtime stale and 76 tests across 14 suites failed at once — every suite
+that loads the COMPILED sidecar. That is `assertRuntimeMatchesSource` refusing to
+report a green run about a program that is not in the tree, which is exactly what
+AO5 was built for. `npm run prepare-runtime` and they pass. Recorded as the guard
+working rather than as a wobble, because the failure looked alarming and was the
+system behaving correctly.
+
+pi-prinny-channel v1.1.0. 620 tests, up from 603.
