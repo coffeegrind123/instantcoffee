@@ -36,3 +36,9 @@ results/
 .ppl-stride-logs/
 .ppl-depth-logs/
 .ppl-cliff-logs/
+
+# Whole-file backup of versions.lock taken by scripts/update.sh before it edits
+# the fields it owns. update.sh no longer rewrites that file from a template
+# (it used to, and destroyed the hand-recorded measurements in it twice), but a
+# copy of the previous state is cheap and the file is irreplaceable.
+.versions.lock.bak

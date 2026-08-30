@@ -214,6 +214,53 @@ lock_get() {
     }' "$file"
 }
 
+# Set ONE field in versions.lock, in place, preserving everything else.
+#
+# WHY THIS EXISTS. update.sh used to rewrite versions.lock from a here-doc
+# template, and that template was the WHOLE file — so every hand-recorded block
+# in it (spec_verdict, depth_ppl, tool_grammar, kv_alt, the model rollback
+# hashes, ~900 lines of measurement that cost days of GPU time) was destroyed on
+# any update. The file's own header admitted this had already happened twice,
+# which made the documented "just run update.sh" path the most destructive
+# command in the repo. Nobody should have to know that. So the writer changed
+# rather than the warning getting louder.
+#
+# Continuation lines — the indented prose under a key — are PRESERVED, not
+# rewritten, because they are hand-written. That means they can now describe a
+# value that has just changed, so update.sh reports which keys carry prose for a
+# human to re-read. Preserving something stale and saying so beats deleting
+# something irreplaceable and not.
+lock_set() {
+  local key="$1" file="$REPO_ROOT/versions.lock"
+  local tmp; tmp="$(mktemp)"
+  LOCK_VAL="$2" awk -v k="$key" '
+    # The key line is `key<pad>= value`. Replace only what follows the "= ",
+    # keeping the original alignment so the file stays column-aligned.
+    !done && $0 ~ "^[[:space:]]*"k"[[:space:]]*=" {
+      match($0, /^[^=]*=[ ]?/)
+      printf "%s%s\n", substr($0, 1, RLENGTH), ENVIRON["LOCK_VAL"]
+      done = 1
+      next
+    }
+    { print }
+    END { if (!done) printf "%-20s= %s\n", k, ENVIRON["LOCK_VAL"] }
+  ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$file"
+}
+
+# Does this key carry hand-written continuation prose beneath it?
+# Used to tell the operator which preserved blocks may now be stale.
+lock_has_prose() {
+  local key="$1" file="$REPO_ROOT/versions.lock"
+  [[ -f "$file" ]] || return 1
+  awk -v k="$key" '
+    $0 ~ "^[[:space:]]*"k"[[:space:]]*=" { inkey = 1; next }
+    inkey && /^[[:space:]]+[^[:space:]]/ { found = 1; exit }
+    inkey { exit }
+    END { exit !found }
+  ' "$file"
+}
+
 
 # --------------------------------------------------------------------------
 # Stack provenance: WHICH engine and WHICH weights produced a measurement.
