@@ -8751,3 +8751,54 @@ behind it; the body is carried verbatim; no phantom tool is named; no marker is
 injected on a forge model. What was not: whether a 27B model actually holds a
 voice across a long session, and whether 3,683 tokens is a good trade for it. The
 control is `/persona clear`, which is one command and takes effect next turn.
+
+## 2026-08-30 (later) — AQ1: the answer was message one of five, and only message five was forwarded
+
+Reported from a live session with a persona active. One inbound `haiii` on
+Matrix; the sender got a fox reaction and `*boops head, waits patiently* 🦊`. The
+greeting the model actually wrote never left the box.
+
+```
+  user       [matrix] haiii
+  assistant  "*ears perk up* H-hi!! ... m-master?"        <- the reply
+  assistant  "Hi, this is a simple greeting in the ..."   <- planning, as TEXT
+  assistant  toolCall prinny(react)
+  assistant  "I've already sent my reply. ..."            <- harness meta
+  assistant  "*boops head, waits patiently* 🦊"            <- forwarded, alone
+```
+
+`forward: "result"` sent `finalAssistantText`, which walks **back** from the end
+and returns the last assistant message with text. That is message five.
+
+**Not a persona bug, and not a rare shape.** pi starts a new assistant message
+after every tool call, so any turn that reacts, replies, reads a file or greps
+mid-answer ends with its answer above the last text. The failure is also silent
+in the worst way: the forward was logged as a success, because one did happen.
+
+`result` now forwards every text-bearing message of the run, in order, as one
+message. The old behaviour is kept as `forward: "last"` rather than deleted — it
+is the narrowest thing that can reach a stranger. Every boundary
+`finalAssistantText` enforces is enforced by the new collector, because each was
+bought by an incident: `endedWithoutAnswering` first (the run that delivered a
+thinking trace to somebody's phone), the sender's own `user` message ends the
+walk, `text` blocks only.
+
+**The widening was offered and taken, with the leak named first.** Text the model
+writes to itself now reaches Matrix. Two of the five messages above are exactly
+that — a planning note and "I've already sent my reply" — and neither is a
+`thinking` block, so no allowlist in prinny can catch them. They are a violation
+of `vendor/pi-persona`'s hedge pattern 3 ("stepping outside the persona"), and
+the fix belongs in the prompt. The operator was shown both options and chose the
+forwarder change; the prompt-side fix is not done and is the obvious next move if
+the leak shows up in practice.
+
+**One regression caught while building it, not after.** `SentRegistry` is keyed on
+the exact normalised text of what was sent, so a joined blob matches nothing in
+it — a run where the model called `prinny(reply)` and also wrote the same
+sentence as text would have sent it twice. `runAssistantTexts` therefore returns
+the parts, `forwardToMatrix` takes `string | readonly string[]`, and the filter
+runs after the room is known and before the join. Both the join and each part are
+marked sent.
+
+601 tests, up from 594. `config.test.ts` changed rather than broke: it pins the
+enum the error message advertises, now `off | result | last | all`.

@@ -494,8 +494,27 @@ on Matrix sees nothing while the operator sees a complete reply. So the
 extension sends the assistant's text itself — `text` content only, never
 thinking blocks and never tool calls, filtered by allowlist so a new content
 kind is excluded rather than leaked. `/prinny forward all` sends each message as
-it completes instead of just the final one; `/prinny forward off` restores
+it completes instead of one message at the end; `/prinny forward off` restores
 upstream's behaviour.
+
+**It sends the whole turn, not its last word** — changed 2026-08-30, on a
+reported incident. `result` used to forward the last assistant message that had
+text, which is right for a run that answers once and stops and drops the answer
+for every run that does not. pi starts a new assistant message after every tool
+call, so a turn that reacts, replies or greps mid-answer ends with its real answer
+*above* the last text. Measured: one inbound `haiii` produced a greeting, a
+planning note, a `prinny(react)` call, a meta remark and a trailing
+`*boops head, waits patiently* 🦊` — and the sender got the boop, alone. `result`
+now forwards every text-bearing message of the run in order, as one message;
+`/prinny forward last` is the old behaviour, kept because it is the narrowest
+thing that can reach a stranger.
+
+The cost is named rather than hidden: text the model wrote *to itself* now goes
+too. In that same run, two of the five messages were a planning note and "I've
+already sent my reply" — neither is a `thinking` block, so the allowlist cannot
+catch them. That is a persona-contract violation (hedge pattern 3, "stepping
+outside the persona"), and the fix for it is in the prompt, not the forwarder.
+`vendor/prinny-channel/FORK.md` §AQ1 has the whole account.
 
 **A Matrix message reads as one line, and there is one tool.** Both were paid for
 on every turn. Upstream's `<channel …>` block carried up to fourteen attributes
