@@ -552,6 +552,18 @@ if [[ "$(env_get PERSONA_ENABLED)" == "1" ]]; then
     PERSONA_IMMERSION_VALUE="$(env_get PERSONA_IMMERSION)"
     [[ -n "$PERSONA_IMMERSION_VALUE" ]] && export PERSONA_IMMERSION="$PERSONA_IMMERSION_VALUE"
 
+    # chub.ai's gateway key, if there is one. The extension sends NO key when
+    # this is unset and both routes were measured answering 200 without one, so
+    # this is optional in the strict sense — it is exported because an operator
+    # who has a key wants it sent, not because anything breaks without it.
+    #
+    # Read through env_get, which means .env.local (gitignored) or the
+    # environment, and NEVER .env — that file is tracked, and a key committed to
+    # a public repo is the thing this whole arrangement exists to avoid.
+    # .env.local.example carries the placeholder, not the value.
+    CHUB_KEY_VALUE="$(env_get CHUB_API_KEY)"
+    [[ -n "$CHUB_KEY_VALUE" ]] && export CHUB_API_KEY="$CHUB_KEY_VALUE"
+
     # Said at launch, where it can be acted on. A persona is global to the agent
     # home and survives restarts, so a session can inherit one adopted days ago
     # and pay for it without anything in the transcript saying so. The status
