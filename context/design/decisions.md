@@ -9136,3 +9136,60 @@ only want one. Pinned by `scripts/test_browser_cli.py` against a socket that
 accepts and never replies, with the control that nothing-listening still reports
 `down` and exits 1 — a probe that called everything hung would pass the first
 test otherwise.
+
+## 2026-08-30 (late) — AQ6: the About Me, and a capability declared missing on the strength of a flag
+
+pi-persona v1.3.0 / prinny v1.5.0. The persona now writes its own **About Me** —
+the box on a profile card — and it is the one piece of persona text in **first
+person**, because that box is what every account on the homeserver fills in about
+itself. A third-person one reads as a bot pretending to be a person and failing.
+
+```
+Short description: A shy fox-girl assistant who calls you master.    3rd person, 120
+About me: H-hi! I'm Crystal, and I look after my master. …           FIRST person, 1024
+```
+
+It replaces the third-person `Description` line added an hour earlier, which fed
+a BotInfo field nothing renders — the operator's "that's what I'm talking about"
+was pointing at the profile card the whole time.
+
+### The correction is the real content
+
+**Twice** — in AQ4 and again in AQ5 — extended profiles were declared unavailable
+on this homeserver, citing the same evidence both times: it reports Matrix v1.12
+and its `unstable_features` carries no MSC4133 entry. Rich presence was called
+unreachable on that basis and `m.biography` written off with it.
+
+The flag was the wrong thing to read. Probing the route:
+
+```
+PUT unstable/uk.tcpip.msc4133/profile/{u}/{k}        404  M_UNRECOGNIZED
+PUT v3/profile/{u}/{k}   (bare value)                400  M_MISSING_PARAM
+PUT v3/profile/{u}/{k}   {"<key>": <value>}          200  round-trips
+```
+
+The **400** is the tell. `Missing key 'gay.fomx.biography'` is a routed request
+complaining about a body — a working endpoint saying so. The first probe had sent
+the wrong shape (the spec wraps the key *in* the body), and a 4xx was read as
+"not supported".
+
+This repo's operating notes already say it: **probe the route, do not trust the
+advertisement**, and *"before accepting 'this is blocked' — including from
+yourself — check"*. A capability list is a claim about a server; a request is a
+measurement of one. The cost was two features written off, one of which — rich
+presence, the Discord-shaped activity card — is still worth building and is now
+known to be available.
+
+The near-miss worth naming: a **4xx is not one verdict**. 404 M_UNRECOGNIZED and
+400 M_MISSING_PARAM mean opposite things about whether a feature exists, and
+collapsing them into "it errored" is what turned a wrong request body into a
+wrong conclusion about a homeserver.
+
+### Mechanics
+
+`gay.fomx.biography` (MSC4440), value `{'m.text': [{ body }]}` — not a bare
+string, which the server accepts and nothing renders. 1024 is cinny's own
+`TextArea maxLength`; MSC4440 states no limit, which is why the provenance is
+recorded. The sidecar compiles outside this repo and cannot import `src/`, so the
+key is declared twice and a test asserts the copies agree and that the value is
+the key the client actually reads.
