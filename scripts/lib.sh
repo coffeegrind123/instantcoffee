@@ -67,6 +67,22 @@ env_set() {
   sed -i -E "s|^([[:space:]]*${key}=).*$|\1${value}|" "$file"
 }
 
+# The llama server image. LLAMA_IMAGE wins when set; otherwise the upstream
+# ggml-org repository plus LLAMA_TAG, which is what every caller hardcoded
+# before this existed and is therefore the unchanged default.
+#
+# Centralised because it was written out three times, and the copy that mattered
+# was the one in capacity-probe.sh's gpu_mem_idle(): it pulls the image to read
+# the device with llama stopped, and a pull that FAILS there returns an empty
+# string rather than an error, which lands in the results JSON as an empty
+# vram_idle_mib and makes every delta in that run meaningless.
+llama_image() {
+  local img; img="$(env_get LLAMA_IMAGE)"
+  if [[ -n "$img" ]]; then printf '%s' "$img"; return 0; fi
+  local tag; tag="$(env_get LLAMA_TAG)"; : "${tag:=server-cuda-b10689}"
+  printf 'ghcr.io/ggml-org/llama.cpp:%s' "$tag"
+}
+
 # --- system-prompt fragments -------------------------------------------------
 # Path of the prompt fragment selected by THINK_LANG, or nothing when off.
 #
@@ -285,7 +301,19 @@ capture_stack_pins() {
   tag="$(env_get LLAMA_TAG)"
   models="$(env_get MODELS_DIR)"
   gguf="$(env_get GGUF_FILE)"
-  image="ghcr.io/ggml-org/llama.cpp:$tag"
+  image="$(llama_image)"
+
+  # llama_tag CARRIES THE WHOLE IMAGE REFERENCE WHEN A FORK IS IN USE, and the
+  # bare tag otherwise. This function used to build the image name from a
+  # hardcoded ggml-org repository, which meant a probe running a FORK looked up
+  # the UPSTREAM image's digest and stamped it into the results — a provenance
+  # field that positively asserts the wrong engine is worse than no field, and
+  # it is the same mixed-provenance trap the pin set exists to stop.
+  #
+  # The KEY SET is deliberately unchanged so every result file written before
+  # this still compares as the same stack; only the VALUE widens, and it widens
+  # only when LLAMA_IMAGE is set, which no upstream run does.
+  [[ -n "$(env_get LLAMA_IMAGE)" ]] && tag="$image"
 
   # The digest of the image ON THIS BOX, not the one versions.lock remembers.
   # A re-pulled tag is precisely the drift this exists to catch, and the lock

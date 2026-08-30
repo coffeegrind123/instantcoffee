@@ -5,7 +5,7 @@ services:
   # llama-server — upstream llama.cpp + unsloth GGUF (MTP-capable).
   # ---------------------------------------------------------------------------
   llama:
-    image: ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG}}
     container_name: instantcoffee-llama
     restart: unless-stopped
     gpus: all
@@ -90,6 +90,7 @@ services:
       -fa ${FLASH_ATTN}
       -ctk ${CACHE_TYPE_K:-f16}
       -ctv ${CACHE_TYPE_V:-f16}
+      ${KV_TAIL_TOKENS:+--kv-tail-tokens ${KV_TAIL_TOKENS}}
       -kvu
       -c ${CTX_SIZE}
       -np ${PARALLEL_SLOTS}

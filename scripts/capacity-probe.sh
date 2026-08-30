@@ -187,10 +187,17 @@ gpu_mem() {
 # stops it a few seconds earlier than the first `--force-recreate` would.
 gpu_mem_idle() {
   compose stop llama >/dev/null 2>&1 || true
-  docker run --rm --gpus all --entrypoint nvidia-smi \
-      "ghcr.io/ggml-org/llama.cpp:$(env_get LLAMA_TAG)" \
+  # llama_image(), not a literal repository: a probe may be running a FORK
+  # (LLAMA_IMAGE), and this read silently returned nothing when the pull failed.
+  local img; img="$(llama_image)"
+  local out
+  out="$(docker run --rm --gpus all --entrypoint nvidia-smi "$img" \
       --query-gpu=memory.used,memory.total --format=csv,noheader,nounits \
-      2>/dev/null | tr -d ' ' | tr ',' ' ' | head -1
+      2>/dev/null | tr -d ' ' | tr ',' ' ' | head -1)"
+  # An empty floor is worse than no run: it lands in the JSON as "" and every
+  # delta computed against it is silently wrong. Say so instead.
+  [[ -n "$out" ]] || warn "idle-floor read returned nothing from $img (image missing, or no GPU)"
+  printf '%s' "$out"
 }
 
 # What the SERVER says it is serving, which is the only claim worth recording:

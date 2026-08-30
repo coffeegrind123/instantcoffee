@@ -113,7 +113,10 @@ GGUF="$(env_get GGUF_FILE)";             [[ -n "$GGUF" ]] || die "GGUF_FILE is n
 MODELS="$(env_get MODELS_DIR)";          [[ -n "$MODELS" ]] || die "MODELS_DIR is not set in .env"
 CAPS="$(env_get CAPTURES_DIR)";          [[ -n "$CAPS" ]] || die "CAPTURES_DIR is not set in .env"
 NGL="$(env_get NGL)";                    : "${NGL:=999}"
-IMAGE="ghcr.io/ggml-org/llama.cpp:${LLAMA_TAG_V}"
+# llama_image() so a fork (LLAMA_IMAGE) can be measured with the same runner.
+# LLAMA_TAG_V above is still read because it is what the run RECORDS as its pin;
+# the two are the same string whenever LLAMA_IMAGE is unset, which is the default.
+IMAGE="$(llama_image)"
 # The llama.cpp image has no python; the forge image does, and it is already
 # built on this box because capture.sh builds it. Only used to read the sidecar.
 SIDECAR_IMAGE="instantcoffee/proxy:$(env_get FORGE_VERSION)"
