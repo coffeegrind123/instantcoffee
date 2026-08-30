@@ -8783,14 +8783,21 @@ bought by an incident: `endedWithoutAnswering` first (the run that delivered a
 thinking trace to somebody's phone), the sender's own `user` message ends the
 walk, `text` blocks only.
 
-**The widening was offered and taken, with the leak named first.** Text the model
-writes to itself now reaches Matrix. Two of the five messages above are exactly
-that — a planning note and "I've already sent my reply" — and neither is a
-`thinking` block, so no allowlist in prinny can catch them. They are a violation
-of `vendor/pi-persona`'s hedge pattern 3 ("stepping outside the persona"), and
-the fix belongs in the prompt. The operator was shown both options and chose the
-forwarder change; the prompt-side fix is not done and is the obvious next move if
-the leak shows up in practice.
+**The widening was offered and taken with a leak named first, and the leak was
+not real.** The warning said two of those five messages were ordinary assistant
+text that no allowlist could catch — a planning note and "I've already sent my
+reply". The session JSONL says both are `thinking` blocks, and
+`assistantTextOfMessage` is an allowlist on `type === "text"`, so neither has
+ever been forwardable. The reading came from a terminal paste, which renders
+`thinking` and `text` identically; the session file does not, and nobody opened
+it until the operator asked a follow-up question. The incident and the fix are
+unaffected — the greeting was dropped, and it was dropped for the stated reason —
+but the cost of the fix is **length, not leakage**, and the corrections are in
+`vendor/prinny-channel/FORK.md` §AQ1 and `docs/pi.md`.
+
+Worth keeping as a rule rather than an anecdote: this repo's own operating notes
+say to log raw evidence rather than an interpretation of it. A pasted TUI frame
+*is* an interpretation. The session JSONL was two commands away the whole time.
 
 **One regression caught while building it, not after.** `SentRegistry` is keyed on
 the exact normalised text of what was sent, so a joined blob matches nothing in

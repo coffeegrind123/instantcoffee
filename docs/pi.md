@@ -509,12 +509,25 @@ now forwards every text-bearing message of the run in order, as one message;
 `/prinny forward last` is the old behaviour, kept because it is the narrowest
 thing that can reach a stranger.
 
-The cost is named rather than hidden: text the model wrote *to itself* now goes
-too. In that same run, two of the five messages were a planning note and "I've
-already sent my reply" — neither is a `thinking` block, so the allowlist cannot
-catch them. That is a persona-contract violation (hedge pattern 3, "stepping
-outside the persona"), and the fix for it is in the prompt, not the forwarder.
-`vendor/prinny-channel/FORK.md` §AQ1 has the whole account.
+The cost is length, not leakage. That was checked against the session file after
+first being got wrong from a terminal paste: the planning note and the "I've
+already sent my reply" line in that run are **`thinking` blocks**, and the
+forwarder's allowlist is `type === "text"`, so neither was ever forwardable. What
+widening actually sends is every in-character line the model writes between tool
+calls — "Page loaded, *ears perk* — let me see what's in there", "404, huh…
+*tilts head*". On a long agentic run that is the point if you want to follow
+along, and noise if you just want the answer; `forward last` is still there for
+the second case. `vendor/prinny-channel/FORK.md` §AQ1 has the whole account,
+including the correction.
+
+**To follow a long run live, `/prinny forward all`.** `result` batches the whole
+turn into one message when it settles, which on a ten-tool-call browse is a wall
+of text after several minutes of silence. `all` sends each line as it completes,
+so the sender sees "404, huh…" while it is still happening. Pair it with
+`/prinny set deliverAs steer` if you want to redirect mid-run: the default,
+`followUp`, holds an inbound message until the agent has finished every tool
+call, so a correction typed halfway through a browse does not land until the
+browse is over.
 
 **A Matrix message reads as one line, and there is one tool.** Both were paid for
 on every turn. Upstream's `<channel …>` block carried up to fourteen attributes
