@@ -21,6 +21,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, test } from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,5 +91,63 @@ describe("browser guard — what gets fenced", () => {
     const one = await hook({ toolName: "browser_get_text_content", ...page("a") });
     const two = await hook({ toolName: "browser_get_text_content", ...page("a") });
     assert.notEqual(one?.content?.[0]?.text, two?.content?.[0]?.text);
+  });
+});
+
+/**
+ * AR1 — the advice a wedged browser gives.
+ *
+ * Watched in a real session, 2026-08-30: a model hit a hung 4chan navigation,
+ * was told "or ask the operator to fix the browser", and spent seven calls
+ * finding the recovery itself — about:blank (timed out), `mcp status`,
+ * `mcp list browser`, close_tab with the wrong parameter name, close_tab with
+ * the right one (dead WebSocket), and finally stop_browser + start_browser,
+ * which worked.
+ *
+ * The advice knew none of that, and there is no operator on an unattended run.
+ * These assert on the SOURCE rather than by driving the handler, because the
+ * handler's timeout path needs a wedged browser to reach.
+ */
+describe("AR1 — the wedge advice is actionable", () => {
+  const source = readFileSync(GUARD, "utf8");
+  // Comments stripped: the docstring above `recovery()` QUOTES the old wording
+  // to explain what changed, and an assertion that cannot tell the fix from the
+  // explanation of the fix fails on its own documentation. Caught by this test
+  // failing the first time it ran.
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  test("it never tells the model to go and find an operator", () => {
+    assert.doesNotMatch(code, /ask the operator/i);
+    assert.doesNotMatch(code, /An operator can/i);
+    assert.doesNotMatch(code, /operator runs/i);
+    // The control: the phrase IS still in the file, in the comment that explains
+    // why it went. A stripper that removed everything would pass this vacuously.
+    assert.match(source, /ask the operator/i);
+  });
+
+  test("it names the recovery that actually worked, in both modes", () => {
+    assert.match(code, /browser_stop_browser, then browser_start_browser/);
+    assert.match(code, /\.\/scripts\/browser\.sh restart/);
+    assert.match(code, /RECOVER IT YOURSELF/);
+  });
+
+  test("it names the two dead ends by name, so they are not tried first", () => {
+    // Both look obviously right and neither works once a tab's WebSocket died.
+    assert.match(code, /about:blank/);
+    assert.match(code, /close_tab/);
+    assert.match(code, /keepalive ping timeout/);
+  });
+
+  test("a healthy Chrome with a stuck tab still reaches the teardown", () => {
+    // The "ok" branch is the one the incident actually hit: Chrome was fine, the
+    // TAB was stuck, and the old text stopped at "retrying is unlikely to help".
+    const ok = code.slice(code.indexOf('case "ok":'), code.indexOf("default:"));
+    assert.match(ok, /recovery\(toolName\)/, "the ok branch must offer the teardown too");
+  });
+
+  test("the cold-start branch tells the model to start it, not to wait", () => {
+    const none = code.slice(code.indexOf('case "none":'), code.indexOf('case "ok":'));
+    assert.match(none, /Start it yourself/);
+    assert.match(none, /browser_start_browser/);
   });
 });

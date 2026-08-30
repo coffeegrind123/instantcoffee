@@ -214,35 +214,78 @@ async function probeBrowser(): Promise<{ state: string; detail: string }> {
 	return { state, detail };
 }
 
+/**
+ * How to un-wedge the browser, in the order that WORKS.
+ *
+ * Every branch of this used to end in "ask the operator" / "an operator can",
+ * which is wrong twice over: the model has a bash tool and, in adapter mode, the
+ * control tools themselves — and there IS no operator on an unattended run.
+ * Watched in a real session 2026-08-30, a model given that advice spent seven
+ * calls finding the recovery for itself, and found it: `browser_stop_browser`
+ * then `browser_start_browser`.
+ *
+ * The two dead ends it tried first are named explicitly, because both look
+ * obviously right and neither works once a tab's WebSocket has died:
+ *
+ *   navigate about:blank   times out like any other navigation — the tab is the
+ *                          thing that is stuck, and a navigation has to go
+ *                          through it
+ *   close_tab              "sent 1011 (internal error) keepalive ping timeout".
+ *                          Closing a tab means talking to that tab's target, and
+ *                          that is precisely what is dead
+ *
+ * Only tearing the whole browser down clears it.
+ */
+function recovery(toolName: string): string {
+	// Adapter mode registers the control tools natively; in CLI mode the same
+	// thing is one bash call. Told by the name of the tool that just failed.
+	const adapter = /^(?:browser_|mcp__browser__)/.test(toolName);
+	const steps = adapter
+		? "call browser_stop_browser, then browser_start_browser"
+		: "run ./scripts/browser.sh restart with the bash tool";
+	return (
+		`RECOVER IT YOURSELF — do not wait for an operator, and on an unattended run there ` +
+		`is not one: ${steps}. Then navigate again.\n\n` +
+		`Do NOT bother with these first; both were measured failing once a tab's WebSocket ` +
+		`is dead: navigating to about:blank (it times out like any other navigation — the ` +
+		`TAB is what is stuck), and close_tab (it answers "keepalive ping timeout", because ` +
+		`closing a tab means talking to the target that just died). Tearing the browser down ` +
+		`is the only thing that clears it.`
+	);
+}
+
 function advice(toolName: string, state: string, detail: string): string {
 	const head = `The ${toolName} call did not return — the browser did not answer in time.`;
 	const fallback =
-		"Do NOT retry this call: it will fail the same way. Fetch the page with the bash tool " +
-		"instead (curl, and an RSS or JSON endpoint where the site has one), or ask the operator " +
-		"to fix the browser. Only come back to the browser tools if the task genuinely needs a " +
-		"rendered page (JavaScript, login, clicking).";
+		"If you would rather not spend the round trips, the bash tool fetches a page fine " +
+		"(curl, and an RSS or JSON endpoint where the site has one). Come back to the browser " +
+		"when the task genuinely needs a rendered page (JavaScript, login, clicking).";
 
 	switch (state) {
 		case "wedged":
 			return (
-				`${head}\n\nChrome is wedged: ${detail}. Every browser tool will hang until an ` +
-				`operator runs ./scripts/browser.sh restart.\n\n${fallback}`
+				`${head}\n\nChrome is wedged: ${detail}. Every browser tool will hang until it is ` +
+				`restarted.\n\n${recovery(toolName)}\n\n${fallback}`
 			);
 		case "none":
 			return (
 				`${head}\n\nNo Chrome is running, and opening one from cold takes longer than a ` +
-				`single tool call is allowed to wait. An operator can pre-open it with ` +
-				`./scripts/browser.sh up.\n\n${fallback}`
+				`single tool call is allowed to wait. Start it yourself — ` +
+				`./scripts/browser.sh up with the bash tool, or browser_start_browser — and then ` +
+				`retry.\n\n${fallback}`
 			);
 		case "ok":
 			return (
-				`${head}\n\nChrome itself is healthy (${detail}), so this was the page, not the ` +
-				`browser: a slow or blocking site, or a navigation that never settled. Retrying ` +
-				`the same URL is unlikely to help.\n\n${fallback}`
+				`${head}\n\nChrome itself is healthy (${detail}), so this was the page rather than ` +
+				`the browser: a slow or blocking site, or a navigation that never settled. Do NOT ` +
+				`retry the same URL — it will fail the same way. If the next browser call also ` +
+				`hangs, the TAB is stuck even though Chrome is fine, and the fix is the same ` +
+				`teardown:\n\n${recovery(toolName)}\n\n${fallback}`
 			);
 		default:
 			return (
-				`${head}\n\nThe browser's own health could not be determined (${detail}).\n\n${fallback}`
+				`${head}\n\nThe browser's own health could not be determined (${detail}).\n\n` +
+				`${recovery(toolName)}\n\n${fallback}`
 			);
 	}
 }

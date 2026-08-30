@@ -8983,3 +8983,47 @@ working rather than as a wobble, because the failure looked alarming and was the
 system behaving correctly.
 
 pi-prinny-channel v1.1.0. 620 tests, up from 603.
+
+## 2026-08-30 (night) — AR1: the browser guard sent the model to look for an operator
+
+A session hit a 4chan navigation that never settled. Chrome stayed healthy —
+`pid 399, CDP 127.0.0.1:47095` — but the TAB's WebSocket died, and after that
+every browser call timed out. The guard's advice ended:
+
+> …or ask the operator to fix the browser.
+
+There was no operator. The model spent **seven calls** finding the recovery for
+itself: `about:blank` (timed out), `mcp status`, `mcp list browser`, `close_tab`
+with the wrong parameter name, `close_tab` with the right one (dead WebSocket),
+and finally `browser_stop_browser` + `browser_start_browser` — which worked.
+
+**Two things were wrong and only one was obvious.** The advice escalated a
+problem the model could fix itself; and it did not know which fix works. Both
+plausible first moves fail once a tab's WebSocket is dead, and now they are named
+in the message so they are not tried:
+
+| attempt | what happens |
+| --- | --- |
+| navigate `about:blank` | times out like any other navigation — the TAB is what is stuck, and a navigation has to go through it |
+| `close_tab` | `sent 1011 (internal error) keepalive ping timeout` — closing a tab means talking to the target that just died |
+| `stop_browser` → `start_browser` | works |
+
+The message now says RECOVER IT YOURSELF and names the teardown, picking the
+adapter form (`browser_stop_browser`) or the CLI form
+(`./scripts/browser.sh restart`) from the name of the tool that just failed. The
+`"ok"` branch — Chrome healthy, tab stuck, which is exactly the incident — used
+to stop at "retrying is unlikely to help" and now reaches the teardown too. The
+`"none"` branch says start it yourself rather than "an operator can pre-open it".
+
+The recovery already existed: `browser.sh status` has detected the wedged state
+and printed `Fix: ./scripts/browser.sh restart` since it was written, with its
+own exit code. Nothing was missing except telling the model.
+
+`.pi/extensions/tests/browser-guard.test.ts` gained five assertions, and the
+first version of one of them **failed on its own documentation** — the docstring
+above `recovery()` quotes the old "ask the operator" wording to explain what
+changed, and an assertion that cannot tell the fix from the explanation of the
+fix is not an assertion. It now strips comments before matching, and keeps a
+control asserting the phrase IS still present in the file, so a stripper that
+removed everything would not pass vacuously. 86 tests across the `.pi`
+extensions, up from 81.
