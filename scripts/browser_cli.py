@@ -117,7 +117,19 @@ def rpc(method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
         detail = e.read().decode("utf-8", "replace")[:400]
         raise RuntimeError(f"HTTP {e.code} from {URL}: {detail}") from e
     except urllib.error.URLError as e:
+        # A refusal arrives wrapped; a READ TIMEOUT does not, and the two are
+        # different verdicts — see the TimeoutError arm below.
+        if isinstance(e.reason, TimeoutError):
+            raise TimeoutError(f"no reply from {URL} within {timeout}s") from e
         raise ConnectionError(str(e.reason)) from e
+    except TimeoutError as e:
+        # The socket connected and the server then said nothing. That is the
+        # wedged case, and it is NOT the same as nothing listening: `is_up`
+        # caught ConnectionError and RuntimeError only, so this escaped as a
+        # traceback out of `status` — the one command an operator runs when
+        # calls have stopped returning. TimeoutError is an OSError, not a
+        # ConnectionError, which is why the existing arm never saw it.
+        raise TimeoutError(f"no reply from {URL} within {timeout}s") from e
 
     if "text/event-stream" in ctype:
         # A stateful server frames the reply as SSE; take the first data line.
@@ -135,12 +147,25 @@ def rpc(method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
     return msg.get("result") or {}
 
 
-def is_up(timeout: float = 3.0) -> bool:
+def probe_server(timeout: float = 3.0) -> str:
+    """"up" | "down" | "hung".
+
+    Three states because they have three fixes, and the version of this that
+    could only say up/down raised an uncaught TimeoutError for the third —
+    out of `status`, which is precisely what you run when calls stop returning.
+    """
     try:
         rpc("tools/list", timeout=timeout)
-        return True
+        return "up"
+    except TimeoutError:
+        return "hung"
     except (ConnectionError, RuntimeError):
-        return False
+        return "down"
+
+
+def is_up(timeout: float = 3.0) -> bool:
+    """Kept for callers that only need a boolean. A hung server is not up."""
+    return probe_server(timeout) == "up"
 
 
 def list_tools() -> list[dict]:
@@ -613,7 +638,16 @@ def status() -> int:
     "up" reported a healthy browser for four hours while every call to it hung.
     """
     pid = read_pid()
-    if not is_up():
+    state = probe_server()
+    if state == "hung":
+        # The socket is open and nothing comes back. Every tool call will hang
+        # exactly the same way, so this is operationally the wedged case and
+        # gets the wedged exit code and the wedged fix.
+        print(f"HUNG  {URL}  pid {pid or '?'}  — the server accepts connections and does not answer")
+        print("      Tool calls will hang until this is cleared.")
+        print("      Fix: ./scripts/browser.sh restart")
+        return 2
+    if state == "down":
         print(f"down  {URL}" + (f"  (stale pid {pid})" if pid else ""))
         print(f"      start it with: ./scripts/browser.sh up   (log: {LOG_FILE})")
         return 1

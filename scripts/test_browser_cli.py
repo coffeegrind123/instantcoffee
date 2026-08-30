@@ -191,6 +191,59 @@ def main() -> int:
         server.shutdown()
         server.server_close()
 
+    # AR2 — three server states, three verdicts, and no traceback.
+    #
+    # `is_up` caught ConnectionError and RuntimeError. A server that ACCEPTS the
+    # connection and then says nothing raises TimeoutError, which is an OSError
+    # and not a ConnectionError, so it escaped — out of `status`, which is the
+    # one command you run when calls have stopped returning. Reproduced against
+    # a socket that accepts and never answers.
+    print("browser_cli: server states")
+    import socket as _socket
+    import subprocess as _subprocess
+    import sys as _sys
+    import threading as _threading
+
+    def _status_exit(port: int) -> tuple[int, str, bool]:
+        env = dict(os.environ, BROWSER_MCP_HOST="127.0.0.1",
+                   BROWSER_MCP_PORT=str(port), BROWSER_MCP_AUTOSTART="0")
+        r = _subprocess.run([_sys.executable, str(HERE / "browser_cli.py"), "status"],
+                            capture_output=True, text=True, env=env, timeout=120)
+        return r.returncode, r.stdout, "Traceback" in r.stderr
+
+    hung = _socket.socket()
+    hung.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    hung.bind(("127.0.0.1", 0))
+    hung_port = hung.getsockname()[1]
+    hung.listen(5)
+    _held: list = []
+
+    def _accept_forever() -> None:
+        while True:
+            try:
+                conn, _ = hung.accept()
+                _held.append(conn)
+            except OSError:
+                return
+
+    _threading.Thread(target=_accept_forever, daemon=True).start()
+    try:
+        code, out, traced = _status_exit(hung_port)
+        check("a hung server exits 2, not a traceback", (code, traced), (2, False))
+        check("and says so", "HUNG" in out and "restart" in out, True)
+    finally:
+        hung.close()
+
+    # The control: with nothing listening it must still say "down" and exit 1.
+    # A probe that reported everything as hung would pass the test above.
+    free = _socket.socket()
+    free.bind(("127.0.0.1", 0))
+    free_port = free.getsockname()[1]
+    free.close()
+    code, out, traced = _status_exit(free_port)
+    check("nothing listening still exits 1", (code, traced), (1, False))
+    check("and still says down", "down" in out, True)
+
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s): {', '.join(FAILURES)}")
         return 1

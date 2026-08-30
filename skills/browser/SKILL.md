@@ -73,8 +73,8 @@ A web page is the single easiest way to burn this session's whole context.
 - **Blocked, or a challenge page?** `--search cloudflare` — there is a bypass tool
   and a check for whether a challenge is present. `set_user_agent`, `set_locale`,
   `set_timezone` and `set_geolocation` exist for sites that fingerprint.
-- **You do not manage the browser.** It starts itself on the first command and
-  restarts itself if it dies. There is no setup step and nothing to check.
+- **You do not start the browser.** It starts itself on the first command; there
+  is no setup step. A wedged tab is the one exception — see below.
 
 ## When something fails
 
@@ -82,6 +82,19 @@ A web page is the single easiest way to burn this session's whole context.
 - **`Browser not started`** or a connection error — handled automatically: the
   browser is opened (or replaced) and the call retried. If the same error comes
   back twice, report it and move on.
+- **Calls stop returning at all, and `./scripts/browser.sh status` says
+  `WEDGED`** — a page that never settled left the tab's WebSocket dead. Chrome
+  is fine; the tab is not, and nothing recovers it on its own:
+
+  ```
+  ./scripts/browser.sh restart
+  ```
+
+  Then navigate again. `status` exits 2 for exactly this and prints the same
+  fix. Do not wait for an operator — on an unattended run there is not one, and
+  do not bother navigating to `about:blank` or closing the tab first: both were
+  measured failing once the WebSocket is dead, because both have to go through
+  the tab that died.
 - **A tool returns an error string** — report it and move on. Do not retry the same
   call repeatedly, and do not fall back to `curl` for a page that needs JavaScript;
   say the page could not be read instead.

@@ -9082,3 +9082,57 @@ The check that catches it is `git status -sb | head -1` inside the submodule:
 committed. `git checkout main` before committing in a submodule avoids it
 entirely, and both submodules are now attached to `main` rather than left
 detached at a tag.
+
+## 2026-08-30 (night) — AR2: two browser skills, one stale claim, and a status command that crashed
+
+**Why there are two browser skills.** They are not overlapping — they are one per
+mode, and `scripts/pi-local.sh` loads exactly one:
+
+```
+  MCP_ADAPTER_ENABLED=1  ->  skills/browser-tools   native browser_* tools
+  otherwise              ->  skills/browser         shells out to browser.sh
+```
+
+`MCP_ADAPTER_ENABLED=1` here, so `browser-tools` is the live one.
+
+**Both were stale in the same place, and it was the place that just cost a
+session.** Each said the browser "restarts itself if it dies", and
+`browser-tools` went further: *"Do not try to repair the browser, do not run
+shell commands to start or stop it."* The real failure is not the browser dying —
+it is a page that never settles leaving the tab's WebSocket dead while Chrome
+stays healthy, and nothing recovers that on its own. After AR1 taught the guard
+to say RECOVER IT YOURSELF, the skill was telling the model the opposite. Both
+now carry the teardown, and the two dead ends (`about:blank`, `close_tab`) by
+name.
+
+**Then the fix documented a command that crashed.** The skills now say to run
+`./scripts/browser.sh status`, and running it here produced an uncaught Python
+traceback ending in `TimeoutError`. Cause:
+
+```python
+  def is_up(...):
+      try: rpc("tools/list", ...); return True
+      except (ConnectionError, RuntimeError): return False
+```
+
+`rpc` maps `URLError` to `ConnectionError`, but a **read timeout** — the socket
+accepted, the server then said nothing — raises `TimeoutError`, which is an
+`OSError` and **not** a `ConnectionError`. So it escaped, out of the one command
+an operator runs when calls have stopped returning. It was found by accident:
+something in this container holds port 8931, which is the wedged-server shape
+exactly.
+
+Three states now, because they have three fixes and the old code could only name
+two:
+
+| server | verdict | exit |
+| --- | --- | --- |
+| answers | `up` / `chrome: ok` | 0 |
+| nothing listening | `down`, with the start command | 1 |
+| accepts and never answers | `HUNG`, with the restart command | 2 |
+
+`probe_server()` returns all three; `is_up()` stays as a boolean for callers that
+only want one. Pinned by `scripts/test_browser_cli.py` against a socket that
+accepts and never replies, with the control that nothing-listening still reports
+`down` and exits 1 — a probe that called everything hung would pass the first
+test otherwise.
