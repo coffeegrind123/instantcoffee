@@ -59,10 +59,10 @@ single-user 4090 will not exercise.
 **`ghcr.io/ggml-org/llama.cpp`, pinned to an immutable per-build tag.** The floating
 `server-cuda` tag pointed at build `b10200` (built 2026-07-31T08:46Z) at the time of
 writing, and moves without warning. `.env` pins an immutable per-build tag —
-`server-cuda-b10200` when this was written, `server-cuda-b10573` since 2026-08-22
-(see the entry for that date); read `LLAMA_TAG` in `.env` for the live pin rather
-than trusting a build number quoted in prose here. `update.sh`
-reads the floating tag's `org.opencontainers.image.version` annotation to discover
+`server-cuda-b10200` when this was written, `server-cuda-b10573` from 2026-08-22
+and `server-cuda-b10689` since 2026-08-30 (see the entries for those dates); read
+`LLAMA_TAG` in `.env` for the live pin rather than trusting a build number quoted
+in prose here. `update.sh` reads the floating tag's `org.opencontainers.image.version` annotation to discover
 the newest build and then pins *that* immutable tag. Reading the annotation beats
 paging the tag list — the tags endpoint returns an unordered 100-tag page whose
 newest entries were years stale.
@@ -8340,3 +8340,250 @@ Not *"probes whose header says this module imports pi"*. Two questions:
 **Gates:** 1,447 tests unchanged, lint 115/115, 124 lettered probes (130 files,
 five `_` helpers), **42 `ab*` modes** — `ab3` gained two — and the whole corpus
 re-run at its default modes: **124 of 124 green**, from 121.
+
+## 2026-08-30 — a GitHub sweep, DFlash2 revisited and refused again, and b10689
+
+Research pass over upstream since the pin, asked for as "anything to speed up
+(quality first) and better our setup". Three things came back worth acting on,
+one of them a correction to this session's own first answer.
+
+### The correction, first, because it is the useful part
+
+DFlash2 looked like the headline. It is a block-diffusion draft head — a whole
+block of draft tokens per forward pass, target hidden states injected into the
+draft's attention — it merged upstream on 2026-08-27 (b10f9ca5, #27342/#27816),
+a drafter for *this exact target* is published (`incoai/Qwen3.8-27B-DFlash2-GGUF`,
+1.14 GB at Q4_K_M), and the author's own eval on Qwen3.8-27B Q4_K_M reports
+**1.81x decode at acceptance 5.03**. Against `spec_verdict`'s mtp-n4 fallback leg
+at 120.2 tok/s that is exactly the right shape of win, and the recommendation
+made here was to sweep it.
+
+That recommendation was wrong, and `.env` already said so. The LLAMA_TAG comment
+has carried a rejection since 2026-08-22 — a 4090 report of generation collapsing
+3-5x on multi-turn tool-result histories — ending "Revisit after it merges." The
+first pass read the PR body and the merge status and did not read the thread, so
+it overrode a recorded blocker without checking whether the blocker's *mechanism*
+had been fixed.
+
+It has not been. Verified in the merged file at the tag being adopted, not
+inferred from the symptom — `common/speculative.cpp` @ b10689,
+`common_speculative_impl_draft_dflash::begin()`:
+
+```cpp
+const llama_pos pos_max = llama_memory_seq_pos_max(...);
+if (pos_max < N - 1) {
+    LOG_WRN("%s: ctx_dft pos_max=%d < N-1=%d - process() did not run on "
+            "every prefill ubatch. Drafts may degrade.\n", ...);
+}
+```
+
+The drafter keeps its **own** KV cache, filled incrementally as each prefill
+ubatch passes through `process()`. When the server reuses a cached prompt prefix
+it *skips prefill*, `process()` never runs for those positions, and the draft
+cache has a hole there. The merged code detects that and **only warns**. There is
+no backfill of `prompt[pos_max+1 .. N-1]`; `n_swa` and `is_masked_swa` appear
+nowhere in the file, so the bounded ~2048-row fix proposed on the PR (laidick,
+2026-08-22) was not taken; and `process()` still carries `TODO: revisit after
+#24669 is merged` for the embedding-batch form of the same hole, with #24669
+(`llama_batch_ext`) still open.
+
+This stack is the maximally exposed case rather than a bystander: `CACHE_PROMPT=1`,
+`CACHE_RAM=2048`, `CACHE_REUSE=64`, `SLOT_PROMPT_SIMILARITY=0.20`, and an agent
+workload whose every turn re-sends a long shared prefix of tool-result history.
+That is the trigger, precisely. A claim on the thread that this was "fixed as of
+f7aadef" does not survive reading the merged file.
+
+**So the answer is still no, and now it is no for a reason with a source
+location and a revisit trigger** rather than for a symptom report. Revisit when
+`begin()` gains a real backfill, or the false-return path degrades to
+unspeculated generation instead of failing the request, or #24669 lands.
+
+One thing that is *not* a reason, so it does not get carried forward: a ~13% MTP
+decode regression reported inside the DFlash2 window (cobra91, RTX 5080, NVFP4)
+was **withdrawn by its own reporter** on 2026-08-27 after a warmup-discarded
+greedy re-run — 188 pre-window against 187 at head. Cold-start artefact, ~10% on
+the first generation after load. Worth remembering for our own benches, which do
+not currently discard a warmup.
+
+### b10573 -> b10689, taken for one commit
+
+`0cc5b149` (#27679, 2026-08-25), *chat: scope the qwen3-coder workarounds*.
+`common_chat_params_init_qwen3_coder` was pushing one `<function=NAME>` grammar
+**trigger per tool** onto every request, unconditionally, and a trigger is
+checked against every sampled token. The fix gates that on
+`is_qwen3_coder = !supports_reasoning`. This stack runs thinking mode, so
+`supports_reasoning` is true and every per-tool trigger disappears. It closes
+#27675 — this model, these flags (Qwen3.8-27B, draft-mtp, native tools) — which
+measured 30 tok/s with 263 tools against 70 without.
+
+Size it honestly before believing it: that 2x came from 263 tools, and adapter
+mode puts ~10-15 schemas on the wire. The win here is proportionally smaller.
+
+Also in the gap: `2c6b141e` (#27400) fixes draft-mtp inheriting embedding and
+pooling settings from the main context — a direct correctness fix on the spec
+path this stack actually runs.
+
+Registry availability was checked the same way as last time, **with b10573 as
+the control** so that a 404 means absent rather than unauthorised. Of the recent
+builds only b10689 has a published `server-cuda` image; b10690 and b10678-b10688
+all 404. `sha256:e52c610406cd18714902d1ca3bffadebca4a2a8370faaba8a5be5cc5d5203921`,
+confirmed on the pulled image, and the binary reports `build 10689, commit
+57291f264`. All four commits above are confirmed ancestors.
+
+Deliberately NOT taken: **speculative prefill** (#27692). Upstream's own note is
+"this is not lossless and can cause model performance degradation", and quality
+is the axis this stack does not trade. `--n-cpu-ffn` (#26622) is real but aimed
+at 16 GB cards buying context with tok/s; fully offloaded here it is a downgrade.
+And nothing in the 117-commit gap is an Ada/sm_89 CUDA win — the CUDA work was
+sm_60/sm_61/ROCm/Metal/Vulkan. **The value of this bump is chat-grammar and spec
+correctness, not kernels**, which matters when attributing a measured delta.
+
+### Plumbing added, and a trap it closes
+
+`DRAFT_GGUF_FILE` / `DRAFT_MODEL_REPO` / `SPEC_DRAFT_CACHE_TYPE_K` / `_V` /
+`SPEC_DRAFT_NGL` now exist and are **empty**, so the served command is
+byte-identical to before. They are here so that the day the blocker clears,
+measuring DFlash2 is an `.env` edit plus a sweep arm rather than a compose
+change. The downloader fetches and content-verifies the drafter alongside the
+target, and refuses a half-set pair — a filename with no repo would be looked
+for in the *target's* repo, where a near-namesake can exist and load.
+
+`--spec-draft-model` is gated on the **filename**, not on `SPEC_TYPE`, because
+llama-server loads whatever is passed regardless of what the active spec type can
+use. That is also the trap: `spec-sweep.sh` only rewrote three keys, so a set
+`DRAFT_GGUF_FILE` would have leaked into every arm and made each draft-mtp
+control pay ~1.06 GiB for a model it never reads — not a control. The sweep now
+carries the draft as a fifth field, `live_matches` compares it, and the row
+parser is a strict five-field split: the old `${var%%|*}` / `${var##*|}` chain
+read the *last* field as p-min, so a five-field row would have handed a filename
+to `--spec-draft-p-min`.
+
+### Measured, and the instrument that had to be built first
+
+The bump is verified: cold load ~19 min, smoke test **11/11** through forge at
+n_ctx 98304, including a real tool call (`get_weather`, 1.5 s, 57 completion
+tokens) and the MTP draft context still binding.
+
+Sizing #27679 took longer, because **the benches this repo already had could not
+see it.** `bench.py` and `bench_repeat.py` send no `tools` array, and llama.cpp
+builds the tool grammar *from the tools in the request* — no tools, no grammar,
+nothing for a trigger change to move. Either would have returned a flat row, and
+a flat row reads as *"the fix does nothing"* rather than *"the instrument cannot
+see it"*. That absence was confirmed with a control (grepping `scripts/` for
+`"tools"` does hit `smoke_test.py` and two others, so the search works).
+
+Hence `scripts/bench_tools.py`. Its first version was wrong twice, and both
+failures changed the answer:
+
+* `cache_n` reached **10603** — the tools block renders *ahead* of the user
+  message, so a nonce in the message does not defeat the prefix cache. Tool
+  names are now salted per run; `cache_n` is 0 on every row.
+* The raw tool-count curve confounded **grammar cost with context depth**. A
+  100-tool request carries ~11,600 prompt tokens against a few hundred at zero,
+  and this stack has already measured decode falling with depth. Every tool arm
+  is now paired with a **ballast** arm — no tools, padded with inert prose to the
+  same depth — and the ratio between them is the grammar.
+
+An `n=3` pilot gave 83.0% / 93.8%: non-monotonic, i.e. noise, and had it been
+believed it would have been written up as a "17% grammar cost". At `n=9`:
+
+| tool count | b10573 | b10689 |
+| --- | ---: | ---: |
+| 15 | 89.6% | **95.6%** |
+| 100 | **77.9%** | **96.0%** |
+
+On b10573 the cost **grows with tool count** (10.4% at 15, 22.1% at 100). On
+b10689 it is **flat at ~4%**. That is the per-tool trigger scaling, and its
+removal, measured on this box with depth controlled.
+
+**But read the no-tools arms before quoting a delta.** The three no-tools cells
+move in *opposite directions* between builds (+9.0%, −3.4%, −5.0%), so there is
+no consistent build difference on that path — that spread is the box, the same
+~6% already recorded. The ratio is the load-bearing number precisely because it
+is computed within one build and one session, so conditions cancel. Median decode
+went 46.64 → 54.61 (+17.1%) at 100 tools, and 55.86 → 57.60 (+3.1%) at 15 — and
+the second of those is inside the noise and should not be quoted as a speedup.
+
+### The finding that was not the one being looked for
+
+**At the tool count this stack actually runs, the win is ~3% and unfeelable.**
+Adapter mode puts ~10–15 schemas on the wire, which is the 15-tool row.
+
+The fix pays at *high* tool counts — and high tool counts are the configuration
+this repo already refused. Wiring all 98 browser tools the normal MCP way was
+rejected on context budget (~19k tokens, a fifth of the window); this measurement
+says it would *also* have cost ~22% of decode on b10573. The adapter-mode
+decision was made on one axis and is independently confirmed on another. So
+b10689 is adopted for correctness and headroom, not for a speedup — and if a
+future client ever loads schemas directly, that 77.9% row is why it still should
+not.
+
+### forge 0.9.0 -> 0.9.5, after the llama bump rather than beside it
+
+Sequenced deliberately: bumping both at once would make a patch-verifier failure
+and a llama regression indistinguishable. So llama was verified first, then
+forge, through `update.sh` with the smoke test as the gate — **11/11**, and
+`test_forge_patches.py` passes **70/70** inside the live image.
+
+All nine patchers apply unchanged. They exit non-zero on changed source and are
+`&&`-chained in `Dockerfile.forge`, so a passing build *is* the verification. The
+two that print nothing on success were checked individually rather than inferred
+— `forge_merge_consecutive` by reading the built module, where
+`_merge_consecutive()` calls `_forge_merge_content()` instead of the raw `+`.
+Upstream 0.9.5 therefore still carries the bug behind forge issues #142/#151, and
+that patch is still load-bearing.
+
+**The one thing that broke was not a patch.** forge 0.9.3 removed the
+`forge-proxy` console script from the PyPI package, so the standalone installer
+could own the name — its changelog says so plainly, and this session had already
+read that changelog without connecting it to the entrypoint. The container died
+at start with
+
+    exec: "forge-proxy": executable file not found in $PATH
+
+which is a *container-init* failure, not a Python one: no traceback, no forge log
+line, reading as a broken image rather than a renamed command. `ENTRYPOINT` is now
+`python -m forge.proxy`, verified to work on 0.9.0 **before** the retry — the
+rollback path rebuilds the old version with the same Dockerfile, so getting that
+wrong would have removed the safety net at the moment it was needed.
+
+The first attempt rolled itself back cleanly. That is the gate doing exactly what
+it exists for, and it is the reason a bad bump cost ten minutes instead of a
+debugging session.
+
+### update.sh was the most destructive command in the repo, and now is not
+
+Found while planning the forge bump: the record step was a here-doc template that
+*was the whole of `versions.lock`*, so every measured block in it — `spec_verdict`,
+`depth_ppl`, `kv_alt`, `tool_grammar`, the model rollback hashes, the better part
+of a thousand lines that cost days of GPU time — was destroyed by any update. The
+file's own header admitted this had already happened twice. The documented "just
+run `update.sh`" path was the trap, and hand-editing `.env` was the safe route,
+which is exactly backwards. **The writer was fixed rather than the warning made
+louder.**
+
+`lock_set` (in `lib.sh`) now writes one field in place, preserving alignment,
+continuation lines and every other key; `lock_has_prose` reports owned keys that
+carry hand notes; the previous file is kept at `.versions.lock.bak`.
+
+Proven rather than asserted: the forge update ran through it and `versions.lock`
+went **1421 lines → 1421 lines**, with a diff of exactly six owned scalars and no
+prose touched. A second `--force` run changed three scalars and nothing else.
+
+Proving it turned up two more clobbers of the same family:
+
+* **`model_*` is mode-blind.** Those fields pin the *coding* regime, while `.env`'s
+  `MODEL_REPO`/`GGUF_FILE` follow whichever mode `mode.sh` has selected. An update
+  run under `uc-coding` would have stamped orcarouter's weights over the unsloth
+  pin and left the prose beneath describing a file no longer named above it. Now
+  refused, with a warning naming both. The same mismatch also made the GGUF drift
+  check compare two *different files* and report DRIFT every single run — a false
+  alarm that trains the reader to ignore a real one. Now skipped, with the reason
+  printed.
+* **Inline annotation on an owned line was still lost**, and a hand-written value
+  long enough to *wrap* lost its first line and orphaned the rest — `verified`'s
+  2026-08-22 measurement block ended up sitting under `verified = smoke test
+  passed`, reading as a description of that day's run. Repaired into `*_note`
+  keys, and the convention is now explicit: an owned key holds a bare value,
+  commentary goes in `<key>_note`. No owned key carries prose as of this entry,
+  so if `lock_has_prose` ever fires it means something new needs looking at.

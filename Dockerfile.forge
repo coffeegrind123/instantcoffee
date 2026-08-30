@@ -204,4 +204,21 @@ USER forge
 EXPOSE 8081
 
 # --host/--port are fixed here; everything else comes from the compose command.
-ENTRYPOINT ["forge-proxy", "--host", "0.0.0.0", "--port", "8081"]
+#
+# `python -m forge.proxy`, NOT the `forge-proxy` console script. forge 0.9.3
+# removed that script from the PyPI package on purpose — its changelog: "The
+# forge-guardrails Python package no longer creates a competing global command;
+# Python-managed Proxy execution remains available through python -m forge.proxy,
+# including in the Docker image" — so the standalone installer can own the name.
+#
+# This is not a cosmetic difference. On 0.9.0 through 0.9.2 the script exists and
+# either form works; from 0.9.3 the container dies at start with
+#     exec: "forge-proxy": executable file not found in $PATH
+# which is a CONTAINER-INIT failure, not a Python error, so it produces no
+# traceback and no forge log line — it looks like a broken image rather than a
+# renamed entrypoint. Found exactly that way bumping 0.9.0 -> 0.9.5 on
+# 2026-08-30; update.sh's smoke gate rolled it back.
+#
+# The module form works on every version this repo has run, so there is no
+# version test here.
+ENTRYPOINT ["python", "-m", "forge.proxy", "--host", "0.0.0.0", "--port", "8081"]
