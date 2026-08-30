@@ -334,7 +334,19 @@ for cand in /home/piuser/qwen3.8-forge /home/piuser/instantcoffee; do
 done
 if [ -n "$REPO" ]; then
     echo "Stack checkout: $REPO"
-    SESS="$(grep -E '^[[:space:]]*PI_SESSIONS_DIR=' "$REPO/.env" 2>/dev/null | tail -n1 | cut -d= -f2-)"
+    # .env THEN .env.local, last wins — the same order `env_get` and
+    # `COMPOSE_ENV_FILES` use. Reading .env alone made this the only reader in
+    # the repo that ignores machine-local overrides, so an operator who had
+    # correctly set PI_SESSIONS_DIR in .env.local (where a machine-specific
+    # path belongs, because .env is tracked) still got warned about the tracked
+    # value on every container start, and the mount compose had actually made
+    # was the right one all along.
+    SESS=""
+    for envf in "$REPO/.env" "$REPO/.env.local"; do
+        [ -f "$envf" ] || continue
+        v="$(grep -E '^[[:space:]]*PI_SESSIONS_DIR=' "$envf" 2>/dev/null | tail -n1 | cut -d= -f2-)"
+        [ -n "$v" ] && SESS="$v"
+    done
     # Always PRINT it. The container cannot derive a host path from its own
     # HOME, so without PI_HOME_HOSTPATH the honest thing is to show the value
     # and let the operator recognise it, not to guess and be confidently wrong.
