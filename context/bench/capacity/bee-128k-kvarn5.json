@@ -1,0 +1,64 @@
+{
+  "label": "bee-128k-kvarn5",
+  "settings": "LLAMA_IMAGE=ghcr.io/anbeeld/beellama.cpp:server-cuda-v0.4.4,CTX_SIZE=131072,CACHE_TYPE_K=kvarn5,CACHE_TYPE_V=kvarn5,KV_TAIL_TOKENS=1024",
+  "loaded": true,
+  "server_n_ctx": "131072",
+  "vram_used_mib": "22380",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "2535",
+  "engine_memory_breakdown": "| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19179 = 15339 +    3588 +     251) +      -16857 |\n|   - Host               |                    831 =   682 +       0 +     149                |\n| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19179 = 15339 +    3588 +     251) +      -16857 |\n|   - Host               |                    831 =   682 +       0 +     149                |\n| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22992 + (16047 = 15339 +     512 +     196) +      -14476 |\n|   - Host               |                    830 =   682 +       0 +     148                |\n| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19179 = 15339 +    3588 +     251) +      -16857 |\n|   - Host               |                    831 =   682 +       0 +     149                |\n| memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 1312 + (19179 = 15339 +    3588 +     251) +        4072 |\n|   - Host               |                   831 =   682 +       0 +     149                |",
+  "bench": "prefill",
+  "measured_utc": "2026-08-30T13:45:02Z",
+  "pins": {
+    "llama_tag": "ghcr.io/anbeeld/beellama.cpp:server-cuda-v0.4.4",
+    "llama_digest": "sha256:a27a0c2213d89d7b80d682836acde4cb12eddb4bf8affab7eb9ba208a90752ec",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479"
+  },
+  "result": {
+    "model": "qwen3.8-27b",
+    "rows": [
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 81.81,
+        "prompt_n": 90029,
+        "prompt_tps": 1364.7092307877942,
+        "predicted_n": 256,
+        "predicted_tps": 16.485952610708992,
+        "cache_n": 0,
+        "draft_n": 329,
+        "draft_accepted": 176,
+        "draft_acceptance": 0.535
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 80.35,
+        "prompt_n": 90029,
+        "prompt_tps": 1451.1828545040287,
+        "predicted_n": 256,
+        "predicted_tps": 18.214478267341683,
+        "cache_n": 0,
+        "draft_n": 294,
+        "draft_accepted": 187,
+        "draft_acceptance": 0.636
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 86.35,
+        "prompt_n": 90029,
+        "prompt_tps": 1419.034132508146,
+        "predicted_n": 256,
+        "predicted_tps": 15.164594727097953,
+        "cache_n": 0,
+        "draft_n": 339,
+        "draft_accepted": 171,
+        "draft_acceptance": 0.504
+      }
+    ]
+  }
+}

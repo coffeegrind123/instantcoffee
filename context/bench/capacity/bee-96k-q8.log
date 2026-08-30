@@ -1,0 +1,564 @@
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+
+===== llama startup log (bee-96k-q8) =====
+instantcoffee-llama  | 0.06.453.040 D create_tensor: loading tensor blk.62.ffn_gate.input_scale
+instantcoffee-llama  | 0.06.453.043 D create_tensor: loading tensor blk.62.ffn_down.input_scale
+instantcoffee-llama  | 0.06.453.047 D create_tensor: loading tensor blk.62.ffn_up.input_scale
+instantcoffee-llama  | 0.06.453.050 D create_tensor: loading tensor blk.62.ssm_out.input_scale
+instantcoffee-llama  | 0.06.453.053 D create_tensor: loading tensor blk.62.ssm_alpha.input_scale
+instantcoffee-llama  | 0.06.453.056 D create_tensor: loading tensor blk.62.ssm_beta.input_scale
+instantcoffee-llama  | 0.06.453.059 D create_tensor: loading tensor blk.63.attn_q.scale
+instantcoffee-llama  | 0.06.453.062 D create_tensor: loading tensor blk.63.attn_k.scale
+instantcoffee-llama  | 0.06.453.065 D create_tensor: loading tensor blk.63.attn_v.scale
+instantcoffee-llama  | 0.06.453.069 D create_tensor: loading tensor blk.63.attn_output.scale
+instantcoffee-llama  | 0.06.453.072 D create_tensor: loading tensor blk.63.ffn_gate.scale
+instantcoffee-llama  | 0.06.453.075 D create_tensor: loading tensor blk.63.ffn_down.scale
+instantcoffee-llama  | 0.06.453.078 D create_tensor: loading tensor blk.63.ffn_up.scale
+instantcoffee-llama  | 0.06.453.082 D create_tensor: loading tensor blk.63.attn_q.input_scale
+instantcoffee-llama  | 0.06.453.085 D create_tensor: loading tensor blk.63.attn_k.input_scale
+instantcoffee-llama  | 0.06.453.088 D create_tensor: loading tensor blk.63.attn_v.input_scale
+instantcoffee-llama  | 0.06.453.091 D create_tensor: loading tensor blk.63.attn_output.input_scale
+instantcoffee-llama  | 0.06.453.095 D create_tensor: loading tensor blk.63.ffn_gate.input_scale
+instantcoffee-llama  | 0.06.453.098 D create_tensor: loading tensor blk.63.ffn_down.input_scale
+instantcoffee-llama  | 0.06.453.101 D create_tensor: loading tensor blk.63.ffn_up.input_scale
+instantcoffee-llama  | 0.06.453.105 D create_tensor: loading tensor blk.64.attn_q.scale
+instantcoffee-llama  | 0.06.453.108 D create_tensor: loading tensor blk.64.attn_k.scale
+instantcoffee-llama  | 0.06.453.111 D create_tensor: loading tensor blk.64.attn_v.scale
+instantcoffee-llama  | 0.06.453.115 D create_tensor: loading tensor blk.64.attn_output.scale
+instantcoffee-llama  | 0.06.453.118 D create_tensor: loading tensor blk.64.ffn_gate.scale
+instantcoffee-llama  | 0.06.453.121 D create_tensor: loading tensor blk.64.ffn_down.scale
+instantcoffee-llama  | 0.06.453.125 D create_tensor: loading tensor blk.64.ffn_up.scale
+instantcoffee-llama  | 0.06.453.129 D create_tensor: loading tensor blk.64.nextn.eh_proj.scale
+instantcoffee-llama  | 0.06.453.132 D create_tensor: loading tensor blk.64.attn_q.input_scale
+instantcoffee-llama  | 0.06.453.136 D create_tensor: loading tensor blk.64.attn_k.input_scale
+instantcoffee-llama  | 0.06.453.139 D create_tensor: loading tensor blk.64.attn_v.input_scale
+instantcoffee-llama  | 0.06.453.142 D create_tensor: loading tensor blk.64.attn_output.input_scale
+instantcoffee-llama  | 0.06.453.146 D create_tensor: loading tensor blk.64.ffn_gate.input_scale
+instantcoffee-llama  | 0.06.453.149 D create_tensor: loading tensor blk.64.ffn_down.input_scale
+instantcoffee-llama  | 0.06.453.152 D create_tensor: loading tensor blk.64.ffn_up.input_scale
+instantcoffee-llama  | 0.06.453.156 D create_tensor: loading tensor blk.64.nextn.eh_proj.input_scale
+instantcoffee-llama  | 0.08.216.066 I load_tensors: offloading output layer to GPU
+instantcoffee-llama  | 0.08.216.094 I load_tensors: offloading 64 repeating layers to GPU
+instantcoffee-llama  | 0.08.216.094 I load_tensors: offloaded 66/66 layers to GPU
+instantcoffee-llama  | 0.08.216.101 I load_tensors:        CUDA0 model buffer size = 15339.44 MiB
+instantcoffee-llama  | 0.08.216.102 I load_tensors:    CUDA_Host model buffer size =   682.03 MiB
+instantcoffee-llama  | 0.08.231.531 D load_all_data: using async uploads for device CUDA0, buffer type CUDA0, backend CUDA0
+instantcoffee-llama  | 4.27.643.704 D load_all_data: buffer type CUDA_Host is not the default buffer type for device CUDA0 for async uploads
+instantcoffee-llama  | 4.44.469.103 I cmn  common_init_: added <|endoftext|> logit bias = -inf
+instantcoffee-llama  | 4.44.469.133 I cmn  common_init_: added <|im_end|> logit bias = -inf
+instantcoffee-llama  | 4.44.469.134 I cmn  common_init_: added <|fim_pad|> logit bias = -inf
+instantcoffee-llama  | 4.44.469.135 I cmn  common_init_: added <|repo_name|> logit bias = -inf
+instantcoffee-llama  | 4.44.469.135 I cmn  common_init_: added <|file_sep|> logit bias = -inf
+instantcoffee-llama  | 4.44.469.694 I llama_context: constructing llama_context
+instantcoffee-llama  | 4.44.469.722 I llama_context: n_seq_max             = 1
+instantcoffee-llama  | 4.44.469.722 I llama_context: n_ctx                 = 98304
+instantcoffee-llama  | 4.44.469.722 I llama_context: n_ctx_seq             = 98304
+instantcoffee-llama  | 4.44.469.723 I llama_context: n_batch               = 2048
+instantcoffee-llama  | 4.44.469.723 I llama_context: n_ubatch              = 512
+instantcoffee-llama  | 4.44.469.723 I llama_context: causal_attn           = 1
+instantcoffee-llama  | 4.44.469.724 I llama_context: flash_attn            = enabled
+instantcoffee-llama  | 4.44.469.724 I llama_context: kv_unified            = true
+instantcoffee-llama  | 4.44.469.728 I llama_context: freq_base             = 10000000.0
+instantcoffee-llama  | 4.44.469.729 I llama_context: freq_scale            = 1
+instantcoffee-llama  | 4.44.469.729 I llama_context: n_rs_seq              = 4
+instantcoffee-llama  | 4.44.469.729 I llama_context: n_outputs_max         = 49
+instantcoffee-llama  | 4.44.469.730 I llama_context: n_outputs_max_per_seq = 49
+instantcoffee-llama  | 4.44.469.730 I llama_context: n_ctx_seq (98304) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+instantcoffee-llama  | 4.44.469.762 D set_abort_callback: call
+instantcoffee-llama  | 4.44.473.180 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+instantcoffee-llama  | 4.44.474.002 D llama_kv_cache: layer   0: filtered
+instantcoffee-llama  | 4.44.474.026 D llama_kv_cache: layer   1: filtered
+instantcoffee-llama  | 4.44.474.027 D llama_kv_cache: layer   2: filtered
+instantcoffee-llama  | 4.44.474.032 D llama_kv_cache: layer   3: dev = CUDA0
+instantcoffee-llama  | 4.44.474.045 D llama_kv_cache: layer   4: filtered
+instantcoffee-llama  | 4.44.474.045 D llama_kv_cache: layer   5: filtered
+instantcoffee-llama  | 4.44.474.045 D llama_kv_cache: layer   6: filtered
+instantcoffee-llama  | 4.44.474.046 D llama_kv_cache: layer   7: dev = CUDA0
+instantcoffee-llama  | 4.44.474.050 D llama_kv_cache: layer   8: filtered
+instantcoffee-llama  | 4.44.474.050 D llama_kv_cache: layer   9: filtered
+instantcoffee-llama  | 4.44.474.051 D llama_kv_cache: layer  10: filtered
+instantcoffee-llama  | 4.44.474.051 D llama_kv_cache: layer  11: dev = CUDA0
+instantcoffee-llama  | 4.44.474.053 D llama_kv_cache: layer  12: filtered
+instantcoffee-llama  | 4.44.474.053 D llama_kv_cache: layer  13: filtered
+instantcoffee-llama  | 4.44.474.053 D llama_kv_cache: layer  14: filtered
+instantcoffee-llama  | 4.44.474.054 D llama_kv_cache: layer  15: dev = CUDA0
+instantcoffee-llama  | 4.44.474.056 D llama_kv_cache: layer  16: filtered
+instantcoffee-llama  | 4.44.474.056 D llama_kv_cache: layer  17: filtered
+instantcoffee-llama  | 4.44.474.056 D llama_kv_cache: layer  18: filtered
+instantcoffee-llama  | 4.44.474.057 D llama_kv_cache: layer  19: dev = CUDA0
+instantcoffee-llama  | 4.44.474.058 D llama_kv_cache: layer  20: filtered
+instantcoffee-llama  | 4.44.474.058 D llama_kv_cache: layer  21: filtered
+instantcoffee-llama  | 4.44.474.058 D llama_kv_cache: layer  22: filtered
+instantcoffee-llama  | 4.44.474.059 D llama_kv_cache: layer  23: dev = CUDA0
+instantcoffee-llama  | 4.44.474.060 D llama_kv_cache: layer  24: filtered
+instantcoffee-llama  | 4.44.474.060 D llama_kv_cache: layer  25: filtered
+instantcoffee-llama  | 4.44.474.060 D llama_kv_cache: layer  26: filtered
+instantcoffee-llama  | 4.44.474.061 D llama_kv_cache: layer  27: dev = CUDA0
+instantcoffee-llama  | 4.44.474.062 D llama_kv_cache: layer  28: filtered
+instantcoffee-llama  | 4.44.474.062 D llama_kv_cache: layer  29: filtered
+instantcoffee-llama  | 4.44.474.063 D llama_kv_cache: layer  30: filtered
+instantcoffee-llama  | 4.44.474.063 D llama_kv_cache: layer  31: dev = CUDA0
+instantcoffee-llama  | 4.44.474.064 D llama_kv_cache: layer  32: filtered
+instantcoffee-llama  | 4.44.474.064 D llama_kv_cache: layer  33: filtered
+instantcoffee-llama  | 4.44.474.064 D llama_kv_cache: layer  34: filtered
+instantcoffee-llama  | 4.44.474.065 D llama_kv_cache: layer  35: dev = CUDA0
+instantcoffee-llama  | 4.44.474.066 D llama_kv_cache: layer  36: filtered
+instantcoffee-llama  | 4.44.474.066 D llama_kv_cache: layer  37: filtered
+instantcoffee-llama  | 4.44.474.066 D llama_kv_cache: layer  38: filtered
+instantcoffee-llama  | 4.44.474.067 D llama_kv_cache: layer  39: dev = CUDA0
+instantcoffee-llama  | 4.44.474.068 D llama_kv_cache: layer  40: filtered
+instantcoffee-llama  | 4.44.474.068 D llama_kv_cache: layer  41: filtered
+instantcoffee-llama  | 4.44.474.068 D llama_kv_cache: layer  42: filtered
+instantcoffee-llama  | 4.44.474.069 D llama_kv_cache: layer  43: dev = CUDA0
+instantcoffee-llama  | 4.44.474.070 D llama_kv_cache: layer  44: filtered
+instantcoffee-llama  | 4.44.474.070 D llama_kv_cache: layer  45: filtered
+instantcoffee-llama  | 4.44.474.071 D llama_kv_cache: layer  46: filtered
+instantcoffee-llama  | 4.44.474.071 D llama_kv_cache: layer  47: dev = CUDA0
+instantcoffee-llama  | 4.44.474.072 D llama_kv_cache: layer  48: filtered
+instantcoffee-llama  | 4.44.474.072 D llama_kv_cache: layer  49: filtered
+instantcoffee-llama  | 4.44.474.073 D llama_kv_cache: layer  50: filtered
+instantcoffee-llama  | 4.44.474.073 D llama_kv_cache: layer  51: dev = CUDA0
+instantcoffee-llama  | 4.44.474.074 D llama_kv_cache: layer  52: filtered
+instantcoffee-llama  | 4.44.474.074 D llama_kv_cache: layer  53: filtered
+instantcoffee-llama  | 4.44.474.075 D llama_kv_cache: layer  54: filtered
+instantcoffee-llama  | 4.44.474.075 D llama_kv_cache: layer  55: dev = CUDA0
+instantcoffee-llama  | 4.44.474.077 D llama_kv_cache: layer  56: filtered
+instantcoffee-llama  | 4.44.474.077 D llama_kv_cache: layer  57: filtered
+instantcoffee-llama  | 4.44.474.077 D llama_kv_cache: layer  58: filtered
+instantcoffee-llama  | 4.44.474.078 D llama_kv_cache: layer  59: dev = CUDA0
+instantcoffee-llama  | 4.44.474.079 D llama_kv_cache: layer  60: filtered
+instantcoffee-llama  | 4.44.474.079 D llama_kv_cache: layer  61: filtered
+instantcoffee-llama  | 4.44.474.080 D llama_kv_cache: layer  62: filtered
+instantcoffee-llama  | 4.44.474.080 D llama_kv_cache: layer  63: dev = CUDA0
+instantcoffee-llama  | 4.44.474.081 D llama_kv_cache: layer  64: filtered
+instantcoffee-llama  | 4.44.497.577 I llama_kv_cache:      CUDA0 KV buffer size =  3264.00 MiB
+instantcoffee-llama  | 4.44.690.995 I llama_kv_cache: size = 3264.00 MiB ( 98304 cells,  16 layers,  1/1 seqs), K (q8_0): 1632.00 MiB, V (q8_0): 1632.00 MiB
+instantcoffee-llama  | 4.44.691.018 I llama_kv_cache: attn_rot_k = 1, n_embd_head_k_all = 256
+instantcoffee-llama  | 4.44.691.019 I llama_kv_cache: attn_rot_v = 1, n_embd_head_k_all = 256
+instantcoffee-llama  | 4.44.691.084 D llama_memory_recurrent, layer   0: dev = CUDA0
+instantcoffee-llama  | 4.44.691.086 D llama_memory_recurrent, layer   1: dev = CUDA0
+instantcoffee-llama  | 4.44.691.088 D llama_memory_recurrent, layer   2: dev = CUDA0
+instantcoffee-llama  | 4.44.691.088 D llama_memory_recurrent: layer   3: skipped
+instantcoffee-llama  | 4.44.691.088 D llama_memory_recurrent, layer   4: dev = CUDA0
+instantcoffee-llama  | 4.44.691.089 D llama_memory_recurrent, layer   5: dev = CUDA0
+instantcoffee-llama  | 4.44.691.090 D llama_memory_recurrent, layer   6: dev = CUDA0
+instantcoffee-llama  | 4.44.691.090 D llama_memory_recurrent: layer   7: skipped
+instantcoffee-llama  | 4.44.691.090 D llama_memory_recurrent, layer   8: dev = CUDA0
+instantcoffee-llama  | 4.44.691.091 D llama_memory_recurrent, layer   9: dev = CUDA0
+instantcoffee-llama  | 4.44.691.092 D llama_memory_recurrent, layer  10: dev = CUDA0
+instantcoffee-llama  | 4.44.691.092 D llama_memory_recurrent: layer  11: skipped
+instantcoffee-llama  | 4.44.691.092 D llama_memory_recurrent, layer  12: dev = CUDA0
+instantcoffee-llama  | 4.44.691.093 D llama_memory_recurrent, layer  13: dev = CUDA0
+instantcoffee-llama  | 4.44.691.094 D llama_memory_recurrent, layer  14: dev = CUDA0
+instantcoffee-llama  | 4.44.691.094 D llama_memory_recurrent: layer  15: skipped
+instantcoffee-llama  | 4.44.691.095 D llama_memory_recurrent, layer  16: dev = CUDA0
+instantcoffee-llama  | 4.44.691.095 D llama_memory_recurrent, layer  17: dev = CUDA0
+instantcoffee-llama  | 4.44.691.096 D llama_memory_recurrent, layer  18: dev = CUDA0
+instantcoffee-llama  | 4.44.691.096 D llama_memory_recurrent: layer  19: skipped
+instantcoffee-llama  | 4.44.691.097 D llama_memory_recurrent, layer  20: dev = CUDA0
+instantcoffee-llama  | 4.44.691.097 D llama_memory_recurrent, layer  21: dev = CUDA0
+instantcoffee-llama  | 4.44.691.098 D llama_memory_recurrent, layer  22: dev = CUDA0
+instantcoffee-llama  | 4.44.691.098 D llama_memory_recurrent: layer  23: skipped
+instantcoffee-llama  | 4.44.691.099 D llama_memory_recurrent, layer  24: dev = CUDA0
+instantcoffee-llama  | 4.44.691.099 D llama_memory_recurrent, layer  25: dev = CUDA0
+instantcoffee-llama  | 4.44.691.100 D llama_memory_recurrent, layer  26: dev = CUDA0
+instantcoffee-llama  | 4.44.691.100 D llama_memory_recurrent: layer  27: skipped
+instantcoffee-llama  | 4.44.691.100 D llama_memory_recurrent, layer  28: dev = CUDA0
+instantcoffee-llama  | 4.44.691.101 D llama_memory_recurrent, layer  29: dev = CUDA0
+instantcoffee-llama  | 4.44.691.102 D llama_memory_recurrent, layer  30: dev = CUDA0
+instantcoffee-llama  | 4.44.691.118 D llama_memory_recurrent: layer  31: skipped
+instantcoffee-llama  | 4.44.691.119 D llama_memory_recurrent, layer  32: dev = CUDA0
+instantcoffee-llama  | 4.44.691.120 D llama_memory_recurrent, layer  33: dev = CUDA0
+instantcoffee-llama  | 4.44.691.120 D llama_memory_recurrent, layer  34: dev = CUDA0
+instantcoffee-llama  | 4.44.691.121 D llama_memory_recurrent: layer  35: skipped
+instantcoffee-llama  | 4.44.691.121 D llama_memory_recurrent, layer  36: dev = CUDA0
+instantcoffee-llama  | 4.44.691.122 D llama_memory_recurrent, layer  37: dev = CUDA0
+instantcoffee-llama  | 4.44.691.122 D llama_memory_recurrent, layer  38: dev = CUDA0
+instantcoffee-llama  | 4.44.691.123 D llama_memory_recurrent: layer  39: skipped
+instantcoffee-llama  | 4.44.691.123 D llama_memory_recurrent, layer  40: dev = CUDA0
+instantcoffee-llama  | 4.44.691.124 D llama_memory_recurrent, layer  41: dev = CUDA0
+instantcoffee-llama  | 4.44.691.124 D llama_memory_recurrent, layer  42: dev = CUDA0
+instantcoffee-llama  | 4.44.691.125 D llama_memory_recurrent: layer  43: skipped
+instantcoffee-llama  | 4.44.691.125 D llama_memory_recurrent, layer  44: dev = CUDA0
+instantcoffee-llama  | 4.44.691.126 D llama_memory_recurrent, layer  45: dev = CUDA0
+instantcoffee-llama  | 4.44.691.127 D llama_memory_recurrent, layer  46: dev = CUDA0
+instantcoffee-llama  | 4.44.691.127 D llama_memory_recurrent: layer  47: skipped
+instantcoffee-llama  | 4.44.691.127 D llama_memory_recurrent, layer  48: dev = CUDA0
+instantcoffee-llama  | 4.44.691.128 D llama_memory_recurrent, layer  49: dev = CUDA0
+instantcoffee-llama  | 4.44.691.129 D llama_memory_recurrent, layer  50: dev = CUDA0
+instantcoffee-llama  | 4.44.691.129 D llama_memory_recurrent: layer  51: skipped
+instantcoffee-llama  | 4.44.691.129 D llama_memory_recurrent, layer  52: dev = CUDA0
+instantcoffee-llama  | 4.44.691.130 D llama_memory_recurrent, layer  53: dev = CUDA0
+instantcoffee-llama  | 4.44.691.131 D llama_memory_recurrent, layer  54: dev = CUDA0
+instantcoffee-llama  | 4.44.691.131 D llama_memory_recurrent: layer  55: skipped
+instantcoffee-llama  | 4.44.691.131 D llama_memory_recurrent, layer  56: dev = CUDA0
+instantcoffee-llama  | 4.44.691.132 D llama_memory_recurrent, layer  57: dev = CUDA0
+instantcoffee-llama  | 4.44.691.132 D llama_memory_recurrent, layer  58: dev = CUDA0
+instantcoffee-llama  | 4.44.691.134 D llama_memory_recurrent: layer  59: skipped
+instantcoffee-llama  | 4.44.691.134 D llama_memory_recurrent, layer  60: dev = CUDA0
+instantcoffee-llama  | 4.44.691.135 D llama_memory_recurrent, layer  61: dev = CUDA0
+instantcoffee-llama  | 4.44.691.135 D llama_memory_recurrent, layer  62: dev = CUDA0
+instantcoffee-llama  | 4.44.691.136 D llama_memory_recurrent: layer  63: skipped
+instantcoffee-llama  | 4.44.736.220 I llama_memory_recurrent:      CUDA0 RS buffer size =   748.12 MiB
+instantcoffee-llama  | 4.44.736.257 I llama_memory_recurrent: size =  748.12 MiB (     1 cells,  64 layers,  1 seqs  4 rs_seq), R (f32):   28.12 MiB, S (f32):  720.00 MiB
+instantcoffee-llama  | 4.44.736.263 D llama_context: enumerating backends
+instantcoffee-llama  | 4.44.736.281 D llama_context: backend_ptrs.size() = 2
+instantcoffee-llama  | 4.44.736.283 I sched_reserve: reserving ...
+instantcoffee-llama  | 4.44.736.285 D sched_reserve: max_nodes = 27712
+instantcoffee-llama  | 4.45.015.918 D sched_reserve: reserving full memory module
+instantcoffee-llama  | 4.45.015.953 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+instantcoffee-llama  | 4.45.015.954 I resolve_fused_ops: resolving fused Gated Delta Net support:
+instantcoffee-llama  | 4.45.015.957 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.017.794 I resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+instantcoffee-llama  | 4.45.017.822 D graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+instantcoffee-llama  | 4.45.019.231 I resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+instantcoffee-llama  | 4.45.019.252 I resolve_fused_ops: resolving fused Lightning Indexer support:
+instantcoffee-llama  | 4.45.019.253 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.020.631 I resolve_fused_ops: Lightning Indexer enabled
+instantcoffee-llama  | 4.45.020.652 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+instantcoffee-llama  | 4.45.020.654 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.022.035 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+instantcoffee-llama  | 4.45.022.061 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.023.519 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+instantcoffee-llama  | 4.45.023.544 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.024.970 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+instantcoffee-llama  | 4.45.024.994 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =   49
+instantcoffee-llama  | 4.45.357.818 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.360.762 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =   49
+instantcoffee-llama  | 4.45.363.511 I sched_reserve:      CUDA0 compute buffer size =   560.28 MiB
+instantcoffee-llama  | 4.45.363.549 I sched_reserve:  CUDA_Host compute buffer size =   116.28 MiB
+instantcoffee-llama  | 4.45.363.550 I sched_reserve: graph nodes  = 4423
+instantcoffee-llama  | 4.45.363.551 I sched_reserve: graph splits = 2
+instantcoffee-llama  | 4.45.363.552 I sched_reserve: reserve took 627.27 ms, sched copies = 1
+instantcoffee-llama  | 4.45.363.685 I cmn          init: llama threadpool init, n_threads = 8
+instantcoffee-llama  | 4.45.363.839 D attach_threadpool: call
+instantcoffee-llama  | 4.45.363.899 D set_adapters_lora: adapters = (nil)
+instantcoffee-llama  | 4.45.363.901 D adapters_lora_are_same: adapters = (nil)
+instantcoffee-llama  | 4.45.363.903 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+instantcoffee-llama  | 4.45.580.464 I common_speculative_init_result: creating MTP draft context against the target model '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+instantcoffee-llama  | 4.45.580.531 I llama_context: constructing llama_context
+instantcoffee-llama  | 4.45.580.535 I llama_context: n_seq_max             = 1
+instantcoffee-llama  | 4.45.580.535 I llama_context: n_ctx                 = 98304
+instantcoffee-llama  | 4.45.580.536 I llama_context: n_ctx_seq             = 98304
+instantcoffee-llama  | 4.45.580.536 I llama_context: n_batch               = 2048
+instantcoffee-llama  | 4.45.580.536 I llama_context: n_ubatch              = 512
+instantcoffee-llama  | 4.45.580.536 I llama_context: causal_attn           = 1
+instantcoffee-llama  | 4.45.580.538 I llama_context: flash_attn            = enabled
+instantcoffee-llama  | 4.45.580.538 I llama_context: kv_unified            = true
+instantcoffee-llama  | 4.45.580.544 I llama_context: freq_base             = 10000000.0
+instantcoffee-llama  | 4.45.580.544 I llama_context: freq_scale            = 1
+instantcoffee-llama  | 4.45.580.545 I llama_context: n_rs_seq              = 0
+instantcoffee-llama  | 4.45.580.545 I llama_context: n_outputs_max         = 1
+instantcoffee-llama  | 4.45.580.545 I llama_context: n_outputs_max_per_seq = 1
+instantcoffee-llama  | 4.45.580.546 I llama_context: n_ctx_seq (98304) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+instantcoffee-llama  | 4.45.580.577 D set_abort_callback: call
+instantcoffee-llama  | 4.45.580.719 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+instantcoffee-llama  | 4.45.583.269 D llama_kv_cache: layer   0: filtered
+instantcoffee-llama  | 4.45.583.299 D llama_kv_cache: layer   1: filtered
+instantcoffee-llama  | 4.45.583.300 D llama_kv_cache: layer   2: filtered
+instantcoffee-llama  | 4.45.583.300 D llama_kv_cache: layer   3: filtered
+instantcoffee-llama  | 4.45.583.300 D llama_kv_cache: layer   4: filtered
+instantcoffee-llama  | 4.45.583.300 D llama_kv_cache: layer   5: filtered
+instantcoffee-llama  | 4.45.583.301 D llama_kv_cache: layer   6: filtered
+instantcoffee-llama  | 4.45.583.301 D llama_kv_cache: layer   7: filtered
+instantcoffee-llama  | 4.45.583.301 D llama_kv_cache: layer   8: filtered
+instantcoffee-llama  | 4.45.583.302 D llama_kv_cache: layer   9: filtered
+instantcoffee-llama  | 4.45.583.302 D llama_kv_cache: layer  10: filtered
+instantcoffee-llama  | 4.45.583.302 D llama_kv_cache: layer  11: filtered
+instantcoffee-llama  | 4.45.583.302 D llama_kv_cache: layer  12: filtered
+instantcoffee-llama  | 4.45.583.303 D llama_kv_cache: layer  13: filtered
+instantcoffee-llama  | 4.45.583.303 D llama_kv_cache: layer  14: filtered
+instantcoffee-llama  | 4.45.583.303 D llama_kv_cache: layer  15: filtered
+instantcoffee-llama  | 4.45.583.303 D llama_kv_cache: layer  16: filtered
+instantcoffee-llama  | 4.45.583.304 D llama_kv_cache: layer  17: filtered
+instantcoffee-llama  | 4.45.583.304 D llama_kv_cache: layer  18: filtered
+instantcoffee-llama  | 4.45.583.304 D llama_kv_cache: layer  19: filtered
+instantcoffee-llama  | 4.45.583.305 D llama_kv_cache: layer  20: filtered
+instantcoffee-llama  | 4.45.583.305 D llama_kv_cache: layer  21: filtered
+instantcoffee-llama  | 4.45.583.305 D llama_kv_cache: layer  22: filtered
+instantcoffee-llama  | 4.45.583.305 D llama_kv_cache: layer  23: filtered
+instantcoffee-llama  | 4.45.583.306 D llama_kv_cache: layer  24: filtered
+instantcoffee-llama  | 4.45.583.306 D llama_kv_cache: layer  25: filtered
+instantcoffee-llama  | 4.45.583.306 D llama_kv_cache: layer  26: filtered
+instantcoffee-llama  | 4.45.583.306 D llama_kv_cache: layer  27: filtered
+instantcoffee-llama  | 4.45.583.307 D llama_kv_cache: layer  28: filtered
+instantcoffee-llama  | 4.45.583.307 D llama_kv_cache: layer  29: filtered
+instantcoffee-llama  | 4.45.583.307 D llama_kv_cache: layer  30: filtered
+instantcoffee-llama  | 4.45.583.307 D llama_kv_cache: layer  31: filtered
+instantcoffee-llama  | 4.45.583.308 D llama_kv_cache: layer  32: filtered
+instantcoffee-llama  | 4.45.583.308 D llama_kv_cache: layer  33: filtered
+instantcoffee-llama  | 4.45.583.308 D llama_kv_cache: layer  34: filtered
+instantcoffee-llama  | 4.45.583.308 D llama_kv_cache: layer  35: filtered
+instantcoffee-llama  | 4.45.583.309 D llama_kv_cache: layer  36: filtered
+instantcoffee-llama  | 4.45.583.309 D llama_kv_cache: layer  37: filtered
+instantcoffee-llama  | 4.45.583.309 D llama_kv_cache: layer  38: filtered
+instantcoffee-llama  | 4.45.583.309 D llama_kv_cache: layer  39: filtered
+instantcoffee-llama  | 4.45.583.310 D llama_kv_cache: layer  40: filtered
+instantcoffee-llama  | 4.45.583.310 D llama_kv_cache: layer  41: filtered
+instantcoffee-llama  | 4.45.583.310 D llama_kv_cache: layer  42: filtered
+instantcoffee-llama  | 4.45.583.311 D llama_kv_cache: layer  43: filtered
+instantcoffee-llama  | 4.45.583.311 D llama_kv_cache: layer  44: filtered
+instantcoffee-llama  | 4.45.583.311 D llama_kv_cache: layer  45: filtered
+instantcoffee-llama  | 4.45.583.311 D llama_kv_cache: layer  46: filtered
+instantcoffee-llama  | 4.45.583.311 D llama_kv_cache: layer  47: filtered
+instantcoffee-llama  | 4.45.583.312 D llama_kv_cache: layer  48: filtered
+instantcoffee-llama  | 4.45.583.312 D llama_kv_cache: layer  49: filtered
+instantcoffee-llama  | 4.45.583.312 D llama_kv_cache: layer  50: filtered
+instantcoffee-llama  | 4.45.583.312 D llama_kv_cache: layer  51: filtered
+instantcoffee-llama  | 4.45.583.313 D llama_kv_cache: layer  52: filtered
+instantcoffee-llama  | 4.45.583.313 D llama_kv_cache: layer  53: filtered
+instantcoffee-llama  | 4.45.583.313 D llama_kv_cache: layer  54: filtered
+instantcoffee-llama  | 4.45.583.313 D llama_kv_cache: layer  55: filtered
+instantcoffee-llama  | 4.45.583.314 D llama_kv_cache: layer  56: filtered
+instantcoffee-llama  | 4.45.583.314 D llama_kv_cache: layer  57: filtered
+instantcoffee-llama  | 4.45.583.314 D llama_kv_cache: layer  58: filtered
+instantcoffee-llama  | 4.45.583.315 D llama_kv_cache: layer  59: filtered
+instantcoffee-llama  | 4.45.583.315 D llama_kv_cache: layer  60: filtered
+instantcoffee-llama  | 4.45.583.315 D llama_kv_cache: layer  61: filtered
+instantcoffee-llama  | 4.45.583.315 D llama_kv_cache: layer  62: filtered
+instantcoffee-llama  | 4.45.583.316 D llama_kv_cache: layer  63: filtered
+instantcoffee-llama  | 4.45.583.321 D llama_kv_cache: layer  64: dev = CUDA0
+instantcoffee-llama  | 4.45.586.593 I llama_kv_cache:      CUDA0 KV buffer size =   384.00 MiB
+instantcoffee-llama  | 4.45.594.819 I llama_kv_cache: size =  384.00 MiB ( 98304 cells,   1 layers,  1/1 seqs), K (f16):  192.00 MiB, V (f16):  192.00 MiB
+instantcoffee-llama  | 4.45.594.846 I llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+instantcoffee-llama  | 4.45.594.846 I llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+instantcoffee-llama  | 4.45.594.851 D llama_context: enumerating backends
+instantcoffee-llama  | 4.45.594.867 D llama_context: backend_ptrs.size() = 2
+instantcoffee-llama  | 4.45.594.868 I sched_reserve: reserving ...
+instantcoffee-llama  | 4.45.594.870 D sched_reserve: max_nodes = 27712
+instantcoffee-llama  | 4.45.628.233 D sched_reserve: reserving full memory module
+instantcoffee-llama  | 4.45.628.262 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+instantcoffee-llama  | 4.45.628.263 I resolve_fused_ops: resolving fused Gated Delta Net support:
+instantcoffee-llama  | 4.45.628.267 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.628.565 I resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+instantcoffee-llama  | 4.45.628.586 D graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+instantcoffee-llama  | 4.45.628.663 I resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+instantcoffee-llama  | 4.45.628.685 I resolve_fused_ops: resolving fused Lightning Indexer support:
+instantcoffee-llama  | 4.45.628.686 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.628.747 I resolve_fused_ops: Lightning Indexer enabled
+instantcoffee-llama  | 4.45.628.747 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+instantcoffee-llama  | 4.45.628.747 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.628.806 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+instantcoffee-llama  | 4.45.628.828 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.628.889 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+instantcoffee-llama  | 4.45.628.910 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.628.970 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+instantcoffee-llama  | 4.45.628.990 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.966.098 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.966.336 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 4.45.966.504 I sched_reserve:      CUDA0 compute buffer size =   164.02 MiB
+instantcoffee-llama  | 4.45.966.531 I sched_reserve:  CUDA_Host compute buffer size =   116.02 MiB
+instantcoffee-llama  | 4.45.966.532 I sched_reserve: graph nodes  = 50
+instantcoffee-llama  | 4.45.966.532 I sched_reserve: graph splits = 2
+instantcoffee-llama  | 4.45.966.534 I sched_reserve: reserve took 371.66 ms, sched copies = 1
+instantcoffee-llama  | 4.45.967.106 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+instantcoffee-llama  | 4.45.967.149 I cmn  common_conte: the context supports bounded partial sequence removal
+instantcoffee-llama  | 4.45.967.150 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 98304, kv_unified = 'true'
+instantcoffee-llama  | 4.45.968.828 I spec common_specu: adding speculative implementation 'ngram-simple'
+instantcoffee-llama  | 4.45.968.857 I spec common_specu: - size_n=12, size_m=48, min_hits=1
+instantcoffee-llama  | 4.45.968.869 I spec common_specu: adding speculative implementation 'draft-mtp'
+instantcoffee-llama  | 4.45.968.873 I spec common_specu: - n_max=4, n_min=0, p_min=0.40, n_embd=5120, backend_sampling=1
+instantcoffee-llama  | 4.45.968.875 I spec common_specu: - gpu_layers=-1, cache_k=f16, cache_v=f16, ctx_tgt=yes, ctx_dft=yes, devices=[default]
+instantcoffee-llama  | 4.45.969.080 D set_sampler: seq_id = 0, sampler = 0x5c0da2bf7d00
+instantcoffee-llama  | 4.45.969.169 D set_embeddings_nextn: value = 1, masked = 0
+instantcoffee-llama  | 4.45.969.193 D set_embeddings_nextn: value = 1, masked = 1
+instantcoffee-llama  | 4.45.969.230 I cmn  common_conte: the context supports arbitrary sequence removal
+instantcoffee-llama  | 4.45.969.257 I srv    load_model: speculative decoding context initialized
+instantcoffee-llama  | 4.45.969.260 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 98304
+instantcoffee-llama  | 4.45.969.312 D slot        reset: id  0 | task -1 | 
+instantcoffee-llama  | 4.45.969.361 I srv    load_model: prompt cache is enabled, size limit: 2048 MiB
+instantcoffee-llama  | 4.45.969.383 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+instantcoffee-llama  | 4.45.969.384 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+instantcoffee-llama  | 4.45.969.384 I srv    load_model: context checkpoints enabled, max = 16, min spacing = 256
+instantcoffee-llama  | 4.45.969.502 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+instantcoffee-llama  | 4.45.969.524 D srv          init: __TEST_TAG_CACHE_IDLE_SLOTS_ENABLED__
+instantcoffee-llama  | 4.45.977.501 D Using specialized template: Qwen3-Coder
+instantcoffee-llama  | 4.45.980.104 I srv          init: init: chat template, example_format: '<|im_start|>system
+instantcoffee-llama  | You are a helpful assistant<|im_end|>
+instantcoffee-llama  | <|im_start|>user
+instantcoffee-llama  | Hello<|im_end|>
+instantcoffee-llama  | <|im_start|>assistant
+instantcoffee-llama  | <think>
+instantcoffee-llama  | 
+instantcoffee-llama  | </think>
+instantcoffee-llama  | 
+instantcoffee-llama  | Hi there<|im_end|>
+instantcoffee-llama  | <|im_start|>user
+instantcoffee-llama  | How are you?<|im_end|>
+instantcoffee-llama  | <|im_start|>assistant
+instantcoffee-llama  | <think>
+instantcoffee-llama  | '
+instantcoffee-llama  | 4.45.980.196 D Using specialized template: Qwen3-Coder
+instantcoffee-llama  | 4.45.981.021 I srv          init: init: chat template, thinking = 1
+instantcoffee-llama  | 4.45.981.056 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+instantcoffee-llama  | 4.45.981.104 I srv  llama_server: model loaded
+instantcoffee-llama  | 4.45.981.132 I srv  llama_server: listening on http://0.0.0.0:8080
+instantcoffee-llama  | 4.45.981.133 W srv  llama_server: NOTICE: server default port will be changed to :9931 in a future release
+instantcoffee-llama  | 4.45.981.133 W srv  llama_server:         ref: https://github.com/ggml-org/llama.cpp/pull/26508
+instantcoffee-llama  | 4.45.981.384 D que    start_loop: processing new tasks
+instantcoffee-llama  | 4.45.981.407 D que    start_loop: update slots
+instantcoffee-llama  | 4.45.981.430 I srv  update_slots: all slots are idle
+instantcoffee-llama  | 4.45.981.431 D que    start_loop: waiting for new tasks
+instantcoffee-llama  | 4.49.996.590 D srv          stop: all tasks already finished, no need to cancel
+instantcoffee-llama  | 4.51.045.524 D srv          stop: all tasks already finished, no need to cancel
+ Image instantcoffee/proxy:0.9.5 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 590B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 36B 0.0s
+#2 transferring dockerfile: 14.59kB 0.1s done
+#2 DONE 0.2s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 1.4s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.1s
+
+#5 [1/8] FROM docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f
+#5 resolve docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f 0.0s done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 1.31kB 0.3s done
+#6 DONE 0.4s
+
+#7 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py      scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/test_forge_patches.py /work/scripts/
+#7 CACHED
+
+#8 [2/8] RUN test -n "0.9.5" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#8 CACHED
+
+#9 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py      /tmp/patches/
+#9 CACHED
+
+#10 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#10 CACHED
+
+#11 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.5"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#11 CACHED
+
+#12 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE"     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE"     && python /tmp/patches/forge_empty_turn.py "$SITE"     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE"     && python /tmp/patches/forge_stream_timeout.py "$SITE"     && rm -rf /tmp/patches
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:53ddac43525af74af4f87a17adb64471f074fb00f0a0aa168609b6c77ec7e2e6 done
+#14 exporting config sha256:417a2ea776accd4369e41d43109b5ff38db1ecf27c9d20e7b47fd9c732f0b401 done
+#14 exporting attestation manifest sha256:8c4f6da568ca9bbf6c1443a5f50485224a2b9e95842486b7e3b0c56963d861bf
+#14 exporting attestation manifest sha256:8c4f6da568ca9bbf6c1443a5f50485224a2b9e95842486b7e3b0c56963d861bf 0.1s done
+#14 exporting manifest list sha256:a4a9df9faca949ac5c5087fa5a8f4d44ff4a240a57df567cfdd377a7b3e7fbff
+#14 exporting manifest list sha256:a4a9df9faca949ac5c5087fa5a8f4d44ff4a240a57df567cfdd377a7b3e7fbff 0.0s done
+#14 naming to docker.io/instantcoffee/proxy:0.9.5 done
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5 0.0s done
+#14 DONE 0.3s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.1s
+ Image instantcoffee/proxy:0.9.5 Built 
+ Container instantcoffee-bench-run-46354e9fbc60 Creating 
+ Container instantcoffee-bench-run-46354e9fbc60 Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=90000  prompt=90029  prefill=   668.1 tok/s  decode=  49.4 tok/s  wall=140.25s draft=177/290 (61% accepted)
+  pp=90000  prompt=90029  prefill=  1700.0 tok/s  decode=  41.1 tok/s  wall=383.86s draft=179/322 (56% accepted)
+  pp=90000  prompt=90029  prefill=  1705.2 tok/s  decode=  40.1 tok/s  wall= 89.79s draft=167/339 (49% accepted)
+
+best prefill: 1705.2 tok/s     best decode: 49.4 tok/s
+MTP draft acceptance: 523/951 = 55.0% across 3 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 140.25,
+      "prompt_n": 90029,
+      "prompt_tps": 668.1475865132344,
+      "predicted_n": 256,
+      "predicted_tps": 49.388904308126335,
+      "cache_n": 0,
+      "draft_n": 290,
+      "draft_accepted": 177,
+      "draft_acceptance": 0.61
+    },
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 383.86,
+      "prompt_n": 90029,
+      "prompt_tps": 1700.0369261261264,
+      "predicted_n": 256,
+      "predicted_tps": 41.0645278328123,
+      "cache_n": 0,
+      "draft_n": 322,
+      "draft_accepted": 179,
+      "draft_acceptance": 0.556
+    },
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 89.79,
+      "prompt_n": 90029,
+      "prompt_tps": 1705.2186482797747,
+      "predicted_n": 256,
+      "predicted_tps": 40.127918361874514,
+      "cache_n": 0,
+      "draft_n": 339,
+      "draft_accepted": 167,
+      "draft_acceptance": 0.493
+    }
+  ]
+}
+
+===== engine memory breakdown (bee-96k-q8) =====
+instantcoffee-llama  | 0.03.800.207 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.03.800.228 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19911 = 15339 +    4012 +     560) +      -17590 |
+instantcoffee-llama  | 0.03.800.228 I common_memory_breakdown_print: |   - Host               |                    798 =   682 +       0 +     116                |
+instantcoffee-llama  | 0.03.896.343 I operator(): getting device memory data for the extra model at a context size of 98304:
+instantcoffee-llama  | 0.04.552.562 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.04.552.618 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.04.552.622 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.04.552.623 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.04.552.625 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.04.552.629 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+instantcoffee-llama  | 0.04.552.630 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+instantcoffee-llama  | 0.04.552.631 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.8 27B Abliterated
+instantcoffee-llama  | 0.04.552.632 I llama_model_loader: - kv   6:                           general.finetune str              = abliterated
+--
+instantcoffee-llama  | 0.05.182.841 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.05.182.867 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22992 + (15887 = 15339 +     384 +     164) +      -14316 |
+instantcoffee-llama  | 0.05.182.868 I common_memory_breakdown_print: |   - Host               |                    798 =   682 +       0 +     116                |
+instantcoffee-llama  | 0.05.283.990 I common_params_fit_impl: projected to use 20459 MiB of device memory vs. 22242 MiB of free device memory
+instantcoffee-llama  | 0.05.284.059 I common_params_fit_impl: will leave 1782 >= 1024 MiB of free device memory, no changes needed
+instantcoffee-llama  | 0.05.284.061 I common_fit_params: successfully fit params to free device memory
+instantcoffee-llama  | 0.05.284.066 I common_fit_params: fitting params to free memory took 4.43 seconds
+instantcoffee-llama  | 0.05.924.934 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.05.924.990 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.05.924.994 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.05.924.995 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.05.924.997 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.05.925.001 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+--
+instantcoffee-llama  | 15.11.626.165 I common_memory_breakdown_print: | memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 15.11.626.191 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 =  840 + (19911 = 15339 +    4012 +     560) +        3811 |
+instantcoffee-llama  | 15.11.626.191 I common_memory_breakdown_print: |   - Host               |                   798 =   682 +       0 +     116                |
+instantcoffee-llama  | 15.11.626.393 D set_sampler: seq_id = 0, sampler = (nil)
+instantcoffee-llama  | 15.11.636.103 D ~llama_context:      CUDA0 compute buffer size is 164.0157 MiB, matches expectation of 164.0157 MiB
+instantcoffee-llama  | 15.11.636.137 D ~llama_context:  CUDA_Host compute buffer size is 116.0176 MiB, matches expectation of 116.0176 MiB
+instantcoffee-llama  | 15.11.696.718 D ~llama_context:      CUDA0 compute buffer size is 560.2816 MiB, matches expectation of 560.2816 MiB
+instantcoffee-llama  | 15.11.696.748 D ~llama_context:  CUDA_Host compute buffer size is 116.2834 MiB, matches expectation of 116.2834 MiB

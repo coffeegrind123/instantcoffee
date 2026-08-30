@@ -1,0 +1,64 @@
+{
+  "label": "bee-96k-q8",
+  "settings": "LLAMA_IMAGE=ghcr.io/anbeeld/beellama.cpp:server-cuda-v0.4.4,CTX_SIZE=98304,CACHE_TYPE_K=q8_0,CACHE_TYPE_V=q8_0,KV_TAIL_TOKENS=",
+  "loaded": true,
+  "server_n_ctx": "98304",
+  "vram_used_mib": "23294",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "2535",
+  "engine_memory_breakdown": "| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19911 = 15339 +    4012 +     560) +      -17590 |\n|   - Host               |                    798 =   682 +       0 +     116                |\n| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22992 + (15887 = 15339 +     384 +     164) +      -14316 |\n|   - Host               |                    798 =   682 +       0 +     116                |\n| memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 =  840 + (19911 = 15339 +    4012 +     560) +        3811 |\n|   - Host               |                   798 =   682 +       0 +     116                |",
+  "bench": "prefill",
+  "measured_utc": "2026-08-30T13:24:40Z",
+  "pins": {
+    "llama_tag": "ghcr.io/anbeeld/beellama.cpp:server-cuda-v0.4.4",
+    "llama_digest": "sha256:a27a0c2213d89d7b80d682836acde4cb12eddb4bf8affab7eb9ba208a90752ec",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479"
+  },
+  "result": {
+    "model": "qwen3.8-27b",
+    "rows": [
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 140.25,
+        "prompt_n": 90029,
+        "prompt_tps": 668.1475865132344,
+        "predicted_n": 256,
+        "predicted_tps": 49.388904308126335,
+        "cache_n": 0,
+        "draft_n": 290,
+        "draft_accepted": 177,
+        "draft_acceptance": 0.61
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 383.86,
+        "prompt_n": 90029,
+        "prompt_tps": 1700.0369261261264,
+        "predicted_n": 256,
+        "predicted_tps": 41.0645278328123,
+        "cache_n": 0,
+        "draft_n": 322,
+        "draft_accepted": 179,
+        "draft_acceptance": 0.556
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 89.79,
+        "prompt_n": 90029,
+        "prompt_tps": 1705.2186482797747,
+        "predicted_n": 256,
+        "predicted_tps": 40.127918361874514,
+        "cache_n": 0,
+        "draft_n": 339,
+        "draft_accepted": 167,
+        "draft_acceptance": 0.493
+      }
+    ]
+  }
+}

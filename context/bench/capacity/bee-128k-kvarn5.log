@@ -1,0 +1,591 @@
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+
+===== llama startup log (bee-128k-kvarn5) =====
+instantcoffee-llama  | 3.34.871.971 D llama_memory_recurrent, layer  37: dev = CUDA0
+instantcoffee-llama  | 3.34.871.973 D llama_memory_recurrent, layer  38: dev = CUDA0
+instantcoffee-llama  | 3.34.871.975 D llama_memory_recurrent: layer  39: skipped
+instantcoffee-llama  | 3.34.871.976 D llama_memory_recurrent, layer  40: dev = CUDA0
+instantcoffee-llama  | 3.34.871.976 D llama_memory_recurrent, layer  41: dev = CUDA0
+instantcoffee-llama  | 3.34.871.977 D llama_memory_recurrent, layer  42: dev = CUDA0
+instantcoffee-llama  | 3.34.871.978 D llama_memory_recurrent: layer  43: skipped
+instantcoffee-llama  | 3.34.871.979 D llama_memory_recurrent, layer  44: dev = CUDA0
+instantcoffee-llama  | 3.34.871.980 D llama_memory_recurrent, layer  45: dev = CUDA0
+instantcoffee-llama  | 3.34.871.984 D llama_memory_recurrent, layer  46: dev = CUDA0
+instantcoffee-llama  | 3.34.871.985 D llama_memory_recurrent: layer  47: skipped
+instantcoffee-llama  | 3.34.871.987 D llama_memory_recurrent, layer  48: dev = CUDA0
+instantcoffee-llama  | 3.34.871.988 D llama_memory_recurrent, layer  49: dev = CUDA0
+instantcoffee-llama  | 3.34.871.988 D llama_memory_recurrent, layer  50: dev = CUDA0
+instantcoffee-llama  | 3.34.871.990 D llama_memory_recurrent: layer  51: skipped
+instantcoffee-llama  | 3.34.871.990 D llama_memory_recurrent, layer  52: dev = CUDA0
+instantcoffee-llama  | 3.34.871.991 D llama_memory_recurrent, layer  53: dev = CUDA0
+instantcoffee-llama  | 3.34.871.992 D llama_memory_recurrent, layer  54: dev = CUDA0
+instantcoffee-llama  | 3.34.871.993 D llama_memory_recurrent: layer  55: skipped
+instantcoffee-llama  | 3.34.871.993 D llama_memory_recurrent, layer  56: dev = CUDA0
+instantcoffee-llama  | 3.34.871.994 D llama_memory_recurrent, layer  57: dev = CUDA0
+instantcoffee-llama  | 3.34.871.994 D llama_memory_recurrent, layer  58: dev = CUDA0
+instantcoffee-llama  | 3.34.871.996 D llama_memory_recurrent: layer  59: skipped
+instantcoffee-llama  | 3.34.871.996 D llama_memory_recurrent, layer  60: dev = CUDA0
+instantcoffee-llama  | 3.34.871.998 D llama_memory_recurrent, layer  61: dev = CUDA0
+instantcoffee-llama  | 3.34.871.998 D llama_memory_recurrent, layer  62: dev = CUDA0
+instantcoffee-llama  | 3.34.871.999 D llama_memory_recurrent: layer  63: skipped
+instantcoffee-llama  | 3.34.893.161 I llama_memory_recurrent:      CUDA0 RS buffer size =   748.12 MiB
+instantcoffee-llama  | 3.34.893.197 I llama_memory_recurrent: size =  748.12 MiB (     1 cells,  64 layers,  1 seqs  4 rs_seq), R (f32):   28.12 MiB, S (f32):  720.00 MiB
+instantcoffee-llama  | 3.34.893.204 D llama_context: enumerating backends
+instantcoffee-llama  | 3.34.893.218 D llama_context: backend_ptrs.size() = 2
+instantcoffee-llama  | 3.34.893.221 I sched_reserve: reserving ...
+instantcoffee-llama  | 3.34.893.224 D sched_reserve: max_nodes = 33952
+instantcoffee-llama  | 3.34.909.992 D sched_reserve: reserving full memory module
+instantcoffee-llama  | 3.34.910.081 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+instantcoffee-llama  | 3.34.910.082 I resolve_fused_ops: resolving fused Gated Delta Net support:
+instantcoffee-llama  | 3.34.910.085 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.34.910.212 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.910.399 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.910.541 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.910.627 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.910.737 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.910.852 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.910.965 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.072 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.180 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.287 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.390 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.518 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.628 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.737 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.850 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.911.959 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.912.064 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.912.855 I resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+instantcoffee-llama  | 3.34.912.882 D graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+instantcoffee-llama  | 3.34.913.036 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.913.138 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.235 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.330 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.429 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.527 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.620 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.714 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.811 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.913.907 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.001 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.096 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.190 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.284 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.378 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.475 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.914.597 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.915.245 I resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+instantcoffee-llama  | 3.34.915.268 I resolve_fused_ops: resolving fused Lightning Indexer support:
+instantcoffee-llama  | 3.34.915.270 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.34.915.416 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.915.519 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.915.616 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.915.711 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.915.805 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.915.902 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.915.995 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.916.091 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.916.187 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.916.473 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.916.693 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.916.897 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.917.059 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.917.189 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.917.320 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.917.454 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.917.660 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.918.605 I resolve_fused_ops: Lightning Indexer enabled
+instantcoffee-llama  | 3.34.918.636 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+instantcoffee-llama  | 3.34.918.638 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.34.918.820 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.918.965 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.106 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.240 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.380 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.517 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.653 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.779 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.919.881 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.004 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.140 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.251 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.392 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.496 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.596 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.695 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.920.797 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.921.567 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+instantcoffee-llama  | 3.34.921.595 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.34.921.758 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.921.861 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.921.958 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.055 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.155 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.248 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.341 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.434 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.561 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.663 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.756 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.849 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.922.939 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.923.031 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.923.159 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.923.297 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.923.435 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.083 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+instantcoffee-llama  | 3.34.924.109 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.34.924.210 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.924.303 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.392 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.481 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.573 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.672 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.764 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.854 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.924.945 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.036 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.136 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.203 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.264 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.327 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.419 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.511 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.925.603 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.926.266 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+instantcoffee-llama  | 3.34.926.292 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =   49
+instantcoffee-llama  | 3.34.926.400 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.34.926.492 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.926.637 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.926.742 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.926.835 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.926.924 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.021 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.110 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.200 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.321 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.446 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.568 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.694 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.786 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.877 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.927.970 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.34.928.081 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.151.427 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.151.547 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.35.151.663 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.151.769 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.151.873 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.151.975 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.079 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.178 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.278 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.379 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.507 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.640 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.765 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.152.924 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.153.084 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.153.209 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.153.314 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.153.442 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.155.600 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =   49
+instantcoffee-llama  | 3.35.155.715 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.35.155.844 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.155.948 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.050 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.177 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.320 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.449 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.565 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.700 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.807 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.156.913 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.157.056 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.157.205 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.157.363 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.157.525 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.157.692 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.157.806 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.160.215 I sched_reserve:      CUDA0 compute buffer size =   251.53 MiB
+instantcoffee-llama  | 3.35.160.260 I sched_reserve:  CUDA_Host compute buffer size =   149.53 MiB
+instantcoffee-llama  | 3.35.160.261 I sched_reserve: graph nodes  = 4599 (with bs=512), 4647 (with bs=1)
+instantcoffee-llama  | 3.35.160.261 I sched_reserve: graph splits = 2
+instantcoffee-llama  | 3.35.160.263 I sched_reserve: reserve took 267.04 ms, sched copies = 1
+instantcoffee-llama  | 3.35.160.518 I cmn          init: llama threadpool init, n_threads = 8
+instantcoffee-llama  | 3.35.160.576 D attach_threadpool: call
+instantcoffee-llama  | 3.35.160.595 D set_adapters_lora: adapters = (nil)
+instantcoffee-llama  | 3.35.160.619 D adapters_lora_are_same: adapters = (nil)
+instantcoffee-llama  | 3.35.160.620 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+instantcoffee-llama  | 3.35.162.218 D build_attn_inp_tail: standard KV tail body route=ordinary physical-capacity-bound=1280
+instantcoffee-llama  | 3.35.162.390 D KV tail final: layer=3 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.162.501 D KV tail final: layer=7 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.162.676 D KV tail final: layer=11 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.162.790 D KV tail final: layer=15 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.162.904 D KV tail final: layer=19 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.009 D KV tail final: layer=23 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.122 D KV tail final: layer=27 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.227 D KV tail final: layer=31 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.331 D KV tail final: layer=35 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.450 D KV tail final: layer=39 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.580 D KV tail final: layer=43 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.693 D KV tail final: layer=47 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.800 D KV tail final: layer=51 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.163.877 D KV tail final: layer=55 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.164.123 D KV tail final: layer=59 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.164.242 D KV tail final: layer=63 dev=CUDA0 route=native body=present current=present body_type=f16/f16 exact_type=f16/f16 body_rows=1280 supported=1
+instantcoffee-llama  | 3.35.394.921 I common_speculative_init_result: creating MTP draft context against the target model '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+instantcoffee-llama  | 3.35.394.949 W llama_init_from_model: KVarN is target-context-only; disabling it for this auxiliary context
+instantcoffee-llama  | 3.35.394.967 I llama_context: constructing llama_context
+instantcoffee-llama  | 3.35.394.971 I llama_context: n_seq_max             = 1
+instantcoffee-llama  | 3.35.394.971 I llama_context: n_ctx                 = 131072
+instantcoffee-llama  | 3.35.394.972 I llama_context: n_ctx_seq             = 131072
+instantcoffee-llama  | 3.35.394.972 I llama_context: n_batch               = 2048
+instantcoffee-llama  | 3.35.394.972 I llama_context: n_ubatch              = 512
+instantcoffee-llama  | 3.35.394.973 I llama_context: causal_attn           = 1
+instantcoffee-llama  | 3.35.394.974 I llama_context: flash_attn            = enabled
+instantcoffee-llama  | 3.35.394.974 I llama_context: kv_unified            = true
+instantcoffee-llama  | 3.35.394.981 I llama_context: freq_base             = 10000000.0
+instantcoffee-llama  | 3.35.394.981 I llama_context: freq_scale            = 1
+instantcoffee-llama  | 3.35.394.982 I llama_context: n_rs_seq              = 0
+instantcoffee-llama  | 3.35.394.982 I llama_context: n_outputs_max         = 1
+instantcoffee-llama  | 3.35.394.983 I llama_context: n_outputs_max_per_seq = 1
+instantcoffee-llama  | 3.35.394.983 I llama_context: n_ctx_seq (131072) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+instantcoffee-llama  | 3.35.395.006 D set_abort_callback: call
+instantcoffee-llama  | 3.35.395.141 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+instantcoffee-llama  | 3.35.400.549 D llama_kv_cache: layer   0: filtered
+instantcoffee-llama  | 3.35.400.596 D llama_kv_cache: layer   1: filtered
+instantcoffee-llama  | 3.35.400.597 D llama_kv_cache: layer   2: filtered
+instantcoffee-llama  | 3.35.400.597 D llama_kv_cache: layer   3: filtered
+instantcoffee-llama  | 3.35.400.598 D llama_kv_cache: layer   4: filtered
+instantcoffee-llama  | 3.35.400.598 D llama_kv_cache: layer   5: filtered
+instantcoffee-llama  | 3.35.400.598 D llama_kv_cache: layer   6: filtered
+instantcoffee-llama  | 3.35.400.599 D llama_kv_cache: layer   7: filtered
+instantcoffee-llama  | 3.35.400.599 D llama_kv_cache: layer   8: filtered
+instantcoffee-llama  | 3.35.400.599 D llama_kv_cache: layer   9: filtered
+instantcoffee-llama  | 3.35.400.600 D llama_kv_cache: layer  10: filtered
+instantcoffee-llama  | 3.35.400.600 D llama_kv_cache: layer  11: filtered
+instantcoffee-llama  | 3.35.400.600 D llama_kv_cache: layer  12: filtered
+instantcoffee-llama  | 3.35.400.601 D llama_kv_cache: layer  13: filtered
+instantcoffee-llama  | 3.35.400.601 D llama_kv_cache: layer  14: filtered
+instantcoffee-llama  | 3.35.400.601 D llama_kv_cache: layer  15: filtered
+instantcoffee-llama  | 3.35.400.601 D llama_kv_cache: layer  16: filtered
+instantcoffee-llama  | 3.35.400.602 D llama_kv_cache: layer  17: filtered
+instantcoffee-llama  | 3.35.400.602 D llama_kv_cache: layer  18: filtered
+instantcoffee-llama  | 3.35.400.602 D llama_kv_cache: layer  19: filtered
+instantcoffee-llama  | 3.35.400.603 D llama_kv_cache: layer  20: filtered
+instantcoffee-llama  | 3.35.400.603 D llama_kv_cache: layer  21: filtered
+instantcoffee-llama  | 3.35.400.603 D llama_kv_cache: layer  22: filtered
+instantcoffee-llama  | 3.35.400.604 D llama_kv_cache: layer  23: filtered
+instantcoffee-llama  | 3.35.400.604 D llama_kv_cache: layer  24: filtered
+instantcoffee-llama  | 3.35.400.604 D llama_kv_cache: layer  25: filtered
+instantcoffee-llama  | 3.35.400.605 D llama_kv_cache: layer  26: filtered
+instantcoffee-llama  | 3.35.400.605 D llama_kv_cache: layer  27: filtered
+instantcoffee-llama  | 3.35.400.605 D llama_kv_cache: layer  28: filtered
+instantcoffee-llama  | 3.35.400.606 D llama_kv_cache: layer  29: filtered
+instantcoffee-llama  | 3.35.400.606 D llama_kv_cache: layer  30: filtered
+instantcoffee-llama  | 3.35.400.607 D llama_kv_cache: layer  31: filtered
+instantcoffee-llama  | 3.35.400.607 D llama_kv_cache: layer  32: filtered
+instantcoffee-llama  | 3.35.400.607 D llama_kv_cache: layer  33: filtered
+instantcoffee-llama  | 3.35.400.607 D llama_kv_cache: layer  34: filtered
+instantcoffee-llama  | 3.35.400.608 D llama_kv_cache: layer  35: filtered
+instantcoffee-llama  | 3.35.400.608 D llama_kv_cache: layer  36: filtered
+instantcoffee-llama  | 3.35.400.609 D llama_kv_cache: layer  37: filtered
+instantcoffee-llama  | 3.35.400.609 D llama_kv_cache: layer  38: filtered
+instantcoffee-llama  | 3.35.400.609 D llama_kv_cache: layer  39: filtered
+instantcoffee-llama  | 3.35.400.610 D llama_kv_cache: layer  40: filtered
+instantcoffee-llama  | 3.35.400.610 D llama_kv_cache: layer  41: filtered
+instantcoffee-llama  | 3.35.400.610 D llama_kv_cache: layer  42: filtered
+instantcoffee-llama  | 3.35.400.611 D llama_kv_cache: layer  43: filtered
+instantcoffee-llama  | 3.35.400.611 D llama_kv_cache: layer  44: filtered
+instantcoffee-llama  | 3.35.400.612 D llama_kv_cache: layer  45: filtered
+instantcoffee-llama  | 3.35.400.612 D llama_kv_cache: layer  46: filtered
+instantcoffee-llama  | 3.35.400.612 D llama_kv_cache: layer  47: filtered
+instantcoffee-llama  | 3.35.400.613 D llama_kv_cache: layer  48: filtered
+instantcoffee-llama  | 3.35.400.613 D llama_kv_cache: layer  49: filtered
+instantcoffee-llama  | 3.35.400.613 D llama_kv_cache: layer  50: filtered
+instantcoffee-llama  | 3.35.400.614 D llama_kv_cache: layer  51: filtered
+instantcoffee-llama  | 3.35.400.614 D llama_kv_cache: layer  52: filtered
+instantcoffee-llama  | 3.35.400.615 D llama_kv_cache: layer  53: filtered
+instantcoffee-llama  | 3.35.400.615 D llama_kv_cache: layer  54: filtered
+instantcoffee-llama  | 3.35.400.618 D llama_kv_cache: layer  55: filtered
+instantcoffee-llama  | 3.35.400.619 D llama_kv_cache: layer  56: filtered
+instantcoffee-llama  | 3.35.400.619 D llama_kv_cache: layer  57: filtered
+instantcoffee-llama  | 3.35.400.620 D llama_kv_cache: layer  58: filtered
+instantcoffee-llama  | 3.35.400.620 D llama_kv_cache: layer  59: filtered
+instantcoffee-llama  | 3.35.400.621 D llama_kv_cache: layer  60: filtered
+instantcoffee-llama  | 3.35.400.621 D llama_kv_cache: layer  61: filtered
+instantcoffee-llama  | 3.35.400.621 D llama_kv_cache: layer  62: filtered
+instantcoffee-llama  | 3.35.400.622 D llama_kv_cache: layer  63: filtered
+instantcoffee-llama  | 3.35.400.633 D llama_kv_cache: layer  64: dev = CUDA0
+instantcoffee-llama  | 3.35.405.234 I llama_kv_cache:      CUDA0 KV buffer size =   512.00 MiB
+instantcoffee-llama  | 3.35.416.236 I llama_kv_cache: size =  512.00 MiB (131072 cells,   1 layers,  1/1 seqs), K (f16):  256.00 MiB, V (f16):  256.00 MiB
+instantcoffee-llama  | 3.35.416.270 I llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+instantcoffee-llama  | 3.35.416.271 I llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+instantcoffee-llama  | 3.35.416.276 D llama_context: enumerating backends
+instantcoffee-llama  | 3.35.416.301 D llama_context: backend_ptrs.size() = 2
+instantcoffee-llama  | 3.35.416.303 I sched_reserve: reserving ...
+instantcoffee-llama  | 3.35.416.305 D sched_reserve: max_nodes = 27712
+instantcoffee-llama  | 3.35.433.492 D sched_reserve: reserving full memory module
+instantcoffee-llama  | 3.35.433.532 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+instantcoffee-llama  | 3.35.433.534 I resolve_fused_ops: resolving fused Gated Delta Net support:
+instantcoffee-llama  | 3.35.433.538 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.433.703 I resolve_fused_ops: fused Gated Delta Net (autoregressive) enabled
+instantcoffee-llama  | 3.35.433.725 D graph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16
+instantcoffee-llama  | 3.35.433.795 I resolve_fused_ops: fused Gated Delta Net (chunked) enabled
+instantcoffee-llama  | 3.35.433.817 I resolve_fused_ops: resolving fused Lightning Indexer support:
+instantcoffee-llama  | 3.35.433.818 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.433.880 I resolve_fused_ops: Lightning Indexer enabled
+instantcoffee-llama  | 3.35.433.901 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+instantcoffee-llama  | 3.35.433.902 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.433.964 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+instantcoffee-llama  | 3.35.433.965 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.434.015 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+instantcoffee-llama  | 3.35.434.037 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.434.098 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+instantcoffee-llama  | 3.35.434.098 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.658.048 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.658.281 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 3.35.658.418 I sched_reserve:      CUDA0 compute buffer size =   196.02 MiB
+instantcoffee-llama  | 3.35.658.449 I sched_reserve:  CUDA_Host compute buffer size =   148.02 MiB
+instantcoffee-llama  | 3.35.658.450 I sched_reserve: graph nodes  = 50
+instantcoffee-llama  | 3.35.658.450 I sched_reserve: graph splits = 2
+instantcoffee-llama  | 3.35.658.452 I sched_reserve: reserve took 242.15 ms, sched copies = 1
+instantcoffee-llama  | 3.35.659.218 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+instantcoffee-llama  | 3.35.659.255 I cmn  common_conte: the context supports bounded partial sequence removal
+instantcoffee-llama  | 3.35.659.256 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'true'
+instantcoffee-llama  | 3.35.659.888 I spec common_specu: adding speculative implementation 'ngram-simple'
+instantcoffee-llama  | 3.35.659.912 I spec common_specu: - size_n=12, size_m=48, min_hits=1
+instantcoffee-llama  | 3.35.659.941 I spec common_specu: adding speculative implementation 'draft-mtp'
+instantcoffee-llama  | 3.35.659.966 I spec common_specu: - n_max=4, n_min=0, p_min=0.40, n_embd=5120, backend_sampling=1
+instantcoffee-llama  | 3.35.659.968 I spec common_specu: - gpu_layers=-1, cache_k=f16, cache_v=f16, ctx_tgt=yes, ctx_dft=yes, devices=[default]
+instantcoffee-llama  | 3.35.660.053 D set_sampler: seq_id = 0, sampler = 0x5c5f025a0440
+instantcoffee-llama  | 3.35.660.099 D set_embeddings_nextn: value = 1, masked = 0
+instantcoffee-llama  | 3.35.660.099 D set_embeddings_nextn: value = 1, masked = 1
+instantcoffee-llama  | 3.35.660.114 I cmn  common_conte: the context supports arbitrary sequence removal
+instantcoffee-llama  | 3.35.660.116 I srv    load_model: speculative decoding context initialized
+instantcoffee-llama  | 3.35.660.145 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 131072
+instantcoffee-llama  | 3.35.660.147 D slot        reset: id  0 | task -1 | 
+instantcoffee-llama  | 3.35.660.191 I srv    load_model: prompt cache is enabled, size limit: 2048 MiB
+instantcoffee-llama  | 3.35.660.191 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+instantcoffee-llama  | 3.35.660.192 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+instantcoffee-llama  | 3.35.660.192 I srv    load_model: context checkpoints enabled, max = 16, min spacing = 256
+instantcoffee-llama  | 3.35.660.275 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+instantcoffee-llama  | 3.35.660.298 D srv          init: __TEST_TAG_CACHE_IDLE_SLOTS_ENABLED__
+instantcoffee-llama  | 3.35.664.781 D Using specialized template: Qwen3-Coder
+instantcoffee-llama  | 3.35.666.831 I srv          init: init: chat template, example_format: '<|im_start|>system
+instantcoffee-llama  | You are a helpful assistant<|im_end|>
+instantcoffee-llama  | <|im_start|>user
+instantcoffee-llama  | Hello<|im_end|>
+instantcoffee-llama  | <|im_start|>assistant
+instantcoffee-llama  | <think>
+instantcoffee-llama  | 
+instantcoffee-llama  | </think>
+instantcoffee-llama  | 
+instantcoffee-llama  | Hi there<|im_end|>
+instantcoffee-llama  | <|im_start|>user
+instantcoffee-llama  | How are you?<|im_end|>
+instantcoffee-llama  | <|im_start|>assistant
+instantcoffee-llama  | <think>
+instantcoffee-llama  | '
+instantcoffee-llama  | 3.35.666.938 D Using specialized template: Qwen3-Coder
+instantcoffee-llama  | 3.35.667.866 I srv          init: init: chat template, thinking = 1
+instantcoffee-llama  | 3.35.667.923 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+instantcoffee-llama  | 3.35.667.980 I srv  llama_server: model loaded
+instantcoffee-llama  | 3.35.668.008 I srv  llama_server: listening on http://0.0.0.0:8080
+instantcoffee-llama  | 3.35.668.008 W srv  llama_server: NOTICE: server default port will be changed to :9931 in a future release
+instantcoffee-llama  | 3.35.668.009 W srv  llama_server:         ref: https://github.com/ggml-org/llama.cpp/pull/26508
+instantcoffee-llama  | 3.35.668.447 D que    start_loop: processing new tasks
+instantcoffee-llama  | 3.35.668.472 D que    start_loop: update slots
+instantcoffee-llama  | 3.35.668.479 I srv  update_slots: all slots are idle
+instantcoffee-llama  | 3.35.668.479 D que    start_loop: waiting for new tasks
+instantcoffee-llama  | 3.37.893.770 D srv          stop: all tasks already finished, no need to cancel
+instantcoffee-llama  | 3.38.562.269 D srv          stop: all tasks already finished, no need to cancel
+ Image instantcoffee/proxy:0.9.5 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 590B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 14.59kB 0.1s done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 1.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.1s
+
+#5 [1/8] FROM docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f
+#5 resolve docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f 0.0s done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 1.31kB 0.3s done
+#6 DONE 0.3s
+
+#7 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.5"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#7 CACHED
+
+#8 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py      /tmp/patches/
+#8 CACHED
+
+#9 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE"     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE"     && python /tmp/patches/forge_empty_turn.py "$SITE"     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE"     && python /tmp/patches/forge_stream_timeout.py "$SITE"     && rm -rf /tmp/patches
+#9 CACHED
+
+#10 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#10 CACHED
+
+#11 [2/8] RUN test -n "0.9.5" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#11 CACHED
+
+#12 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py      scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/test_forge_patches.py /work/scripts/
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:53ddac43525af74af4f87a17adb64471f074fb00f0a0aa168609b6c77ec7e2e6 done
+#14 exporting config sha256:417a2ea776accd4369e41d43109b5ff38db1ecf27c9d20e7b47fd9c732f0b401 done
+#14 exporting attestation manifest sha256:6927bdfd2939c8c3616f76c3a2eb51e41334d593e8a1cad3fbcb80f37f60eef9
+#14 exporting attestation manifest sha256:6927bdfd2939c8c3616f76c3a2eb51e41334d593e8a1cad3fbcb80f37f60eef9 0.1s done
+#14 exporting manifest list sha256:6dffffa538dd9ba91ac512e44d3f9e25f8d3fa93e7ec60bbe313d44d8e7ba6c1 0.0s done
+#14 naming to docker.io/instantcoffee/proxy:0.9.5 done
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5 0.0s done
+#14 DONE 0.2s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image instantcoffee/proxy:0.9.5 Built 
+ Container instantcoffee-bench-run-376d57d19702 Creating 
+ Container instantcoffee-bench-run-376d57d19702 Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=90000  prompt=90029  prefill=  1364.7 tok/s  decode=  16.5 tok/s  wall= 81.81s draft=176/329 (54% accepted)
+  pp=90000  prompt=90029  prefill=  1451.2 tok/s  decode=  18.2 tok/s  wall= 80.35s draft=187/294 (64% accepted)
+  pp=90000  prompt=90029  prefill=  1419.0 tok/s  decode=  15.2 tok/s  wall= 86.35s draft=171/339 (50% accepted)
+
+best prefill: 1451.2 tok/s     best decode: 18.2 tok/s
+MTP draft acceptance: 534/962 = 55.5% across 3 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 81.81,
+      "prompt_n": 90029,
+      "prompt_tps": 1364.7092307877942,
+      "predicted_n": 256,
+      "predicted_tps": 16.485952610708992,
+      "cache_n": 0,
+      "draft_n": 329,
+      "draft_accepted": 176,
+      "draft_acceptance": 0.535
+    },
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 80.35,
+      "prompt_n": 90029,
+      "prompt_tps": 1451.1828545040287,
+      "predicted_n": 256,
+      "predicted_tps": 18.214478267341683,
+      "cache_n": 0,
+      "draft_n": 294,
+      "draft_accepted": 187,
+      "draft_acceptance": 0.636
+    },
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 86.35,
+      "prompt_n": 90029,
+      "prompt_tps": 1419.034132508146,
+      "predicted_n": 256,
+      "predicted_tps": 15.164594727097953,
+      "cache_n": 0,
+      "draft_n": 339,
+      "draft_accepted": 171,
+      "draft_acceptance": 0.504
+    }
+  ]
+}
+
+===== engine memory breakdown (bee-128k-kvarn5) =====
+instantcoffee-llama  | 0.02.149.419 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.02.149.441 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19179 = 15339 +    3588 +     251) +      -16857 |
+instantcoffee-llama  | 0.02.149.442 I common_memory_breakdown_print: |   - Host               |                    831 =   682 +       0 +     149                |
+instantcoffee-llama  | 0.02.254.631 I common_params_fit_impl: getting device memory data for initial parameters:
+instantcoffee-llama  | 0.02.857.362 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.02.857.409 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.02.857.413 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.02.857.414 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.02.857.416 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.02.857.420 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+instantcoffee-llama  | 0.02.857.421 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+instantcoffee-llama  | 0.02.857.422 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.8 27B Abliterated
+instantcoffee-llama  | 0.02.857.423 I llama_model_loader: - kv   6:                           general.finetune str              = abliterated
+--
+instantcoffee-llama  | 0.03.429.054 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.03.429.077 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19179 = 15339 +    3588 +     251) +      -16857 |
+instantcoffee-llama  | 0.03.429.078 I common_memory_breakdown_print: |   - Host               |                    831 =   682 +       0 +     149                |
+instantcoffee-llama  | 0.03.536.228 I operator(): getting device memory data for the extra model at a context size of 131072:
+instantcoffee-llama  | 0.04.207.843 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.04.207.876 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.04.207.882 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.04.207.882 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.04.207.887 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.04.207.892 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+instantcoffee-llama  | 0.04.207.893 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+instantcoffee-llama  | 0.04.207.894 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.8 27B Abliterated
+instantcoffee-llama  | 0.04.207.894 I llama_model_loader: - kv   6:                           general.finetune str              = abliterated
+--
+instantcoffee-llama  | 0.04.710.066 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.04.710.091 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22992 + (16047 = 15339 +     512 +     196) +      -14476 |
+instantcoffee-llama  | 0.04.710.092 I common_memory_breakdown_print: |   - Host               |                    830 =   682 +       0 +     148                |
+instantcoffee-llama  | 0.04.795.844 I common_params_fit_impl: projected to use 19887 MiB of device memory vs. 22242 MiB of free device memory
+instantcoffee-llama  | 0.04.795.885 I common_params_fit_impl: will leave 2354 >= 1024 MiB of free device memory, no changes needed
+instantcoffee-llama  | 0.05.481.760 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.05.481.836 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.05.481.840 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.05.481.844 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.05.481.846 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.05.481.851 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+instantcoffee-llama  | 0.05.481.852 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+instantcoffee-llama  | 0.05.481.853 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.8 27B Abliterated
+--
+instantcoffee-llama  | 0.06.145.771 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.06.145.795 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19179 = 15339 +    3588 +     251) +      -16857 |
+instantcoffee-llama  | 0.06.145.795 I common_memory_breakdown_print: |   - Host               |                    831 =   682 +       0 +     149                |
+instantcoffee-llama  | 0.06.234.836 I common_fit_params: exact Bee post-fit validation passed
+instantcoffee-llama  | 0.06.234.871 I common_fit_params: successfully fit params to free device memory
+instantcoffee-llama  | 0.06.234.873 I common_fit_params: fitting params to free memory took 5.83 seconds
+instantcoffee-llama  | 0.06.848.630 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.06.848.678 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.06.848.684 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.06.848.685 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.06.848.687 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.06.848.692 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+instantcoffee-llama  | 0.06.848.693 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+--
+instantcoffee-llama  | 7.51.802.830 I common_memory_breakdown_print: | memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 7.51.802.865 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 1312 + (19179 = 15339 +    3588 +     251) +        4072 |
+instantcoffee-llama  | 7.51.802.866 I common_memory_breakdown_print: |   - Host               |                   831 =   682 +       0 +     149                |
+instantcoffee-llama  | 7.51.803.036 D set_sampler: seq_id = 0, sampler = (nil)
+instantcoffee-llama  | 7.51.816.781 D ~llama_context:      CUDA0 compute buffer size is 196.0157 MiB, matches expectation of 196.0157 MiB
+instantcoffee-llama  | 7.51.816.818 D ~llama_context:  CUDA_Host compute buffer size is 148.0176 MiB, matches expectation of 148.0176 MiB
+instantcoffee-llama  | 7.51.909.288 D ~llama_context:      CUDA0 compute buffer size is 251.5278 MiB, matches expectation of 251.5278 MiB
+instantcoffee-llama  | 7.51.909.333 D ~llama_context:  CUDA_Host compute buffer size is 149.5296 MiB, matches expectation of 149.5296 MiB
