@@ -38,7 +38,7 @@ empty-tool-call-list exit still returns an empty response — it cannot invent o
 
 ---
 
-## 0b. `ngram-mod 12:64:32` — APPLIED and REPLICATED; one question still open
+## 0b. `ngram-mod 12:64:32` — APPLIED, REPLICATED, and the synthetic side SETTLED
 
 **The pin was changed on 2026-08-31 and the change is live.** `.env` carries
 `SPEC_TYPE=ngram-mod,draft-mtp` with `12/64/32`. Full story in
@@ -50,18 +50,19 @@ different load regime, agreeing to within one point, and positive in all eight
 round subsets. In three of the rounds the candidate benched at 2-5x the pin's
 load and still won, so the estimate is conservative.
 
-**STILL OPEN — the novel-text (synthetic) cost.** Twelve rounds across two runs
-have produced exactly TWO usable synthetic rounds, and they disagree in sign
-(-12.9% to +4.0%, p=0.46 on the last). No large or consistent penalty has
-appeared, but no cost has been ruled out either. If prose or novel-code
-generation ever feels worse, this is the thing to suspect, and the revert is one
-`.env` edit back to `ngram-simple,draft-mtp` with the three MOD keys blank.
+**SETTLED 2026-09-01 — there is no measurable novel-text cost.** The
+synthetic-only run (8 rounds, ~13 min each because one workload halves round
+duration) gave five usable rounds at a balanced n=20/20:
+medians 59.8 vs 59.6, **-0.3%**, p=0.4866. The -3.5% on MEANS is one 23.7 tok/s
+transient inside round 5 whose siblings were 39.6/64.1/52.0.
 
-The reason the synthetic side keeps failing where repeat succeeds is not
-mysterious: both workloads are measured in the same rounds, and a round is
-scored per workload — synthetic simply drew the split rounds. A synthetic-only
-run (one workload, so ~13 min rounds) would settle it far faster than another
-both-workload run.
+It excludes an effect larger than about +-7% (SE on the difference ~1.9 tok/s),
+not a small one — "no cost detectable at this power", not "exactly zero".
+
+So the pin is done: +22.3% and +23.3% on repeat across two independent runs, no
+detectable synthetic cost across five more rounds. The revert, if ever needed,
+is one `.env` edit back to `ngram-simple,draft-mtp` with the three MOD keys
+blank.
 
 The 5-round run (2026-08-31, 30 results, zero failures) gives **+23.3% on the
 repeat workload, p=0.0011**, replicated across the two rounds that survived
@@ -231,7 +232,7 @@ without new evidence; both tests are recorded above and both were negative.
 
 ---
 
-## 2. What sets the misfire rate — the actual science left
+## 2. What sets the misfire rate — NARROWED 2026-08-31 to the boundary offset
 
 §3f of `context/design/kv-cache-fidelity-measured.md` established WHAT a cliff
 is: a per-token misfire rate. The model puts ~0.2 probability on an unrelated
@@ -253,6 +254,80 @@ The rate is flat across a chunk's scored range and misfires are near-independent
 rate is set by what the chunk's HISTORY contains. Same progress-bar tokens cost
 0.121 nats with 1023 tokens of homogeneous history and ~13 nats when the history
 spans a prose/progress boundary.
+
+### 2026-08-31: the rate is moved 3.4x by the CHUNK BOUNDARY OFFSET. No GPU.
+
+`scripts/rotation_asymmetry_analyse.py` (its `cliff_cross_check`) reads
+`nll_series` out of `.ppl-cliff-logs/20260824T164959Z/result.json` — one NLL per
+scored token, which is what the misfire rate is defined on. That run carries two
+n_ctx-8192 specs whose `corpus_start` differs by 4096, i.e. section 3's
+boundary-offset variable, recorded for an unrelated purpose:
+
+| boundary offset | chunks | mean misfire (>10 nats) |
+|---|---|---:|
+| 0 | 3 | **8.2%** |
+| 4096 | 2 | **27.5%** |
+
+**3.4x, per token.** Section 3 moved a per-span PERPLEXITY; this moves THE RATE
+ITSELF, on a different instrument, in the same direction. **Sections 2 and 3 are
+one phenomenon**, demonstrated rather than conjectured.
+
+**But the claim is narrow, and the wider version is FALSE.** That comparison is
+valid only because it is REGION-MATCHED: every chunk in it sits in corpus 8k-32k
+as interleaved 4096-blocks, so offset is the only thing that differs. Pool in the
+other cliff run and the effect disappears —
+
+```
+164959Z alone (region-matched)  off=0  8.2% | off=4096 27.5%   3.37x
+all cliff runs pooled           off=0 26.7% | off=4096 28.2%   1.06x
+```
+
+— because that run contributes `86017..90111`, an **off=0 chunk at an 82.3%
+rate**: the progress-bar region 3f calls the worst in the corpus. Across regions,
+**region difficulty dwarfs offset**.
+
+So: within a matched region, offset moves the rate ~3.4x. Offset is NOT a global
+determinant of the rate, and **any sweep that mixes corpus regions will measure
+difficulty instead of offset.** The offset sweep proposed below must therefore
+hold the scored region fixed and vary only A — which is what rotation does, and
+is exactly why the depth instrument found the effect and a naive pooling does
+not. (Recorded because the wider claim was made here first and walked back
+within the hour.)
+
+**This makes the experiment below far cheaper.** The standing hypothesis is that
+the rate is set by what the history CONTAINS. Boundary offset changes exactly
+that — the same scored tokens keep the same COUNT of history while its content
+shifts by 4096 tokens — and `--chunk N:A:K` already varies it. So the corpus
+construction described below is not the only route, and probably not the first
+one: sweep A over `{0, 2048, 4096, 6144}` on ONE corpus and read the rate.
+
+**§3f's flatness: checked, upheld where claimed, and refined.** It looked at
+first like a contradiction — binning `nll_series` showed rates running 0.2% to
+10.9% within one chunk. That comparison was invalid: §3f's claim is explicitly
+about HIGH-rate chunks ("the worst chunk in the corpus", "the other two
+high-rate chunks"), and the 0.2-10.9% case is a 5.5%-rate chunk where a bin
+holds ~14 misfires and the ratio is small-count noise.
+
+Applying §3f's own test (16 position-ordered bins, first quarter vs last) to
+every chunk with an `nll_series` on disk:
+
+| chunk (scored) | rate | Q4/Q1 | |
+|---|---:|---:|---|
+| 86017..90111 | 82.3% | **1.03** | §3f's own chunk — dead flat, as claimed |
+| 24577..28671 | 29.5% | **0.99** | flat |
+| 8193..12287 | 31.2% | 1.58 | rises |
+| 16385..20479 | 23.8% | 2.54 | rises clearly |
+| 12289..16383 | 11.8% | 0.48 | too sparse to read |
+| 28673..32767 | 7.2% | 1.32 | too sparse |
+| 20481..24575 | 5.5% | 55.72 | ~14 misfires per bin; noise |
+
+So flatness REPRODUCES on the chunk it was measured on, and on one more — but it
+is **not universal among high-rate chunks**: two of the four ramp by 1.6x and
+2.5x. Both ramping chunks sit in the deep-s26b5bb half and one of them
+(8193..12287) is the first scored chunk of the corpus, so an edge effect is not
+excluded. Nothing here blocks the experiment below; it means "the rate is
+constant across a chunk" should be read as "it can be, and is in the worst
+chunks", not as a law.
 
 **The experiment to run.** This is corpus construction, not GPU time. Build
 slices whose history is deliberately homogeneous versus deliberately mixed, over

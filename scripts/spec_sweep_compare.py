@@ -34,6 +34,7 @@ import glob
 import itertools
 import json
 import os
+import random
 import statistics
 import sys
 
@@ -44,9 +45,15 @@ DEFAULT_LOAD_RATIO = 2.5
 # Absolute ceiling. Above this the box was busy for everyone, which is a fair
 # but noisy comparison; below it and the ratio test is what matters.
 DEFAULT_LOAD_MAX = 8.0
-# Permutation tests get expensive fast; above this many samples per side, fall
-# back to reporting the difference without a p-value rather than hanging.
+# Above this many samples per side an EXACT permutation test (every C(n+m, n)
+# split) is too slow, so switch to a SAMPLED one rather than refusing to answer.
+# Returning None here was backwards: it withheld the p-value exactly when the
+# comparison had the most data behind it — five pooled rounds at n=16/20 got
+# "too many samples" while a ragged n=4 mid-run got a number.
 MAX_PERM_N = 12
+# Random splits used once the exact test is out of reach. 200k gives a standard
+# error near 0.001 on a p around 0.05, which is finer than any decision here.
+SAMPLED_PERMS = 200000
 
 
 def load_results(results_dir):
@@ -119,21 +126,33 @@ def round_health(data, wl, rnd, load_max, load_ratio):
     return True, "even %.1f-%.1f%s" % (lo, hi, detail)
 
 
-def perm_p(a, b):
-    """Two-sided permutation test on the difference of means. None if too big."""
-    if len(a) + len(b) > 2 * MAX_PERM_N:
-        return None
+def perm_p(a, b, seed=20260831):
+    """Two-sided permutation test on the difference of means.
+
+    Exact while that is cheap, sampled above MAX_PERM_N per side. Returns
+    (p, kind) where kind is "exact" or "sampled", because a reader is entitled
+    to know which they are looking at.
+    """
     obs = abs(statistics.mean(a) - statistics.mean(b))
-    pool = a + b
-    hits = total = 0
-    for idx in itertools.combinations(range(len(pool)), len(a)):
-        sel = set(idx)
-        x = [pool[i] for i in idx]
-        y = [pool[i] for i in range(len(pool)) if i not in sel]
-        total += 1
-        if abs(statistics.mean(x) - statistics.mean(y)) >= obs - 1e-12:
+    pool = list(a) + list(b)
+    k = len(a)
+    if len(a) + len(b) <= 2 * MAX_PERM_N:
+        hits = total = 0
+        for idx in itertools.combinations(range(len(pool)), k):
+            sel = set(idx)
+            x = [pool[i] for i in idx]
+            y = [pool[i] for i in range(len(pool)) if i not in sel]
+            total += 1
+            if abs(statistics.mean(x) - statistics.mean(y)) >= obs - 1e-12:
+                hits += 1
+        return hits / total, "exact"
+    rng = random.Random(seed)
+    hits = 0
+    for _ in range(SAMPLED_PERMS):
+        rng.shuffle(pool)
+        if abs(statistics.mean(pool[:k]) - statistics.mean(pool[k:])) >= obs - 1e-12:
             hits += 1
-    return hits / total
+    return hits / SAMPLED_PERMS, "sampled"
 
 
 def pool(data, wl, rounds, name):
@@ -234,9 +253,9 @@ def main():
                 continue
             delta = statistics.mean(v) - statistics.mean(base)
             pct = 100.0 * delta / statistics.mean(base)
-            p = perm_p(v, base)
-            pstr = "p=%.4f" % p if p is not None else "p=n/a (too many samples)"
-            mark = "  SIGNIFICANT" if (p is not None and p < 0.05) else ""
+            p, kind = perm_p(v, base)
+            pstr = "p=%.4f (%s)" % (p, kind)
+            mark = "  SIGNIFICANT" if p < 0.05 else ""
             print("    %-24s delta=%+7.1f (%+.1f%%)  %s%s" % (name, delta, pct, pstr, mark))
 
         # The number that decides whether to act: how much does the answer move

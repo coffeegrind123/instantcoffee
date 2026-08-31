@@ -1,0 +1,87 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.53,
+      "prompt_n": 1053,
+      "prompt_tps": 777.0053637720696,
+      "predicted_n": 256,
+      "predicted_tps": 63.82729485406827,
+      "cache_n": 0,
+      "draft_n": 299,
+      "draft_accepted": 175,
+      "draft_acceptance": 0.585
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.18,
+      "prompt_n": 1053,
+      "prompt_tps": 1464.2571085302363,
+      "predicted_n": 256,
+      "predicted_tps": 46.60970169059785,
+      "cache_n": 0,
+      "draft_n": 401,
+      "draft_accepted": 175,
+      "draft_acceptance": 0.436
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.2,
+      "prompt_n": 1053,
+      "prompt_tps": 1159.5039129127774,
+      "predicted_n": 256,
+      "predicted_tps": 55.42695053959767,
+      "cache_n": 0,
+      "draft_n": 509,
+      "draft_accepted": 178,
+      "draft_acceptance": 0.35
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 6.67,
+      "prompt_n": 1053,
+      "prompt_tps": 1210.872322540509,
+      "predicted_n": 256,
+      "predicted_tps": 50.147236218654534,
+      "cache_n": 0,
+      "draft_n": 363,
+      "draft_accepted": 168,
+      "draft_acceptance": 0.463
+    }
+  ],
+  "config": {
+    "name": "ngrammod-12-64-32-n4",
+    "spec_type": "ngram-mod,draft-mtp",
+    "n_max": 4,
+    "p_min": 0.4,
+    "draft_gguf": null,
+    "ngram_mod": "12:64:32",
+    "workload": "synthetic",
+    "repeat": 4,
+    "round": 3,
+    "load_before": 3.18,
+    "load_after": 3,
+    "load_warn": 8,
+    "prompt_len": null
+  },
+  "pins": {
+    "llama_tag": "server-cuda-b10689",
+    "llama_digest": "sha256:e52c610406cd18714902d1ca3bffadebca4a2a8370faaba8a5be5cc5d5203921",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479",
+    "ctx_size": "98304",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
+  },
+  "measured_utc": "2026-08-31T20:11:15Z"
+}

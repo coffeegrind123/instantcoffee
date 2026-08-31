@@ -207,6 +207,43 @@ reads as noise around zero rather than a suppressed real effect.
 independently. Its novel-text cost remains unmeasured, bounded loosely at
 "nothing large or consistent across twelve rounds."**
 
+## The synthetic side, settled (2026-09-01)
+
+The one open risk on the live pin. Answered by a SYNTHETIC-ONLY run — one
+workload halves round duration to ~13 min, and short rounds survive load splits,
+which is why the earlier both-workload runs kept yielding one usable synthetic
+round out of six. 8 rounds, `--repeat 4`, 16 results, zero failures. Five rounds
+survived, balanced n=20/20:
+
+| config | mean | median |
+|---|---:|---:|
+| `ngram-pmin-040-n4` | 59.3 | 59.8 |
+| `ngrammod-12-64-32-n4` | 57.3 | 59.6 |
+| delta | -2.1 (-3.5%) | **-0.3%** |
+
+`p=0.4866`. **No measurable cost on novel text.**
+
+**Read the median, not the mean, and here is why.** The candidate's minimum is
+23.7 against the pin's 47.2 — a single 2.7x transient inside round 5, whose
+siblings were 39.6, 64.1 and 52.0. That one sample is the whole -3.5%; the
+medians differ by 0.3%.
+
+**What this run can and cannot exclude.** With n=20 per side and a within-config
+spread of roughly 47-71, the standard error on the difference is about 1.9 tok/s
+— so it excludes a true effect larger than about +-7%, not a small one. The
+honest claim is "no cost detectable at this power", not "exactly zero".
+
+**A limitation of the load guard, found here.** Load is stamped before and after
+a whole four-repeat bench, so a transient INSIDE one is invisible to the
+round-health test: round 5 stamped a respectable 6.0->5.3 while containing that
+2.7x slowdown. The dropped round 2 shows the same shape on the PIN side (7.4
+among 54.5/72.4/56.3). Per-repeat stamping would catch it; per-round pooling and
+medians are the current defence.
+
+**Status of the pin, complete:** +22.3% and +23.3% on the repeat workload across
+two independent runs, and no detectable cost on synthetic across five more
+rounds. The tradeoff it was feared to be is not one.
+
 ## Applying it
 
 One edit, and the ngram arm changes from `ngram-simple` to `ngram-mod`:

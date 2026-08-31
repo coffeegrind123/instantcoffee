@@ -1,0 +1,134 @@
+ Image instantcoffee/proxy:0.9.5 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 590B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 14.59kB 0.1s done
+#2 DONE 0.2s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.9s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.2s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f
+#6 resolve docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f
+#6 resolve docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f 0.2s done
+#6 DONE 0.2s
+
+#5 [internal] load build context
+#5 transferring context: 1.35kB 0.4s done
+#5 DONE 0.4s
+
+#7 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#7 CACHED
+
+#8 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.5"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#8 CACHED
+
+#9 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py      /tmp/patches/
+#9 CACHED
+
+#10 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py      scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/test_forge_patches.py /work/scripts/
+#10 CACHED
+
+#11 [2/8] RUN test -n "0.9.5" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#11 CACHED
+
+#12 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE"     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE"     && python /tmp/patches/forge_empty_turn.py "$SITE"     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE"     && python /tmp/patches/forge_stream_timeout.py "$SITE"     && rm -rf /tmp/patches
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:e5e255bf29f61597d43b3cfc09e406e58c06b7897727418ebe35f8d58c8095f9 done
+#14 exporting config sha256:4534569d49cfd8a7e45ca97e864314b030bcfee3b6e4516998eb7c40f1449998 done
+#14 exporting attestation manifest sha256:4d4eb168ec7e5c6b21c693735878db25194c6f947791d6315ee8f4c435757054 0.0s done
+#14 exporting manifest list sha256:4e3df073a7f5cf852020fe1cc720addbb13ec8631dcf3d47324eeb1c62f555fa
+#14 exporting manifest list sha256:4e3df073a7f5cf852020fe1cc720addbb13ec8631dcf3d47324eeb1c62f555fa 0.0s done
+#14 naming to docker.io/instantcoffee/proxy:0.9.5 done
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5 0.0s done
+#14 DONE 0.1s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image instantcoffee/proxy:0.9.5 Built 
+ Container instantcoffee-bench-run-8c9ffd5aaabb Creating 
+ Container instantcoffee-bench-run-8c9ffd5aaabb Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=1024   prompt=1053   prefill=   777.0 tok/s  decode=  63.8 tok/s  wall=  5.53s draft=175/299 (58% accepted)
+  pp=1024   prompt=1053   prefill=  1464.3 tok/s  decode=  46.6 tok/s  wall=  7.18s draft=175/401 (44% accepted)
+  pp=1024   prompt=1053   prefill=  1159.5 tok/s  decode=  55.4 tok/s  wall=  7.20s draft=178/509 (35% accepted)
+  pp=1024   prompt=1053   prefill=  1210.9 tok/s  decode=  50.1 tok/s  wall=  6.67s draft=168/363 (46% accepted)
+
+best prefill: 1464.3 tok/s     best decode: 63.8 tok/s
+MTP draft acceptance: 696/1572 = 44.3% across 4 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.53,
+      "prompt_n": 1053,
+      "prompt_tps": 777.0053637720696,
+      "predicted_n": 256,
+      "predicted_tps": 63.82729485406827,
+      "cache_n": 0,
+      "draft_n": 299,
+      "draft_accepted": 175,
+      "draft_acceptance": 0.585
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.18,
+      "prompt_n": 1053,
+      "prompt_tps": 1464.2571085302363,
+      "predicted_n": 256,
+      "predicted_tps": 46.60970169059785,
+      "cache_n": 0,
+      "draft_n": 401,
+      "draft_accepted": 175,
+      "draft_acceptance": 0.436
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.2,
+      "prompt_n": 1053,
+      "prompt_tps": 1159.5039129127774,
+      "predicted_n": 256,
+      "predicted_tps": 55.42695053959767,
+      "cache_n": 0,
+      "draft_n": 509,
+      "draft_accepted": 178,
+      "draft_acceptance": 0.35
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 6.67,
+      "prompt_n": 1053,
+      "prompt_tps": 1210.872322540509,
+      "predicted_n": 256,
+      "predicted_tps": 50.147236218654534,
+      "cache_n": 0,
+      "draft_n": 363,
+      "draft_accepted": 168,
+      "draft_acceptance": 0.463
+    }
+  ]
+}

@@ -163,6 +163,121 @@ def test_dose_response(doc, label):
     return True
 
 
+def cliff_cross_check(path=".ppl-cliff-logs/20260824T164959Z/result.json"):
+    """The same offset effect, on PER-TOKEN data from a different instrument.
+
+    The depth runs give per-span perplexity. The cliff runs give `nll_series`,
+    one NLL per scored token, which is what section 2's MISFIRE RATE is defined
+    on -- so this is where the two sections meet. That run happens to carry two
+    n_ctx-8192 specs whose `corpus_start` differs by 4096, which is exactly the
+    boundary-offset variable, measured for an unrelated purpose.
+
+    THIS COMPARISON IS ONLY VALID BECAUSE IT IS REGION-MATCHED, and the default
+    path is pinned to one run for that reason. Every chunk in 20260824T164959Z
+    lies in corpus 8k-32k as interleaved 4096-blocks, so offset is the only
+    thing that differs.
+
+    Pool it with the other cliff runs and the effect DISAPPEARS: off=0 goes to
+    26.7% against off=4096's 28.2%, a ratio of 1.06. That is not a refutation,
+    it is a confound -- the other run contributes 86017..90111, an off=0 chunk
+    at an 82.3% rate, which is the progress-bar region section 3f calls the
+    worst in the corpus. Across regions, REGION DIFFICULTY DWARFS OFFSET.
+
+    So the honest claim is narrow: within a matched region, boundary offset
+    moves the misfire rate ~3.4x. Offset is NOT a global determinant of the
+    rate, and any sweep that mixes corpus regions will measure difficulty
+    instead. (Recorded because the wider claim was made here first, on
+    2026-08-31, and had to be walked back within the hour.)
+    """
+    if not os.path.exists(path):
+        print("\n(cliff cross-check skipped: %s not present)" % path)
+        return
+    doc = json.load(open(path))
+    print("\n=== cliff cross-check: misfire RATE by boundary offset (per-token) ===")
+    print("  section 2's quantity, moved by section 3's variable, on a different instrument.")
+    by_off = {}
+    for spec in doc.get("specs", []):
+        off = spec.get("corpus_start", 0) % 8192
+        for c in spec.get("by_chunk", []):
+            ser = [x for x in c.get("nll_series", []) if isinstance(x, (int, float))]
+            if not ser:
+                continue
+            rate = 100.0 * sum(1 for x in ser if x > 10.0) / len(ser)
+            mean = sum(ser) / len(ser)
+            by_off.setdefault(off, []).append((c.get("chunk"), c.get("scored_corpus"), mean, rate))
+    for off in sorted(by_off):
+        print("  offset %d:" % off)
+        for chunk, scored, mean, rate in by_off[off]:
+            print("    chunk %s scored %s  mean_nll %.3f  ppl %8.1f  misfire>10nats %5.2f%%"
+                  % (chunk, scored, mean, math.exp(mean), rate))
+    if len(by_off) == 2:
+        a, b = sorted(by_off)
+        ra = sum(r for _c, _s, _m, r in by_off[a]) / len(by_off[a])
+        rb = sum(r for _c, _s, _m, r in by_off[b]) / len(by_off[b])
+        lo, hi = (ra, rb) if ra < rb else (rb, ra)
+        print("  mean misfire rate: offset %d = %.1f%%, offset %d = %.1f%%  (%.1fx)"
+              % (a, ra, b, rb, hi / lo if lo else 0))
+        print("  -> within this REGION-MATCHED set, the boundary offset moves the MISFIRE")
+        print("     RATE itself, not merely the aggregate ppl. Do not pool across corpus")
+        print("     regions: region difficulty dominates and the effect vanishes (1.06x).")
+
+
+def flatness_check():
+    """Section 3f's own test: is the misfire rate constant across a chunk?
+
+    3f demonstrates flatness on the worst chunk in the corpus and says the same
+    holds for "the other two high-rate chunks". Re-running it over every chunk
+    with an nll_series on disk both REPRODUCES that and bounds it.
+
+    Read the low-rate rows with care, and this is the trap worth naming: at a
+    5.5% rate a 256-token bin holds about 14 misfires, so a Q4/Q1 ratio of 55x
+    is small-count noise, not a refutation of anything. Comparing a low-rate
+    chunk against a claim made about high-rate chunks is a category error -- it
+    was made once here, on 2026-08-31, and this function exists so the next
+    reader sees the rates beside the ratios.
+    """
+    rows = []
+    for path in sorted(glob.glob(".ppl-cliff-logs/*/result.json")):
+        try:
+            doc = json.load(open(path))
+        except (ValueError, OSError):
+            continue
+        for spec in doc.get("specs", []):
+            off = spec.get("corpus_start", 0) % 8192
+            for c in spec.get("by_chunk", []):
+                ser = [x for x in c.get("nll_series", []) if isinstance(x, (int, float))]
+                if len(ser) < 1000:
+                    continue
+                n = len(ser)
+                b = n // 16
+                rate = 100.0 * sum(1 for x in ser if x > 10.0) / n
+                bins = []
+                for i in range(16):
+                    seg = ser[i * b:(i + 1) * b] if i < 15 else ser[15 * b:]
+                    bins.append(100.0 * sum(1 for x in seg if x > 10.0) / max(1, len(seg)))
+                q1 = statistics.mean(bins[:4])
+                q4 = statistics.mean(bins[-4:])
+                rows.append((c.get("scored_corpus"), off, rate, q1, q4,
+                             rate * b / 100.0))
+    if not rows:
+        print("\n(flatness check skipped: no nll_series on disk)")
+        return
+    print("\n=== section 3f flatness: misfire rate across the scored range ===")
+    print("  %-22s %6s %6s %6s %7s %9s" % ("chunk", "rate%", "Q1%", "Q4%", "Q4/Q1", "misfires/bin"))
+    for sc, off, rate, q1, q4, per_bin in sorted(rows, key=lambda r: -r[2]):
+        ratio = (q4 / q1) if q1 else float("inf")
+        note = "" if per_bin >= 30 else "   <- too sparse to read"
+        print("  %-22s %6.1f %6.1f %6.1f %7.2f %9.0f%s"
+              % (str(sc), rate, q1, q4, ratio, per_bin, note))
+    high = [r for r in rows if r[2] > 20]
+    flat = [r for r in high if 0.8 <= ((r[4] / r[3]) if r[3] else 9) <= 1.25]
+    print("  high-rate chunks (>20%%): %d, of which flat (0.8-1.25x): %d"
+          % (len(high), len(flat)))
+    print("  -> 3f reproduces where it was claimed; it is NOT universal among")
+    print("     high-rate chunks. Read it as 'it can be, and is in the worst", end="")
+    print(" chunks'.")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -183,6 +298,8 @@ def main():
         label = os.path.basename(os.path.normpath(r))
         did_any |= test_span_selection(doc, label)
         did_any |= test_dose_response(doc, label)
+    cliff_cross_check()
+    flatness_check()
     if not did_any:
         sys.exit("no run carried both a span_map and an 8192 arm")
     return 0

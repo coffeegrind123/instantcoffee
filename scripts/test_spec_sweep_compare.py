@@ -129,9 +129,10 @@ class PermutationTest(unittest.TestCase):
     def test_separated_samples_are_significant(self):
         a = [200.0, 202.0, 204.0, 206.0]
         b = [150.0, 152.0, 154.0, 156.0]
-        p = perm_p(a, b)
+        p, kind = perm_p(a, b)
         # 8 choose 4 = 70 splits; only the observed one (and its mirror) reach
         # the observed separation, so p = 2/70.
+        self.assertEqual(kind, "exact")
         self.assertAlmostEqual(p, 2.0 / 70.0, places=6)
 
     def test_overlapping_samples_are_not(self):
@@ -139,11 +140,36 @@ class PermutationTest(unittest.TestCase):
         test above is passing because perm_p always returns something small."""
         a = [200.0, 150.0, 198.0, 152.0]
         b = [199.0, 151.0, 197.0, 153.0]
-        p = perm_p(a, b)
+        p, kind = perm_p(a, b)
+        self.assertEqual(kind, "exact")
         self.assertGreater(p, 0.5)
 
-    def test_returns_none_rather_than_hanging_on_large_inputs(self):
-        self.assertIsNone(perm_p([1.0] * 20, [2.0] * 20))
+    def test_large_inputs_are_SAMPLED_not_refused(self):
+        """The exact test is O(C(n+m,n)) and cannot run at these sizes, but
+        refusing to answer withheld a p-value exactly when the comparison had
+        the most data behind it — five pooled rounds at n=16/20 printed "too
+        many samples" while a ragged n=4 mid-run printed a number. It now falls
+        back to a sampled test and SAYS which kind it used."""
+        p, kind = perm_p([1.0] * 20, [2.0] * 20)
+        self.assertEqual(kind, "sampled")
+        self.assertLess(p, 0.05, "two perfectly separated groups must be significant")
+
+    def test_sampled_agrees_with_exact_on_a_case_both_can_do(self):
+        """CONTROL for the fallback: on separated data small enough for the
+        exact test, the sampled path must reach the same verdict, or the
+        fallback is not measuring the same thing."""
+        import spec_sweep_compare as mod
+        a = [200.0, 202.0, 204.0, 206.0]
+        b = [150.0, 152.0, 154.0, 156.0]
+        exact_p, exact_kind = perm_p(a, b)
+        saved = mod.MAX_PERM_N
+        try:
+            mod.MAX_PERM_N = 1          # force the sampled branch
+            samp_p, samp_kind = perm_p(a, b)
+        finally:
+            mod.MAX_PERM_N = saved
+        self.assertEqual((exact_kind, samp_kind), ("exact", "sampled"))
+        self.assertAlmostEqual(exact_p, samp_p, delta=0.01)
 
 
 class Pooling(unittest.TestCase):
