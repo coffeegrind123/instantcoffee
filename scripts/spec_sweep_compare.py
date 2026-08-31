@@ -50,7 +50,14 @@ DEFAULT_LOAD_MAX = 8.0
 # Returning None here was backwards: it withheld the p-value exactly when the
 # comparison had the most data behind it — five pooled rounds at n=16/20 got
 # "too many samples" while a ragged n=4 mid-run got a number.
-MAX_PERM_N = 12
+#
+# EIGHT, not twelve, and the difference is not cosmetic. C(24,12) is 2,704,156
+# splits and the tool took over two minutes on three comparisons at n=12 — the
+# SAME failure as the one above wearing a different hat: unusable exactly as the
+# data accumulates. C(16,8) is 12,870, which is instant, and the sampled test
+# above it is accurate to ~0.001 on a p near 0.05. Exactness is worth having
+# only where it is free.
+MAX_PERM_N = 8
 # Random splits used once the exact test is out of reach. 200k gives a standard
 # error near 0.001 on a p around 0.05, which is finer than any decision here.
 SAMPLED_PERMS = 200000

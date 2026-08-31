@@ -89,48 +89,61 @@ to look for, and the fix is to re-run the synthetic workload with more rounds.
 
 ---
 
-## 0c. Three ngram modes still unmeasured (rows now in the grid)
+## 0c. Three ngram modes MEASURED 2026-09-01 — one is an upgrade
 
-`ngram-map-k`, `ngram-map-k4v` and `ngram-cache` are in this build's
-`--spec-type` list and have never run here. They are now `CONFIGS` rows
-(`ngrammapk-n4`, `ngrammapk4v-n4`, `ngramcache-n4`) at engine defaults and the
-pin's MTP settings, so the ngram arm is the only variable — the same design as
-the `ngram-mod` defaults control.
+`ngram-map-k`, `ngram-map-k4v` and `ngram-cache` had never run here. They have
+now, against the LIVE pin (`ngram-mod 12:64:32`), repeat workload only, 7 rounds,
+`--repeat 4`. 28 results, zero failures, and **every round came back `even`** —
+the first fully clean run of the day, because repeat-only rounds are short
+(~26 min for four configs) and the box stayed quiet.
 
-```bash
-./scripts/spec-sweep.sh --workload synthetic,repeat --rounds 3 --repeat 4 \
-  --results-dir context/bench/spec-sweep-ngrammodes \
-  --only ngram-pmin-040-n4,ngrammapk-n4,ngrammapk4v-n4,ngramcache-n4
+Six usable rounds, n=24 a side:
+
+| mode | vs the live pin | p | per-round |
+|---|---:|---:|---|
+| `ngram-map-k` | **+8.7%** | 0.0147 | positive in all 7 (3.9-20.1%) |
+| `ngram-map-k4v` | -6.5% | 0.0514 | mostly negative (-11.4 to +2.3) |
+| `ngram-cache` | **-58.4%** | 0.0000 | -55.6 to -60.5, every round |
+
+**`ngram-map-k` is a real, small upgrade — RECOMMENDED for a follow-up decision.**
+It ran at ENGINE DEFAULTS (`size-n 12, size-m 48, min-hits 1`); its knob family
+is deliberately not plumbed, so adopting it is one `.env` line:
+
+```
+SPEC_TYPE=ngram-map-k,draft-mtp     # keep n-max 4 / p-min 0.40
 ```
 
-~1h45m at the measured 7.3 min per arm-instance. Their own size-n/size-m/
-min-hits families are deliberately NOT plumbed: measure the modes first, plumb
-the knobs of whichever one earns it.
+Tuning it afterwards WOULD need plumbing, mirroring `SPEC_NGRAM_MOD_*` in
+`.env` and `docker-compose.yml`. Worth doing only if the default already earns
+its place, which it does.
 
-The state: on the repeat workload — the shape pi produces — `ngram-mod` at
-`n-min 12 / n-max 64 / n-match 32` beat the production pin by **+22.8%
-(p=0.0014)** when pooling the two load-clean rounds of an interleaved run, at no
-measurable cost on novel text (-3.1%, p=0.52).
+**`ngram-cache` is rejected decisively** — 58% below the pin, p=0.0000, and the
+per-round figures barely move. **`ngram-map-k4v` is not an improvement** and may
+be a small regression.
 
-**Why it was not adopted.** The sensitivity analysis moves too much:
+### The mid-run scare, and what it was
 
-| rounds used | delta | p |
-|---|---:|---:|
-| 1+3 (clean) | +22.8% | 0.0014 |
-| all three | +10.5% | — |
-| 2+3 (the script's own default) | **+2.1%** | **0.797** |
-| 3 only | +17.3% | 0.143 |
-| 1 only | +28.2% | 0.029 |
+The delta appeared to DECAY across rounds (20.1 -> 12.0 -> 5.5 -> 3.9), which
+looked like a result evaporating. It was not: the PIN had an anomalously low
+round 2 (187.4 against its usual ~210) which inflated the early deltas, while
+`map-k` itself sat steady at 222-235 from round 2 on. Dropping the pin's dip:
 
-Every subset is positive, so the direction is robust; the magnitude is not. The
-headline depends on excluding round 2, which is justified (a 10x load difference
-*between configs inside that round*, recorded in the load stamps) but is still a
-judgement call — and the default analysis finds nothing. Round 1 is not neutral
-either: its rotation puts the pin first, so the pin pays the coldest cache.
+```
+rounds 2-7 (all usable)              map-k +8.7%
+rounds 3-7 (excluding the pin dip)   map-k ~+7%
+```
 
-Analyse any re-run with `python3 scripts/spec_sweep_compare.py --results-dir
-<dir> --baseline ngram-pmin-040-n4`. Do not eyeball `--report` for this: it
-ranks arms, it does not tell you whether the gap is real.
+That correction WEAKENS map-k and STRENGTHENS both rejections, so it is not
+cherry-picked in a convenient direction.
+
+### A methodological note worth keeping
+
+This item was twice argued here to be low value, on the grounds that these modes
+"draft short" (`DRAFT/CYCLE` 5.7-9.7 against the pin's 34.2) and so looked
+unpromising. That reading came from a LOAD-SPLIT round — exactly the kind this
+repo's own tooling refuses to read — and it was believed because it agreed with
+a plausible mechanism. The draft-length observation was even true; it simply did
+not predict throughput. **A plausible mechanism is not a measurement.**
 
 ---
 
@@ -288,11 +301,44 @@ rate**: the progress-bar region 3f calls the worst in the corpus. Across regions
 
 So: within a matched region, offset moves the rate ~3.4x. Offset is NOT a global
 determinant of the rate, and **any sweep that mixes corpus regions will measure
-difficulty instead of offset.** The offset sweep proposed below must therefore
-hold the scored region fixed and vary only A — which is what rotation does, and
-is exactly why the depth instrument found the effect and a naive pooling does
-not. (Recorded because the wider claim was made here first and walked back
-within the hour.)
+difficulty instead of offset.** (Recorded because the wider claim was made here
+first and walked back within the hour.)
+
+### And an offset sweep CANNOT replace the corpus construction. Here is why.
+
+Earlier this session it was written here that varying `A` "may answer 2 without
+building any new corpora". That is wrong, and the reason is structural rather
+than practical.
+
+A token `t` is scored when its in-chunk position `p = t - s` falls in
+`[N/2+1, N-1]`, so the chunk starts that score it are
+
+```
+s in [t - N + 1, t - N/2 - 1]        N=8192, t=12000 -> s in [3809, 7903]
+```
+
+4095 different starts score the same token — verified against the specs already
+on disk (`start 4096 -> scored 8193..12287`, `start 8192 -> scored
+12289..16383`, both matching the formula exactly). So the same token CAN be
+re-scored under many histories, which is the lever section 2 wants.
+
+**But moving `s` moves two things at once.** History CONTENT is `corpus[s, t)`
+and history AMOUNT is `t - s`; across that window the amount runs 4832..7904, a
+1.6x range. With CONTIGUOUS history the two cannot be separated: fix the token
+and fix the amount, and `s` is determined, and so is the content. There is no
+third degree of freedom.
+
+**That is exactly why section 2 proposed corpus construction**, and the proposal
+should be read as deliberate rather than as the expensive option. Changing what
+is INSIDE `corpus[s, t)` — homogeneous versus mixed — varies content while
+holding the token AND the amount fixed. Nothing else does.
+
+**What an offset sweep is still worth**, and it is cheap: it varies content and
+amount TOGETHER over a known 1.6x amount range, and 3d/3e already characterise
+what amount alone buys. If the offset-induced swing greatly exceeds what depth
+predicts over that range, content is implicated without building anything. Treat
+it as a bound that decides whether the corpus work is warranted, not as a
+substitute for it.
 
 **This makes the experiment below far cheaper.** The standing hypothesis is that
 the rate is set by what the history CONTAINS. Boundary offset changes exactly
