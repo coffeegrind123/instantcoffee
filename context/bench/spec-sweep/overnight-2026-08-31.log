@@ -1,0 +1,321 @@
+pins: server-cuda-b10689  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b
+==> sweeping 3 config(s) x 2 workload(s) into context/bench/spec-sweep-overnight
+current: SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40
+==> ===== round 1 of 5 =====
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  ok   the running llama already serves this config — benching it as-is (saved a ~27 min reload)
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-simple,draft-mtp' want='ngram-mod,draft-mtp') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammod-8-32-24-n3 — SPEC_TYPE=ngram-mod,draft-mtp n-max=3 p-min=0.40 draft=none mod=8:32:24
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='3') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammod-8-32-24-n3 [synthetic] — host load is 8.76 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [synthetic] recorded
+warn ngrammod-8-32-24-n3 [repeat] — host load is 10.10 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [repeat] recorded
+==> ===== round 2 of 5 =====
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='3' want='4') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammod-12-64-32-n4 [synthetic] — host load is 15.92 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+warn ngrammod-12-64-32-n4 [repeat] — host load is 15.04 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammod-8-32-24-n3 — SPEC_TYPE=ngram-mod,draft-mtp n-max=3 p-min=0.40 draft=none mod=8:32:24
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='3') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [repeat] recorded
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='3' want='4') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ===== round 3 of 5 =====
+==> ngrammod-8-32-24-n3 — SPEC_TYPE=ngram-mod,draft-mtp n-max=3 p-min=0.40 draft=none mod=8:32:24
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='3') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [repeat] recorded
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='3' want='4') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-simple,draft-mtp' want='ngram-mod,draft-mtp') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ===== round 4 of 5 =====
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-mod,draft-mtp' want='ngram-simple,draft-mtp') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-simple,draft-mtp' want='ngram-mod,draft-mtp') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammod-12-64-32-n4 [synthetic] — host load is 8.64 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+warn ngrammod-12-64-32-n4 [repeat] — host load is 8.47 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammod-8-32-24-n3 — SPEC_TYPE=ngram-mod,draft-mtp n-max=3 p-min=0.40 draft=none mod=8:32:24
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='3') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [repeat] recorded
+==> ===== round 5 of 5 =====
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='3' want='4') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+warn ngrammod-12-64-32-n4 [repeat] — host load is 16.54 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammod-8-32-24-n3 — SPEC_TYPE=ngram-mod,draft-mtp n-max=3 p-min=0.40 draft=none mod=8:32:24
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='3') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [synthetic] recorded
+warn ngrammod-8-32-24-n3 [repeat] — host load is 36.38 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-8-32-24-n3 [repeat] recorded
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='3' want='4') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> .env restored to its pre-sweep state
+  ok llama is already serving the pre-sweep config — no reload needed
+
+==> workload: synthetic
+CONFIG               SPEC-TYPE              N-MAX  P-MIN MOD         RND  PREFILL DEC-MEAN  DEC-MAX  SPREAD  ACCEPT DRAFT/CYCLE   ECHO
+------------------------------------------------------------------------------------------------------------------------------------------------
+ngram-pmin-040-n4    ngram-simple,draft-mtp     4    0.4 default     4/5   1488.9     64.3     81.8    31.3   57.0%        3.74      -
+ngrammod-8-32-24-n3  ngram-mod,draft-mtp        3    0.4 8:32:24     4/5   1490.2     60.6     70.3    30.4   56.6%        3.29      -
+ngrammod-12-64-32-n4 ngram-mod,draft-mtp        4    0.4 12:64:32    4/5   1429.9     55.3     71.0    66.3   46.9%        4.43      -
+
+==> provenance
+  [current stack] 15 result(s)
+    llama=server-cuda-b10689  digest=e52c610406cd  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b mtime 1787676479  ngram(min_hits/n/m)=def/def/def
+  ok   all results came off the stack this box is configured for
+
+==> load
+warn measured on a BUSY box — not comparable with quiet-box rows:
+  ngrammod-12-64-32-n4 [synthetic] load 15.92 -> 15.04 (threshold 8)
+  ngrammod-12-64-32-n4 [synthetic] load 8.64 -> 8.47 (threshold 8)
+  ngrammod-12-64-32-n4 [synthetic] load 6.49 -> 16.54 (threshold 8)
+  ngrammod-8-32-24-n3 [synthetic] load 8.76 -> 10.1 (threshold 8)
+  ngrammod-8-32-24-n3 [synthetic] load 6.65 -> 37.11 (threshold 8)
+warn Re-run these before ranking them against anything.
+
+==> workload: repeat
+CONFIG               SPEC-TYPE              N-MAX  P-MIN MOD         RND  PREFILL DEC-MEAN  DEC-MAX  SPREAD  ACCEPT DRAFT/CYCLE   ECHO
+------------------------------------------------------------------------------------------------------------------------------------------------
+ngrammod-12-64-32-n4 ngram-mod,draft-mtp        4    0.4 12:64:32    4/5   1614.4    229.3    253.7    73.0   68.0%       34.23  98.8%
+ngrammod-8-32-24-n3  ngram-mod,draft-mtp        3    0.4 8:32:24     4/5   1578.0    189.4    204.8    50.3   76.6%       20.81  98.8%
+ngram-pmin-040-n4    ngram-simple,draft-mtp     4    0.4 default     4/5   1637.2    185.5    199.8    29.9   63.0%       24.64  98.8%
+
+==> provenance
+  [current stack] 15 result(s)
+    llama=server-cuda-b10689  digest=e52c610406cd  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b mtime 1787676479  ngram(min_hits/n/m)=def/def/def
+  ok   all results came off the stack this box is configured for
+
+==> load
+warn measured on a BUSY box — not comparable with quiet-box rows:
+  ngram-pmin-040-n4 [repeat] load 6.72 -> 8.52 (threshold 8)
+  ngrammod-12-64-32-n4 [repeat] load 15.04 -> 11.6 (threshold 8)
+  ngrammod-12-64-32-n4 [repeat] load 8.47 -> 7.87 (threshold 8)
+  ngrammod-12-64-32-n4 [repeat] load 16.54 -> 9.35 (threshold 8)
+  ngrammod-8-32-24-n3 [repeat] load 10.1 -> 10.12 (threshold 8)
+  ngrammod-8-32-24-n3 [repeat] load 36.38 -> 31.57 (threshold 8)
+warn Re-run these before ranking them against anything.
+
+Rows are sorted by DEC-MEAN, best first.
+
+READ SPREAD BEFORE READING THE RANKING. It is max-min across this config's own
+--repeat runs. If SPREAD is wider than the gap between two rows, those two rows
+are not distinguishable and ranking them is false precision. Earlier handoffs
+quote DEC-MAX, which is what this table printed, unlabelled, before the
+2026-08-22 provenance pass.
+
+How to read DRAFT/CYCLE (the column this sweep was built for):
+  ~1.0 with n-max 2  -> p-min is truncating the draft. Lower SPEC_DRAFT_P_MIN.
+  ~n-max             -> n-max is binding. Raise SPEC_DRAFT_N_MAX.
+  Between            -> both bite; take the row with the best DECODE and stop.
+It is a property of the drafting rather than of the clock, so it is the most
+contention-resistant number here and the one to prefer when decode is close.
+
+ACCEPT is a rate, not a goal. It is expected to fall as p-min drops; that is
+the trade being bought. DECODE is the number that decides.
+
+ECHO (--workload repeat only) is the share of generated 12-token windows that
+also occur in the prompt — the ceiling on what ngram-simple could ever draft.
+It is a property of the workload, not of the config, so it should be roughly
+constant down the column. If it is not, the runs are not comparable. A high
+ECHO next to a DRAFT/CYCLE pinned at n-max is repetition the engine is paying
+full price for; that is the case ngram-simple exists to fix. ECHO reads "-" on
+the synthetic workload, whose repetition is incidental rather than measured.
+  ok sweep complete

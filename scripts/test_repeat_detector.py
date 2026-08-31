@@ -39,7 +39,7 @@ PASSED = 0
 FAILED = 0
 
 
-def test(name: str, expected_count: int, text: str, threshold: int = 3) -> None:
+def check(name: str, expected_count: int, text: str, threshold: int = 3) -> None:
     global PASSED, FAILED
     count, length = check_for_repeats(text, threshold)
     ok = count >= threshold if expected_count >= threshold else count < threshold
@@ -51,78 +51,100 @@ def test(name: str, expected_count: int, text: str, threshold: int = 3) -> None:
         print(f"  FAIL {name}: expected {'>=' if expected_count >= threshold else '<'} {threshold}, got count={count}, length={length}")
 
 
-# --- degenerate repeats (should be detected) ---------------------------------
+# --- the checks -------------------------------------------------------------
+#
+# Wrapped in a function, and the summary guarded by __main__, so that IMPORTING
+# this module is side-effect free. Before 2026-08-31 both ran at import time and
+# the module ended in sys.exit(), which aborts pytest COLLECTION -- not just
+# this file, the entire suite. `pytest scripts/ -q` reported "no tests ran"
+# while 124 tests sat there passing, and docs/context-budget.md already warns
+# that a collection error is the one check that earns its place over all others.
+# It still runs as a script exactly as it did: python3 scripts/test_repeat_detector.py
 
-test("exact repeat x3",
-     3,
-     "hello hello hello ")
+def _all_checks() -> None:
+    global PASSED, FAILED
+    PASSED = 0
+    FAILED = 0
+    # --- degenerate repeats (should be detected) ---------------------------------
 
-test("exact repeat x5",
-     5,
-     "The error was: timeout\nThe error was: timeout\nThe error was: timeout\nThe error was: timeout\nThe error was: timeout\n")
+    check("exact repeat x3",
+         3,
+         "hello hello hello ")
 
-test("substring repeat at end",
-     4,
-     "OK, let me fix that.\nOK, let me fix that.\nOK, let me fix that.\nOK, let me fix that.")
+    check("exact repeat x5",
+         5,
+         "The error was: timeout\nThe error was: timeout\nThe error was: timeout\nThe error was: timeout\nThe error was: timeout\n")
 
-test("single char repeat",
-     10,
-     "aaaaaaaaaaa")  # 11 'a' chars
+    check("substring repeat at end",
+         4,
+         "OK, let me fix that.\nOK, let me fix that.\nOK, let me fix that.\nOK, let me fix that.")
 
-test("two-char repeat",
-     5,
-     "()()()()()()")  # 6 pairs
+    check("single char repeat",
+         10,
+         "aaaaaaaaaaa")  # 11 'a' chars
 
-# --- legitimate code (should NOT be flagged) ---------------------------------
+    check("two-char repeat",
+         5,
+         "()()()()()()")  # 6 pairs
 
-test("indentation not a loop",
-     0,  # expect count < threshold
-     "    def foo():\n        pass\n    def bar():\n        pass\n    def baz():\n        pass\n")
+    # --- legitimate code (should NOT be flagged) ---------------------------------
 
-test("JSON response",
-     0,
-     '{"tool_calls":[{"function":{"name":"get_weather","arguments":"{\\"city\\":\\"Tokyo\\"}"}}]}\n')
+    check("indentation not a loop",
+         0,  # expect count < threshold
+         "    def foo():\n        pass\n    def bar():\n        pass\n    def baz():\n        pass\n")
 
-test("normal code block",
-     0,
-     "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n")
+    check("JSON response",
+         0,
+         '{"tool_calls":[{"function":{"name":"get_weather","arguments":"{\\"city\\":\\"Tokyo\\"}"}}]}\n')
 
-test("short repeated tokens (below threshold)",
-     0,
-     "});\n});\n")  # 2 repeats, threshold is 3
+    check("normal code block",
+         0,
+         "def add(a, b):\n    return a + b\n\ndef sub(a, b):\n    return a - b\n")
 
-# --- edge cases --------------------------------------------------------------
+    check("short repeated tokens (below threshold)",
+         0,
+         "});\n});\n")  # 2 repeats, threshold is 3
 
-test("empty string",
-     0,
-     "")
+    # --- edge cases --------------------------------------------------------------
 
-test("single char",
-     0,
-     "x")
+    check("empty string",
+         0,
+         "")
 
-test("newlines only (4 blank lines IS degenerate)",
-     4,  # 4+ newlines in a row is a legitimate degenerate pattern
-     "\n\n\n\n")
+    check("single char",
+         0,
+         "x")
 
-# --- boundary: exactly at threshold ------------------------------------------
+    check("newlines only (4 blank lines IS degenerate)",
+         4,  # 4+ newlines in a row is a legitimate degenerate pattern
+         "\n\n\n\n")
 
-test("exactly at threshold (3)",
-     3,
-     "abc abc abc ")
+    # --- boundary: exactly at threshold ------------------------------------------
 
-test("one below threshold (2)",
-     0,  # expect < 3
-     "abc abc ")
+    check("exactly at threshold (3)",
+         3,
+         "abc abc abc ")
+
+    check("one below threshold (2)",
+         0,  # expect < 3
+         "abc abc ")
 
 
-# --- summary -----------------------------------------------------------------
 
-total = PASSED + FAILED
-print(f"\n{PASSED}/{total} passed", end="")
-if FAILED:
-    print(f", {FAILED} FAILED")
-    sys.exit(1)
-else:
-    print(" — all good")
-    sys.exit(0)
+def test_repeat_detector() -> None:
+    """pytest entry point: the same checks, as one assertion."""
+    _all_checks()
+    assert FAILED == 0, f"{FAILED} of {PASSED + FAILED} repeat-detector checks failed"
+
+
+if __name__ == "__main__":
+    _all_checks()
+
+    total = PASSED + FAILED
+    print(f"\n{PASSED}/{total} passed", end="")
+    if FAILED:
+        print(f", {FAILED} FAILED")
+        sys.exit(1)
+    else:
+        print(" — all good")
+        sys.exit(0)

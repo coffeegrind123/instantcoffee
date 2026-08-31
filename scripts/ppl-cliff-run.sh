@@ -320,32 +320,16 @@ token_pass() {
   docker run --rm -v "${CAPS}:/captures" alpine rm -f "$logits" >/dev/null 2>&1
   "${cmd[@]}" > "${LOCAL_LOGDIR}/${log}" 2>&1 &
   local runner_pid=$!
-  # Wait for the array, then kill. The waiter reads the header for itself rather
-  # than being told how big the file will be: n_chunk is min(n_chunks, corpus /
-  # n_ctx) and computing it here would duplicate perplexity's own arithmetic.
-  docker run --rm --user 0:0 -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" -c "
-import os, struct, sys, time
-path = '$logits'
-deadline = time.time() + 1800
-head = None
-while time.time() < deadline:
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        time.sleep(2); continue
-    if head is None and size >= 20:
-        with open(path, 'rb') as f:
-            h = f.read(20)
-        if h[:8] != b'_logits_':
-            print('BAD HEADER ' + h[:20].hex()); sys.exit(1)
-        head = struct.unpack('<iii', h[8:20])
-        print('    header        n_ctx=%d n_vocab=%d n_chunk=%d -> %d tokens' % (head[0], head[1], head[2], head[2] * head[0]))
-    if head is not None and size >= 20 + head[2] * head[0] * 4:
-        print('    array         %d bytes on disk; killing the pass' % size)
-        sys.exit(0)
-    time.sleep(2)
-print('TIMED OUT waiting for the token array'); sys.exit(1)
-"
+  # Wait for the array, then kill. The waiter is a FILE, not an interpolated
+  # `python -c` string: as a string the shell parses the Python source, so a
+  # backtick or $(...) anywhere in it becomes command substitution. That trap
+  # already fired once here (a backtick in a comment -> `sl: command not
+  # found`), and it corrupted nothing by luck rather than by design. See
+  # scripts/ppl_cliff_wait.py, which also explains why it reads the header
+  # instead of being told the size.
+  stage_script "${REPO_ROOT}/scripts/ppl_cliff_wait.py"
+  docker run --rm --user 0:0 -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" \
+    "${SCRIPT_STAGE}/ppl_cliff_wait.py" --path "$logits" --timeout 1800
   local waiter_rc=$?
   docker kill "$RUNNER_CT" >/dev/null 2>&1
   wait "$runner_pid" 2>/dev/null

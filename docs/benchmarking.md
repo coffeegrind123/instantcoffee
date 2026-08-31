@@ -74,8 +74,58 @@ the trade being bought.
 ./scripts/spec-sweep.sh --dry-run                    # plan and cost
 ./scripts/spec-sweep.sh                              # novel text (pessimistic)
 ./scripts/spec-sweep.sh --workload repeat            # repetitive (agentic)
+./scripts/spec-sweep.sh --workload synthetic,repeat  # BOTH, one reload each
+./scripts/spec-sweep.sh --rounds 5 --only a,b,c      # interleaved, drift-proof
 ./scripts/spec-sweep.sh --report                     # re-print, run nothing
 ```
+
+Pass **both** workloads in one invocation. The expensive step in an arm is the
+llama recreate; the bench is minutes, and both workloads interrogate the same
+server. Running them as two invocations pays for every recreate twice — about
+eight wasted hours on the 16-arm grid.
+
+### Host load is part of the measurement (2026-08-31)
+
+**A sequential sweep on this box cannot be trusted on its own.** The machine is
+shared with other working sessions, and a sweep takes hours, so anything that
+drifts over that window is charged to whichever arms were scheduled late.
+
+The control number: the same config, unchanged, measured **181.4 then 202.3
+tok/s** an hour apart — a 12% swing with nothing different but the machine, which
+is wider than the gap between most rows this sweep exists to rank. It happened
+twice in one day and in both directions: one sweep ran while load fell 31 -> 3
+(flattering the arms that ran last), the follow-up while load climbed 1.4 -> 23.8
+(penalising the same ones).
+
+Two defences, both in the script:
+
+- **Every result stamps `load_before` / `load_after`.** A bench above
+  `--load-warn` (default 8.0) warns at measurement time, and `--report` lists the
+  offenders under `==> load`. Rows predating the stamping are reported as "cannot
+  be shown to have been measured on a quiet box" rather than silently trusted.
+- **`--rounds N` interleaves.** Configs run in a rotating order (`A B C` /
+  `B C A` / `C A B`), so drift lands on all arms roughly equally instead of on
+  whichever came last. Round 1 is discarded when a later round exists — the first
+  pass pays cold caches the others do not. Results are written per round as
+  `<name>.r<k>.json` and grouped by config name in the report.
+
+Read `==> load` before believing the table. Interleaving survives gradual drift;
+it does **not** survive a spike that hits one arm and not the others, and the
+stamps are how you tell those apart afterwards.
+
+`scripts/spec_sweep_compare.py` mechanises that judgement so it is a rule applied
+to recorded numbers rather than a call made after seeing which arm won. Two
+things it prints that `--report` cannot:
+
+- **Round health with the per-config load means**, e.g.
+  `LOAD-SPLIT 3.6-15.0 (4.1x) [8:32:24 3.9, pin 4.1, 12:64:32 13.3]` — which
+  shows at a glance whether one arm was hit or the whole box ramped together.
+  The split test needs a big ratio **and** a materially busy arm: a 2.8x ratio
+  between 2.3 and 6.5 is an idle machine twice over, and gating on the ratio
+  alone threw away the cleanest round of a five-round run.
+- **A sensitivity row** across every round subset. A delta that is +24% on one
+  subset and +2% on another is a direction to test, not a result — and the tool
+  says so out loud when fewer than two rounds survive.
 
 Run **both** workloads. `bench.sh` nonce-randomises every prompt to defeat the
 prefix cache, which also defeats `ngram-simple` — measured on the repeat
@@ -97,6 +147,10 @@ paragraph-length cells had made the everyday commands unfindable.
 | `./scripts/spec-sweep.sh --dry-run` | Plan the speculative-decoding sweep and price it |
 | `./scripts/spec-sweep.sh --only baseline,pmin-050,pmin-040` | Is the MTP draft p-min-bound or n-max-bound |
 | `./scripts/spec-sweep.sh --workload repeat` | What `ngram-simple` is worth on repetitive output |
+| `./scripts/spec-sweep.sh --workload synthetic,repeat` | Both workloads against each server, instead of paying every llama recreate twice |
+| `./scripts/spec-sweep.sh --rounds 5 --only pin,cand-a,cand-b` | Interleaved comparison that survives host-load drift — rotates the arms, discards round 1, groups rounds per config |
+| `./scripts/spec-sweep.sh --load-warn 4` | Tighten the load threshold above which a bench is flagged as not comparable (default 8.0) |
+| `python3 scripts/spec_sweep_compare.py --results-dir <dir>` | **Is a difference real?** Applies the round-health rules to the RECORDED load stamps (a round is dropped when one arm was measurably busy and the others were not), pools the usable rounds, runs an exact permutation test, and prints how much the answer moves across every round subset. `--report` ranks; this decides |
 | `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything — with mean, max and within-config spread, and a provenance block that says whether every row came off one stack |
 | `./scripts/spec-sweep.sh --pins` | What build, context size, KV types and weights this box would stamp on a result right now |
 | `./scripts/capacity-probe.sh --config 'ctx-96k\|CTX_SIZE=98304' --bench prefill` | Does a launch flag FIT, and what does it cost in VRAM — context window, ngram table size, draft cache type |

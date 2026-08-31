@@ -38,7 +38,102 @@ empty-tool-call-list exit still returns an empty response — it cannot invent o
 
 ---
 
-## 1. The runner exits 1 and skips its own last two steps — UNEXPLAINED
+## 0b. `ngram-mod 12:64:32` — APPLIED and REPLICATED; one question still open
+
+**The pin was changed on 2026-08-31 and the change is live.** `.env` carries
+`SPEC_TYPE=ngram-mod,draft-mtp` with `12/64/32`. Full story in
+`context/design/ngram-mod-and-the-load-confound.md`.
+
+**Replicated by an independent run the same evening:** +22.3% (p=0.0002) on the
+repeat workload, against the first run's +23.3% (p=0.0011) — different rounds,
+different load regime, agreeing to within one point, and positive in all eight
+round subsets. In three of the rounds the candidate benched at 2-5x the pin's
+load and still won, so the estimate is conservative.
+
+**STILL OPEN — the novel-text (synthetic) cost.** Twelve rounds across two runs
+have produced exactly TWO usable synthetic rounds, and they disagree in sign
+(-12.9% to +4.0%, p=0.46 on the last). No large or consistent penalty has
+appeared, but no cost has been ruled out either. If prose or novel-code
+generation ever feels worse, this is the thing to suspect, and the revert is one
+`.env` edit back to `ngram-simple,draft-mtp` with the three MOD keys blank.
+
+The reason the synthetic side keeps failing where repeat succeeds is not
+mysterious: both workloads are measured in the same rounds, and a round is
+scored per workload — synthetic simply drew the split rounds. A synthetic-only
+run (one workload, so ~13 min rounds) would settle it far faster than another
+both-workload run.
+
+The 5-round run (2026-08-31, 30 results, zero failures) gives **+23.3% on the
+repeat workload, p=0.0011**, replicated across the two rounds that survived
+load-splitting, with the load advantage running OPPOSITE ways in those two
+rounds and a sensitivity band of 13.6-27.3% that never changes sign. `--report`
+and `spec_sweep_compare.py` agree independently (+23.6% / +23.3%).
+
+`8:32:24@n3` is REJECTED — its sensitivity changes sign across subsets.
+
+**To adopt** (one `.env` edit, then `./scripts/up.sh && ./scripts/smoke-test.sh`):
+
+```
+SPEC_TYPE=ngram-mod,draft-mtp
+SPEC_NGRAM_MOD_N_MIN=12
+SPEC_NGRAM_MOD_N_MAX=64
+SPEC_NGRAM_MOD_N_MATCH=32
+```
+
+**The one thing this did NOT establish:** the synthetic (novel-text) side had
+only one usable round, measuring -2.1% (p=0.80) with a band straddling zero. No
+cost was detected there, but the measurement is underpowered. If the pin is
+changed and prose or novel-code generation feels worse, that is the regression
+to look for, and the fix is to re-run the synthetic workload with more rounds.
+
+---
+
+## 0c. Three ngram modes still unmeasured (rows now in the grid)
+
+`ngram-map-k`, `ngram-map-k4v` and `ngram-cache` are in this build's
+`--spec-type` list and have never run here. They are now `CONFIGS` rows
+(`ngrammapk-n4`, `ngrammapk4v-n4`, `ngramcache-n4`) at engine defaults and the
+pin's MTP settings, so the ngram arm is the only variable — the same design as
+the `ngram-mod` defaults control.
+
+```bash
+./scripts/spec-sweep.sh --workload synthetic,repeat --rounds 3 --repeat 4 \
+  --results-dir context/bench/spec-sweep-ngrammodes \
+  --only ngram-pmin-040-n4,ngrammapk-n4,ngrammapk4v-n4,ngramcache-n4
+```
+
+~1h45m at the measured 7.3 min per arm-instance. Their own size-n/size-m/
+min-hits families are deliberately NOT plumbed: measure the modes first, plumb
+the knobs of whichever one earns it.
+
+The state: on the repeat workload — the shape pi produces — `ngram-mod` at
+`n-min 12 / n-max 64 / n-match 32` beat the production pin by **+22.8%
+(p=0.0014)** when pooling the two load-clean rounds of an interleaved run, at no
+measurable cost on novel text (-3.1%, p=0.52).
+
+**Why it was not adopted.** The sensitivity analysis moves too much:
+
+| rounds used | delta | p |
+|---|---:|---:|
+| 1+3 (clean) | +22.8% | 0.0014 |
+| all three | +10.5% | — |
+| 2+3 (the script's own default) | **+2.1%** | **0.797** |
+| 3 only | +17.3% | 0.143 |
+| 1 only | +28.2% | 0.029 |
+
+Every subset is positive, so the direction is robust; the magnitude is not. The
+headline depends on excluding round 2, which is justified (a 10x load difference
+*between configs inside that round*, recorded in the load stamps) but is still a
+judgement call — and the default analysis finds nothing. Round 1 is not neutral
+either: its rotation puts the pin first, so the pin pays the coldest cache.
+
+Analyse any re-run with `python3 scripts/spec_sweep_compare.py --results-dir
+<dir> --baseline ngram-pmin-040-n4`. Do not eyeball `--report` for this: it
+ranks arms, it does not tell you whether the gap is real.
+
+---
+
+## 1. The runner exits 1 and skips its own last two steps — NARROWED to the launch shape
 
 **Highest value because it will cost you an hour of confusion otherwise.**
 
@@ -76,6 +171,63 @@ is confirmed and the fix is to stop relying on stdout for anything load-bearing.
 
 **Until then: check `docker ps` after every run.** That is the mitigation and it
 is fragile.
+
+**One environment fact, and one hypothesis TESTED AND REJECTED (2026-08-31).**
+
+The fact: **`tail -f` does not work on this 9p mount.** Following a log under
+`context/bench/` dies with `tail: error reading '<file>': No data available`,
+while a polling reader over the same file is fine. Anything here that follows a
+log while a long job runs must poll.
+
+The rejected hypothesis — recorded so nobody spends an afternoon on it again.
+It looked like backgrounded work on this box gets reaped and loses its stdout,
+which would explain this section exactly. **It does not reproduce.** Control run
+2026-08-31: three writers launched from a tool call, each emitting 15 lines over
+30 s, checked from a LATER tool call so the test spans the boundary that was
+suspected:
+
+| variant | destination | result |
+|---|---|---|
+| `nohup … &` | container fs | 16/16 lines, clean exit |
+| `nohup … &` | **9p mount** | 16/16 lines, clean exit |
+| `setsid nohup … &` | container fs | 16/16 lines, clean exit |
+
+Plain `nohup &` survives the tool call and writes fine to the 9p mount. The
+observation that seeded the idea — several background tasks dying mid-run — was
+**harness-managed** background tasks being killed by the harness, which is a
+different mechanism from a `nohup &` inside a script. They were conflated.
+
+**THE LONG TEST IS NOW DONE, AND THE ENVIRONMENT HYPOTHESIS IS DEAD.** The short
+control above only covered 30 s, and the real failure follows runs of hours — so
+a detached writer was held open appending one line per minute to a log under
+`context/bench/`, the same 9p mount `ppl-cliff-run.sh` writes to:
+
+```
+180 / 180 writes,  seq contiguous 1..180,  0 errors,  span 3:00:38
+context/bench/fdtest/longrun-9p.log
+```
+
+Three hours, every write landed, no gap in the sequence, nothing reaped. It also
+survived something the design did not anticipate: **the Claude Code session
+itself crashed partway through and the writer carried on**, because it was
+`setsid`-detached. A properly detached process here does not lose its stdout over
+hours and does not get reaped.
+
+**So the suspicion moves to the LAUNCH SHAPE, not the environment.**
+`ppl-cliff-run.sh` backgrounds its passes with a plain `nohup … &` from inside
+the script; what survived all of the above was `setsid nohup … &`. The
+difference is the process group and controlling terminal — a plain `&` job stays
+in the session's process group and dies with it; a `setsid` one does not. That
+is a one-word change to test, and it is the next thing to try rather than
+another environment probe.
+
+**Corroborating evidence from the same day, unplanned:** the crash also killed a
+`spec-sweep.sh` run that had been launched with `setsid nohup` — and that one
+did NOT survive, because the crash took the whole container's process tree, not
+just a session. Worth knowing which failures `setsid` does and does not cover.
+
+Both environment hypotheses in this section are now closed. Do not re-open them
+without new evidence; both tests are recorded above and both were negative.
 
 ---
 
@@ -126,7 +278,11 @@ have already measured can be re-analysed with no GPU at all.
 
 ---
 
-## 3. The rotation asymmetry — unexplained, and it taints per-span numbers
+## 3. The rotation asymmetry — NARROWED 2026-08-31, mechanism still open
+
+*(It still taints per-span numbers: an 8192 per-span figure must carry its
+rotation. What changed is that two explanations are now dead and the effect
+has a dose-response curve — see the 2026-08-31 section below.)*
 
 At `n_ctx` 8192 the F=4096 rotation has a median delta-NLL of 2.597 against
 F=0's 0.365, and nine of the ten highest-delta spans come from F=4096
@@ -150,20 +306,81 @@ instruments say it does not.
 span map at grid 4096 feeds each cell from exactly ONE rotation, which is how
 this hid in §3e.
 
+### 2026-08-31: narrowed, with no GPU. `scripts/rotation_asymmetry_analyse.py`
+
+Two tests the original pass could not run, because both need depth 2048 as a
+control. Re-derives the 2.597 / 0.365 figures first, so it is anchored.
+
+**1. It is NOT span selection, and the control runs the OTHER WAY.** At depth
+8192 each span is fed by exactly one rotation, so "rotation 4096 is worse" and
+"its spans are harder" are confounded by construction. Depth 2048 IS
+rotation-balanced, so it prices a span's intrinsic difficulty independently.
+Comparing amplification `log(ppl@8192 / ppl@2048)` — replicated over three runs:
+
+| run | rot 0 med ppl@2048 | rot 4096 med ppl@2048 | rot 0 log-amp | rot 4096 log-amp | p (median) |
+|---|---:|---:|---:|---:|---:|
+| 110429Z | 10.55 | 3.34 | 0.365 | 4.071 | 0.011 |
+| 132817Z | 13.66 | 8.31 | 0.365 | 2.586 | 0.007 |
+| 142049Z | 13.66 | 8.31 | 0.365 | 2.597 | 0.007 |
+
+Rotation-4096's spans are **easier** at the balanced depth in all three, and
+still amplify 13x against 1.4x. Coverage/selection is dead as an explanation.
+
+**2. It is a DOSE-RESPONSE, not a two-arm oddity.** `20260824T114717Z` carries
+FOUR rotations at n_ctx 8192. A chunk boundary lands at corpus index `-F (mod
+8192)`, giving each arm a circular distance from the F=0 alignment:
+
+```
+distance 0     -> ppl  14.77      (F=0)
+distance 2048  -> ppl  36.58      (F=2048)
+distance 2048  -> ppl  48.98      (F=6144)
+distance 4096  -> ppl 227.67      (F=4096)
+```
+
+Monotone, and the two arms at EQUAL distance agree within 1.34x while the
+extremes differ 15x. (Caveat the script prints: F=6144 has `kept=[3,8]` against
+the others' `[2,8]`, so it scores fewer tokens.) A binary asymmetry has become a
+curve, which is a much stronger constraint on any mechanism.
+
+**3. The document junction is NOT the cause.** `deep-plus-pi.txt` is
+`deep-s26b5bb + "\n\n" + pi-150turn` — ONE junction, at ~65-73k tokens (its
+README: deep-s26b5bb alone gives 8 chunks at n_ctx 8192). The four-rotation run
+windows `[8192, 65536]`, ending at or before that junction, so the monotone
+ordering above is produced with **no junction inside the scored range**.
+
+**What is left, and why it now points at §2.** The only thing that differs
+between rotations is where each scored token's HISTORY BEGINS: F=0's chunks
+start at corpus indices congruent to 0 (mod 8192), F=4096's at 4096. Both give
+the same COUNT of real history (4097..8191 tokens). §2's standing hypothesis is
+that the misfire rate is set by what the history CONTAINS, not how much of it
+there is — and a dose-response in boundary offset is exactly the shape that
+predicts. **§2 and §3 are probably one phenomenon**, and §2's corpus-construction
+experiment is the way to test it: it already varies history composition over the
+same scored tokens, which is this effect with the confound removed.
+
 ---
 
-## 4. One tooling loose end
+## 4. One tooling loose end — DONE 2026-08-31
 
-`token_pass()` in `ppl-cliff-run.sh` still builds its waiter as an interpolated
+`token_pass()` in `ppl-cliff-run.sh` built its waiter as an interpolated
 `python -c "…"` string. Stage 1 used to do the same and a backtick in a COMMENT
 became shell command substitution — `line 245: sl: command not found` — which
-landed inside a comment and corrupted nothing, by luck. Stage 1 is now
-`scripts/ppl_cliff_stage.py`, a file, and the shell parses only arguments. The
-waiter should follow. It works today; it is a trap for whoever edits it.
+landed inside a comment and corrupted nothing, by luck.
+
+The waiter is now `scripts/ppl_cliff_wait.py`, staged with `stage_script` like
+`ppl_cliff_stage.py`, invoked with `--path` / `--timeout`. The shell parses
+arguments and nothing else.
+
+Verified against synthetic fixtures rather than a GPU pass (four cases, all
+green): a complete array exits 0; a wrong magic exits 1 AND prints the actual
+header bytes, so "flag dropped" and "stale file" can be told apart; a header
+with a short array times out at 1; and the real sequence — file absent, then
+appearing mid-wait — is detected and exits 0. Log output is byte-identical to
+the inline version, so pass logs do not change shape.
 
 ---
 
-## 5. Browser anti-injection — shipped, but one layer is untested in anger
+## 5. Browser anti-injection — shipped and AUDITED 2026-08-31; two unwrapped paths remain
 
 Three layers went in on 2026-08-24:
 
@@ -202,9 +419,51 @@ had been **unreachable for the exact failure it was written for** since it was
 written. Failure is now detected from the text (`TOOL_FAILURE`), and
 `.pi/extensions/tests/browser-guard.test.ts` pins both directions.
 
-Still unexamined: whether anything else on the tool surface returns web-derived
-text without going through these two paths. `curl` output via bash is NOT
-wrapped and arguably should be.
+### 2026-08-31: the tool-surface audit, done. No GPU, no live browser needed.
+
+**Two paths are covered, and both are DENY-lists — wrap everything except a
+short control set.** That is the safe shape, and it is why the audit came back
+mostly clean:
+
+| path | mechanism | rule |
+|---|---|---|
+| browser MCP (native + adapter) | `.pi/extensions/browser-guard.ts` | admits any `browser_` / `mcp__browser__` tool, wraps all success output except `CONTROL_TOOLS` |
+| browser CLI | `scripts/browser_cli.py` -> `untrusted_content.wrap_if_needed` | `needs_wrapping = tool not in CONTROL_TOOLS` |
+
+**A false alarm, recorded so nobody re-raises it.** `BROWSER_TOOL` lists only the
+five natively-registered tools, so `browser_call_tool` — the gateway that
+reaches ~98 underlying tools and, per its schema, "returns exactly what the
+underlying tool returns" — looks unfenced. It is not. That regex is consulted
+only in the ERROR-ADVICE branch; the wrapping decision upstream keys on the
+`browser_`/`mcp__browser__` PREFIX. A test written to prove the hole passed
+against unmodified code, which is how the reading was caught.
+
+Two characterization tests now pin it (`browser-guard.test.ts`, 13 tests green):
+`browser_call_tool` and `mcp__browser__call_tool` results must carry the
+envelope. They pass today and would fail the moment anyone converts that gate
+from a prefix deny-list to a name allow-list — which is the plausible regression.
+
+**Still uncovered, and now enumerated:**
+
+1. **`bash` -> `curl` / `wget`.** As previously noted. Web-derived text straight
+   into the transcript with no envelope.
+2. **`bash` -> `./scripts/mcp.sh <server> <tool>` — NEW.** A generic
+   MCP-over-CLI gateway (mcp2cli) whose output arrives as ordinary bash output;
+   `scripts/mcp.sh` contains no wrapping of any kind. **Latent, not live:** the
+   only registered server today is the reference `everything` server (13 demo
+   tools, nothing web-facing), so nothing web-derived currently flows through
+   it.
+
+   **The trigger to watch for:** this becomes a real hole the moment a
+   web-facing server is registered — a fetch/search/scrape server, or the kind
+   of custom reddit/searxng extension other setups in this space add. If that
+   happens, `scripts/mcp.sh` needs the same `wrap_if_needed` treatment
+   `browser_cli.py` already has; the function is importable and the rule is one
+   line.
+
+The general principle both covered paths follow, and which any third should:
+**wrap unless the tool is known-inert.** An allow-list of content tools is the
+shape that fails, because the surface grows and the list does not.
 
 ---
 

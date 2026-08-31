@@ -1,0 +1,139 @@
+pins: server-cuda-b10689  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b
+==> sweeping 5 config(s) x 2 workload(s) into context/bench/spec-sweep-confirm
+current: SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  ok   the running llama already serves this config — benching it as-is (saved a ~27 min reload)
+==>   benching [synthetic] (--repeat 7) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 7) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ngram-pmin-040-n6 — SPEC_TYPE=ngram-simple,draft-mtp n-max=6 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='6') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 7) ...
+  ok   ngram-pmin-040-n6 [synthetic] recorded
+==>   benching [repeat] (--repeat 7) ...
+  ok   ngram-pmin-040-n6 [repeat] recorded
+==> ngram-baseline — SPEC_TYPE=ngram-simple,draft-mtp n-max=2 p-min=0.75 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='6' want='2') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 7) ...
+  ok   ngram-baseline [synthetic] recorded
+==>   benching [repeat] (--repeat 7) ...
+  ok   ngram-baseline [repeat] recorded
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='2' want='4') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 7) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 7) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammod-8-32-24-n3 — SPEC_TYPE=ngram-mod,draft-mtp n-max=3 p-min=0.40 draft=none mod=8:32:24
+  workloads to measure: synthetic repeat
+  live server differs (n-max: live='4' want='3') — recreating
+==>   recreating llama (cold load is ~27 min on this box) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 7) ...
+  ok   ngrammod-8-32-24-n3 [synthetic] recorded
+==>   benching [repeat] (--repeat 7) ...
+  ok   ngrammod-8-32-24-n3 [repeat] recorded
+warn   .env changed under this run in ways this script did NOT write.
+warn   Those changes are about to be DISCARDED by the restore:
+      < SPEC_NGRAM_MOD_N_MIN=
+      < SPEC_NGRAM_MOD_N_MAX=
+      < SPEC_NGRAM_MOD_N_MATCH=
+      > SPEC_NGRAM_MOD_N_MIN=8
+      > SPEC_NGRAM_MOD_N_MAX=32
+      > SPEC_NGRAM_MOD_N_MATCH=24
+warn   Re-apply them after this run. While a sweep is running, .env
+warn   belongs to the sweep — edit it before or after, never during.
+==> .env restored to its pre-sweep state
+  live server differs (n-max: live='3' want='4') — recreating
+==> restoring the pre-sweep server so the stack is left as it was found
+
+==> workload: synthetic
+CONFIG               SPEC-TYPE              N-MAX  P-MIN MOD        PREFILL DEC-MEAN  DEC-MAX  SPREAD  ACCEPT DRAFT/CYCLE   ECHO
+------------------------------------------------------------------------------------------------------------------------------------------
+ngram-pmin-040-n4    ngram-simple,draft-mtp     4    0.4 default     1491.6     65.7     73.4    16.8   52.8%        3.71      -
+ngrammod-8-32-24-n3  ngram-mod,draft-mtp        3    0.4 8:32:24     1488.1     62.0     67.2    10.8   51.3%        3.43      -
+ngrammod-12-64-32-n4 ngram-mod,draft-mtp        4    0.4 12:64:32    1372.0     57.8     65.1    13.8   45.8%        4.62      -
+ngram-pmin-040-n6    ngram-simple,draft-mtp     6    0.4 default     1386.8     54.0     66.2    26.3   47.0%        5.21      -
+ngram-baseline       ngram-simple,draft-mtp     2   0.75 default     1300.7     40.3     44.2    18.8   76.5%        1.57      -
+
+==> provenance
+  [current stack] 5 result(s)
+    llama=server-cuda-b10689  digest=e52c610406cd  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b mtime 1787676479  ngram(min_hits/n/m)=def/def/def
+  ok   all results came off the stack this box is configured for
+
+==> workload: repeat
+CONFIG               SPEC-TYPE              N-MAX  P-MIN MOD        PREFILL DEC-MEAN  DEC-MAX  SPREAD  ACCEPT DRAFT/CYCLE   ECHO
+------------------------------------------------------------------------------------------------------------------------------------------
+ngrammod-8-32-24-n3  ngram-mod,draft-mtp        3    0.4 8:32:24     1587.6    206.9    217.3    41.9   76.9%       21.66  98.8%
+ngram-pmin-040-n4    ngram-simple,draft-mtp     4    0.4 default     1642.4    202.3    212.8    18.7   63.0%       24.65  98.8%
+ngrammod-12-64-32-n4 ngram-mod,draft-mtp        4    0.4 12:64:32    1453.5    200.8    211.3    33.2   68.0%       36.05  98.8%
+ngram-pmin-040-n6    ngram-simple,draft-mtp     6    0.4 default     1560.1    164.7    178.3    60.1   62.4%       25.99  98.8%
+ngram-baseline       ngram-simple,draft-mtp     2   0.75 default     1445.8    144.3    160.6    27.5   63.4%       20.90  98.8%
+
+==> provenance
+  [current stack] 5 result(s)
+    llama=server-cuda-b10689  digest=e52c610406cd  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b mtime 1787676479  ngram(min_hits/n/m)=def/def/def
+  ok   all results came off the stack this box is configured for
+
+Rows are sorted by DEC-MEAN, best first.
+
+READ SPREAD BEFORE READING THE RANKING. It is max-min across this config's own
+--repeat runs. If SPREAD is wider than the gap between two rows, those two rows
+are not distinguishable and ranking them is false precision. Earlier handoffs
+quote DEC-MAX, which is what this table printed, unlabelled, before the
+2026-08-22 provenance pass.
+
+How to read DRAFT/CYCLE (the column this sweep was built for):
+  ~1.0 with n-max 2  -> p-min is truncating the draft. Lower SPEC_DRAFT_P_MIN.
+  ~n-max             -> n-max is binding. Raise SPEC_DRAFT_N_MAX.
+  Between            -> both bite; take the row with the best DECODE and stop.
+It is a property of the drafting rather than of the clock, so it is the most
+contention-resistant number here and the one to prefer when decode is close.
+
+ACCEPT is a rate, not a goal. It is expected to fall as p-min drops; that is
+the trade being bought. DECODE is the number that decides.
+
+ECHO (--workload repeat only) is the share of generated 12-token windows that
+also occur in the prompt — the ceiling on what ngram-simple could ever draft.
+It is a property of the workload, not of the config, so it should be roughly
+constant down the column. If it is not, the runs are not comparable. A high
+ECHO next to a DRAFT/CYCLE pinned at n-max is repetition the engine is paying
+full price for; that is the case ngram-simple exists to fix. ECHO reads "-" on
+the synthetic workload, whose repetition is incidental rather than measured.
+  ok sweep complete
+./scripts/spec-sweep.sh: line 1016: unexpected EOF while looking for matching `''

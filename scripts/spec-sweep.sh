@@ -3,13 +3,14 @@
 # Sweep the speculative-decoding knobs and report decode rate, draft acceptance
 # and — the number this script exists for — average draft length per cycle.
 #
-#   ./scripts/spec-sweep.sh                     # the whole 12-config grid
+#   ./scripts/spec-sweep.sh                     # the whole 16-config grid
 #   ./scripts/spec-sweep.sh --only baseline,pmin-040
 #   ./scripts/spec-sweep.sh --resume            # skip configs already measured
 #                                               #   ON THIS EXACT STACK
 #   ./scripts/spec-sweep.sh --dry-run           # print the plan and the cost
 #   ./scripts/spec-sweep.sh --repeat 3 --prompt-len 2048
 #   ./scripts/spec-sweep.sh --workload repeat   # the repetition workload (see below)
+#   ./scripts/spec-sweep.sh --workload synthetic,repeat   # BOTH, one reload each
 #   ./scripts/spec-sweep.sh --report            # re-print the table, run nothing
 #   ./scripts/spec-sweep.sh --pins              # what would be stamped right now
 #
@@ -33,6 +34,10 @@
 #                                   ngram-simple's upside.
 #
 # Results are namespaced per workload, so --resume never confuses the two.
+#
+# The MOD column reads "default" for every arm that is not ngram-mod, because
+# the ngram-mod knobs are inert unless SPEC_TYPE carries that arm — it is not a
+# claim that those rows were measured at 48:64:24.
 #
 # ---------------------------------------------------------------------------
 # WHY THIS EXISTS, AND WHY IT SWEEPS p-min BEFORE n-max
@@ -135,6 +140,13 @@ require_cmd docker
 
 RESULTS_DIR="${RESULTS_DIR:-$REPO_ROOT/context/bench/spec-sweep}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-3000}"
+# 1-minute load average above which a bench is flagged as not comparable. This
+# box has 16 cores and a sweep's own llama + bench containers sit around 3-5, so
+# the threshold is set above the script's own footprint and below the level that
+# measurably moved results (10+).
+LOAD_WARN="${LOAD_WARN:-8.0}"
+# Interleaving rounds. See the --rounds comment above CONFIGS.
+ROUNDS="${ROUNDS:-1}"
 PROMPT_LEN=""
 REPEAT="3"
 WORKLOAD="synthetic"
@@ -196,20 +208,79 @@ ONLY=""
 #   "dflash-n8|ngram-simple,draft-dflash|8|0.40|Qwen3.8-27B-DFlash2-Q4_K_M.gguf"
 # and the file has to be in MODELS_DIR first (./scripts/download-model.sh).
 #
-# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE
+# THE NGRAM-MOD ARMS, AND WHY THE ROW GREW A SIXTH FIELD
+#
+# ngram-mod has its own n-min/n-max, separate from --spec-draft-n-max: the
+# shared n-max governs the MTP arm, and --spec-ngram-mod-n-{min,max} govern the
+# ngram arm. A row that varied only SPEC_DRAFT_N_MAX would therefore leave the
+# ngram knobs pinned at their defaults and measure nothing about them — the same
+# "raising the knob that is not binding" trap the p-min note above describes.
+# So the sixth field carries them, as n-min:n-max:n-match, empty for the engine
+# defaults (48:64:24 on b10689, read off --help).
+#
+# The two knob sets under test are the ones two r/LocalLLaMA commenters
+# independently arrived at (thread 1w2ljy7, 2026-08-30) — 8:32:24 and 12:64:32.
+# Both drop n-min far below the shipped 48. That is a hypothesis about a floor
+# being too high for agent traffic, and it is what these arms exist to test; the
+# defaults arm is the control that says whether the knobs did anything at all.
+#
+# Still unmeasured after this sweep, and cheap to add as more rows once the
+# format is proven: ngram-map-k, ngram-map-k4v, ngram-cache. All three are in
+# this build's --spec-type list and none has ever run here.
+#
+# --rounds N: INTERLEAVING, AND WHY A SEQUENTIAL SWEEP CANNOT BE TRUSTED HERE
+#
+# A sweep measures its arms one after another, so anything that drifts over the
+# hours it runs is charged to whichever arms were scheduled late. On 2026-08-31
+# that stopped being theoretical twice in one day:
+#
+#   - The 16-arm sweep ran while host load fell from 31 to 3. The ngram-mod arms
+#     are last in the grid, so they were measured on the quietest box of the run
+#     and "won". Against a quiet control they did not reproduce.
+#   - The follow-up ran while load climbed 1.4 -> 23.8 (other sessions started
+#     C++ builds), penalising the same arms in the same way. The CONTROL config
+#     alone measured 181.4 and then 202.3 tok/s -- a 12% swing on ONE config
+#     with nothing changed but the machine, wider than the gap between most
+#     rows this script exists to rank.
+#
+# This box is shared with other working sessions, so "wait until it is quiet" is
+# a wish, not a method. Interleaving does not need the machine to cooperate: run
+# the configs in rotation so drift lands on all of them roughly equally.
+#
+#   ./scripts/spec-sweep.sh --rounds 3 --only pin,cand-a,cand-b
+#
+# Round 1 is DISCARDED by --report whenever more than one round exists -- the
+# first pass pays cold caches later passes do not, the same reason the bench
+# discards its first repeat. Results are written per round as <name>.r<k>.json
+# and grouped by config name. A single-round run is unchanged in every respect.
+#
+# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE | NGRAM_MOD n-min:n-max:n-match
 CONFIGS=(
-  "baseline|draft-mtp|2|0.75|"
-  "pmin-050|draft-mtp|2|0.50|"
-  "pmin-040|draft-mtp|2|0.40|"
-  "pmin-040-n3|draft-mtp|3|0.40|"
-  "pmin-040-n4|draft-mtp|4|0.40|"
-  "pmin-040-n6|draft-mtp|6|0.40|"
-  "pmin-040-n8|draft-mtp|8|0.40|"
-  "pmin-082-n6|draft-mtp|6|0.82|"
-  "ngram-pmin-040-n3|ngram-simple,draft-mtp|3|0.40|"
-  "ngram-pmin-040-n4|ngram-simple,draft-mtp|4|0.40|"
-  "ngram-pmin-040-n6|ngram-simple,draft-mtp|6|0.40|"
-  "ngram-baseline|ngram-simple,draft-mtp|2|0.75|"
+  "baseline|draft-mtp|2|0.75||"
+  "pmin-050|draft-mtp|2|0.50||"
+  "pmin-040|draft-mtp|2|0.40||"
+  "pmin-040-n3|draft-mtp|3|0.40||"
+  "pmin-040-n4|draft-mtp|4|0.40||"
+  "pmin-040-n6|draft-mtp|6|0.40||"
+  "pmin-040-n8|draft-mtp|8|0.40||"
+  "pmin-082-n6|draft-mtp|6|0.82||"
+  "ngram-pmin-040-n3|ngram-simple,draft-mtp|3|0.40||"
+  "ngram-pmin-040-n4|ngram-simple,draft-mtp|4|0.40||"
+  "ngram-pmin-040-n6|ngram-simple,draft-mtp|6|0.40||"
+  "ngram-baseline|ngram-simple,draft-mtp|2|0.75||"
+  "ngrammod-default-n4|ngram-mod,draft-mtp|4|0.40||"
+  "ngrammod-8-32-24-n4|ngram-mod,draft-mtp|4|0.40||8:32:24"
+  "ngrammod-12-64-32-n4|ngram-mod,draft-mtp|4|0.40||12:64:32"
+  "ngrammod-8-32-24-n3|ngram-mod,draft-mtp|3|0.40||8:32:24"
+  # The other three ngram modes this build offers, at ENGINE DEFAULTS and at the
+  # production pin's MTP settings (n-max 4, p-min 0.40) so the ngram arm is the
+  # only variable. None has ever run here. map-k and map-k4v have their own
+  # size-n/size-m/min-hits families (defaults 12/48/1, same shape as
+  # ngram-simple's) which are NOT plumbed: measure the modes first, then plumb
+  # the knobs of whichever one is worth tuning. ngram-cache takes no knobs.
+  "ngrammapk-n4|ngram-map-k,draft-mtp|4|0.40||"
+  "ngrammapk4v-n4|ngram-map-k4v,draft-mtp|4|0.40||"
+  "ngramcache-n4|ngram-cache,draft-mtp|4|0.40||"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -228,6 +299,8 @@ while [[ $# -gt 0 ]]; do
     --funcs)        FUNCS="$2"; shift 2 ;;
     --results-dir)  RESULTS_DIR="$2"; shift 2 ;;
     --wait-timeout) WAIT_TIMEOUT="$2"; shift 2 ;;
+    --load-warn)    LOAD_WARN="$2"; shift 2 ;;
+    --rounds)       ROUNDS="$2"; shift 2 ;;
     # Print the whole leading comment block, however long it grows — a fixed
     # line range silently truncates --help the next time the header is edited.
     -h|--help)      awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' \
@@ -236,16 +309,36 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-case "$WORKLOAD" in
-  synthetic|repeat) ;;
-  *) die "--workload must be 'synthetic' (bench.py) or 'repeat' (bench_repeat.py), got '$WORKLOAD'" ;;
-esac
+# --workload takes a COMMA LIST, and passing both is not a convenience — it is
+# most of the cost of the sweep.
+#
+# The expensive step in an arm is the llama recreate (~27 min cold on this box);
+# the bench itself is minutes. Both workloads interrogate the SAME server, so
+# running them as two invocations pays for all 16 recreates twice — about eight
+# wasted hours on the full grid, for numbers that would have come off the
+# servers the first pass already had loaded and then threw away.
+#
+# They are still recorded separately, because they are not comparable: synthetic
+# decides p-min and n-max on novel text, repeat decides whether an ngram arm
+# earns its place, and ECHO only exists in the latter.
+IFS=',' read -r -a WORKLOADS <<<"$WORKLOAD"
+[[ ${#WORKLOADS[@]} -gt 0 ]] || die "--workload must name at least one workload"
+for _w in "${WORKLOADS[@]}"; do
+  case "$_w" in
+    synthetic|repeat) ;;
+    *) die "--workload takes 'synthetic' (bench.py) and/or 'repeat' (bench_repeat.py), got '$_w'" ;;
+  esac
+done
+unset _w
 
 # Results are namespaced by workload. The two measure different things and a
 # shared directory would let --resume skip a config that was only ever run
 # under the other one.
-RESULTS_DIR="$RESULTS_DIR/$WORKLOAD"
-mkdir -p "$RESULTS_DIR"
+RESULTS_ROOT="$RESULTS_DIR"
+for _w in "${WORKLOADS[@]}"; do mkdir -p "$RESULTS_ROOT/$_w"; done
+unset _w
+# Single-workload callers (and --report) still read one directory.
+RESULTS_DIR="$RESULTS_ROOT/${WORKLOADS[0]}"
 
 # --- .env protection ---------------------------------------------------------
 # The sweep rewrites three keys in .env. A whole-file backup is restored on any
@@ -418,18 +511,31 @@ select_configs() {
 # would use, not necessarily what this process was started with, and trusting it
 # would silently bench the wrong server — the one failure mode of this whole
 # script that produces plausible numbers instead of an error.
+# Reason-carrying rejection for live_matches. Always returns 1, so it composes
+# as `[[ test ]] || _lm_no "reason" || return 1`.
+_lm_no() { dim "  live server differs ($1) — recreating"; return 1; }
+
 live_matches() {
-  local want_type="$1" want_nmax="$2" want_pmin="$3" want_draft="$4"
+  local want_type="$1" want_nmax="$2" want_pmin="$3" want_draft="$4" want_mod="$5"
   local cid argv health
 
+  # WHY EVERY REJECTION SAYS WHICH FIELD IT WAS
+  #
+  # A false "no match" is not free: it buys a ~27 min recreate of a server that
+  # was already correct, and on the full grid a systematic one costs hours. This
+  # function used to return 1 from eleven places with no way to tell which, so
+  # an unexpected reload looked identical to an expected one and could only be
+  # investigated by reproducing it — at 27 minutes a go, against a container
+  # that no longer exists by the time you notice. `dim` because a mismatch is
+  # the NORMAL case when the sweep moves between arms; it is data, not a fault.
   cid="$(compose ps -q llama 2>/dev/null | head -n1)" || return 1
-  [[ -n "$cid" ]] || return 1
+  [[ -n "$cid" ]] || _lm_no "no llama container in this compose project" || return 1
 
   health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2>/dev/null)" || return 1
-  [[ "$health" == "healthy" ]] || return 1
+  [[ "$health" == "healthy" ]] || _lm_no "health=$health, not healthy" || return 1
 
   argv="$(docker inspect --format '{{range .Config.Cmd}}{{.}} {{end}}' "$cid" 2>/dev/null)" || return 1
-  [[ -n "$argv" ]] || return 1
+  [[ -n "$argv" ]] || _lm_no "container has no command line to read" || return 1
 
   local got_type got_nmax got_pmin
   got_type="$(sed -nE 's/.*--spec-type[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
@@ -438,7 +544,8 @@ live_matches() {
 
   # A missing field means the running server predates these flags, or the argv
   # could not be read. Either way: do not guess, just recreate.
-  [[ -n "$got_type" && -n "$got_nmax" && -n "$got_pmin" ]] || return 1
+  [[ -n "$got_type" && -n "$got_nmax" && -n "$got_pmin" ]] \
+    || _lm_no "argv has no spec flags (server predates them?)" || return 1
 
   # The draft model is part of the config, so a server holding the wrong one (or
   # holding one at all when this arm wants none) is NOT a match. Absence is the
@@ -447,12 +554,34 @@ live_matches() {
   local got_draft
   got_draft="$(sed -nE 's|.*--spec-draft-model[[:space:]]+([^[:space:]]+).*|\1|p' <<<"$argv")"
   got_draft="${got_draft##*/}"
-  [[ "$got_draft" == "$want_draft" ]] || return 1
+  [[ "$got_draft" == "$want_draft" ]] \
+    || _lm_no "draft: live='${got_draft:-none}' want='${want_draft:-none}'" || return 1
 
   # Numeric compare so 0.75 and .75 and 0.750 do not read as three configs.
-  awk -v a="$got_nmax" -v b="$want_nmax" 'BEGIN{exit !(a+0==b+0)}' || return 1
-  awk -v a="$got_pmin" -v b="$want_pmin" 'BEGIN{exit !(a+0==b+0)}' || return 1
-  [[ "$got_type" == "$want_type" ]] || return 1
+  awk -v a="$got_nmax" -v b="$want_nmax" 'BEGIN{exit !(a+0==b+0)}' \
+    || _lm_no "n-max: live='$got_nmax' want='$want_nmax'" || return 1
+  awk -v a="$got_pmin" -v b="$want_pmin" 'BEGIN{exit !(a+0==b+0)}' \
+    || _lm_no "p-min: live='$got_pmin' want='$want_pmin'" || return 1
+  [[ "$got_type" == "$want_type" ]] \
+    || _lm_no "spec-type: live='$got_type' want='$want_type'" || return 1
+
+  # The ngram-mod knobs are swept, so they are part of the config and belong in
+  # this test. Without them two arms that differ ONLY in n-min read as a match,
+  # and the second one silently benches the first one's server — plausible
+  # numbers under the wrong label, which is the one failure this function is
+  # here to prevent. Absence is the empty string on both sides: the flags are
+  # only passed when the key is set, so a defaults arm wants all three unset.
+  local got_mod_min got_mod_max got_mod_match got_mod
+  got_mod_min="$(sed -nE 's/.*--spec-ngram-mod-n-min[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
+  got_mod_max="$(sed -nE 's/.*--spec-ngram-mod-n-max[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
+  got_mod_match="$(sed -nE 's/.*--spec-ngram-mod-n-match[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
+  if [[ -n "$got_mod_min$got_mod_max$got_mod_match" ]]; then
+    got_mod="${got_mod_min}:${got_mod_max}:${got_mod_match}"
+  else
+    got_mod=""
+  fi
+  [[ "$got_mod" == "$want_mod" ]] \
+    || _lm_no "ngram-mod: live='${got_mod:-default}' want='${want_mod:-default}'" || return 1
 
   return 0
 }
@@ -468,47 +597,89 @@ run_config() {
   # Strict five-field split. The old ${var%%|*} / ${var##*|} chain silently read
   # the LAST field as p-min, so a five-field row would have taken the draft
   # filename as a probability and passed it to llama as --spec-draft-p-min.
-  local name stype nmax pmin draft extra
-  IFS='|' read -r name stype nmax pmin draft extra <<<"$spec"
+  local name stype nmax pmin draft mod extra
+  IFS='|' read -r name stype nmax pmin draft mod extra <<<"$spec"
   if [[ -z "$name" || -z "$stype" || -z "$nmax" || -z "$pmin" || -n "$extra" ]]; then
-    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft): $spec"
+    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft|mod): $spec"
     return 1
   fi
 
-  local raw="$RESULTS_DIR/$name.log"
-  local js="$RESULTS_DIR/$name.json"
-
-  if [[ "$RESUME" == 1 && -s "$js" ]]; then
-    # --resume used to skip on the mere existence of a result file. It now has
-    # to be a result from THIS stack; see the pin-set comment above.
-    local stored current
-    stored="$(jq -cS '.pins // empty' "$js" 2>/dev/null || true)"
-    current="$(capture_pins | jq -cS '.')"
-    if [[ -n "$stored" && "$stored" == "$current" ]]; then
-      ok "$name — already measured on this exact stack, skipping (--resume)"
-      return 0
+  # Sixth field is n-min:n-max:n-match for ngram-mod, or empty for the engine
+  # defaults. Validated here rather than at use: a typo that reaches env_set
+  # becomes a launch flag, and llama-server rejects it ~27 minutes into a cold
+  # load, at which point the sweep has already lost the slot.
+  local mod_min="" mod_max="" mod_match="" mod_extra=""
+  if [[ -n "$mod" ]]; then
+    IFS=':' read -r mod_min mod_max mod_match mod_extra <<<"$mod"
+    if [[ -n "$mod_extra" ]] \
+       || [[ ! "$mod_min" =~ ^[0-9]+$ ]] \
+       || [[ ! "$mod_max" =~ ^[0-9]+$ ]] \
+       || [[ ! "$mod_match" =~ ^[0-9]+$ ]]; then
+      warn "malformed CONFIGS ngram-mod field (want n-min:n-max:n-match): $spec"
+      return 1
     fi
-    if [[ -z "$stored" ]]; then
-      warn "$name — existing result carries no pin set (it predates pin stamping)."
-      warn "  It cannot be shown to match this build/weights/KV, so it is being re-run."
-    else
-      warn "$name — existing result was measured on a DIFFERENT stack; re-running:"
-      pin_diff "$stored" "$current" >&2
+    if (( mod_min > mod_max )); then
+      warn "CONFIGS ngram-mod n-min ($mod_min) exceeds n-max ($mod_max): $spec"
+      return 1
+    fi
+    if [[ ",$stype," != *",ngram-mod,"* ]]; then
+      warn "CONFIGS row sets ngram-mod knobs but SPEC_TYPE has no ngram-mod arm: $spec"
+      return 1
     fi
   fi
 
-  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none}"
+  # Which workloads still need measuring for THIS arm. Computed before the
+  # server is touched, because an arm that is fully measured must not cost a
+  # recreate — that is the whole value of --resume.
+  local -a todo=()
+  local w rd js stored current
+  current="$(capture_pins | jq -cS '.')"
+  for w in "${WORKLOADS[@]}"; do
+    if [[ "${CURRENT_ROUND:-1}" -gt 1 ]]; then
+      js="$RESULTS_ROOT/$w/$name.r${CURRENT_ROUND}.json"
+    else
+      js="$RESULTS_ROOT/$w/$name.json"
+    fi
+    if [[ "$RESUME" == 1 && -s "$js" ]]; then
+      # --resume used to skip on the mere existence of a result file. It now has
+      # to be a result from THIS stack; see the pin-set comment above.
+      stored="$(jq -cS '.pins // empty' "$js" 2>/dev/null || true)"
+      if [[ -n "$stored" && "$stored" == "$current" ]]; then
+        ok "$name [$w] — already measured on this exact stack, skipping (--resume)"
+        continue
+      fi
+      if [[ -z "$stored" ]]; then
+        warn "$name [$w] — existing result carries no pin set (it predates pin stamping)."
+        warn "  It cannot be shown to match this build/weights/KV, so it is being re-run."
+      else
+        warn "$name [$w] — existing result was measured on a DIFFERENT stack; re-running:"
+        pin_diff "$stored" "$current" >&2
+      fi
+    fi
+    todo+=("$w")
+  done
+  if [[ ${#todo[@]} -eq 0 ]]; then
+    return 0
+  fi
 
-  if live_matches "$stype" "$nmax" "$pmin" "$draft"; then
-    ok "  the running llama already serves this config — benching it as-is (saved a ~27 min reload)"
+  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none} mod=${mod:-default}"
+  dim "  workloads to measure: ${todo[*]}"
+
+  if live_matches "$stype" "$nmax" "$pmin" "$draft" "$mod"; then
+    ok "  the running llama already serves this config — benching it as-is (saved a reload)"
     # .env is still aligned to it for the same reason, so nothing to write.
   else
     env_set SPEC_TYPE          "$stype"
     env_set SPEC_DRAFT_N_MAX   "$nmax"
     env_set SPEC_DRAFT_P_MIN   "$pmin"
     env_set DRAFT_GGUF_FILE    "$draft"
+    # Always written, empty included: an arm that inherited the previous arm's
+    # knobs would be mislabelled rather than merely wrong.
+    env_set SPEC_NGRAM_MOD_N_MIN   "$mod_min"
+    env_set SPEC_NGRAM_MOD_N_MAX   "$mod_max"
+    env_set SPEC_NGRAM_MOD_N_MATCH "$mod_match"
 
-    info "  recreating llama (cold load is ~27 min on this box) ..."
+    info "  recreating llama (~3 min warm, far longer on a cold page cache) ..."
     if ! compose up -d --force-recreate --wait --wait-timeout "$WAIT_TIMEOUT" llama; then
       warn "$name — llama did not become healthy within ${WAIT_TIMEOUT}s; skipping"
       compose logs --tail 40 llama || true
@@ -517,9 +688,31 @@ run_config() {
     ok "  llama healthy"
   fi
 
+  # One recreate, every outstanding workload benched against it.
+  local rc=0
+  for w in "${todo[@]}"; do
+    bench_one "$name" "$w" "$stype" "$nmax" "$pmin" "$draft" "$mod" || rc=1
+  done
+  return $rc
+}
+
+# Bench ONE workload against the server that is already up, and stamp the
+# result. Split out of run_config so that both workloads can share a recreate;
+# it assumes nothing about the server beyond it being healthy and correct, which
+# is run_config's job to have established.
+bench_one() {
+  local name="$1" workload="$2" stype="$3" nmax="$4" pmin="$5" draft="$6" mod="$7"
+  # Per-round filenames so rounds do not overwrite each other. Round 1 keeps the
+  # historical bare name, so a single-round run writes exactly what it always
+  # did and every existing result directory stays readable.
+  local suffix=""
+  if [[ "${CURRENT_ROUND:-1}" -gt 1 ]]; then suffix=".r${CURRENT_ROUND}"; fi
+  local raw="$RESULTS_ROOT/$workload/$name$suffix.log"
+  local js="$RESULTS_ROOT/$workload/$name$suffix.json"
+
   local bench_args=(--repeat "$REPEAT")
   local -a bench_cmd
-  if [[ "$WORKLOAD" == "repeat" ]]; then
+  if [[ "$workload" == "repeat" ]]; then
     [[ -n "$FUNCS" ]] && bench_args+=(--funcs "$FUNCS")
     # bench_repeat.py is baked into the image alongside bench.py
     # (Dockerfile.forge), so it is reached by overriding the entrypoint rather
@@ -531,16 +724,39 @@ run_config() {
     bench_cmd=(--profile tools run --rm --build bench)
   fi
 
-  info "  benching [$WORKLOAD] (${bench_args[*]}) ..."
+  # HOST LOAD IS PART OF THE MEASUREMENT, SO IT GETS RECORDED LIKE ANY OTHER PIN.
+  #
+  # On 2026-08-31 the same config measured 181.4 tok/s during a sweep that ran
+  # while the box was at load 10-31, and 202.3 on a quiet box an hour later.
+  # Nothing changed but the machine. That is a +12% swing on the SAME arm, which
+  # is wider than the gap between most of the rows this script exists to rank.
+  # Worse, load fell monotonically through that sweep, so the arms measured last
+  # got a systematic advantage over the arms measured first — the confound
+  # points the same way as the ranking, which is the hardest kind to notice.
+  #
+  # The row that made it visible was contaminated hard enough to be absurd
+  # (prefill 131 t/s against ~1300, spread 117.5). The dangerous rows are the
+  # ones contaminated just enough to reorder the table and still look plausible.
+  # So: record it always, warn above the threshold, and let --report flag it.
+  # A number you cannot audit afterwards is a number you have to re-measure.
+  local load_before load_after
+  load_before="$(awk '{print $1}' /proc/loadavg)"
+  if awk -v l="$load_before" -v t="$LOAD_WARN" 'BEGIN{exit !(l+0 > t+0)}'; then
+    warn "$name [$workload] — host load is $load_before (threshold $LOAD_WARN)."
+    warn "  This result is being recorded, but it is NOT comparable with one"
+    warn "  measured on a quiet box. Re-run it before ranking anything against it."
+  fi
+
+  info "  benching [$workload] (${bench_args[*]}) ..."
   if ! compose "${bench_cmd[@]}" "${bench_args[@]}" >"$raw" 2>&1; then
-    warn "$name — bench failed; see $raw"
+    warn "$name [$workload] — bench failed; see $raw"
     tail -20 "$raw" >&2 || true
     return 1
   fi
 
   extract_json "$raw" >"$js"
   if [[ ! -s "$js" ]]; then
-    warn "$name — no JSON block in bench output; see $raw"
+    warn "$name [$workload] — no JSON block in bench output; see $raw"
     rm -f "$js"
     return 1
   fi
@@ -549,35 +765,47 @@ run_config() {
   # self-describing and --resume can tell "already measured" from "measured on
   # something else". measured_utc is stamped too: it is the field that would
   # have made the Aug-16 quarantine a one-line check instead of an mtime hunt.
+  load_after="$(awk '{print $1}' /proc/loadavg)"
+
   local tmp; tmp="$(mktemp)"
-  jq --arg n "$name" --arg t "$stype" --arg x "$nmax" --arg p "$pmin" --arg w "$WORKLOAD" \
-     --arg rep "$REPEAT" --arg plen "$PROMPT_LEN" --arg draft "$draft" \
+  jq --arg n "$name" --arg t "$stype" --arg x "$nmax" --arg p "$pmin" --arg w "$workload" \
+     --arg lb "$load_before" --arg la "$load_after" --arg lw "$LOAD_WARN" \
+     --arg round "${CURRENT_ROUND:-1}" \
+     --arg rep "$REPEAT" --arg plen "$PROMPT_LEN" --arg draft "$draft" --arg mod "$mod" \
      --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      --argjson pins "$(capture_pins)" \
      '. + {config: {name: $n, spec_type: $t, n_max: ($x|tonumber), p_min: ($p|tonumber),
                     draft_gguf: (if $draft == "" then null else $draft end),
+                    ngram_mod: (if $mod == "" then null else $mod end),
                     workload: $w, repeat: ($rep|tonumber),
+                    round: ($round|tonumber),
+                    load_before: ($lb|tonumber), load_after: ($la|tonumber),
+                    load_warn: ($lw|tonumber),
                     prompt_len: (if $plen == "" then null else ($plen|tonumber) end)},
            pins: $pins,
            measured_utc: $when}' \
      "$js" >"$tmp" && mv "$tmp" "$js"
 
-  ok "  $name recorded"
+  ok "  $name [$workload] recorded"
   return 0
 }
 
-report() {
-  local files=("$RESULTS_DIR"/*.json)
+# One table for one workload. The legend is NOT printed here: with two
+# workloads it would appear twice, and a legend that repeats reads as though the
+# second table were a different kind of thing.
+report_one() {
+  local workload="$1"
+  local files=("$RESULTS_ROOT/$workload"/*.json)
   # Prime the cache in THIS shell. capture_pins memoises into PINS_JSON, but
   # every other caller invokes it inside $( ), where the assignment dies with
   # the subshell — so without this line the docker probe runs once per call.
   PINS_JSON="${PINS_JSON:-$(capture_pins)}"
-  [[ -e "${files[0]}" ]] || { warn "no results in $RESULTS_DIR yet"; return 1; }
+  [[ -e "${files[0]}" ]] || { warn "no results in $RESULTS_ROOT/$workload yet"; return 1; }
 
-  printf '\n%s workload: %s\n' "==>" "$WORKLOAD"
-  printf '%-20s %-22s %5s %6s %8s %8s %8s %7s %7s %11s %6s\n' \
-    CONFIG SPEC-TYPE N-MAX P-MIN PREFILL DEC-MEAN DEC-MAX SPREAD ACCEPT DRAFT/CYCLE ECHO
-  printf '%.0s-' {1..128}; printf '\n'
+  printf '\n%s workload: %s\n' "==>" "$workload"
+  printf '%-20s %-22s %5s %6s %-9s %5s %8s %8s %8s %7s %7s %11s %6s\n' \
+    CONFIG SPEC-TYPE N-MAX P-MIN MOD RND PREFILL DEC-MEAN DEC-MAX SPREAD ACCEPT DRAFT/CYCLE ECHO
+  printf '%.0s-' {1..144}; printf '\n'
 
   # DEC-MEAN, DEC-MAX and SPREAD all come out of the same --repeat runs, and
   # printing all three is the fix for a trap this script laid on 2026-08-22.
@@ -604,9 +832,18 @@ report() {
       | $sg + ($d[0:(($d | length) - $n)]) + "." + ($d[-$n:]);
     def r1: dec(1);
     def r2: dec(2);
-    .[]
-    | . as $doc
-    | ([ $doc.rows[]
+    # Group every round of one config together. $doc is the first document, used
+    # only for the config fields, which are identical across rounds by
+    # construction. Round 1 is dropped whenever a second round exists: the first
+    # pass pays cold caches the others do not.
+    group_by(.config.name)[]
+    | . as $docs
+    | ($docs[0]) as $doc
+    | ([ $docs[] | .config.round // 1 ] | unique) as $rounds
+    | (if ($rounds|length) > 1
+       then [ $docs[] | select((.config.round // 1) > 1) ]
+       else $docs end) as $use
+    | ([ $use[].rows[]
          | select(.error == null and .cached != true and .unrepeated != true) ]) as $u
     | ([ $u[] | select(.draft_n != null) ]) as $d
     | ([ $u[].predicted_tps | num(.) ]) as $tgs
@@ -626,6 +863,10 @@ report() {
         ($doc.config.spec_type // "?"),
         ($doc.config.n_max | tostring),
         ($doc.config.p_min | tostring),
+        ($doc.config.ngram_mod // "default"),
+        (if ($rounds|length) > 1
+         then (($use|length|tostring) + "/" + ($rounds|length|tostring))
+         else "-" end),
         ($pp | r1),
         ($tgmean | r1),
         ($tgmax | r1),
@@ -639,12 +880,52 @@ report() {
   ' "${files[@]}" \
   | sort -t"$(printf '\t')" -k1,1gr \
   | cut -f2- \
-  | while IFS=$'\t' read -r n t x p pp mean mx sp ac dpc ec; do
-      printf '%-20s %-22s %5s %6s %8s %8s %8s %7s %7s %11s %6s\n' \
-        "$n" "$t" "$x" "$p" "$pp" "$mean" "$mx" "$sp" "$ac" "$dpc" "$ec"
+  | while IFS=$'\t' read -r n t x p md rnd pp mean mx sp ac dpc ec; do
+      printf '%-20s %-22s %5s %6s %-9s %5s %8s %8s %8s %7s %7s %11s %6s\n' \
+        "$n" "$t" "$x" "$p" "$md" "$rnd" "$pp" "$mean" "$mx" "$sp" "$ac" "$dpc" "$ec"
     done
 
   report_pins "${files[@]}"
+  report_load "${files[@]}"
+  return 0
+}
+
+# Flag rows that were measured on a busy box, and rows too old to know.
+#
+# Separate from report_pins because it is a different claim: pins say "measured
+# on the same stack", load says "measured under the same conditions". Two rows
+# can agree on every pin and still not be comparable, which is exactly the trap
+# that produced a 12% phantom difference on 2026-08-31.
+report_load() {
+  local files=("$@") busy unknown
+  busy="$(jq -r --slurpfile _ /dev/null '
+      select((.config.load_before // null) != null)
+      | select((.config.load_before > .config.load_warn)
+            or ((.config.load_after // 0) > .config.load_warn))
+      | "  \(.config.name) [\(.config.workload)] load \(.config.load_before) -> \(.config.load_after) (threshold \(.config.load_warn))"
+    ' "${files[@]}" 2>/dev/null || true)"
+  unknown="$(jq -r 'select((.config.load_before // null) == null) | .config.name' "${files[@]}" 2>/dev/null | sort -u | tr "\n" " " || true)"
+
+  if [[ -n "$busy" || -n "${unknown// /}" ]]; then
+    printf "\n%s load\n" "==>"
+  fi
+  if [[ -n "$busy" ]]; then
+    warn "measured on a BUSY box — not comparable with quiet-box rows:"
+    printf "%s\n" "$busy" >&2
+    warn "Re-run these before ranking them against anything."
+  fi
+  if [[ -n "${unknown// /}" ]]; then
+    dim "no load recorded (predates load stamping): ${unknown}"
+    dim "  These cannot be shown to have been measured on a quiet box."
+  fi
+}
+
+report() {
+  local w rc=0 any=0
+  for w in "${WORKLOADS[@]}"; do
+    if report_one "$w"; then any=1; else rc=1; fi
+  done
+  [[ "$any" == 1 ]] || return "$rc"
 
   cat <<'EOF'
 
@@ -759,16 +1040,23 @@ main() {
   [[ ${#selected[@]} -gt 0 ]] || die "no configs selected (--only '$ONLY' matched nothing)"
 
   if [[ "$DRY_RUN" == 1 ]]; then
-    info "plan — ${#selected[@]} config(s), workload '$WORKLOAD', each a full llama recreate"
+    info "plan — ${#selected[@]} config(s), workload(s) '${WORKLOADS[*]}', each a full llama recreate"
     local c
     for c in "${selected[@]}"; do
-      local d; d="$(cut -d'|' -f5 <<<"$c")"
-      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s\n' \
+      local d m; d="$(cut -d'|' -f5 <<<"$c")"; m="$(cut -d'|' -f6 <<<"$c")"
+      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s mod=%s\n' \
         "${c%%|*}" "$(cut -d'|' -f2 <<<"$c")" "$(cut -d'|' -f3 <<<"$c")" \
-        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}"
+        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}" "${m:-default}"
     done
-    dim "cold load is ~27 min per config on this box (versions.lock), so this"
-    dim "is roughly $(( ${#selected[@]} * 30 )) minutes plus bench time. --resume makes it restartable."
+    # MEASURED 2026-08-31, not guessed: a 5-round x 3-config run with both
+    # workloads did 15 arm-instances in 110 min = ~7.3 min each, recreate
+    # included. The old "~27 min per config" here predates --load-mode none and
+    # a warm page cache, and it over-priced every plan by 4x -- which matters,
+    # because that estimate is what decides whether a sweep gets run at all.
+    dim "~7.3 min per arm-instance measured on this box (recreate + both"
+    dim "workloads), so this is roughly $(( (${#selected[@]} * ${ROUNDS} * 73) / 10 )) minutes, and the"
+    dim "recreate count does NOT grow with the workload list — ${#WORKLOADS[@]} workload(s) share"
+    dim "each server, and --rounds ${ROUNDS} multiplies the arms. --resume makes it restartable."
     return 0
   fi
 
@@ -789,19 +1077,47 @@ main() {
   # here; the non-zero is for callers who want to test the branch.
   trap 'restore_env || true' EXIT INT TERM
 
-  info "sweeping ${#selected[@]} config(s) into $RESULTS_DIR"
+  info "sweeping ${#selected[@]} config(s) x ${#WORKLOADS[@]} workload(s) into $RESULTS_ROOT"
   dim "current: SPEC_TYPE=$(env_get SPEC_TYPE) n-max=$(env_get SPEC_DRAFT_N_MAX) p-min=$(env_get SPEC_DRAFT_P_MIN)"
 
-  local failed=0 c
-  for c in "${selected[@]}"; do
-    run_config "$c" || failed=$((failed + 1))
+  local failed=0 c k rot n_sel
+  n_sel=${#selected[@]}
+  for k in $(seq 1 "$ROUNDS"); do
+    export CURRENT_ROUND="$k"
+    # `if`, NOT `[[ ]] && info`. main is called BARE, so under `set -e` a
+    # trailing false test is a fatal silent exit -- with ROUNDS=1 (the default)
+    # that killed the sweep before a single arm ran, printing nothing at all.
+    if [[ "$ROUNDS" -gt 1 ]]; then
+      info "===== round $k of $ROUNDS ====="
+    fi
+    # ROTATE the order each round. Repeating one fixed order would keep every
+    # config in the same slot relative to the others, so a load ramp INSIDE a
+    # round biases the same arms every round -- and averaging rounds would then
+    # average that bias in rather than cancel it. Rotating puts each config in
+    # each slot exactly once.
+    for ((rot = 0; rot < n_sel; rot++)); do
+      c="${selected[$(( (rot + k - 1) % n_sel ))]}"
+      run_config "$c" || failed=$((failed + 1))
+    done
   done
+  unset CURRENT_ROUND
 
   restore_env || true
   trap - EXIT INT TERM
 
   # .env is back to its pre-sweep values by now, so these are the originals.
-  if live_matches "$(env_get SPEC_TYPE)" "$(env_get SPEC_DRAFT_N_MAX)" "$(env_get SPEC_DRAFT_P_MIN)"; then
+  #
+  # All five arguments, which is a fix rather than tidying: this call passed
+  # three, and under `set -u` live_matches then died on $4 instead of comparing
+  # it. The failure was invisible because the death reads as "does not match",
+  # so the sweep ALWAYS took the recreate branch and paid a ~27 min reload to
+  # restore a server it was frequently already running.
+  local restore_mod=""
+  if [[ -n "$(env_get SPEC_NGRAM_MOD_N_MIN)$(env_get SPEC_NGRAM_MOD_N_MAX)$(env_get SPEC_NGRAM_MOD_N_MATCH)" ]]; then
+    restore_mod="$(env_get SPEC_NGRAM_MOD_N_MIN):$(env_get SPEC_NGRAM_MOD_N_MAX):$(env_get SPEC_NGRAM_MOD_N_MATCH)"
+  fi
+  if live_matches "$(env_get SPEC_TYPE)" "$(env_get SPEC_DRAFT_N_MAX)" \
+                  "$(env_get SPEC_DRAFT_P_MIN)" "$(env_get DRAFT_GGUF_FILE)" "$restore_mod"; then
     ok "llama is already serving the pre-sweep config — no reload needed"
   else
     info "restoring the pre-sweep server so the stack is left as it was found"
@@ -812,7 +1128,7 @@ main() {
   report || true
 
   if [[ "$failed" -gt 0 ]]; then
-    warn "$failed config(s) failed — see the .log files in $RESULTS_DIR"
+    warn "$failed config(s) failed — see the .log files under $RESULTS_ROOT"
     return 1
   fi
   ok "sweep complete"

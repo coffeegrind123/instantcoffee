@@ -1,0 +1,152 @@
+ Image instantcoffee/proxy:0.9.5 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 590B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 14.59kB 0.1s done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.1s
+
+#5 [1/8] FROM docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f
+#5 resolve docker.io/library/python:3.13-slim@sha256:7ce4b6dfe35e55397b7cda544f8a13f191b7ae28dc5aad71fe664dbc9bc2623f 0.0s done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 1.35kB 0.3s done
+#6 DONE 0.4s
+
+#7 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#7 CACHED
+
+#8 [2/8] RUN test -n "0.9.5" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#8 CACHED
+
+#9 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.5"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#9 CACHED
+
+#10 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py      /tmp/patches/
+#10 CACHED
+
+#11 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py      scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/test_forge_patches.py /work/scripts/
+#11 CACHED
+
+#12 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE"     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE"     && python /tmp/patches/forge_empty_turn.py "$SITE"     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE"     && python /tmp/patches/forge_stream_timeout.py "$SITE"     && rm -rf /tmp/patches
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:9d34ce1efb7b7f4fd32988c2de0bce3ad60ca4b6f972a4c0908bc357f9d90649 done
+#14 exporting config sha256:dd474e6624d1e0e495712caef6a7c6de0f57c78c24596d44f37f687f5cadc841 done
+#14 exporting attestation manifest sha256:2fab85f22de75e98e6e188e6245edb9fb2e244d7ce6004350c975054464dd8b6
+#14 exporting attestation manifest sha256:2fab85f22de75e98e6e188e6245edb9fb2e244d7ce6004350c975054464dd8b6 0.1s done
+#14 exporting manifest list sha256:0b9b8b3d9f8da09ef913bdce7650db24601295206cfb892b43e5d37774f442d2 0.0s done
+#14 naming to docker.io/instantcoffee/proxy:0.9.5 done
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5 0.0s done
+#14 DONE 0.2s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image instantcoffee/proxy:0.9.5 Built 
+ Container instantcoffee-bench-run-ac522edd0e62 Creating 
+ Container instantcoffee-bench-run-ac522edd0e62 Created 
+
+bench-repeat — qwen3.8-27b via http://llama:8080
+repetitive rewrite workload; echo measured over 12-token windows (ngram-simple's default lookup width)
+
+  funcs=12   prompt=1211   out=1178  decode= 175.5 tok/s  echo=  99%  wall=  8.49s draft=1089/1457 (75% accepted)
+  funcs=12   prompt=1211   out=1178  decode= 204.1 tok/s  echo=  99%  wall=  7.13s draft=1115/1443 (77% accepted)
+  funcs=12   prompt=1211   out=1178  decode= 204.6 tok/s  echo=  99%  wall=  6.93s draft=1115/1443 (77% accepted)
+  funcs=12   prompt=1211   out=1178  decode= 202.2 tok/s  echo=  99%  wall=  7.07s draft=1115/1443 (77% accepted)
+
+best decode: 204.6 tok/s     mean echo: 99% across 4 usable run(s)
+draft acceptance: 4434/5786 = 76.6%
+draft per cycle:  20.81 tokens
+
+With ngram-simple enabled, draft/cycle can reach 48 (its size_m) because a
+lookup hit costs no forward pass. With draft-mtp alone it cannot exceed
+SPEC_DRAFT_N_MAX, and each drafted token costs one MTP pass. A high echo
+with draft/cycle pinned near n-max is repetition the engine is paying full
+price for.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 8.49,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1108.8159566948311,
+      "predicted_n": 1178,
+      "predicted_tps": 175.4939214541692,
+      "cache_n": 0,
+      "draft_n": 1457,
+      "draft_accepted": 1089,
+      "draft_acceptance": 0.747,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 7.13,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1464.1819503000304,
+      "predicted_n": 1178,
+      "predicted_tps": 204.09476170072494,
+      "cache_n": 0,
+      "draft_n": 1443,
+      "draft_accepted": 1115,
+      "draft_acceptance": 0.773,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 6.93,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1578.0023090174166,
+      "predicted_n": 1178,
+      "predicted_tps": 204.62821383213705,
+      "cache_n": 0,
+      "draft_n": 1443,
+      "draft_accepted": 1115,
+      "draft_acceptance": 0.773,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 7.07,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1554.026481329867,
+      "predicted_n": 1178,
+      "predicted_tps": 202.2001853988446,
+      "cache_n": 0,
+      "draft_n": 1443,
+      "draft_accepted": 1115,
+      "draft_acceptance": 0.773,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    }
+  ]
+}

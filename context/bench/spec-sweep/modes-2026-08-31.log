@@ -1,0 +1,249 @@
+pins: server-cuda-b10689  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b
+==> sweeping 5 config(s) x 2 workload(s) into context/bench/spec-sweep-modes
+current: SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40
+==> ===== round 1 of 5 =====
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-mod,draft-mtp' want='ngram-simple,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+warn ngram-pmin-040-n4 [repeat] — host load is 15.60 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-simple,draft-mtp' want='ngram-mod,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammod-12-64-32-n4 [synthetic] — host load is 8.80 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+warn ngrammod-12-64-32-n4 [repeat] — host load is 18.25 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammapk-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-mod,draft-mtp' want='ngram-map-k,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammapk-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammapk-n4 [repeat] recorded
+==> ngrammapk4v-n4 — SPEC_TYPE=ngram-map-k4v,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-map-k,draft-mtp' want='ngram-map-k4v,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammapk4v-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammapk4v-n4 [repeat] recorded
+==> ngramcache-n4 — SPEC_TYPE=ngram-cache,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-map-k4v,draft-mtp' want='ngram-cache,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngramcache-n4 [synthetic] — host load is 10.92 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngramcache-n4 [synthetic] recorded
+warn ngramcache-n4 [repeat] — host load is 23.52 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngramcache-n4 [repeat] recorded
+==> ===== round 2 of 5 =====
+==> ngrammod-12-64-32-n4 — SPEC_TYPE=ngram-mod,draft-mtp n-max=4 p-min=0.40 draft=none mod=12:64:32
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-cache,draft-mtp' want='ngram-mod,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammod-12-64-32-n4 [synthetic] — host load is 26.38 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [synthetic] recorded
+warn ngrammod-12-64-32-n4 [repeat] — host load is 27.25 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammod-12-64-32-n4 [repeat] recorded
+==> ngrammapk-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-mod,draft-mtp' want='ngram-map-k,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammapk-n4 [synthetic] — host load is 13.33 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammapk-n4 [synthetic] recorded
+warn ngrammapk-n4 [repeat] — host load is 10.22 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammapk-n4 [repeat] recorded
+==> ngrammapk4v-n4 — SPEC_TYPE=ngram-map-k4v,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-map-k,draft-mtp' want='ngram-map-k4v,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammapk4v-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammapk4v-n4 [repeat] recorded
+==> ngramcache-n4 — SPEC_TYPE=ngram-cache,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-map-k4v,draft-mtp' want='ngram-cache,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngramcache-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngramcache-n4 [repeat] recorded
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-cache,draft-mtp' want='ngram-simple,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngram-pmin-040-n4 [repeat] recorded
+==> ===== round 3 of 5 =====
+==> ngrammapk-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-simple,draft-mtp' want='ngram-map-k,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammapk-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammapk-n4 [repeat] recorded
+==> ngrammapk4v-n4 — SPEC_TYPE=ngram-map-k4v,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-map-k,draft-mtp' want='ngram-map-k4v,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngrammapk4v-n4 [synthetic] — host load is 8.81 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngrammapk4v-n4 [synthetic] recorded
+warn ngrammapk4v-n4 [repeat] — host load is 10.31 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngrammapk4v-n4 [repeat] recorded
+==> ngramcache-n4 — SPEC_TYPE=ngram-cache,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-map-k4v,draft-mtp' want='ngram-cache,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+warn ngramcache-n4 [synthetic] — host load is 14.27 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [synthetic] (--repeat 4) ...
+  ok   ngramcache-n4 [synthetic] recorded
+warn ngramcache-n4 [repeat] — host load is 27.23 (threshold 8.0).
+warn   This result is being recorded, but it is NOT comparable with one
+warn   measured on a quiet box. Re-run it before ranking anything against it.
+==>   benching [repeat] (--repeat 4) ...
+  ok   ngramcache-n4 [repeat] recorded
+==> ngram-pmin-040-n4 — SPEC_TYPE=ngram-simple,draft-mtp n-max=4 p-min=0.40 draft=none mod=default
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='ngram-cache,draft-mtp' want='ngram-simple,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
