@@ -38,7 +38,12 @@ empty-tool-call-list exit still returns an empty response — it cannot invent o
 
 ---
 
-## 0b. `ngram-mod 12:64:32` — APPLIED, REPLICATED, and the synthetic side SETTLED
+## 0b. `ngram-mod 12:64:32` — SUPERSEDED by ngram-map-k on 2026-09-01
+
+*(Kept as the record of how it was measured, and because its 12/64/32 values
+are still in `.env`, inert, as the one-line revert path. Its "synthetic side
+settled" claim below is CORRECTED in 0e: that instrument could not resolve a
+6% effect, so read it as "no LARGE cost".)*
 
 **The pin was changed on 2026-08-31 and the change is live.** `.env` carries
 `SPEC_TYPE=ngram-mod,draft-mtp` with `12/64/32`. Full story in
@@ -50,7 +55,9 @@ different load regime, agreeing to within one point, and positive in all eight
 round subsets. In three of the rounds the candidate benched at 2-5x the pin's
 load and still won, so the estimate is conservative.
 
-**SETTLED 2026-09-01 — there is no measurable novel-text cost.** The
+**CORRECTED 2026-09-01 (see 0e): read this as NO LARGE COST, not no cost.** The
+run below could only detect effects above roughly 10%, so "no measurable cost"
+is a statement about the instrument as much as about the config. The
 synthetic-only run (8 rounds, ~13 min each because one workload halves round
 duration) gave five usable rounds at a balanced n=20/20:
 medians 59.8 vs 59.6, **-0.3%**, p=0.4866. The -3.5% on MEANS is one 23.7 tok/s
@@ -259,6 +266,65 @@ it returned -0.2%/p=0.97 over five rounds, which was reported as "no measurable
 cost". That reading was right in its conclusion but got there with the same
 instrument that cannot resolve 6%, so it should be understood as "no LARGE cost",
 not "no cost".
+
+---
+
+## 0e. Settle the novel-text cost of the pin — 19 rounds, ~4h
+
+**The one axis of the live pin that is genuinely unresolved.** map-k measured
+-6.6% against ngram-mod on synthetic (2026-09-01, n=24 a side), but:
+
+```
+difference                              -6.6%
+SE of the difference                     5.3%
+smallest effect that run could DETECT   10.6%   (2 SE)
+```
+
+The effect is BELOW the detection threshold. The 95% interval spans about -17%
+to +4% — a real cost, nothing, or a small gain are all consistent. Do not read
+the -6.6% as a measurement of anything.
+
+**The same caveat applies to `ngram-mod`'s synthetic result** (-0.2%, p=0.97),
+which was reported as "no measurable cost". Same instrument, same inability to
+resolve 6%. Both should be read as "no LARGE cost".
+
+### The run
+
+SE scales as `1/sqrt(n)`, so resolving a 6% effect needs SE ~3%, i.e. about
+3.1x the samples — **19 rounds** rather than 8:
+
+```bash
+./scripts/spec-sweep.sh --workload synthetic --rounds 19 --repeat 4 \
+  --results-dir context/bench/spec-sweep-synth19 \
+  --only ngrammod-12-64-32-n4,ngrammapk-n4
+
+python3 scripts/spec_sweep_compare.py \
+  --results-dir context/bench/spec-sweep-synth19 --baseline ngrammod-12-64-32-n4
+```
+
+~13 min a round at 2 configs synthetic-only, so **~4h**, and expect to lose a
+few rounds to load splits — 19 is chosen so ~14 survive, not so all 19 do.
+
+### Is it worth 4 hours?
+
+**Probably not, and that is a real answer.** The repeat workload is what pi
+actually produces, and map-k's +8.7% there is measured four times over. Novel
+text is the minority shape for this stack. Run this only if:
+
+- prose or novel-code generation subjectively feels slower since 2026-09-01, or
+- someone wants the pin's tradeoff stated with a number rather than a bound, or
+- the box is idle overnight and the GPU would otherwise sit unused.
+
+**If it comes back at -6%,** the pin is a genuine tradeoff (+8.7% agent work for
+-6% novel text) and still probably right for this stack — but say so in
+`versions.lock` instead of the current "unresolved".
+**If it comes back at 0,** the pin is free and the caveat can be deleted.
+
+### Reading it
+
+Same rules as everywhere else: `round health` first, `sensitivity` second, and
+the p-value last. A synthetic delta that swings +18.7% to -17.1% across rounds —
+which is what the 8-round run did — is noise however small the p.
 
 ---
 

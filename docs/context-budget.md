@@ -153,7 +153,18 @@ what will catch `rtk read` the day it starts summarising. `RTK_VERSION` is pinne
 for the same reason: rtk shipped 45 minor versions in seven months, and the
 filters are what the allow-list is trusting.
 
-One check earns its place over all the others: a `pytest` collection error must
+One check earns its place over all the others — and on 2026-08-31 it caught a
+real one: `scripts/test_repeat_detector.py` called `sys.exit()` at module level,
+which aborted collection for the WHOLE suite. `pytest scripts/ -q` reported "no
+tests ran" while 124 tests sat there passing. Fixed by guarding the script body
+with `__main__`; the file still runs standalone.
+
+(Also note: pytest is not in the container image, it is installed at runtime and
+vanishes on a container restart — it did once on 2026-09-01. Reinstall with
+`pip install --break-system-packages pytest`, or use
+`python3 -m unittest discover -s scripts -p "test_*.py"`, which needs nothing.)
+
+A `pytest` collection error must
 still exit non-zero and still name what failed. Upstream #2317 reports filters
 masking hard failures behind benign summaries; it does not reproduce on 0.45.0,
 and pytest is only on the allow-list because of that. A masked failure here means

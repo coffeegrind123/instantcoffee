@@ -10,6 +10,31 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**The speculative pin moved twice on 2026-08-31/09-01**, and the entry below
+from 2026-08-17 is history rather than current state. `.env` now runs
+**`SPEC_TYPE=ngram-map-k,draft-mtp`, `n-max 4`, `p-min 0.40`**.
+
+Measured directly against the old pin in a single run: **map-k +38.7%**,
+`ngram-mod 12:64:32` +29.1%, both p<0.002, ordering stable in all 8 rounds.
+map-k beats ngram-mod by +8.7% (n=24, p=0.015), replicated four times across
+three runs (8.7 / 8.6 / 9.3 / 7.5%). It is also the STEADIEST of the three —
+25.7% within-round spread against ngram-simple's 39.3%.
+
+**The novel-text axis is unresolved, not clean.** map-k measured -6.6% against
+ngram-mod on the synthetic workload, but that run could only detect effects
+above 10.6%, so it cannot tell -6.6% from zero. Read as "no LARGE cost". The
+same caveat applies retroactively to ngram-mod's own synthetic result, which
+was reported at the time as "no measurable cost" from the same instrument.
+
+Getting here took five measurement attempts, four of them void, because the
+same config measured 181.4 then 202.3 tok/s an hour apart on this shared box.
+What made the fifth work: load stamped into every result, `--rounds N`
+interleaving, and `scripts/spec_sweep_compare.py`, which decides round health
+from recorded numbers rather than judgement applied after seeing the winner.
+See `context/design/ngram-mod-and-the-load-confound.md`.
+
+---
+
 **Migrated from Qwen3.6-27B on 2026-08-15**, the day 3.8-27B released. The
 architecture string is unchanged (`qwen35`), so the pinned llama.cpp build
 loads it as-is, and UD-Q4_K_XL is the same 17.9 GB — but three things moved:

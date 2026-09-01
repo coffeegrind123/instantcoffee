@@ -128,9 +128,14 @@ things it prints that `--report` cannot:
   says so out loud when fewer than two rounds survive.
 
 Run **both** workloads. `bench.sh` nonce-randomises every prompt to defeat the
-prefix cache, which also defeats `ngram-simple` — measured on the repeat
-workload alone, `ngram-simple` looks like a flat 2× win; measured on novel text
+prefix cache, which also defeats any NGRAM arm — measured on the repeat
+workload alone, `ngram-simple` looked like a flat 2× win; measured on novel text
 at n-max 2 it *costs* 25%. Only the pair gives the real answer.
+
+That asymmetry is why the pin is chosen on the REPEAT workload (the shape pi
+produces) and why the synthetic axis keeps coming back underpowered: on
+2026-09-01 a synthetic run at n=24 a side could only resolve effects above
+10.6%, so "no measurable cost" from this instrument means "no LARGE cost".
 
 If no draft counters appear at all, either `SPEC_TYPE` is empty or the GGUF has
 no MTP head — check `block_count`, which must be **65**, not 64.
@@ -146,7 +151,7 @@ paragraph-length cells had made the everyday commands unfindable.
 | `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
 | `./scripts/spec-sweep.sh --dry-run` | Plan the speculative-decoding sweep and price it |
 | `./scripts/spec-sweep.sh --only baseline,pmin-050,pmin-040` | Is the MTP draft p-min-bound or n-max-bound |
-| `./scripts/spec-sweep.sh --workload repeat` | What `ngram-simple` is worth on repetitive output |
+| `./scripts/spec-sweep.sh --workload repeat` | What an ngram arm is worth on repetitive output — the workload the pin is chosen on |
 | `./scripts/spec-sweep.sh --workload synthetic,repeat` | Both workloads against each server, instead of paying every llama recreate twice |
 | `./scripts/spec-sweep.sh --rounds 5 --only pin,cand-a,cand-b` | Interleaved comparison that survives host-load drift — rotates the arms, discards round 1, groups rounds per config |
 | `./scripts/spec-sweep.sh --load-warn 4` | Tighten the load threshold above which a bench is flagged as not comparable (default 8.0) |

@@ -43,7 +43,7 @@ scripts/
   bench.sh              runner for bench.py
   bench.py              prefill / decode / MTP acceptance, from llama's timings
   bench_repeat.py       the repetition workload bench.py cannot measure — its
-                        nonce defeats ngram-simple as well as the prefix cache.
+                        nonce defeats any ngram arm as well as the prefix cache.
                         Reports "echo" so a flat result can be told apart from
                         a workload that failed to repeat
   bench_quality.py      reasoning effort vs ANSWER QUALITY: 8 tasks x 5 hidden

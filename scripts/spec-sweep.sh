@@ -3,7 +3,7 @@
 # Sweep the speculative-decoding knobs and report decode rate, draft acceptance
 # and — the number this script exists for — average draft length per cycle.
 #
-#   ./scripts/spec-sweep.sh                     # the whole 16-config grid
+#   ./scripts/spec-sweep.sh                     # the whole 19-config grid
 #   ./scripts/spec-sweep.sh --only baseline,pmin-040
 #   ./scripts/spec-sweep.sh --resume            # skip configs already measured
 #                                               #   ON THIS EXACT STACK

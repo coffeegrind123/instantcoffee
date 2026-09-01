@@ -233,8 +233,29 @@ reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget)
                       Re-confirmed on the V3 weights 2026-08-23 — see
                       quality_on_v3 below, and read its first caveat before
                       re-running the bench to re-decide this.
-spec_config         = ngram-simple,draft-mtp at n-max 4 / p-min 0.40 — the
-                      measured optimum of a full 2x6 grid, adopted 2026-08-17.
+spec_config         = ngram-map-k,draft-mtp at n-max 4 / p-min 0.40, adopted
+                      2026-09-01. map-k runs at ENGINE DEFAULTS (size-n 12,
+                      size-m 48, min-hits 1); its knob family is deliberately
+                      unplumbed. n-max/p-min are unchanged from 2026-08-17.
+                      Lineage, each link measured directly:
+                        ngram-simple n4 p0.40   the 2026-08-17 optimum
+                        -> ngram-mod 12:64:32   +22.3%, +23.3% (two runs)
+                        -> ngram-map-k          +8.7% over mod (n=24, p=0.015),
+                                                replicated 4x: 8.7/8.6/9.3/7.5
+                      Measured directly against the ORIGINAL in one run
+                      (2026-09-01 three-way): map-k +38.7%, mod +29.1%, both
+                      p<0.002. The ordering holds in all 8 rounds.
+                      CAVEAT — the novel-text axis is UNRESOLVED. map-k measured
+                      -6.6% vs mod on the synthetic workload, but that run could
+                      only detect an effect above 10.6% (2 SE), so it cannot
+                      distinguish -6.6% from zero. Read as "no LARGE cost", not
+                      "no cost". Settling it needs ~19 synthetic rounds; see
+                      context/OPEN-WORK.md 0e. The repeat workload — the shape pi
+                      actually produces — is where the +8.7% is measured.
+                      SPEC_NGRAM_MOD_N_MIN/MAX/MATCH remain set at 12/64/32 and
+                      are INERT (only read when SPEC_TYPE contains ngram-mod),
+                      retained so a revert to the validated ngram-mod is one
+                      SPEC_TYPE line.
                       Replaces the inherited 3.6 values (draft-mtp / 2 / 0.75).
                       Output is unchanged AS A SAMPLING DISTRIBUTION: every
                       draft is verified against the target model and the token
@@ -280,7 +301,8 @@ verified_2026_08_22 = b10573 / q8_0-q8_0 / 65536, pre-V3 weights:
                       shape pi actually produces): decode 176-180 tok/s, echo
                       0.988 with echo_exact_tokenizer true, draft acceptance
                       0.623-0.627, draft/cycle ~20.9. So ngram-simple still
-                      fires correctly on b10573 with a q8_0 cache. Prior figures
+                      fires correctly on b10573 with a q8_0 cache. (ngram-simple
+                      was the pin at the time; it was superseded 2026-09-01.) Prior figures
                       were 191.0 tok/s and draft/cycle 26.8 on a QUIET box; this
                       run was taken while the 17.6 GB Dynamic V3 download was
                       saturating the same 9p mount, so treat the gap as
@@ -624,7 +646,15 @@ tool_grammar        = 2026-08-30, b10573 -> b10689, MEASURED on this box with
                       and headroom, not for a speedup.
                       An n=3 pilot gave 83.0 % / 93.8 % -- non-monotonic, i.e.
                       noise. Do not run this probe below n=9.
-spec_verdict        = 2026-08-22 re-sweep on b10573 / q8_0 / 65536 / V3 weights:
+spec_verdict        = SUPERSEDED 2026-09-01 — see spec_config above. The pin is
+                      now ngram-map-k,draft-mtp; ngram-simple measures +38.7%
+                      BELOW it in a direct three-way. The verdict below stands as
+                      the record of what was true on b10573/65536/V3, and its
+                      closing sentence is the part that survived: an ngram arm is
+                      worth ~1.6-2x on real traffic, which dwarfs every
+                      n-max/p-min effect. What changed is WHICH ngram arm.
+                      ---
+                      2026-08-22 re-sweep on b10573 / q8_0 / 65536 / V3 weights:
                       KEEP ngram-simple,draft-mtp at n-max 4 / p-min 0.40. It is
                       in the top group on both workloads and nothing beats it.
                       repeat workload (mean tok/s): ngram-baseline 191.0,
@@ -1187,6 +1217,12 @@ ngram_size_m_note   = LEAVE IT AT 48. Swept 2026-08-23 (context/bench/capacity/
                       common_speculative_n_max() (common/speculative.cpp:2283)
                       takes the MAX over enabled speculators, so ngram-simple's
                       size_m (48) overrides draft.n_max (4).
+                      STILL IN FORCE UNDER THE 2026-09-01 PIN: ngram-map-k's
+                      size_m defaults to 48 as well, so SPEC_DRAFT_N_MAX=4 does
+                      not bound map-k's drafts either — it bounds only the MTP
+                      arm. This is why measured draft/cycle runs ~20-34 on the
+                      repeat workload while n-max reads 4, and why raising or
+                      lowering n-max moves so little.
 draft_kv_note       = REJECTED 2026-08-23. DO NOT SET -ctkd/-ctvd q8_0. The
                       "~180 MiB sitting there" DOES NOT EXIST; the flag costs
                       +216 MiB at 96K rather than saving 180.
