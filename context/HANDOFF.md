@@ -1,4 +1,4 @@
-# Handoff — 2026-09-01 (a dead backend that reported itself as a protocol bug: one upstream CUDA abort, one container nothing restarted, two forge patches aimed at the wrong file; the forge image REBUILT)
+# Handoff — 2026-09-01 (a dead backend that reported itself as a protocol bug: two forge patches aimed at the wrong file, a healthcheck that now ends its own container, and the VRAM leak that is not there; the forge image REBUILT)
 
 ## Read this first
 
@@ -135,12 +135,74 @@ most expensive thing in this handoff.
   the host bridge — it is not installed in the container). That headroom is
   §0f's whole concern.
 
-## 6. What was NOT done
+## 6. The container now ends itself, and it needed no Docker socket
 
-- The upstream CUDA abort. `context/OPEN-WORK.md` §0f — instrument first, do not
-  revert the measured +38.7% pin on one crash.
-- Restart-on-unhealthy. §0g — two shapes costed out, neither chosen, because one
-  of them mounts the Docker socket and that is the operator's call.
+`restart: unless-stopped` never fired because llama-server never ended. The
+healthcheck now ends it: after the server has been up and has stopped answering,
+the probe kills it, tini exits, and the policy already in `docker-compose.yml`
+does the rest. The alternative — an `autoheal` sidecar with
+`/var/run/docker.sock` mounted — is root on the host granted to a container for
+one service's benefit, and it turned out to be unnecessary. **`init: true` was
+already there,** so tini is PID 1 and llama-server is an ordinary child; an
+ordinary child is killable from inside the PID namespace and a namespace's PID 1
+is not, which is why "just `kill -9 1`" does not work and is not what this does.
+
+Three guards, and the middle one was confirmed on the reload that shipped it:
+
+- Nothing is counted until the server has answered **once**, so a ~24 minute
+  cold load cannot look like a wedge. This tests the condition instead of
+  assuming when the port binds.
+- `curl` exit 22 does not count. Every probe of the 16-minute load window came
+  back `curl: (22) The requested URL returned error: 503`. A server answering
+  503 is a server.
+- `--max-time 4` under Docker's `timeout: 5s`, so the probe always records its
+  own result. The wedged container's probes were being killed at Docker's
+  timeout, which is why nothing ever accumulated.
+
+Two details are load-bearing rather than tidy. The counter lives in a **tmpfs**,
+because the writable layer survives `docker restart` — a counter in `/tmp` would
+outlive the restart it caused and the next failed probe would kill again,
+forever. And the reason is written to `/proc/1/fd/2` so it lands in
+`docker logs` above the reload, not only in `State.Health.Log[].Output`, which
+nobody reads and which the restart discards.
+
+`scripts/test_llama_watchdog.sh` **15/15**, and live: `RestartCount=0` across a
+16-minute cold load with the watchdog armed. The test reads the probe out of the
+created container (`docker inspect .Config.Healthcheck.Test`) rather than
+carrying a copy. `docker compose config` is NOT usable as that source — it
+re-escapes `$` as `$$` so its output is a compose file again, and asserting on
+it tests the escaping.
+
+## 7. The VRAM leak is not there, and the reproduction did not crash
+
+llama.cpp#23154's claim is that the ngram spec map grows VRAM until it OOMs.
+`vram-floor.sh` already established how to ask this box that question: the
+Windows `\GPU Process Memory(*)\Dedicated Usage` counter for `vmwp` IS llama and
+nothing else, because it is the only GPU-enabled container here. Across six
+back-to-back 2,500-token heavy-thinking generations:
+
+    samples=29   llama 20995.0 -> 20995.1 MB   span 0.1 MB
+
+and across a run that built a 60K-token context:
+
+    samples=8    llama 20993.0 -> 20995.1 MB   span 2.1 MB
+
+The device total moved ~200 MiB in the same windows and all of it was the
+desktop. **The leading hypothesis is dead.**
+
+The reproduction attempt matched every line the crash logged — `selected slot by
+LRU`, `prompt state size 7258 MiB exceeds cache size limit 2048 MiB, skipping`,
+`shrink cleanup begin: 60088 -> 10026`, the refresh — and survived. The one
+number that did not match is where to look next:
+
+    crash     #keys_checked=165  #keys_del=162  #hashes_upd=30834
+    attempt1  #keys_checked=3    #keys_del=1    #hashes_upd=43243
+
+`hashes_upd` was HIGHER in the run that survived, so the size of the rehash is
+not the trigger. What the crashing boot had was **165 live keys** accumulated
+over six hours of varied traffic, of which the shrink deleted 162 — nearly all
+of them. That is the state attempt 2 tries to build. Status and next steps in
+`context/OPEN-WORK.md` §0f.
 
 ---
 

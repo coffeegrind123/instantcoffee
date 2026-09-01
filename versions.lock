@@ -649,6 +649,61 @@ forge_patch_12      = 2026-09-01. patches/forge_sse_error_shape.py, the
                       vacuous on the first run and the negative control
                       caught it -- '"error" in wire' is satisfied by the
                       BROKEN shape too. It names finish_reason in full now.
+llama_watchdog      = 2026-09-01. The llama healthcheck can now END the
+                      container, and LLAMA_HEALTH_KILL_AFTER=8 is the pin.
+                      WHY. llama-server aborted on a CUDA assert at 18:38 and
+                      did NOT exit -- /proc/7/stat sampled 3s apart moved +248
+                      ticks, so it was spinning, and `docker restart` needed
+                      the full timeout and a SIGKILL. A restart policy only
+                      sees processes that END, so `restart: unless-stopped`
+                      never fired. Docker marked the container unhealthy 88
+                      consecutive times over two hours and NOTHING on this box
+                      acts on unhealthy. `docker ps` read `Up 7 hours
+                      (unhealthy)` throughout.
+                      SHAPE, and why not the obvious one. Docker has no
+                      restart-on-unhealthy. The usual answer is an autoheal
+                      sidecar with /var/run/docker.sock mounted -- root on the
+                      host, granted to a container, for one service's benefit.
+                      This instead has the probe kill the server so the
+                      container exits and the policy already in the file does
+                      the rest. No socket, no sidecar, no new image. It works
+                      because `init: true` is already there: tini is PID 1, so
+                      llama-server is an ordinary child and IS killable from
+                      inside the namespace (PID 1 would not be).
+                      THREE GUARDS, each a way the naive version breaks a
+                      working stack:
+                        * nothing is counted until the server has answered
+                          ONCE. A ~24 min cold load must not look like a wedge,
+                          and this tests the condition rather than assuming
+                          when the port binds.
+                        * curl exit 22 does not count. MEASURED LIVE during the
+                          2026-09-01 reload: every probe of the load window was
+                          `curl: (22) ... error: 503`. A server answering 503 is
+                          a server. Only 7 (refused) and 28 (timeout) count.
+                        * --max-time 4 under Docker's timeout: 5s, so the probe
+                          always records its own result. The wedged container's
+                          probes were being killed at Docker's timeout, which is
+                          why nothing ever accumulated.
+                      STATE LIVES IN A tmpfs, and that is load-bearing. The
+                      container's writable layer SURVIVES `docker restart`, so
+                      a counter in /tmp would survive the restart it just
+                      caused and the next failed probe would kill again --
+                      an unkillable boot loop. tmpfs is re-created empty on
+                      every start. Pinned with a control: a file outside it
+                      survives the same restart.
+                      THE REASON GOES TO `docker logs`, not only to
+                      State.Health.Log[].Output, which nobody reads and which
+                      does not survive the restart it is explaining. The probe
+                      writes to /proc/1/fd/2 -- the container's log stream --
+                      so the line sits immediately above the reload.
+                      PROVEN: scripts/test_llama_watchdog.sh 15/15, driving the
+                      probe READ OUT OF THE CREATED CONTAINER (docker inspect
+                      Config.Healthcheck.Test) rather than a copy, so the test
+                      and the shipped text cannot drift. `docker compose config`
+                      is NOT the source: it re-escapes $ as $$ so its output is
+                      a compose file again, and testing that would test the
+                      escaping. Costs no GPU -- the throwaway container's
+                      "llama-server" is a renamed sleep.
 forge_0_9_5         = ADOPTED 2026-08-30, 0.9.0 -> 0.9.5, through update.sh
                       with the smoke test as the gate. 11/11 including a real
                       tool call, and test_forge_patches.py run inside the LIVE

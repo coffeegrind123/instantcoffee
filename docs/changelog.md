@@ -10,6 +10,60 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**A restart policy only sees processes that end, and llama-server did not end.**
+The same 2026-09-01 abort that produced the two forge patches below had a second
+half: the container stayed `Up 7 hours (unhealthy)` with a dead server inside
+it. `/proc/7/stat` sampled 3 s apart moved +248 ticks — spinning, not hung — and
+`docker restart` needed the full 30 s timeout and a SIGKILL to end it. Docker has
+no "restart when unhealthy"; it recorded 88 consecutive failures and did nothing
+else, because nothing else is what it does.
+
+The usual fix is an `autoheal` sidecar with `/var/run/docker.sock` mounted —
+root on the host, granted to a container, for one service's benefit. It was not
+needed. `init: true` was already in the file, so tini is PID 1 and llama-server
+is an ordinary child; **an ordinary child is killable from inside the PID
+namespace, and a namespace's PID 1 is not.** The healthcheck now kills the
+server so the container exits and `restart: unless-stopped` — already there —
+takes over. No socket, no sidecar, no new image.
+
+Three guards keep it from breaking a working stack, and the middle one was
+confirmed live on the reload that shipped it:
+
+- Nothing is counted until the server has answered **once**. A ~24 minute cold
+  load must not look like a wedge, and this tests that condition rather than
+  assuming when the port binds.
+- `curl` exit 22 does not count. Every probe of the load window came back
+  `curl: (22) The requested URL returned error: 503`. A server answering 503 is
+  a server; only 7 (refused) and 28 (timeout) mean nobody home.
+- `--max-time 4` under Docker's `timeout: 5s`, so the probe always finishes and
+  records its own result. The wedged container's probes were being killed at
+  Docker's timeout, which is why nothing ever accumulated.
+
+Two details that are load-bearing rather than decorative. The counter lives in a
+**tmpfs**: the writable layer survives `docker restart`, so a counter in `/tmp`
+would survive the restart it just caused and the next failed probe would kill
+again, forever. And the reason is written to `/proc/1/fd/2`, so it appears in
+`docker logs` immediately above the reload instead of only in
+`State.Health.Log[].Output`, which nobody reads and which the restart discards.
+
+`scripts/test_llama_watchdog.sh` is **15/15**, and it reads the probe out of the
+created container with `docker inspect` rather than carrying a copy — the test
+and the shipped text cannot drift. `docker compose config` is deliberately not
+the source: it re-escapes `$` as `$$` so its output is a compose file again, and
+asserting on that would test the escaping. `LLAMA_HEALTH_KILL_AFTER=8` (× the
+15 s interval = two minutes) is the new `.env` key, defaulted in compose so an
+older `.env` starts the same container it always did.
+
+**Separately, the leading hypothesis for the abort itself is now dead.**
+llama.cpp#23154 reports the ngram spec map growing VRAM until a CUDA OOM. Using
+`vram-floor.sh`'s method — the Windows per-process GPU counter for `vmwp`, which
+that script established is llama and nothing else here — across six back-to-back
+2,500-token heavy-thinking generations: **29 samples, 20995.0 to 20995.1 MB, a
+span of 0.1 MB.** The device total moved ~200 MiB in the same window and all of
+it was the desktop. See `context/OPEN-WORK.md` §0f for what that leaves.
+
+---
+
 **"Stream ended without finish_reason", twice, for a backend that had been dead
 for two hours.** On 2026-09-01 llama-server aborted mid-generation on a CUDA
 assert — `ggml-cuda.cu:2651 GGML_ASSERT(stat == cudaSuccess)` inside

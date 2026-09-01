@@ -373,6 +373,34 @@ to 100% and crashing WITH it. **Closed 2026-07-31 as stale, never fixed.**
   60K-token context, the LRU slot eviction, or the 8.5 GiB prompt-state shrink
   that preceded this abort.
 
+### MEASURED 2026-09-01, after the restart: llama's VRAM does not move
+
+The first of the three steps below has been done, and it comes back negative.
+
+`vram-floor.sh`'s method — the Windows `\GPU Process Memory(*)\Dedicated Usage`
+counter for the `vmwp` process, which that script established IS llama and
+nothing else on this box — sampled every 15 s across six back-to-back
+2,500-token heavy-thinking generations (15,000 tokens):
+
+```
+samples=29   llama first=20995.0  last=20995.1  min=20995.0  max=20995.1
+             span = 0.1 MB
+```
+
+The device total moved by ~200 MiB over the same window; all of it was the
+desktop. **#23154's shape — VRAM climbing while the model thinks — does not
+reproduce here at small context.** That is not proof the abort was not an
+allocation failure, but it removes the leading hypothesis, and it moves the
+suspicion from "ran out" to "read out of range": `cudaGraphExecUpdate` returning
+a STICKY error latched by an earlier async failure would land on exactly the
+assert that fired, and an index that just moved backwards by 49,000 positions is
+the obvious candidate for producing one.
+
+If a reproduction is obtained, the instrument that names the real failure site is
+`CUDA_LAUNCH_BLOCKING=1` in the llama service's `environment:` — it makes every
+launch synchronous, so the abort points at the failing kernel instead of at the
+next CUDA call after it. Slow, and correct for one diagnostic run.
+
 **So do not revert the +38.7% pin on this.** One crash does not indict a
 measured result, and the honest next step is instrumentation, not a rollback:
 
@@ -391,35 +419,53 @@ measured result, and the honest next step is instrumentation, not a rollback:
 
 ---
 
-## 0g. NOTHING on this box restarts a container that goes unhealthy
+## 0g. Restart-on-unhealthy — DONE 2026-09-01, and it needed no Docker socket
 
-**The second half of why 0f cost 40 minutes instead of 30 seconds.**
-llama-server aborted — and then did not exit. `ggml_abort` printed its backtrace
-and the process stayed in `R` state, burning ~80% of a core with nothing
-listening on 8080. Verified rather than assumed: sampling `/proc/7/stat` 3 s
-apart showed +248 ticks, and `docker restart` needed the full 30 s timeout and a
-SIGKILL to end it.
+**Shipped.** The llama healthcheck in `docker-compose.yml` now ends the
+container itself when the server has been up and has stopped answering, and
+`restart: unless-stopped` — already in the file — does the rest.
 
-Because it never exited, `restart: unless-stopped` never fired. Docker did the
-only thing it does: it marked the container **unhealthy**, 88 consecutive times
-over two hours. `docker ps` said `Up 7 hours (unhealthy)` the whole time, and
-forge — whose own healthcheck deliberately probes `/forge/health` rather than
-the backend, for good reasons written into `docker-compose.yml` — stayed green.
+The alternative was an `autoheal` sidecar with `/var/run/docker.sock` mounted,
+which is root on the host granted to a container for one service's benefit.
+It was not needed: `init: true` was already there, so tini is PID 1 and
+llama-server is an ordinary child, and an ordinary child IS killable from
+inside the PID namespace. (PID 1 is not — a namespace init is immune to signals
+it has no handler for, which is why "just `kill -9 1`" does not work and is not
+what this does.)
 
-**Docker has no native "restart when unhealthy".** The two shapes that work:
+Three guards, each one a way the naive version breaks a working stack, and the
+middle one was confirmed live during the reload that shipped it:
 
-- an `autoheal` sidecar (`willfarrell/autoheal`) with
-  `/var/run/docker.sock` mounted, restarting containers carrying its label. One
-  service in `docker-compose.yml`, no change to the llama service beyond a
-  label. It is a socket mount, which is root-on-the-host — that is the real
-  cost and it should be a deliberate choice, not a default.
-- a self-terminating healthcheck: the check counts its own consecutive failures
-  in a file under `/tmp` and, past a threshold, `kill -9 1`. No socket, no new
-  container, and it works precisely because `init: true` already puts a real
-  init at PID 1. Uglier, and it puts restart policy inside a probe.
+- **Nothing is counted until the server has answered once.** A ~24 minute cold
+  load must never look like a wedge, and this tests the condition instead of
+  assuming when the port binds.
+- **curl exit 22 does not count.** Measured, not reasoned: every probe of the
+  2026-09-01 load window came back `curl: (22) The requested URL returned error:
+  503`. A server answering 503 is a server. Only 7 (refused) and 28 (timeout)
+  count.
+- **`--max-time 4` under Docker's `timeout: 5s`,** so the probe always finishes
+  and records its own result. The wedged container's probes were being killed at
+  Docker's timeout, which is exactly why nothing ever accumulated.
 
-Either one turns a 40-minute silent outage into a 30-second blip. **Patches 11
-and 12 make the failure legible; neither makes it short.**
+Two details that are not decoration. The counter lives in a **tmpfs**, because
+the writable layer survives `docker restart` — a counter in `/tmp` would survive
+the restart it just caused and the next failed probe would kill again, forever.
+And the reason is written to `/proc/1/fd/2`, so it lands in `docker logs`
+immediately above the reload rather than only in `State.Health.Log[].Output`,
+which nobody reads and which the restart discards.
+
+`scripts/test_llama_watchdog.sh` is **15/15**. It reads the probe out of the
+created container with `docker inspect` rather than carrying a copy, so the test
+and the shipped text cannot drift; it costs no GPU (the throwaway container's
+"llama-server" is a renamed `sleep`); and the tmpfs case has a control — a file
+outside the tmpfs must survive the same restart, or "the file is gone" would
+only mean the container was replaced.
+
+**What is still open here:** forge and the capture proxy have no equivalent.
+Neither has ever wedged — both are Python servers that would crash and exit,
+which the restart policy already handles — so this is a note, not a task. If one
+ever does, the generalisation is the sidecar, and it should be argued for on its
+own evidence rather than added pre-emptively.
 
 ---
 

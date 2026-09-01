@@ -22,6 +22,11 @@ services:
       # that vram_note calls the authority — is gated above 3 and is therefore
       # invisible at the default. See capacity-probe.sh's breakdown block.
       - LLAMA_ARG_LOG_VERBOSITY=${LLAMA_LOG_VERBOSITY:-3}
+      # How many consecutive nobody-home probes end the container. Read by the
+      # healthcheck below. 8 x the 15s interval = two minutes of a server that
+      # was up and has stopped answering. Defaulted here rather than required,
+      # so a .env predating this key starts the same container it always did.
+      - LLAMA_HEALTH_KILL_AFTER=${LLAMA_HEALTH_KILL_AFTER:-8}
     ports:
       - "${BIND_ADDR}:${LLAMA_PORT}:8080"
     volumes:
@@ -132,8 +137,80 @@ services:
       --checkpoint-min-step ${CHECKPOINT_MIN_STEP}
       --metrics
       ${LLAMA_EXTRA_FLAGS}
+    # The counter and the "has ever been up" sentinel live here. A tmpfs is
+    # RE-CREATED EMPTY on every container start, including `docker restart`,
+    # and the container's writable layer is not — so state in /tmp would
+    # survive the very restart it just caused and the next failed probe would
+    # kill again immediately. Verified, not assumed: touch a file, restart,
+    # it is gone.
+    tmpfs:
+      - /run/llama-watchdog
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      # THIS PROBE CAN END THE CONTAINER, and that is the point.
+      #
+      # On 2026-09-01 llama-server aborted on a CUDA assert and DID NOT EXIT.
+      # It sat in R state spinning on a core with nothing listening on 8080,
+      # so `restart: unless-stopped` never fired — a restart policy only sees
+      # processes that end. Docker did the one thing it does: marked the
+      # container unhealthy, 88 consecutive times over two hours, which
+      # NOTHING on this box acts on. `docker ps` said `Up 7 hours (unhealthy)`
+      # the whole time and every request in that window burned the full
+      # 600 s FORGE_BACKEND_TIMEOUT. See context/HANDOFF.md 2026-09-01.
+      #
+      # Docker has no "restart when unhealthy". The two ways to get one are an
+      # autoheal sidecar with /var/run/docker.sock mounted — root-equivalent on
+      # the host, for one container's benefit — or this: the probe kills the
+      # server so the container exits and the policy already in this file does
+      # the rest. No socket, no sidecar, no new image.
+      #
+      # THE THREE THINGS THAT MAKE IT SAFE, each one a failure mode of the
+      # naive version:
+      #
+      #  1. It kills nothing until the server has been healthy ONCE. A ~24
+      #     minute cold load must never look like a wedge, and reasoning about
+      #     whether the port is bound yet is exactly the kind of assumption
+      #     this repo keeps paying for. "It worked and then stopped" is the
+      #     condition being detected, so that is what is tested.
+      #  2. curl exit 22 — an HTTP error status — does not count. A server
+      #     answering 503 is a server. Only 7 (refused) and 28 (timeout), i.e.
+      #     nobody home, do.
+      #  3. --max-time 4 under Docker's timeout: 5s, so the probe always
+      #     finishes and records its own result rather than being killed
+      #     mid-count. The wedged container's probes were dying at Docker's
+      #     timeout, which is why nothing accumulated.
+      #
+      # $$ is an escaped $: compose interpolates this string before the
+      # container ever sees it. `docker compose config` is the check.
+      test:
+        - CMD
+        - sh
+        - -c
+        - |
+          S=/run/llama-watchdog
+          curl -fsS --max-time 4 -o /dev/null http://127.0.0.1:8080/health
+          rc=$$?
+          if [ "$$rc" = 0 ]; then : > "$$S/up"; rm -f "$$S/fails"; exit 0; fi
+          [ -f "$$S/up" ] || exit 1
+          [ "$$rc" = 22 ] && exit 1
+          n=$$(cat "$$S/fails" 2>/dev/null || echo 0)
+          n=$$((n + 1))
+          echo "$$n" > "$$S/fails"
+          if [ "$$n" -ge "$$LLAMA_HEALTH_KILL_AFTER" ]; then
+            m="watchdog: llama-server unreachable for $$n consecutive probes (curl rc=$$rc) - killing it so the container exits and restart:unless-stopped fires"
+            # Twice, on purpose. A healthcheck's own output goes ONLY to
+            # .State.Health.Log[].Output, which nobody reads and which does not
+            # survive the restart it is explaining. /proc/1/fd/2 is the
+            # container's log stream, so `docker logs instantcoffee-llama`
+            # carries the reason immediately above the reload that follows it.
+            echo "$$m" >&2
+            echo "$$m" > /proc/1/fd/2 2>/dev/null || true
+            for d in /proc/[0-9]*; do
+              p=$${d#/proc/}
+              [ "$$p" = 1 ] && continue
+              grep -q llama-server "$$d/comm" 2>/dev/null && kill -9 "$$p" 2>/dev/null
+            done
+          fi
+          exit 1
       interval: 15s
       timeout: 5s
       # A 27B GGUF takes a while to read off disk and upload to VRAM on a cold
@@ -142,6 +219,10 @@ services:
       # measured at 10-12 MB/s is a ~24 minute cold load, so the container was
       # being marked unhealthy while loading normally. Warm restarts are far
       # faster (the file is in the host's cache), so this only bites once.
+      #
+      # start_period governs Docker's HEALTH STATUS only. The watchdog above
+      # does not read it and does not need to — rule 1 covers the same ground
+      # by observation instead of by clock.
       start_period: 2400s
       retries: 5
 

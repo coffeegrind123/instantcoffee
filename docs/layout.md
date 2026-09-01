@@ -87,6 +87,13 @@ scripts/
   test_forge_patches.py behaviour gate for the twelve build-time forge patches.
                         Runs INSIDE the built image, because it imports the
                         patched package. CI runs it after the image build
+  test_llama_watchdog.sh
+                        behaviour gate for the healthcheck that can END the
+                        llama container. Reads the shipped probe out of the
+                        created container with `docker inspect` so a copy
+                        cannot drift from it, then drives it against a
+                        throwaway whose "llama-server" is a renamed sleep.
+                        Costs no GPU
   probe_lib.py          shared by ctx_needle.py and bench_literal.py: the nonce,
                         the varied filler, and the document builder that
                         CALIBRATES its length against the server's tokenizer.
