@@ -173,36 +173,58 @@ carrying a copy. `docker compose config` is NOT usable as that source — it
 re-escapes `$` as `$$` so its output is a compose file again, and asserting on
 it tests the escaping.
 
-## 7. The VRAM leak is not there, and the reproduction did not crash
+## 7. The VRAM leak is not there, four reproductions did not crash, and the headroom has moved
 
-llama.cpp#23154's claim is that the ngram spec map grows VRAM until it OOMs.
-`vram-floor.sh` already established how to ask this box that question: the
-Windows `\GPU Process Memory(*)\Dedicated Usage` counter for `vmwp` IS llama and
-nothing else, because it is the only GPU-enabled container here. Across six
-back-to-back 2,500-token heavy-thinking generations:
+**The leak hypothesis is dead.** llama.cpp#23154 claims the ngram spec map grows
+VRAM until it OOMs. `vram-floor.sh` already established how to ask this box that
+question — the Windows `\GPU Process Memory(*)\Dedicated Usage` counter for
+`vmwp` IS llama, because it is the only GPU-enabled container here:
 
-    samples=29   llama 20995.0 -> 20995.1 MB   span 0.1 MB
+    124 samples / 41 min, spanning 24 short conversations, three 58K context
+    builds, five 2000-token deep generations and a 93K-token conversation:
+        llama   20993.0 -> 20999.1 MiB   span 6.1 MiB
+        device  22939.2 -> 23323.1 MiB   span 383.9 MiB   (all desktop)
 
-and across a run that built a 60K-token context:
+    69 samples / 17 min, quiet, in vram-floor.sh's own words:
+        llama moved 0.0 MiB across the whole capture (i.e. not at all)
 
-    samples=8    llama 20993.0 -> 20995.1 MB   span 2.1 MB
+**Four reproductions, all negative.** `common_ngram_map_begin` is pure CPU — it
+edits two vectors and touches no CUDA — so it did not crash; it is the last
+thing logged before the decode that did, and its counters describe the state
+that decode inherited. Every attempt matched more of the crash:
 
-The device total moved ~200 MiB in the same windows and all of it was the
-desktop. **The leading hypothesis is dead.**
+    | context | shrink to | keys | del |  %  | hashes_upd | result
+    crash    |  62,366 | 12,221 | 165 | 162 | 98% |     30,834 | ABORT
+    att. 1   |  60,088 | 10,086 |   3 |   1 | 33% |     43,243 | survived
+    att. 4   |  93,123 | 10,076 |  59 |  55 | 93% |     65,133 | survived
 
-The reproduction attempt matched every line the crash logged — `selected slot by
-LRU`, `prompt state size 7258 MiB exceeds cache size limit 2048 MiB, skipping`,
-`shrink cleanup begin: 60088 -> 10026`, the refresh — and survived. The one
-number that did not match is where to look next:
+Attempt 1 reproduced every LINE the crash logged — `selected slot by LRU`, the
+`exceeds cache size limit` warning, the shrink, the refresh — and survived, so
+the shrink alone is not sufficient. Attempts 2 and 3 could not raise the key
+count, and the source says why: **any request whose prompt is shorter than the
+last one culls keys**, so attempt 3's branched "deep" prompts were culling the
+keys they were meant to plant, five times per cycle. Attempt 4 used one strictly
+monotonic conversation and reached a LARGER context and a LARGER rehash than the
+crash at 93% deletion. It survived too.
 
-    crash     #keys_checked=165  #keys_del=162  #hashes_upd=30834
-    attempt1  #keys_checked=3    #keys_del=1    #hashes_upd=43243
+**What is left is headroom, and it has moved since the window was chosen.**
+llama does not need to grow for the device to run out. At the busiest moment
+measured today the device held 23,323 of 24,564 MiB — 1,241 MiB free — and that
+number is set by the Windows desktop:
 
-`hashes_upd` was HIGHER in the run that survived, so the size of the rehash is
-not the trigger. What the crashing boot had was **165 live keys** accumulated
-over six hours of varied traffic, of which the shrink deleted 162 — nearly all
-of them. That is the state attempt 2 tries to build. Status and next steps in
-`context/OPEN-WORK.md` §0f.
+    desktop floor 2026-08-23:  1405 1536 1881 1905 1961 2027   (622 MiB spread)
+    desktop floor 2026-09-01:  min 2007.5  median 2033.5  max 2050.4
+
+Today's MEDIAN is above the whole August range. A CUDA allocation failing at a
+moment of desktop pressure — and a re-instantiated graph on the shrink path is
+an allocation — latches a sticky error that surfaces at exactly the assert that
+fired, and would need the desktop to spike in the same second, which no
+reproduction script can arrange.
+
+Full attempt log, the mechanism, and the four things to do in order are in
+`context/OPEN-WORK.md` §0f. The short version: change nothing about the pin,
+re-price CTX_SIZE against the current floor if headroom is wanted, and put
+`CUDA_LAUNCH_BLOCKING=1` on the next recurrence to get the real failure site.
 
 ---
 

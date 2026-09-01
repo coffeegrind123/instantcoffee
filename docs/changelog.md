@@ -54,13 +54,33 @@ asserting on that would test the escaping. `LLAMA_HEALTH_KILL_AFTER=8` (× the
 15 s interval = two minutes) is the new `.env` key, defaulted in compose so an
 older `.env` starts the same container it always did.
 
-**Separately, the leading hypothesis for the abort itself is now dead.**
+**Separately, the abort itself was chased down to a different suspect.**
 llama.cpp#23154 reports the ngram spec map growing VRAM until a CUDA OOM. Using
 `vram-floor.sh`'s method — the Windows per-process GPU counter for `vmwp`, which
-that script established is llama and nothing else here — across six back-to-back
-2,500-token heavy-thinking generations: **29 samples, 20995.0 to 20995.1 MB, a
-span of 0.1 MB.** The device total moved ~200 MiB in the same window and all of
-it was the desktop. See `context/OPEN-WORK.md` §0f for what that leaves.
+that script established is llama and nothing else here — across 41 minutes
+spanning 24 short conversations, three 58K context builds, five 2,000-token deep
+generations and a 93K-token conversation: **llama moved 6.1 MiB, and 0.0 MiB
+across a quieter 69-sample capture.** It does not leak.
+
+Four reproductions did not crash either. `common_ngram_map_begin` is pure CPU,
+so it was never the thing that aborted — it is the last line before the decode
+that did. The first attempt matched every line the crash logged (`selected slot
+by LRU`, `exceeds cache size limit`, the shrink, the refresh) and survived; the
+fourth reached a **larger** context (93,123 tokens) and a **larger** rehash than
+the crash at 93% key deletion, and survived. Attempts 2 and 3 failed to raise
+the key count for a reason the source explains: any request whose prompt is
+shorter than the last one culls keys, so a branched follow-up culls the keys it
+is meant to be planting.
+
+What is left is headroom, and it has moved. At the busiest moment measured, the
+device held 23,323 of 24,564 MiB — 1,241 MiB free — and that number belongs to
+the Windows desktop, whose floor now reads **min 2007.5 / median 2033.5 / max
+2050.4 MiB against an August range of 1405–2027**. Today's median is above the
+whole range the 96K window was chosen against. `context/OPEN-WORK.md` §0f has
+the attempt table and the four things to do in order; the short version is that
+the pin is not at fault, `CTX_SIZE` is the only lever that returns VRAM in GiB,
+and `CUDA_LAUNCH_BLOCKING=1` on the next recurrence names the real failure
+site.
 
 ---
 

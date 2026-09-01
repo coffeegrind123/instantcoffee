@@ -328,94 +328,143 @@ which is what the 8-round run did — is noise however small the p.
 
 ---
 
-## 0f. llama-server ABORTED on a CUDA assert, on the ngram-map path — 2026-09-01
+## 0f. The CUDA abort: four reproductions that did not crash, and where that leaves it
 
-**This happened; it is not a hypothesis.** Six hours into the boot that adopted
-`ngram-map-k` (the pin from 0c/0d, adopted the same day), at 18:38 UTC:
+**The event, 2026-09-01 18:38 UTC.** Six hours into the boot that adopted
+`ngram-map-k` (the pin from 0c/0d, adopted the same day):
 
 ```
+348.34  selected slot by LRU, t_last = 81473493103
 348.38  W srv alloc: - prompt state size 8485.588 MiB exceeds cache size
                        limit 2048.000 MiB, skipping
-354.13  I common_ngram_map_begin: shrink cleanup begin: 61573 -> 12161
-354.15  I common_ngram_map_begin: refresh map: idx_last_draft=62362,
+354.13  common_ngram_map_begin: shrink cleanup begin: 61573 -> 12161
+354.15  common_ngram_map_begin: refresh map: idx_last_draft=62362,
                        new begin=12221, #keys_checked=165, #keys_del=162,
                        #values_del=0, #hashes_upd=30834
 /app/ggml/src/ggml-cuda/ggml-cuda.cu:2651: GGML_ASSERT(stat == cudaSuccess) failed
-  ggml_abort -> ggml_backend_sched_graph_compute_async -> llama_context::decode
+  ggml_abort <- ggml_backend_sched_graph_compute_async <- llama_context::decode
 ```
 
 Line 2651 in b10689 is the `else` of `ggml_cuda_graph_update_executable`:
 `cudaGraphExecUpdate` returned something that is neither `cudaSuccess` nor
-`cudaErrorGraphExecUpdateFailure`. A sticky error latched by an earlier async
-failure returns there, so **the assert is where it surfaced, not where it
-happened.**
+`cudaErrorGraphExecUpdateFailure` (which that function handles by
+re-instantiating). A sticky error latched by an earlier async failure lands
+there, so **the assert is where it surfaced, not where it happened.**
 
-**The upstream match, found with `gh` and read rather than remembered:**
-[ggml-org/llama.cpp#23154](https://github.com/ggml-org/llama.cpp/issues/23154),
-"CUDA ERROR crash when using MTP ngram-mod" — same RTX 4090, same
-`--spec-type ngram-*,draft-mtp`, same `ggml_cuda_graph_update_executable`, with
-the reporter's own before/after: VRAM flat at 76% WITHOUT `ngram-mod`, climbing
-to 100% and crashing WITH it. **Closed 2026-07-31 as stale, never fixed.**
+### What the source says the log means
 
-**What is measured here, and what is not.**
-
-- Measured: 1 abort in ~6 h of that boot. No CUDA crash is recorded anywhere
-  else in this repo's history — `grep -ri "GGML_ASSERT\|CUDA error" docs/
-  context/` finds only the changelog entry written for this one.
-- Measured: VRAM steady state after the restart is **22809 / 24564 MiB, 1334 MiB
-  free**, on a GPU shared with the Windows desktop and 16 other compute clients
-  (`nvidia-smi` via the host bridge; it is not available inside the container).
-  That is the entire headroom a growing spec map has to grow into.
-- NOT measured: whether `ngram-map-k` is any worse than `ngram-mod` here. Both
-  are in the family #23154 names, and this stack ran `ngram-mod` for a day
-  without a recorded crash — which is an absence of evidence, not evidence.
-  0c/0d's benchmark rounds are short repeat workloads; they never reach the
-  60K-token context, the LRU slot eviction, or the 8.5 GiB prompt-state shrink
-  that preceded this abort.
-
-### MEASURED 2026-09-01, after the restart: llama's VRAM does not move
-
-The first of the three steps below has been done, and it comes back negative.
-
-`vram-floor.sh`'s method — the Windows `\GPU Process Memory(*)\Dedicated Usage`
-counter for the `vmwp` process, which that script established IS llama and
-nothing else on this box — sampled every 15 s across six back-to-back
-2,500-token heavy-thinking generations (15,000 tokens):
+`common_ngram_map_begin` (`common/ngram-map.cpp` at b10689) is **pure CPU** — it
+edits `map.keys` and `map.key_map` and touches no CUDA. It did not crash. It is
+the last thing logged before the decode that did, and its counters describe the
+state that decode inherited:
 
 ```
-samples=29   llama first=20995.0  last=20995.1  min=20995.0  max=20995.1
-             span = 0.1 MB
+#keys_checked = map.keys.size() on entry      (live keys)
+#keys_del     = keys erased
+a key is erased when key.key_idx >= size_begin - size_key - size_value
 ```
 
-The device total moved by ~200 MiB over the same window; all of it was the
-desktop. **#23154's shape — VRAM climbing while the model thinks — does not
-reproduce here at small context.** That is not proof the abort was not an
-allocation failure, but it removes the leading hypothesis, and it moves the
-suspicion from "ran out" to "read out of range": `cudaGraphExecUpdate` returning
-a STICKY error latched by an earlier async failure would land on exactly the
-assert that fired, and an index that just moved backwards by 49,000 positions is
-the obvious candidate for producing one.
+165 keys down to 3 means the map stopped being able to draft, so the very next
+decode changed batch shape — and a changed graph pushed into an existing graph
+exec is exactly what `ggml_cuda_graph_update_executable` is for. That was the
+working hypothesis for all four attempts below.
 
-If a reproduction is obtained, the instrument that names the real failure site is
-`CUDA_LAUNCH_BLOCKING=1` in the llama service's `environment:` — it makes every
-launch synchronous, so the abort points at the failing kernel instead of at the
-next CUDA call after it. Slow, and correct for one diagnostic run.
+### Attempt log — every attempt matched more of the crash, and none crashed
 
-**So do not revert the +38.7% pin on this.** One crash does not indict a
-measured result, and the honest next step is instrumentation, not a rollback:
+| | context before | shrink to | keys | deleted | % | hashes_upd | result |
+|---|---:|---:|---:|---:|---:|---:|---|
+| **the crash** | 62,366 | 12,221 | 165 | 162 | 98% | 30,834 | **abort** |
+| attempt 1 | 60,088 | 10,086 | 3 | 1 | 33% | 43,243 | survived |
+| attempt 2 | 58,290 | 10,079 | 20 | 11 | 55% | 41,660 | survived |
+| attempt 3 | 58,097 | 10,079 | 21 | 16 | 76% | 42,929 | survived |
+| **attempt 4** | **93,123** | 10,076 | 59 | 55 | **93%** | **65,133** | survived |
 
-1. **Log VRAM across a long agentic session.** `nvidia-smi --query-gpu=memory.used
-   --format=csv --loop=30` through the host bridge, alongside a real pi session
-   that grows past 50K tokens. #23154's whole claim is a climb; either it climbs
-   here or it does not, and that is one afternoon of watching, not a rebuild.
-2. If it climbs, the same session with `SPEC_TYPE=draft-mtp` alone is the
-   control that separates the ngram map from everything else.
-3. `GGML_CUDA_DISABLE_GRAPHS=1` in the llama service's `environment:` removes
-   the code path the assert lives in. It costs throughput and does NOT fix a
-   leak — it moves where a leak lands — so it is a diagnostic, not a fix.
-4. More headroom is the other lever: `--cache-ram 2048` and 16 context
-   checkpoints are both VRAM-adjacent, and `capacity-probe.sh` exists to say
-   what they cost.
+Attempt 1 already reproduced every *line* the crash logged — `selected slot by
+LRU`, `prompt state size 7258 MiB exceeds cache size limit 2048 MiB, skipping`,
+the shrink, the refresh — and survived. So the shrink is not sufficient on its
+own.
+
+Attempts 2 and 3 tried to raise the key count and could not, and the log said
+why: **any request whose prompt is shorter than the last one culls keys.**
+Attempt 3's "deep" prompts branched off a shared history, so each arrived ~2000
+tokens shorter than the reply before it and culled the keys it was meant to be
+planting, five times per cycle. Attempt 4 fixed that with one strictly
+monotonic conversation — every reply appended, every prompt longer than the
+last — and reached 59 keys at 93K tokens, a **larger** context and a **larger**
+rehash than the crash, at 93% deletion. It survived too.
+
+**Four attempts, progressively closer on every axis and larger on most, all
+negative. The abort is not a deterministic consequence of the shrink.**
+
+### The leak hypothesis is dead
+
+llama.cpp#23154 (same 4090, same `--spec-type ngram-*,draft-mtp`, same
+function, closed 2026-07-31 as stale) claims the ngram map grows VRAM until it
+OOMs. `vram-floor.sh`'s method answers that here: the Windows
+`\GPU Process Memory(*)\Dedicated Usage` counter for `vmwp` IS llama, because it
+is the only GPU-enabled container on this box.
+
+```
+124 samples / 41 min, spanning 24 seed conversations, three 58K context
+builds, five 2000-token deep generations and a 93K-token conversation:
+    llama   20993.0 -> 20999.1 MiB     span 6.1 MiB
+    device  22939.2 -> 23323.1 MiB     span 383.9 MiB   (all desktop)
+
+69 samples / 17 min, quiet, vram-floor.sh's own report:
+    llama moved 0.0 MiB across the whole capture (i.e. not at all)
+```
+
+**It does not leak.** Not over 15,000 generated tokens, not over a 93K context,
+not at all.
+
+### What is left, and it is not an ngram bug
+
+llama does not need to grow for the DEVICE to run out. At the busiest moment
+measured today the device held 23,323 of 24,564 MiB — **1,241 MiB free** — and
+that number is set by the Windows desktop, which nobody here controls.
+
+```
+desktop floor, 2026-08-23 (vram-floor.sh's header):  1405 1536 1881 1905 1961 2027
+desktop floor, 2026-09-01 (69 samples):              min 2007.5  median 2033.5  max 2050.4
+```
+
+**Today's median floor is above the entire August range.** The desktop is
+holding ~500 MiB more than it did when the 96K window was chosen, and the
+August spread alone is 622 MiB. A CUDA allocation failing at a moment of
+desktop pressure — and a re-instantiated graph on the shrink path is an
+allocation — latches a sticky error that surfaces at exactly the assert that
+fired. That is consistent with everything above, including the four failed
+reproductions: it would need the desktop to spike at the same second, which is
+not something a reproduction script can arrange.
+
+**So the honest state is: not an ngram-map leak, not reproducible on demand,
+and consistent with device-level headroom that has quietly shrunk under the
+window this stack is configured for.**
+
+### What to do, in order
+
+1. **Nothing to the pin.** Four negative reproductions do not justify reverting
+   a measured +38.7%, and the leak it was suspected of does not exist.
+2. **Re-price the window against the CURRENT floor.** `capacity-probe.sh` exists
+   for this and `vram-floor.sh` has just been run; the August decision was made
+   against a floor ~500 MiB lower than today's. Dropping CTX_SIZE is the one
+   lever that returns VRAM in GiB rather than MiB, and it is an operator choice
+   with a real cost — the 96K claim is a headline feature — so it is written
+   here rather than taken.
+3. **If it happens again, get the real failure site.** `CUDA_LAUNCH_BLOCKING=1`
+   in the llama service's `environment:` makes every launch synchronous, so the
+   abort names the failing kernel instead of the next CUDA call after it. Slow,
+   and correct for one diagnostic run. If the answer is `out of memory`, item 2
+   is the whole fix and this section closes.
+4. **A recurrence now costs a reload, not an outage** — §0g. Worth knowing that
+   the reload is ~16 minutes warm, which is a real cost and a separate question
+   (`--load-mode none` is in `LLAMA_EXTRA_FLAGS`; nobody has priced the
+   alternatives).
+
+**Not worth doing on present evidence:** `GGML_CUDA_DISABLE_GRAPHS=1`. It
+removes the code path the assert lives in, costs throughput (`graphs reused =
+7997` in the crashing boot), and if the cause is an allocation failure it moves
+the failure rather than fixing it.
 
 ---
 
