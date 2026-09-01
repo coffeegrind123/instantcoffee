@@ -19,15 +19,38 @@ import { findPiIndex } from "./harness.ts"
 
 const PI_INDEX = findPiIndex()
 
-/** The bundle chunk holding the tool-result path, found by content not by name. */
+/**
+ * The bundle chunk holding the tool-result path, found BY CONTENT.
+ *
+ * Not by name: the chunk is `chunk-OMWWHBTG.js` on 0.84.4 and that hash changes
+ * with every build. Not by a fixed path either — the `pi` binary resolves to
+ * `dist/bundle/cli.js` on this stack's image and to `dist/cli.js` elsewhere, so
+ * `chunks/` sits one directory up or down depending on the install. Both
+ * candidates are tried, plus the bundle roots themselves for a build that is
+ * not split into chunks at all.
+ *
+ * This search was wrong on its first outing — it looked only under
+ * `<dir>/bundle/chunks`, found nothing on the real container, and the whole
+ * describe below skipped SILENTLY while reporting a green suite. A contract
+ * test that cannot find the thing it pins is worse than no contract test, so
+ * `SKIP` distinguishes "pi is absent" from "pi is here and the search failed".
+ */
 function findChunk(): string | null {
   if (!PI_INDEX) return null
-  const chunks = join(dirname(PI_INDEX), "bundle", "chunks")
-  if (!existsSync(chunks)) return null
-  for (const name of readdirSync(chunks)) {
-    if (!name.endsWith(".js")) continue
-    const src = readFileSync(join(chunks, name), "utf8")
-    if (src.includes("function getTextOutput(")) return src
+  const dir = dirname(PI_INDEX)
+  const roots = [join(dir, "chunks"), join(dir, "bundle", "chunks"), dir]
+  for (const root of roots) {
+    if (!existsSync(root)) continue
+    for (const name of readdirSync(root)) {
+      if (!name.endsWith(".js")) continue
+      let src: string
+      try {
+        src = readFileSync(join(root, name), "utf8")
+      } catch {
+        continue
+      }
+      if (src.includes("function getTextOutput(")) return src
+    }
   }
   return null
 }

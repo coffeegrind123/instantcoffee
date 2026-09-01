@@ -24,7 +24,10 @@ export function findPiIndex(): string | null {
     const bin = join(dir, "pi")
     if (!existsSync(bin)) continue
     try {
-      const cli = realpathSync(bin) // .../dist/cli.js
+      // `.../dist/cli.js` on a plain npm install, `.../dist/bundle/cli.js` on
+      // this stack's image. `index.js` sits beside whichever one it is, so
+      // resolve relative to the binary rather than assuming a layout.
+      const cli = realpathSync(bin)
       const index = join(dirname(cli), "index.js")
       if (existsSync(index)) return index
     } catch {
