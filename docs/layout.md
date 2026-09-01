@@ -165,6 +165,17 @@ patches/
                         every session, not just /loop
     src/                pure modules — the cap, the notice (no pi import)
     tests/              node --test suite, 37 tests
+vendor/pi-toolresult-guard/  keeps a malformed tool result from EXITING pi.
+                        Loaded FIRST, so every other tool_result handler reads a
+                        content array that is already safe. No tool, no command,
+                        zero tokens
+  src/normalize.ts      what pi can render, and what to send instead (no pi import)
+  extensions/index.ts   the tool_result handler, and the account of why that hook
+                        is the one place a result can still be corrected
+  tests/pi-contract.test.ts  pins the five pi shapes it depends on against the
+                        INSTALLED pi — says "delete this package" if pi ever
+                        guards the read
+  tests/                24 tests; every repair case carries its crashing control
 vendor/pi-loop-mode/    /loop — fork of pi-loop-mode@2.5.4, loaded from here
   FORK.md               what was changed and why (context-recovery race)
   tests/                node --test suite for the fork's recovery ladder
@@ -195,7 +206,9 @@ vendor/pi-persona/      /persona — a character voice over invariant engineerin
   src/processor.ts      the extraction turn — inline vs jq walk, sized to the window
   src/immersion.ts      the DeepSeek first-message marker, off by default here
   extensions/index.ts   the pi coupling: /persona, before_agent_start, status line
-  tests/                103 tests, incl. the factory against a real pi import
+  src/switch.ts         retiring the outgoing persona — the half of a switch a
+                        file delete cannot do, and how it survives a resume
+  tests/                123 tests, incl. the factory against a real pi import
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
 mcp/adapter.json        pi-mcp-adapter config: how pi reaches the browser server
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh

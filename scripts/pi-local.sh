@@ -200,6 +200,35 @@ else
   pi_flags+=(-nc)
 fi
 
+# The tool-result guard, FIRST — before every other extension, deliberately.
+#
+# pi renders a tool result with `getTextOutput`, whose only input check is
+# `if (!result) return ""`. That covers a missing result, not a result without
+# `content`, and every wrong shape a tool can return is truthy — so a tool that
+# does `return "some message"` reaches `"...".content.filter(...)`, which
+# arrives from a render callback as an uncaughtException and exits pi mid-turn.
+# It has cost this stack two sessions, both to vendor/prinny-channel
+# (2026-08-30 action:status hitting its throttle, 2026-09-01 action:react with
+# no message_id). Upstream has closed the missing guard `no-action` seven times.
+#
+# The fix is a `tool_result` handler, because that is the one point pi still
+# lets a result be corrected: `afterToolCall` already computes `result.content
+# ?? []` and then discards it unless some handler modified something. See
+# vendor/pi-toolresult-guard/README.md for the whole mechanism, and its
+# tests/pi-contract.test.ts, which pins the five pi shapes it depends on against
+# the installed pi and says "delete this package" if pi ever guards the read.
+#
+# FIRST because `emitToolResult` runs handlers in extension order and each sees
+# the previous one's edits: going first means every other tool_result handler in
+# the session reads a content array that has already been made safe. It
+# registers no tool and no command, so it costs nothing in the window.
+TRGUARD_DIR="$REPO_ROOT/vendor/pi-toolresult-guard"
+if [[ -r "$TRGUARD_DIR/extensions/index.ts" ]]; then
+  pi_flags+=(-e "$TRGUARD_DIR/extensions/index.ts")
+else
+  warn "$TRGUARD_DIR is missing — a tool that returns a malformed result will exit pi this session."
+fi
+
 # /stack, loaded by absolute path for the same reason --skill is below.
 #
 # Auto-discovery of .pi/extensions/ is scoped to the project pi was STARTED in,

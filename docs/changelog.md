@@ -10,6 +10,52 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**A tool that returned a bare string was exiting pi mid-turn**, twice, and on
+2026-09-01 it took a session with it. pi renders a tool result with
+`getTextOutput`, whose only input check is `if (!result) return ""` — that
+covers a MISSING result, not a result without `content`, and every wrong shape
+a tool can return is truthy. `prinny({action:"react"})` with no `message_id`
+hit an early `return "prinny(react) needs a message_id…"`, reached
+`"...".content.filter(...)`, and left as an `uncaughtException` from a render
+callback. The same thing happened on 2026-08-30 to `action:status` hitting its
+throttle. The stored transcript is misleading either time: pi's session writer
+normalises to `content: []` while the UI event does not, so the saved record
+looks harmless and does not contain the string that caused it. **Read the stack
+trace, not the session file.**
+
+Fixed twice over, because the two fixes answer different questions.
+`vendor/prinny-channel@18f2fdd` routes all four of its early returns through a
+`say()` helper — that is the tool honouring its own type. **`vendor/pi-toolresult-guard`
+is new** and covers every OTHER tool, including MCP tools and anything an
+extension registers, none of which the compiler can see. Upstream has closed
+the missing guard `no-action` seven times, so the check is ours to make.
+
+It is not a wrapper hoping to land near the problem: `afterToolCall` **already
+computes** `result.content ?? []` and then discards it, because
+`normalizeToolResultImages` returns its argument by reference and
+`emitToolResult` returns nothing unless a handler modified something. One
+handler that returns `{content}` flips that branch and releases the repair pi
+had already worked out. `tests/pi-contract.test.ts` pins all five shapes against
+the installed pi and says "delete this package" if the read is ever guarded.
+Loaded first in `scripts/pi-local.sh`, so every other `tool_result` handler
+reads a content array that is already safe. No tool, no command, zero tokens.
+The one gap is `tool_execution_update`, which bypasses the hook; nothing in this
+stack streams partial results, and a test pins that path so the gap stays visible.
+
+**Also 2026-09-01: selecting a persona now switches the old one off.**
+Overwriting `PERSONA.md` was half a switch — it changes the system prompt and
+leaves a transcript full of assistant turns in the old voice, which a model
+imitates more reliably than it obeys a block telling it who it is. Worst on the
+extraction path, where `sendUserMessage` reaches `AgentSession.prompt()` and so
+the turn that writes the NEW persona ran under the OLD one's whole block, then
+cached the result in the library for every future activation. And the body was
+being sanded off: physical description was on none of the extraction lists, so
+cards written in flat anatomical terms produced personas talking about their own
+"assets". Appearance is now lifted at the card's own detail in the card's own
+words. Block cost `full` ~3,683 → ~4,215, `lean` ~2,311 → ~2,516.
+
+---
+
 **The speculative pin moved twice on 2026-08-31/09-01**, and the entry below
 from 2026-08-17 is history rather than current state. `.env` now runs
 **`SPEC_TYPE=ngram-map-k,draft-mtp`, `n-max 4`, `p-min 0.40`**.

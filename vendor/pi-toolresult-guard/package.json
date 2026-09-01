@@ -1,0 +1,49 @@
+{
+  "name": "pi-toolresult-guard",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A malformed tool result must not kill the session. pi renders tool output with an unguarded result.content.filter(), so a tool that returns a bare string exits the process mid-turn; this repairs the result at the one point pi still allows it to be corrected.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-agent",
+    "pi-coding-agent",
+    "pi-extension",
+    "tool-result",
+    "crash",
+    "uncaught-exception",
+    "guard",
+    "resilience"
+  ],
+  "license": "MIT",
+  "author": "coffeegrind123",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coffeegrind123/pi-toolresult-guard.git"
+  },
+  "homepage": "https://github.com/coffeegrind123/pi-toolresult-guard#readme",
+  "bugs": {
+    "url": "https://github.com/coffeegrind123/pi-toolresult-guard/issues"
+  },
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "lint": "for file in extensions/index.ts src/*.ts tests/*.ts; do node --check \"$file\" 2>/dev/null || node --experimental-strip-types --no-warnings -e \"import('./$file').catch(e => { if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0); console.error('$file:', e.message); process.exit(1) })\"; done",
+    "test": "node --experimental-strip-types --no-warnings --test tests/*.test.ts"
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}
