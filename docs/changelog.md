@@ -10,6 +10,65 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**"Stream ended without finish_reason", twice, for a backend that had been dead
+for two hours.** On 2026-09-01 llama-server aborted mid-generation on a CUDA
+assert — `ggml-cuda.cu:2651 GGML_ASSERT(stat == cudaSuccess)` inside
+`ggml_cuda_graph_update_executable`, immediately after a `common_ngram_map_begin`
+shrink on the `ngram-map-k` speculative path — and then **did not exit**. It sat
+in `R` state spinning on a core with its port closed, so `restart: unless-stopped`
+never fired; Docker only marked the container unhealthy, 88 times, and nothing
+acts on unhealthy. Four turns over the next 40 minutes each burned the full
+600-second `FORGE_BACKEND_TIMEOUT` against it.
+
+None of that reached the operator. What reached the operator was a protocol
+complaint, and the path from one to the other is five links long, each read off
+the running system rather than reasoned about:
+
+1. `LlamafileClient.send()` has no `httpx.ReadTimeout` handler — zero, counted —
+   though `OpenAICompatClient.send()` has had one all along. The timeout escaped
+   raw to forge's generic handler.
+2. `_send_exception` does `error_msg = str(exc)`, and `httpx.ReadTimeout` carries
+   no message. forge's own log line is the proof: `<< ERROR:` and then nothing.
+3. So the wire carried `data: {"error": ""}`.
+4. pi's bundled OpenAI SDK guards exactly this case —
+   `if(data&&data.error)throw new APIError(...)`, read out of
+   `chunk-NUHFSC37.js`. **An empty string is falsy.** The one check that would
+   have surfaced the failure did not fire.
+5. pi's completions loop reads only `choices[0]`, so the chunk was skipped
+   whole, `[DONE]` arrived with `hasFinishReason` still false, and pi raised the
+   only message it has for a stream that stopped early.
+
+**Patch 11** (`forge_llamafile_timeout.py`) gives `send()` and `send_stream()`
+the 408 conversion. **Patch 12** (`forge_sse_error_shape.py`) makes the message
+never empty, sends the error as an object rather than a bare string, and adds a
+terminal `finish_reason: "error"` — deliberately not `"stop"`, because patches
+3, 8 and 9 all exist because a failure that ends the stream the way a completion
+does is invisible to everything above it. Proven live against a socket that
+accepts and never answers: the same request now returns
+`{"error": {"message": "Backend returned 408: Read timeout", ...}}`.
+
+**Patch 10 was aimed at the wrong file, and had been since it shipped.** It
+guards `OpenAICompatClient.send_stream`. Its docstring claimed the streaming
+path was "the ONLY path that matters here"; it is the one path that never runs —
+`run_inference` takes `stream=False` and the proxy never overrides it, which is
+the same fact README records from the other end when it says two SSE events is
+the healthy count. It is kept, because the hole is real and upstream #142 is
+open, but it never covered this stack's traffic. **A patch that verifies its
+input text will apply cleanly to the wrong file forever without complaining
+once.**
+
+`test_forge_patches.py` is **97/97** in the rebuilt image (was 70), and the
+negative control — the same suite run against the unpatched package copied out
+of the running container — fails 11. One of the new assertions was vacuous on
+its first run and the control is what caught it: `'"error"' in wire` is
+satisfied by the broken shape too. `smoke-test.sh` 11/11 on the recovered stack.
+
+The llama.cpp crash itself is upstream and unfixed — see `context/OPEN-WORK.md`,
+along with the fact that nothing on this box restarts a container that goes
+unhealthy.
+
+---
+
 **A tool that returned a bare string was exiting pi mid-turn**, twice, and on
 2026-09-01 it took a session with it. pi renders a tool result with
 `getTextOutput`, whose only input check is `if (!result) return ""` — that

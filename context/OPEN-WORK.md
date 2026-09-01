@@ -328,6 +328,101 @@ which is what the 8-round run did — is noise however small the p.
 
 ---
 
+## 0f. llama-server ABORTED on a CUDA assert, on the ngram-map path — 2026-09-01
+
+**This happened; it is not a hypothesis.** Six hours into the boot that adopted
+`ngram-map-k` (the pin from 0c/0d, adopted the same day), at 18:38 UTC:
+
+```
+348.38  W srv alloc: - prompt state size 8485.588 MiB exceeds cache size
+                       limit 2048.000 MiB, skipping
+354.13  I common_ngram_map_begin: shrink cleanup begin: 61573 -> 12161
+354.15  I common_ngram_map_begin: refresh map: idx_last_draft=62362,
+                       new begin=12221, #keys_checked=165, #keys_del=162,
+                       #values_del=0, #hashes_upd=30834
+/app/ggml/src/ggml-cuda/ggml-cuda.cu:2651: GGML_ASSERT(stat == cudaSuccess) failed
+  ggml_abort -> ggml_backend_sched_graph_compute_async -> llama_context::decode
+```
+
+Line 2651 in b10689 is the `else` of `ggml_cuda_graph_update_executable`:
+`cudaGraphExecUpdate` returned something that is neither `cudaSuccess` nor
+`cudaErrorGraphExecUpdateFailure`. A sticky error latched by an earlier async
+failure returns there, so **the assert is where it surfaced, not where it
+happened.**
+
+**The upstream match, found with `gh` and read rather than remembered:**
+[ggml-org/llama.cpp#23154](https://github.com/ggml-org/llama.cpp/issues/23154),
+"CUDA ERROR crash when using MTP ngram-mod" — same RTX 4090, same
+`--spec-type ngram-*,draft-mtp`, same `ggml_cuda_graph_update_executable`, with
+the reporter's own before/after: VRAM flat at 76% WITHOUT `ngram-mod`, climbing
+to 100% and crashing WITH it. **Closed 2026-07-31 as stale, never fixed.**
+
+**What is measured here, and what is not.**
+
+- Measured: 1 abort in ~6 h of that boot. No CUDA crash is recorded anywhere
+  else in this repo's history — `grep -ri "GGML_ASSERT\|CUDA error" docs/
+  context/` finds only the changelog entry written for this one.
+- Measured: VRAM steady state after the restart is **22809 / 24564 MiB, 1334 MiB
+  free**, on a GPU shared with the Windows desktop and 16 other compute clients
+  (`nvidia-smi` via the host bridge; it is not available inside the container).
+  That is the entire headroom a growing spec map has to grow into.
+- NOT measured: whether `ngram-map-k` is any worse than `ngram-mod` here. Both
+  are in the family #23154 names, and this stack ran `ngram-mod` for a day
+  without a recorded crash — which is an absence of evidence, not evidence.
+  0c/0d's benchmark rounds are short repeat workloads; they never reach the
+  60K-token context, the LRU slot eviction, or the 8.5 GiB prompt-state shrink
+  that preceded this abort.
+
+**So do not revert the +38.7% pin on this.** One crash does not indict a
+measured result, and the honest next step is instrumentation, not a rollback:
+
+1. **Log VRAM across a long agentic session.** `nvidia-smi --query-gpu=memory.used
+   --format=csv --loop=30` through the host bridge, alongside a real pi session
+   that grows past 50K tokens. #23154's whole claim is a climb; either it climbs
+   here or it does not, and that is one afternoon of watching, not a rebuild.
+2. If it climbs, the same session with `SPEC_TYPE=draft-mtp` alone is the
+   control that separates the ngram map from everything else.
+3. `GGML_CUDA_DISABLE_GRAPHS=1` in the llama service's `environment:` removes
+   the code path the assert lives in. It costs throughput and does NOT fix a
+   leak — it moves where a leak lands — so it is a diagnostic, not a fix.
+4. More headroom is the other lever: `--cache-ram 2048` and 16 context
+   checkpoints are both VRAM-adjacent, and `capacity-probe.sh` exists to say
+   what they cost.
+
+---
+
+## 0g. NOTHING on this box restarts a container that goes unhealthy
+
+**The second half of why 0f cost 40 minutes instead of 30 seconds.**
+llama-server aborted — and then did not exit. `ggml_abort` printed its backtrace
+and the process stayed in `R` state, burning ~80% of a core with nothing
+listening on 8080. Verified rather than assumed: sampling `/proc/7/stat` 3 s
+apart showed +248 ticks, and `docker restart` needed the full 30 s timeout and a
+SIGKILL to end it.
+
+Because it never exited, `restart: unless-stopped` never fired. Docker did the
+only thing it does: it marked the container **unhealthy**, 88 consecutive times
+over two hours. `docker ps` said `Up 7 hours (unhealthy)` the whole time, and
+forge — whose own healthcheck deliberately probes `/forge/health` rather than
+the backend, for good reasons written into `docker-compose.yml` — stayed green.
+
+**Docker has no native "restart when unhealthy".** The two shapes that work:
+
+- an `autoheal` sidecar (`willfarrell/autoheal`) with
+  `/var/run/docker.sock` mounted, restarting containers carrying its label. One
+  service in `docker-compose.yml`, no change to the llama service beyond a
+  label. It is a socket mount, which is root-on-the-host — that is the real
+  cost and it should be a deliberate choice, not a default.
+- a self-terminating healthcheck: the check counts its own consecutive failures
+  in a file under `/tmp` and, past a threshold, `kill -9 1`. No socket, no new
+  container, and it works precisely because `init: true` already puts a real
+  init at PID 1. Uglier, and it puts restart policy inside a probe.
+
+Either one turns a 40-minute silent outage into a 30-second blip. **Patches 11
+and 12 make the failure legible; neither makes it short.**
+
+---
+
 ## 1. The runner exits 1 and skips its own last two steps — NARROWED to the launch shape
 
 **Highest value because it will cost you an hour of confusion otherwise.**

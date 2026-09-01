@@ -17,10 +17,31 @@ still open and still present at 0.9.5: in the installed
 ``clients/openai_compat.py`` the only ``ReadTimeout`` is at line 299, inside
 ``send()`` (274-328); ``send_stream()`` starts at 329 and has none.
 
-WHY IT MATTERS HERE, SPECIFICALLY. pi streams every turn of every session, and
-this stack sets FORGE_BACKEND_TIMEOUT=600 against a 27B on one 4090 — a deep
-turn at 96K can and does approach that. So the streaming path is the ONLY path
-that matters here, and it is the unguarded one.
+WHY IT MATTERS HERE — CORRECTED 2026-09-01, AND THE CORRECTION IS THE POINT.
+
+This docstring used to read: "pi streams every turn of every session ... So the
+streaming path is the ONLY path that matters here, and it is the unguarded one."
+Both halves are wrong, and a live traceback settled it:
+
+  * pi streams INBOUND. forge does not stream OUTBOUND. ``run_inference`` takes
+    ``stream: bool = False`` and ``handle_chat_completions`` never passes the
+    kwarg, so every backend call is ``client.send()``. This is the same fact
+    README.md records from the other end — "``<< SSE 2 events`` is the HEALTHY
+    count" — read here as what it implies about the outbound call.
+  * The client is ``LlamafileClient``, not ``OpenAICompatClient``. This module
+    is not on the chat path at all.
+
+So this patch guards a method that this stack never calls, on a client it never
+uses. It is kept because the hole is real, upstream #142 is open, and a backend
+config that selects the OpenAI-compat client would walk straight into it — but
+it never protected this stack, and while it stood the identical hole one module
+over cost a two-hour outage that reported itself as "Stream ended without
+finish_reason". ``patches/forge_llamafile_timeout.py`` is the one that covers
+the traffic; read its docstring for the measurement.
+
+The general lesson is cheap to state and was expensive to learn: a patch that
+verifies its input text will apply cleanly to the wrong file forever without
+complaining once.
 
 What the client gets instead of a 408 is::
 

@@ -42,9 +42,18 @@ WHAT IT PINS
                         turn — carries the reasoning in its own delta and the
                         backend's finish_reason, so a truncated turn is not
                         reported as a natural stop
+  stream_timeout        a read timeout out of OpenAICompatClient.send_stream is
+                        a BackendError(408) rather than a raw httpx exception
+  llamafile_timeout     the same, on the client and the method the live
+                        traceback named — LlamafileClient.send, which is what
+                        forge's proxy actually calls
+  sse_error_shape       a failure after the SSE headers went out reaches the
+                        client as a non-empty error OBJECT and a terminal
+                        finish_reason — and never as a natural "stop"
 
-The last one is checked in both directions on purpose. A test that only proves
-the new behaviour cannot tell a working flag from a flag that is never read.
+text_sse_passthrough is checked in both directions on purpose. A test that only
+proves the new behaviour cannot tell a working flag from a flag that is never
+read.
 """
 
 from __future__ import annotations
@@ -481,6 +490,145 @@ def main() -> int:
     # on it tests the prose rather than the code. (It did, first time round.)
     eq("exactly two ReadTimeout handlers now: send() and the stream wrapper",
        _csrc.count("except httpx.ReadTimeout"), 2)
+
+    print("\npatches/forge_llamafile_timeout.py")
+    # DRIVEN, and driven through the exact frames the live traceback named:
+    #   inference.py:347  response = await client.send(
+    #   llamafile.py:581  return await self._send_native(
+    #   llamafile.py:826  resp = await self._http.post(
+    # Patch 10 above guards openai_compat, which is not on that path. Without
+    # THIS patch these two checks see a raw httpx.ReadTimeout — which is the
+    # bug that reported a two-hour-dead backend as a missing finish_reason.
+    from forge.clients.llamafile import LlamafileClient
+
+    class _TimeoutHTTP:
+        """Times out on both the non-streaming POST and the streaming open."""
+
+        async def post(self, *a, **kw):
+            raise _httpx.ReadTimeout("simulated backend read timeout")
+
+        def stream(self, *a, **kw):
+            return _TimeoutStream()
+
+    def _drive_llamafile(streaming: bool):
+        client = LlamafileClient.__new__(LlamafileClient)
+        client.mode = "native"
+        client._http = _TimeoutHTTP()
+        client._chat_url = "http://backend/v1/chat/completions"
+        client._cache_prompt = True
+        client.model = "test-model"
+        client._apply_slot_id = lambda body: None
+        client._apply_sampling = lambda body, sampling: None
+        client._request_headers = lambda extra=None: {}
+
+        async def run():
+            messages = [{"role": "user", "content": "x"}]
+            if streaming:
+                async for _ in client.send_stream(messages):
+                    pass
+            else:
+                await client.send(messages)
+
+        try:
+            asyncio.run(run())
+        except BaseException as exc:  # noqa: BLE001 - the exception IS the result
+            return exc
+        return None
+
+    for label, streaming in (("send()", False), ("send_stream()", True)):
+        got = _drive_llamafile(streaming)
+        check(f"a llamafile read timeout in {label} becomes BackendError, "
+              f"not a raw httpx error",
+              isinstance(got, _BackendError), f"got {type(got).__name__}: {got!r}")
+        if isinstance(got, _BackendError):
+            eq(f"...and it is a 408 from {label}",
+               getattr(got, "status_code", None), 408)
+
+    # Controls: the originals survive under their inner names (wrapped, not
+    # duplicated), and there are exactly two handlers — one per wrapper. Both
+    # counts are on CODE; the docstrings the patch installs name the exception
+    # too, so counting "httpx.ReadTimeout" would be counting prose.
+    import forge.clients.llamafile as _lf
+    _lfsrc = open(_lf.__file__).read()
+    eq("the original send body survives under its inner name",
+       _lfsrc.count("async def _forge_llamafile_send_inner"), 1)
+    eq("the original send_stream body survives under its inner name",
+       _lfsrc.count("async def _forge_llamafile_send_stream_inner"), 1)
+    eq("exactly two ReadTimeout handlers in llamafile.py: send and send_stream",
+       _lfsrc.count("except httpx.ReadTimeout"), 2)
+
+    print("\npatches/forge_sse_error_shape.py")
+    # getattr rather than a from-import: on an UNPATCHED image the helper does
+    # not exist, and that must fail one check rather than abort the whole run
+    # before the controls below get to say so.
+    import forge.proxy.server as _srv
+    _events_for = getattr(_srv, "_forge_stream_error_events", None)
+    check("the streaming-error builder exists", _events_for is not None)
+
+    if _events_for is not None:
+        events = _events_for("Read timeout", 502, "openai")
+        eq("an openai stream error is two events", len(events), 2)
+        finish = events[0].get("choices", [{}])[0].get("finish_reason")
+        eq("...the first ends the stream, with finish_reason 'error'",
+           finish, "error")
+        # The regression this guards is not "no finish_reason" — it is the
+        # tempting fix for it. Patches 3, 8 and 9 all exist because a failure
+        # that ends the stream the way a completion does is invisible above.
+        check("...and NEVER as a natural completion",
+              finish not in ("stop", "length", "tool_calls"), f"got {finish!r}")
+        err = events[1].get("error")
+        check("...the second carries the error as an OBJECT, not a bare string",
+              isinstance(err, dict), f"got {type(err).__name__}: {err!r}")
+        if isinstance(err, dict):
+            eq("...with the message on it", err.get("message"), "Read timeout")
+            # Byte-for-byte the object _send_error already sends on the
+            # non-streaming path. A draft added "code": status and produced a
+            # message naming 408 next to a code saying 502.
+            eq("...and exactly the shape the non-streaming path uses",
+               err, {"message": "Read timeout", "type": "proxy_error"})
+
+        a_events = _events_for("Read timeout", 502, "anthropic")
+        eq("an anthropic stream error is one event", len(a_events), 1)
+        eq("...named 'error', not the unnamed event the old shape produced",
+           a_events[0].get("type"), "error")
+        eq("...and a 502 backend fault is an api_error on that wire",
+           a_events[0].get("error", {}).get("type"), "api_error")
+
+    # DRIVEN end to end, with the exception that actually did this: an
+    # httpx.ReadTimeout carries no message, str() is "", and "" is falsy — so
+    # the OpenAI SDK's `if (data && data.error) throw` never fired and pi fell
+    # through to "Stream ended without finish_reason".
+    class _CapturingWriter:
+        def __init__(self):
+            self.chunks: list[bytes] = []
+
+        def is_closing(self) -> bool:
+            return False
+
+        def write(self, data: bytes) -> None:
+            self.chunks.append(data)
+
+        async def drain(self) -> None:
+            return None
+
+    writer = _CapturingWriter()
+    server = _srv.HTTPServer.__new__(_srv.HTTPServer)
+    asyncio.run(server._send_exception(
+        writer, _httpx.ReadTimeout(""), "openai", as_stream=True,
+    ))
+    wire = b"".join(writer.chunks).decode()
+    check("a message-less exception does not reach the wire as an empty error",
+          '"error": ""' not in wire and '"error":""' not in wire, wire[:300])
+    check("...it names the exception class instead, so the value is truthy",
+          "ReadTimeout" in wire, wire[:300])
+    check("...and the stream carries a finish_reason at all",
+          "finish_reason" in wire, wire[:300])
+    # Named in full. The first version of this check asked for '"error"' in the
+    # wire, which the UNPATCHED shape `data: {"error": ""}` also satisfies — it
+    # passed on both columns and was therefore testing nothing.
+    check("...which is 'error', never 'stop'",
+          '"finish_reason": "error"' in wire
+          and '"finish_reason": "stop"' not in wire, wire[:300])
 
     total = PASSED + FAILED
     print(f"\n{PASSED}/{total} passed", end="")

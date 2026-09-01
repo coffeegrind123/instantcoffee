@@ -1,3 +1,149 @@
+# Handoff — 2026-09-01 (a dead backend that reported itself as a protocol bug: one upstream CUDA abort, one container nothing restarted, two forge patches aimed at the wrong file; the forge image REBUILT)
+
+## Read this first
+
+**The stack changed and is running.** `Dockerfile.forge` gained an eleventh and
+a twelfth patch, `instantcoffee/proxy:0.9.5` was rebuilt, and
+`instantcoffee-forge` was recreated onto it. `scripts/test_forge_patches.py`
+runs **97/97** inside the rebuilt image (was 70); `./scripts/smoke-test.sh` is
+**11/11** on the recovered stack. `instantcoffee-llama` was **restarted by hand**
+— it had aborted and wedged — and reloaded clean. No `.env` key changed, no
+`docker-compose.yml` change, no vendored submodule moved.
+
+**The report was two identical lines in a pi session:**
+
+```
+[matrix] get me the latest tech news from hacker news
+
+Error: Stream ended without finish_reason
+Error: Stream ended without finish_reason
+```
+
+It was four defects in a line — one upstream, one in Docker's model of what
+"running" means, and two in forge — and the visible message named none of them.
+
+---
+
+## 1. The backend had been dead for two hours, and said so nowhere
+
+`docker ps` said `Up 7 hours (unhealthy)`. `docker logs instantcoffee-llama`
+ended, at 18:38 UTC:
+
+    348.38  W srv alloc: - prompt state size 8485.588 MiB exceeds cache size
+                           limit 2048.000 MiB, skipping
+    354.13  I common_ngram_map_begin: shrink cleanup begin: 61573 -> 12161
+    354.15  I common_ngram_map_begin: refresh map: idx_last_draft=62362, ...
+    /app/ggml/src/ggml-cuda/ggml-cuda.cu:2651: GGML_ASSERT(stat == cudaSuccess) failed
+
+and forge's, at 18:42, 18:53, 19:03 and 19:09, with `httpx.ReadTimeout` and
+
+    << ERROR: 
+    << SSE complete (openai)
+
+**The two measurements that broke it open.** First, `ps` inside the container:
+llama-server was still there, PID 7, `State: R`. It had aborted and **not
+exited** — `/proc/7/stat` sampled 3 s apart moved +248 ticks, so it was
+spinning, not hung, and `docker restart` needed the full timeout and a SIGKILL.
+A process that never exits is a container `restart: unless-stopped` never
+restarts. Docker's only response was to mark it unhealthy, 88 times, which
+nothing on this box acts on. Second, forge's traceback named
+`clients/llamafile.py` — not `openai_compat.py` — and named `client.send`, not
+`send_stream`. Both of those contradict what patch 10 was built on. See §3.
+
+The abort is upstream and matches
+[llama.cpp#23154](https://github.com/ggml-org/llama.cpp/issues/23154) (same
+4090, same `--spec-type ngram-*,draft-mtp`, same function, VRAM climbing to
+100%), closed stale and never fixed. **It is NOT indicted against `ngram-map-k`
+specifically** — that pin and the `ngram-mod` the issue names are in the same
+family, and one crash is not a measurement. `context/OPEN-WORK.md` §0f carries
+what is measured, what is not, and the instrumentation that would settle it;
+§0g carries the restart-on-unhealthy gap. Neither is done.
+
+## 2. Why the operator saw a protocol complaint instead of "the backend is down"
+
+Five links, each read off the running system rather than inferred:
+
+1. `LlamafileClient.send()` has **zero** `httpx.ReadTimeout` handlers — counted
+   in the installed 0.9.5 module — while `OpenAICompatClient.send()` has had one
+   all along. The timeout escaped raw.
+2. `_send_exception` does `error_msg = str(exc)`, and `httpx.ReadTimeout`
+   carries no message. **The blank after forge's own `<< ERROR:` is the proof**,
+   not a redaction.
+3. So the wire carried `data: {"error": ""}` then `data: [DONE]`.
+4. pi 0.84.4's bundled OpenAI SDK guards exactly this, in
+   `dist/bundle/chunks/chunk-NUHFSC37.js`:
+   `if(data&&data.error)throw new APIError(...)`. **`""` is falsy.** The one
+   check that would have surfaced it never ran.
+5. pi's completions loop reads only `choices[0]`, so a chunk without `choices`
+   is skipped whole; `[DONE]` arrived with `hasFinishReason` false.
+
+Every link was read, including both pi bundle chunks. Guessing at step 4 would
+have produced a patch that fixed the message and changed nothing.
+
+## 3. Patch 10 had been aimed at the wrong file since it shipped
+
+`patches/forge_stream_timeout.py` guards `OpenAICompatClient.send_stream`. Its
+docstring said the streaming path "is the ONLY path that matters here". It is
+the one path that never runs: `run_inference` takes `stream: bool = False` and
+`handle_chat_completions` never passes the kwarg, so the backend call is always
+`send()`. That is the same fact README states from the other end when it says
+`<< SSE 2 events` is the healthy count — forge converts to SSE at the edge and
+does not stream to the backend.
+
+The patch is **kept** (the hole is real, upstream #142 is open, an
+openai-compat backend would walk into it) with its docstring corrected in place.
+**A patch that verifies its input text will apply cleanly to the WRONG FILE
+forever without complaining once.** That is the general lesson and it is the
+most expensive thing in this handoff.
+
+## 4. The two new patches
+
+- **Patch 11, `forge_llamafile_timeout.py`** — the 408 conversion on
+  `LlamafileClient.send()` and `send_stream()`. Both halves, even though only
+  `send()` carries traffic: leaving one of a matched pair unguarded is exactly
+  how patch 10's gap happened.
+- **Patch 12, `forge_sse_error_shape.py`** — the message is never empty (falls
+  back to the exception class name: poor, but TRUTHY, which is what step 4
+  above turns on), the error goes out as the same object `_send_error` already
+  sends on the non-streaming path, and a terminal chunk carries
+  `finish_reason: "error"`. **Not `"stop"`.** That is the tempting fix and the
+  worst one available — patches 3, 8 and 9 all exist because a failure that ends
+  the stream the way a completion does is invisible to everything above it.
+
+## 5. What is verified, and how
+
+- `scripts/test_forge_patches.py` **97/97** in the rebuilt image, and the same
+  suite run against the **unpatched** package — `docker cp`'d out of the still-
+  running old container into the new image — fails **11**. A patch test that
+  passes on both columns is not a test.
+- One of the new assertions was vacuous on its first run and the control is what
+  caught it: `'"error"' in wire` is satisfied by the broken shape
+  `data: {"error": ""}` too. It names `"finish_reason": "error"` in full now.
+- **Proven live, over real HTTP, not only in unit form.** A throwaway forge
+  pointed at a socket that accepts and never answers returns:
+
+      data: {"object": "chat.completion.chunk", "choices": [{"index": 0,
+             "delta": {}, "finish_reason": "error"}]}
+      data: {"error": {"message": "Backend returned 408: Read timeout",
+             "type": "proxy_error"}}
+      data: [DONE]
+
+  against `data: {"error": ""}` before.
+- `./scripts/smoke-test.sh` **11/11**, including a real tool call, after the
+  llama restart.
+- VRAM after reload: **22809 / 24564 MiB, 1334 MiB free** (`nvidia-smi` through
+  the host bridge — it is not installed in the container). That headroom is
+  §0f's whole concern.
+
+## 6. What was NOT done
+
+- The upstream CUDA abort. `context/OPEN-WORK.md` §0f — instrument first, do not
+  revert the measured +38.7% pin on one crash.
+- Restart-on-unhealthy. §0g — two shapes costed out, neither chosen, because one
+  of them mounts the Docker socket and that is the operator's call.
+
+---
+
 # Handoff — 2026-08-27 (the loop that could not get unstuck: two silent forge exits and a ladder pinned at rung 1; the forge image REBUILT)
 
 ## Read this first

@@ -558,6 +558,97 @@ forge_patch_10      = 2026-08-30. patches/forge_stream_timeout.py, the tenth
                       The patcher REFUSES to run if send()'s is no longer the
                       only handler, so if upstream fixes #142 the build fails
                       loudly rather than layering a second wrapper.
+forge_patch_10_note = CORRECTED 2026-09-01, and the correction is the
+                      finding. The entry above says the streaming path
+                      "is the only one this stack uses". It is the one path
+                      that never runs, and openai_compat is not the client
+                      this stack uses. A live traceback settled both:
+                        inference.py:347   response = await client.send(
+                        llamafile.py:581   send -> :826 _send_native
+                      run_inference takes stream=False and
+                      handle_chat_completions never passes the kwarg, so the
+                      backend call is ALWAYS send(); and the client is
+                      LlamafileClient. README's "<< SSE 2 events is the
+                      HEALTHY count" is the same fact from the other end --
+                      forge converts to SSE at the edge and does not stream
+                      to the backend. Patch 10 is KEPT (the hole is real,
+                      #142 is open, an openai-compat backend would hit it)
+                      but it never covered this stack's traffic. Patch 11
+                      does. A patch that verifies its input text will apply
+                      cleanly to the WRONG FILE forever without complaining.
+forge_patch_11      = 2026-09-01. patches/forge_llamafile_timeout.py, the
+                      eleventh build-time forge patch. The read timeout ->
+                      BackendError(408) conversion, on the client and the
+                      method this stack's traffic actually takes.
+                      WHAT IT COST TO FIND. llama-server aborted on a CUDA
+                      assert at 18:38 and kept its port bound without
+                      answering. Four turns ran the full FORGE_BACKEND_TIMEOUT
+                      against it (18:42, 18:53, 19:03, 19:09) and every one
+                      reached pi as `Stream ended without finish_reason` --
+                      a protocol complaint for a backend that had been dead
+                      for two hours. llamafile.py had ZERO httpx.ReadTimeout
+                      handlers (counted, and the patcher fails the build if
+                      that ever stops being true), so the exception escaped
+                      raw to server.py's generic handler.
+                      SHAPE: same wrapper trick as patch 10, but twice --
+                      send() is a coroutine and send_stream() an async
+                      generator, so one returns and one re-yields. Both are
+                      wrapped even though only send() carries traffic today:
+                      leaving one half of a matched pair unguarded is exactly
+                      how patch 10's gap happened.
+                      PROVEN BOTH WAYS. test_forge_patches.py drives the real
+                      LlamafileClient with a transport that times out on the
+                      POST and on the stream open: 97/97 with the patch. The
+                      same suite against the UNPATCHED package (docker cp'd
+                      out of the running container into the new image) fails
+                      11 assertions, 5 of them these.
+forge_patch_12      = 2026-09-01. patches/forge_sse_error_shape.py, the
+                      twelfth. A failure AFTER the 200 and the SSE headers
+                      went out is now visible to the client instead of only
+                      to the log.
+                      THE FIVE-LINK CHAIN, every link read off the running
+                      system rather than reasoned:
+                        1 _send_exception did error_msg = str(exc), and
+                          httpx.ReadTimeout carries no message. forge's own
+                          log line is the proof: `<< ERROR:` and nothing.
+                        2 it went out as data: {"error": ""}
+                        3 pi 0.84.4's bundled OpenAI SDK guards exactly this,
+                          in chunk-NUHFSC37.js: if(data&&data.error)throw new
+                          APIError(...). "" is FALSY. The guard never fired.
+                        4 pi's completions loop reads only choices[0], so a
+                          chunk without choices is skipped whole.
+                        5 at [DONE], hasFinishReason was still false.
+                        => `Stream ended without finish_reason`.
+                      NOW: the message is never empty (falls back to the
+                      exception class name -- poor, but TRUTHY, which is what
+                      link 3 turns on); the error is an OBJECT, byte-for-byte
+                      the one _send_error already sends on the non-streaming
+                      path; and a terminal chunk carries finish_reason
+                      "error" for a client that ignores `error` entirely.
+                      NOT "stop". That is the tempting fix and it is the
+                      worst one available: patches 3, 8 and 9 all exist
+                      because a failure that ends the stream the way a
+                      completion does is invisible to everything above it.
+                      A client that reads neither is left saying the stream
+                      ended early, which is at least true.
+                      The anthropic branch emits `event: error` (the old
+                      shape rendered an SSE frame with an EMPTY event name).
+                      Stated plainly: that half is derived from the wire
+                      format, not measured -- the failure arrived on
+                      /v1/chat/completions.
+                      PROVEN LIVE, not only in unit form. A throwaway forge
+                      pointed at a socket that accepts and never answers,
+                      driven over real HTTP, returns:
+                        data: {"object": "chat.completion.chunk", "choices":
+                              [{"index": 0, "delta": {}, "finish_reason":
+                              "error"}]}
+                        data: {"error": {"message": "Backend returned 408:
+                              Read timeout", "type": "proxy_error"}}
+                        data: [DONE]
+                      against `data: {"error": ""}` before. One assertion was
+                      vacuous on the first run and the negative control
+                      caught it -- '"error" in wire' is satisfied by the
+                      BROKEN shape too. It names finish_reason in full now.
 forge_0_9_5         = ADOPTED 2026-08-30, 0.9.0 -> 0.9.5, through update.sh
                       with the smoke test as the gate. 11/11 including a real
                       tool call, and test_forge_patches.py run inside the LIVE

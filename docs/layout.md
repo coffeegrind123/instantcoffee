@@ -84,7 +84,7 @@ scripts/
                         gaps named
   test_capture_proxy.py the recorder's unit + live-socket suite, including the
                         no-buffering control and the exploding-recorder control
-  test_forge_patches.py behaviour gate for the ten build-time forge patches.
+  test_forge_patches.py behaviour gate for the twelve build-time forge patches.
                         Runs INSIDE the built image, because it imports the
                         patched package. CI runs it after the image build
   probe_lib.py          shared by ctx_needle.py and bench_literal.py: the nonce,

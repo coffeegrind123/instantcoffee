@@ -140,20 +140,45 @@ RUN pip install --no-cache-dir \
 # indistinguishable from one the model chose to end, which is exactly how the
 # wedged turns above hid. See patches/forge_text_sse_passthrough.py.
 #
-# PATCH 10 — a backend read timeout on the STREAMING path returns a clean 408.
-# send() converts httpx.ReadTimeout into BackendError(408); send_stream() never
-# did, so a timeout mid-stream escaped raw and reached the client as
-# "can only concatenate list (not 'str') to list". pi streams every turn and
-# FORGE_BACKEND_TIMEOUT is 600s against a 27B on one 4090, so the unguarded path
-# is the only one this stack uses. Worse, that string is also what patch 1's bug
-# produces, so the message was ambiguous between two unrelated failures.
+# PATCH 10 — a backend read timeout on OpenAICompatClient.send_stream() returns
+# a clean 408. send() converts httpx.ReadTimeout into BackendError(408);
+# send_stream() never did, so a timeout mid-stream escaped raw and reached the
+# client as "can only concatenate list (not 'str') to list" — the same
+# uninterpretable string patch 1's bug produces, from an unrelated cause.
 # Upstream antoinezambelli/forge#142, still open at 0.9.5.
 # See patches/forge_stream_timeout.py.
+#
+# CORRECTION (2026-09-01). That patch's docstring claimed the streaming path is
+# "the ONLY path that matters here". It is the one path that never runs, and the
+# module is not the one this stack uses. A live traceback settled both:
+# run_inference takes stream=False and handle_chat_completions never overrides
+# it, so the backend call is always client.send(); and the client is
+# LlamafileClient, not OpenAICompatClient. Patch 10 is kept — the hole it closes
+# is real and upstream's issue is open — but it guards traffic this stack does
+# not carry. PATCH 11 closes the same hole on llamafile.py, where the traffic
+# actually is, for both send() and send_stream(). Without it a dead backend
+# reached pi as "Stream ended without finish_reason", two hours after the fact.
+# See patches/forge_llamafile_timeout.py.
+#
+# PATCH 12 makes a mid-stream failure VISIBLE. Once the 200 and the SSE headers
+# are out the status line is spent, so the only way to report a backend fault is
+# in the body — and forge's was unreadable in three separate ways. The message
+# was str(exc), which for httpx.ReadTimeout is the empty string (forge's own log
+# line, "<< ERROR:" with nothing after it, is the proof). It went out as
+# {"error": ""}, and the OpenAI SDK's guard is `if (data && data.error) throw` —
+# so an empty message defeated the one check that would have surfaced it. And
+# nothing in the stream carried a finish_reason, which is the message the
+# operator finally saw. Now: never an empty message, an error OBJECT rather than
+# a bare string, and a terminal chunk with finish_reason "error" — deliberately
+# NOT "stop", because patches 3, 8 and 9 all exist because a failure that ends
+# the stream like a natural completion is invisible to everything above it.
+# See patches/forge_sse_error_shape.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py \
      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py \
+     patches/forge_llamafile_timeout.py patches/forge_sse_error_shape.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -166,6 +191,8 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_empty_turn.py "$SITE" \
     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE" \
     && python /tmp/patches/forge_stream_timeout.py "$SITE" \
+    && python /tmp/patches/forge_llamafile_timeout.py "$SITE" \
+    && python /tmp/patches/forge_sse_error_shape.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"
