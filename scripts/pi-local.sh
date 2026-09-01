@@ -562,8 +562,8 @@ fi
 # no persona active it contributes ZERO tokens — `before_agent_start` returns
 # undefined, and it registers no tool, so there is no schema to pay for on a turn
 # that never uses it. The cost only appears once a persona IS active, and then it
-# is large and worth knowing about: ~3,683 tokens of every request in `full`
-# mode, ~2,311 in `lean`, against a 32,768-token window. `/persona status` prints
+# is large and worth knowing about: ~4,708 tokens of every request in `full`
+# mode, ~2,718 in `lean`, against a 32,768-token window. `/persona status` prints
 # the live number; the wire measurements are in FORK.md.
 #
 # Loaded AFTER vendor/rtk-pi and everything else, and the order matters for one
@@ -611,7 +611,7 @@ if [[ "$(env_get PERSONA_ENABLED)" == "1" ]]; then
     if [[ -r "$PERSONA_ACTIVE_FILE" ]]; then
       PERSONA_NAME="$(sed -n 's/.*persona of \([^.]*\)\..*/\1/p' "$PERSONA_ACTIVE_FILE" | head -n1)"
       PERSONA_NOTE=", /persona (${PERSONA_NAME:-active})"
-      dim "A persona is active (${PERSONA_NAME:-unnamed}) — it costs ~2.3-3.7k tokens of every request."
+      dim "A persona is active (${PERSONA_NAME:-unnamed}) — it costs ~2.7-4.7k tokens of every request."
       dim "Clear it with /persona clear, or see what it costs with /persona status."
     fi
   else
