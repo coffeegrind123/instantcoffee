@@ -94,8 +94,42 @@ def load_results(results_dir):
     return out
 
 
+def round_incomplete(data, wl, rnd, configs):
+    """Which configs have no data in this round.
+
+    A round that is missing an arm must not be pooled: it contributes samples
+    for some configs and none for others, so every downstream mean is computed
+    over a different set of rounds and the permutation test runs on an
+    unbalanced pool it cannot see is unbalanced. Seen 2026-09-01, when a llama
+    health-check timeout cost one arm of one round and left the comparison at
+    n=28 vs n=24 with no indication which rounds differed.
+    """
+    return [n for n in configs if (wl, rnd, n) not in data]
+
+
 def round_health(data, wl, rnd, load_max, load_ratio):
     """Why this round is or is not usable. -> (ok: bool, reason: str)
+
+    KNOWN FLAW, measured 2026-09-01: `load_before` is stamped immediately after
+    the llama recreate, and a recreate spikes the container to ~975% CPU reading
+    a 16.8 GB model off the 9p mount. The 1-minute load average is still
+    draining that when the stamp is taken, so `load_before` partly measures
+    RECREATE TAIL rather than bench conditions. Consequences:
+
+      - It inflates the apparent spread within a round and can trigger FALSE
+        SPLITS. Some of the brutal split rates on 2026-08-31/09-01 (the
+        three-way lost 6 of 8 rounds) may be this rather than real interference.
+      - It manufactures config-looking patterns out of the alternating round
+        order. `ngram-map-k` stamped higher than `ngram-mod` in 5 of 5 rounds,
+        position-independent, which looked like a genuine CPU-cost difference
+        and is not: direct `docker stats` showed the recreate, not the config,
+        dominating.
+
+    The fix is to stamp load DURING the bench rather than around it, or to use
+    `load_after` alone (taken after minutes of steady benching, so the recreate
+    has decayed out). Not changed yet because every result on disk carries the
+    current definition and changing it silently would make old and new rows
+    incomparable — the exact failure the pin set exists to prevent.
 
     The test is deliberately CONSERVATIVE: it uses the global min and max of
     every load sample in the round, so it cannot tell a shared ramp (every arm
@@ -203,15 +237,19 @@ def main():
         usable = []
         for rnd in rounds:
             ok, why = round_health(data, wl, rnd, args.load_max, args.load_ratio)
+            missing = round_incomplete(data, wl, rnd, configs)
             cold = (rnd == min(rounds) and len(rounds) > 1 and not args.keep_first_round)
             verdict = "USE"
-            if not ok:
+            if missing:
+                verdict = "DROP(partial)"
+                why = "missing %s — a round without every arm cannot be pooled" % ",".join(missing)
+            elif not ok:
                 verdict = "DROP"
             elif cold:
                 verdict = "DROP(cold)"
             else:
                 usable.append(rnd)
-            print("    round %-3s %-12s %s" % (rnd, verdict, why))
+            print("    round %-3s %-13s %s" % (rnd, verdict, why))
 
         if not usable:
             print("  no usable rounds — nothing can be concluded for this workload")

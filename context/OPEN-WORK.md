@@ -218,12 +218,47 @@ delta against `simple` is measured against the noisiest config on the board, so
 those deltas swing, while `map-k`-vs-`mod` — two well-behaved configs — replicates
 to within a point across three runs.
 
-### What is still not measured
+### map-k on synthetic: MEASURED 2026-09-01, and UNDERPOWERED
 
-`map-k` has never been tested on the SYNTHETIC (novel-text) workload. `ngram-mod`
-was, and came back clean (-0.3% on medians, p=0.49, five rounds). map-k inherits
-no such guarantee. A synthetic-only run — 2 configs, ~13 min rounds, 8 rounds —
-is the same shape that settled it for ngram-mod and is the obvious next job.
+Run: 2 configs, synthetic only, 8 rounds, `--repeat 4`. Six usable rounds
+(round 1 cold; round 6 dropped PARTIAL after a llama health-check timeout cost
+one arm). Balanced n=24 a side.
+
+```
+ngrammapk-n4   mean 57.1  median 58.7      -6.6%   p=0.2256
+ngrammod       mean 61.2  median 63.2
+```
+
+**The answer is "cannot tell", and the arithmetic says why:**
+
+```
+difference                              -6.6%
+SE of the difference                     5.3%
+smallest effect this run could DETECT   10.6%   (2 SE)
+```
+
+A 6.6% effect sits BELOW the detection threshold. The 95% interval runs about
+-17% to +4% — consistent with a real cost, with nothing, or with a small gain.
+The sensitivity row spans **+18.7% to -17.1%** across rounds, which is the same
+verdict said another way.
+
+**Do not read this as "map-k costs 6% on novel text."** The point estimate leans
+negative and that is all. During the run the successive rounds (-6.3, -11.6,
+-9.8) looked like a firming trend and were called as one here; the pooled
+analysis does not support it. Reading a trend off successive rounds is the
+mistake the sensitivity row exists to catch.
+
+**What would settle it:** SE scales as 1/sqrt(n), so detecting a 6% effect needs
+SE ~3%, i.e. about 3.1x the samples — roughly **19 synthetic rounds** (~4h at
+this shape) rather than 8. Worth doing only if novel-text throughput is
+something this stack actually cares about; the repeat workload is what pi
+produces, and there map-k's +8.7% is measured four times over.
+
+**For the record, the same question for `ngram-mod` was equally underpowered** —
+it returned -0.2%/p=0.97 over five rounds, which was reported as "no measurable
+cost". That reading was right in its conclusion but got there with the same
+instrument that cannot resolve 6%, so it should be understood as "no LARGE cost",
+not "no cost".
 
 ---
 

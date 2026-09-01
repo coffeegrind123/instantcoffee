@@ -1,0 +1,87 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 4.98,
+      "prompt_n": 1053,
+      "prompt_tps": 1291.595064708545,
+      "predicted_n": 256,
+      "predicted_tps": 61.656380528673246,
+      "cache_n": 0,
+      "draft_n": 300,
+      "draft_accepted": 170,
+      "draft_acceptance": 0.567
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.91,
+      "prompt_n": 1053,
+      "prompt_tps": 1218.1042919378385,
+      "predicted_n": 256,
+      "predicted_tps": 55.714359687973364,
+      "cache_n": 0,
+      "draft_n": 303,
+      "draft_accepted": 171,
+      "draft_acceptance": 0.564
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.36,
+      "prompt_n": 1053,
+      "prompt_tps": 1341.6678983339364,
+      "predicted_n": 256,
+      "predicted_tps": 52.42234400652258,
+      "cache_n": 0,
+      "draft_n": 318,
+      "draft_accepted": 165,
+      "draft_acceptance": 0.519
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.59,
+      "prompt_n": 1053,
+      "prompt_tps": 1368.6896324034997,
+      "predicted_n": 256,
+      "predicted_tps": 58.530740689308494,
+      "cache_n": 0,
+      "draft_n": 333,
+      "draft_accepted": 174,
+      "draft_acceptance": 0.523
+    }
+  ],
+  "config": {
+    "name": "ngrammapk-n4",
+    "spec_type": "ngram-map-k,draft-mtp",
+    "n_max": 4,
+    "p_min": 0.4,
+    "draft_gguf": null,
+    "ngram_mod": null,
+    "workload": "synthetic",
+    "repeat": 4,
+    "round": 5,
+    "load_before": 4.07,
+    "load_after": 3.55,
+    "load_warn": 8,
+    "prompt_len": null
+  },
+  "pins": {
+    "llama_tag": "server-cuda-b10689",
+    "llama_digest": "sha256:e52c610406cd18714902d1ca3bffadebca4a2a8370faaba8a5be5cc5d5203921",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479",
+    "ctx_size": "98304",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
+  },
+  "measured_utc": "2026-09-01T11:36:26Z"
+}
