@@ -105,13 +105,17 @@ Six usable rounds, n=24 a side:
 | `ngram-map-k4v` | -6.5% | 0.0514 | mostly negative (-11.4 to +2.3) |
 | `ngram-cache` | **-58.4%** | 0.0000 | -55.6 to -60.5, every round |
 
-**`ngram-map-k` is a real, small upgrade — RECOMMENDED for a follow-up decision.**
-It ran at ENGINE DEFAULTS (`size-n 12, size-m 48, min-hits 1`); its knob family
-is deliberately not plumbed, so adopting it is one `.env` line:
+**`ngram-map-k` is a real, small upgrade — ADOPTED 2026-09-01, and it is the
+LIVE pin.** It runs at ENGINE DEFAULTS (`size-n 12, size-m 48, min-hits 1`); its
+knob family is deliberately not plumbed.
 
 ```
-SPEC_TYPE=ngram-map-k,draft-mtp     # keep n-max 4 / p-min 0.40
+SPEC_TYPE=ngram-map-k,draft-mtp     # n-max 4 / p-min 0.40 unchanged
 ```
+
+**Confirm it with the three-way in 0d before trusting it.** Its win was measured
+against `ngram-mod`, which was itself measured against `ngram-simple`, in
+separate runs — chained, never composed.
 
 Tuning it afterwards WOULD need plumbing, mirroring `SPEC_NGRAM_MOD_*` in
 `.env` and `docker-compose.yml`. Worth doing only if the default already earns
@@ -144,6 +148,103 @@ unpromising. That reading came from a LOAD-SPLIT round — exactly the kind this
 repo's own tooling refuses to read — and it was believed because it agreed with
 a plausible mechanism. The draft-length observation was even true; it simply did
 not predict throughput. **A plausible mechanism is not a measurement.**
+
+---
+
+## 0d. HANDOFF: the direct three-way. Do this before trusting the pin.
+
+**Why this exists.** Three configs have been pinned in sequence and each was
+validated only against the one before it, in a SEPARATE run, under DIFFERENT
+load conditions:
+
+```
+ngram-simple n4 p0.40   the original pin, re-baselined 2026-08-31
+  -> ngram-mod 12:64:32   +22.3% and +23.3%, two independent runs
+     -> ngram-map-k         +8.7%, one run (7 rounds, all clean)   <- LIVE NOW
+```
+
+Nobody has measured all three against each other in one run. The deltas are
+chained, not composed: "+23% then +9%" does NOT license "+34% overall", and a
+chain of pairwise wins can hide a case where the first change was doing the work
+and the second is riding on it. **One run settles it.**
+
+### The run
+
+```bash
+./scripts/spec-sweep.sh --workload repeat --rounds 8 --repeat 4 \
+  --results-dir context/bench/spec-sweep-threeway \
+  --only ngram-pmin-040-n4,ngrammod-12-64-32-n4,ngrammapk-n4
+```
+
+All three rows already exist in `CONFIGS`; nothing needs plumbing. Three configs
+repeat-only gives ~20 min rounds, and SHORT ROUNDS ARE WHAT SURVIVE LOAD DRIFT —
+that lesson cost four void runs. 8 rounds is ~2.7h and leaves 7 scored after
+round 1 drops as cold.
+
+Add `--workload synthetic,repeat` ONLY if you also want the novel-text axis; it
+doubles round duration to ~40 min and materially raises the chance rounds split.
+The synthetic question is already settled for ngram-mod (no cost, p=0.49) and is
+UNMEASURED for map-k — which is a real gap, but a separate synthetic-only run
+answers it better than bundling.
+
+### Reading it
+
+```bash
+python3 scripts/spec_sweep_compare.py --results-dir context/bench/spec-sweep-threeway \
+    --baseline ngram-pmin-040-n4      # mod and map-k vs the ORIGINAL
+python3 scripts/spec_sweep_compare.py --results-dir context/bench/spec-sweep-threeway \
+    --baseline ngrammod-12-64-32-n4   # map-k vs mod, the chained step
+```
+
+The tool compares everything to ONE baseline, so run it twice to get every pair.
+Read `round health` first and the `sensitivity` row before any p-value: a delta
+that changes sign or swings 5x across subsets is not settled whatever its p.
+
+### What would change the pin
+
+- **map-k wins both comparisons** -> keep it; the chain composed.
+- **map-k beats simple but NOT mod** -> revert to `ngram-mod,draft-mtp`. The
+  `SPEC_NGRAM_MOD_*` keys are still in `.env` at their validated 12/64/32 for
+  exactly this, so the revert is one `SPEC_TYPE` line.
+- **mod and map-k both beat simple by the same amount** -> the second change is
+  riding on the first; prefer the simpler config.
+- **Anything within noise** -> say so and stop. Three pins in one day is already
+  more churn than the evidence per change deserves.
+
+### Gotchas, all of them paid for
+
+- **The sweep OWNS `.env` while it runs**, rewriting `SPEC_TYPE` per arm and
+  restoring on clean exit. If the session or container dies mid-run, `.env` is
+  left on whatever arm was in flight and llama comes back on the WRONG config.
+  The tell is a leftover `.env.spec-sweep-backup`; restore from it and check the
+  diff is only the `SPEC_*` keys. This happened on 2026-08-31 and silently
+  reverted a pin.
+- **Do not commit while a sweep runs** — you would bake an arm's config in as
+  the pin.
+- **Container restarts kill even `setsid` runs** (they take the whole process
+  tree) and drop runtime-installed pip packages; `pytest` has gone missing that
+  way once. `python3 -m unittest discover -s scripts -p "test_*.py"` is the
+  fallback.
+- **Memory pressure looks like a GPU failure.** `nvidia-container-cli:
+  driver rpc error: timed out` and `ldconfig terminated with signal 9` are both
+  ENOMEM. Fix:
+  `docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`
+  then retry. Seen twice on 2026-08-31/09-01.
+- **The `--spec-ngram-mod-*` flags are still passed** while `SPEC_TYPE` is
+  `ngram-map-k`, because compose emits them whenever the keys are set. llama
+  ignores them (verified: server healthy, smoke 11/11). Harmless today; if a
+  future build rejects unused flags, gate the emission on `SPEC_TYPE`.
+
+### What "good" looks like
+
+For reference, the numbers these three produced in their own runs, repeat
+workload, so a wildly different figure means something changed:
+
+```
+ngram-simple n4 p0.40    ~176-186 tok/s
+ngram-mod 12:64:32       ~208-228
+ngram-map-k              ~226
+```
 
 ---
 
