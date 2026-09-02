@@ -295,14 +295,37 @@ def main() -> int:
         # And stop_server must actually signal it instead of returning quietly.
         signalled: list[int] = []
         real_up, real_read, real_kill, real_call = bc.is_up, bc.read_pid, os.kill, bc.call_tool
+        real_pidfile = bc.PID_FILE
+        # Snapshot it so the assertion below can actually fail.
+        _sentinel = object()
+        try:
+            with open(real_pidfile) as _fh:
+                pidfile_before = _fh.read()
+        except OSError:
+            pidfile_before = _sentinel  # type: ignore[assignment]
         try:
             bc.is_up = lambda *a, **k: True          # the port answers
             bc.read_pid = lambda: None               # the pid file cannot say who
             bc.call_tool = lambda *a, **k: None      # no server to ask
+            # PID_FILE is computed at import from PORT, so moving PORT does NOT
+            # move it: stop_server()'s cleanup would delete the REAL pid file of a
+            # running server. It did, on the first run inside the container --
+            # leaving a live supervisor that read_pid() could no longer name,
+            # which is precisely the bug under test, caused by the test.
+            bc.PID_FILE = os.path.join(
+                os.path.dirname(real_pidfile) or ".", f"test-{marker_port}.pid"
+            )
             os.kill = lambda pid, sig: signalled.append(pid) if sig != 0 else None
             bc.stop_server(quiet=True)
         finally:
             bc.is_up, bc.read_pid, os.kill, bc.call_tool = real_up, real_read, real_kill, real_call
+            bc.PID_FILE = real_pidfile
+        try:
+            with open(real_pidfile) as _fh:
+                pidfile_after = _fh.read()
+        except OSError:
+            pidfile_after = _sentinel  # type: ignore[assignment]
+        check("the real pid file is untouched", pidfile_after, pidfile_before)
         check("stop_server signals the found server", child.pid in signalled, True)
     finally:
         child.kill()
