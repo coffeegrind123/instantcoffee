@@ -62,6 +62,20 @@ scripts/
                         a distinct nonce at EACH END of the document must come
                         back, plus a negative control past the limit. Sizes the
                         prompt from the server's /tokenize, not an estimate
+  template_probe.py     which request shapes does the ACTIVE chat template
+                        refuse? The template ships inside the GGUF, so the modes
+                        do not run the same one and they disagree about what is
+                        legal. Ten shapes, four of them controls; the llama
+                        column renders through /apply-template and generates
+                        nothing, the forge column sends one token because a
+                        refusal the operator never sees is the actual defect
+  gguf_probe.py         reads a GGUF's HEADER off the Hub with a ranged fetch —
+                        chat template length and capabilities, MTP head, arch,
+                        size — so a model can be vetted BEFORE spending 16 GB
+                        and a cold load on it. `--dump-template <repo> <file>
+                        <out>` writes that template to a file for
+                        CHAT_TEMPLATE_FILE, which is the only sane way to get
+                        9 KB of Jinja out of a 16 GB artifact
   bench_literal.py      do exact literals survive from deep context into a
                         TOOL-CALL ARGUMENT? The failure the Level1Techs
                         divergence experiments actually found is not worse
@@ -84,7 +98,7 @@ scripts/
                         gaps named
   test_capture_proxy.py the recorder's unit + live-socket suite, including the
                         no-buffering control and the exploding-recorder control
-  test_forge_patches.py behaviour gate for the twelve build-time forge patches.
+  test_forge_patches.py behaviour gate for the thirteen build-time forge patches.
                         Runs INSIDE the built image, because it imports the
                         patched package. CI runs it after the image build
   test_llama_watchdog.sh
@@ -164,6 +178,30 @@ patches/
                         carried neither the reasoning nor the backend's
                         finish_reason — the OpenAI SSE text path, which is the
                         one pi takes on every turn
+  forge_stream_timeout.py  a backend read timeout out of
+                        OpenAICompatClient.send_stream escaped as a raw httpx
+                        exception; it is a BackendError(408) now. Guards both
+                        stream-open and mid-stream, because a guard around only
+                        the first misses the second
+  forge_llamafile_timeout.py  the same hole on the client and method the live
+                        traceback actually named — LlamafileClient.send, which
+                        is what forge's proxy calls
+  forge_sse_error_shape.py  a failure AFTER the 200 and the SSE headers went
+                        out was unreadable three ways: an empty message (falsy,
+                        so the OpenAI SDK's `if (data && data.error)` guard
+                        never fired), a bare string rather than an error object,
+                        and no finish_reason at all. Now never empty, an object,
+                        and a terminal chunk with finish_reason "error" —
+                        deliberately not "stop"
+  forge_backend_error_detail.py  a backend fault reached the client as
+                        "Backend returned 500" with the backend's own
+                        explanation discarded. Lifts the `error.message` string
+                        out of a well-formed JSON error envelope ONLY — upstream
+                        keeps a raw body off the message on purpose, because an
+                        intermediary can echo a credential into one, so HTML,
+                        plain text and non-object bodies are left exactly where
+                        upstream put them. Status codes untouched.
+                        FORGE_BACKEND_ERROR_DETAIL=0 restores upstream
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction

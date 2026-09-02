@@ -27,10 +27,41 @@ by rendering it:
 | Value | What the template does |
 | --- | --- |
 | `xhigh` | Prepends the steering paragraph above. Upstream default |
-| `high` | Silently rewritten to `xhigh` |
+| `high` | **Depends on the mode — see below.** `coding` rewrites it to `xhigh`; `uc-coding` and `prose` refuse it |
 | `medium` | **Injects nothing at all.** What this stack runs |
 | `low` | Prepends "keep your thinking brief and focused" |
 | anything else | `raise_exception()` — the request fails |
+
+**Corrected 2026-09-02.** The `high` row read "silently rewritten to `xhigh`"
+without qualification. That is true of the template it was read out of and false
+of the template two of the three modes now ship, because **the chat template is
+part of the model and the modes do not ship the same one**:
+
+| Mode | GGUF | Template |
+| --- | --- | --- |
+| `coding` | `unsloth/Qwen3.8-27B-GGUF` | 9993 chars — unsloth's fork |
+| `uc-coding` | `orcarouter/…-Uncensored-GGUF` | 8952 chars |
+| `prose` | `orcarouter/…-Uncensored-GGUF` | 8952 chars |
+
+8952 is byte-identical to Qwen's own published `chat_template.jinja`
+(sha256 `c3cf9e34…`). The `high → xhigh` rewrite is one of the "Unsloth fixes"
+its own trailing comment names; upstream has no such rewrite and reaches
+`raise_exception('Unexpected reasoning effort high…')` instead. Measured against
+the live server on the current pin, `reasoning_effort=high` returns HTTP 500
+from llama and an opaque `502 Backend returned 500` from forge — on **every**
+request, because `REASONING_EFFORT` is baked into the server's launch flags.
+
+So on `uc-coding` and `prose`, setting `REASONING_EFFORT=high` is not a slower
+regime, it is a stack that answers nothing. `medium`, `low` and `xhigh` are
+accepted by both templates and are the portable set.
+
+Reproduce with `scripts/template_probe.py`, which measures this and three other
+shapes the two templates disagree about:
+
+```bash
+docker compose --profile tools run --rm --build \
+    --entrypoint python bench /work/scripts/template_probe.py
+```
 
 That last row includes `none`, which several release-day write-ups list as a
 fourth level. It is not one — *for this setting*. It also includes the empty

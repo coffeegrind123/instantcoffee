@@ -78,11 +78,18 @@ def fetch(repo, name, nbytes):
         return r.read(), total
 
 
-def probe(repo, name, nbytes=48 << 20):
+def read_header(repo, name, nbytes=48 << 20):
+    """The KV block and tensor names, off the Hub. Raises ValueError on bad magic.
+
+    Extracted from probe() on 2026-09-02 so --dump-template could read the same
+    header without a second copy of the walk. probe()'s behaviour is unchanged;
+    the extraction is verified by --dump-template's own byte-for-byte control
+    against the value probe() reports as `template_chars`.
+    """
     data, total = fetch(repo, name, nbytes)
     b = Buf(data)
     if b.raw(4) != b"GGUF":
-        return {"error": "not a GGUF (bad magic)"}
+        raise ValueError("not a GGUF (bad magic)")
     version, n_tensors, n_kv = b.u32(), b.u64(), b.u64()
     kv = {}
     for _ in range(n_kv):
@@ -96,6 +103,38 @@ def probe(repo, name, nbytes=48 << 20):
             b.raw(8 * nd); b.u32(); b.u64()
     except EOFError:
         names.append("<truncated>")
+    return version, n_tensors, kv, names, total
+
+
+def dump_template(repo, name, out_path, nbytes=48 << 20):
+    """Write a GGUF's chat template to a file, for CHAT_TEMPLATE_FILE.
+
+    The whole point of the key is to run one model's weights under another
+    model's template, so the template has to come off a GGUF that is not
+    necessarily the one in service — and downloading 16 GB to read 9 KB of Jinja
+    is not a reasonable way to get it. This reads the header only, the same
+    ranged fetch probe() uses.
+
+    Writes BYTES, not text: llama-server reads the file as-is and a template is
+    whitespace-significant (Qwen's ends without a trailing newline, and adding
+    one changes every prompt this stack sends).
+    """
+    _, _, kv, _, _ = read_header(repo, name, nbytes)
+    tmpl = kv.get("tokenizer.chat_template")
+    if not tmpl:
+        raise ValueError(f"{repo}/{name} carries no tokenizer.chat_template")
+    raw = tmpl.encode("utf-8")
+    path = pathlib.Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return len(raw), path
+
+
+def probe(repo, name, nbytes=48 << 20):
+    try:
+        version, n_tensors, kv, names, total = read_header(repo, name, nbytes)
+    except ValueError as e:
+        return {"error": str(e)}
     tmpl = kv.get("tokenizer.chat_template") or ""
     nextn = sorted({n for n in names if ".nextn." in n})
     arch = kv.get("general.architecture", "?")
@@ -115,6 +154,20 @@ def probe(repo, name, nbytes=48 << 20):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
+    if args and args[0] == "--dump-template":
+        if len(args) != 4:
+            print("usage: gguf_probe.py --dump-template <repo> <file> <out-path>",
+                  file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            n, path = dump_template(args[1], args[2], args[3])
+        except Exception as e:
+            print(f"FAILED: {e!r}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"wrote {n} bytes to {path}")
+        print("Put the FILENAME in CHAT_TEMPLATE_FILE — it is resolved inside "
+              "MODELS_DIR, which is what /models is mounted from.")
+        raise SystemExit(0)
     for repo, name in zip(args[::2], args[1::2]):
         print(f"\n=== {repo}\n    {name}")
         try:

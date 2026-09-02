@@ -1,3 +1,363 @@
+# Handoff — 2026-09-03 (the chat template ships inside the GGUF, so the modes do not run the same one; a thirteenth forge patch so a backend fault says why; 128K re-measured and refused for a NEW reason; the forge image REBUILT)
+
+## Read this first
+
+**The stack changed and is running.** `Dockerfile.forge` gained a **thirteenth**
+patch, `instantcoffee/proxy:0.9.5` was rebuilt, and `instantcoffee-forge` was
+recreated onto it. `scripts/test_forge_patches.py` runs **115/115** inside the
+rebuilt image (was 97); `./scripts/smoke-test.sh` is **11/11**.
+**`instantcoffee-llama` was never touched** — no cold reload was spent this
+session, and no sampler, quant, context or spec-decoding value moved.
+
+**Three new `.env` keys. Two are inert by design; one changes behaviour:**
+
+| Key | Value | Effect |
+| --- | --- | --- |
+| `FORGE_BACKEND_ERROR_DETAIL` | `1` | **Live.** A backend fault now reports the backend's own sentence instead of a bare `Backend returned 500`. `0` restores upstream exactly |
+| `CHAT_TEMPLATE_FILE` | *(empty)* | Inert — `docker compose config` resolves to zero occurrences of the flag. Declared in all three `modes/*.env` so a mode switch resets it |
+| — | — | `KV_TAIL_TOKENS` unchanged and still empty |
+
+**Nothing here was broken and nothing here is now fixed in the running system.**
+The session's findings are a latent outage, an opaque error path (closed), and
+two corrections to records that had quietly gone stale. Read §6 before spending
+any VRAM headroom on anything.
+
+**Where it started:** a second r/LocalLLaMA sweep for Qwen3.8 setups, of the same
+shape as `context/design/ngram-mod-and-the-load-confound.md` (2026-08-31). The
+same thing happened again — **almost everything the threads recommend, this repo
+had already measured and refused**, including the two loudest items:
+
+| Their tip | Already settled here |
+| --- | --- |
+| beellama's `kvarn` KV types + `--kv-tail-tokens` for long context | `kvarn-measured-and-refused.md` — memory claim reproduces, refused on **decode: 16 t/s against 43** |
+| `--spec-draft-p-min 0.7` is fastest | Contradicted: p-min 0.75 is the *slowest* arm here. The pin is `ngram-map-k,draft-mtp` at n-max 4 / p-min 0.40 |
+| `-ctk q4_0 -ctv q4_0` for a big window | llama.cpp#27109 — collapses prefill on this hybrid |
+
+One Reddit datum was genuinely new and is recorded but acted on nowhere: a
+commenter's decoy multi-hop needle test put every `kvarn` variant at ~75%
+against >80% for non-kvarn quants and 84% at f16. It **corroborates** the
+existing refusal rather than changing it; the decode number is the stronger
+reason and already sufficient.
+
+**The one thread that paid** was two passing mentions of a "fixed chat
+template". Neither said what was fixed. Asking that produced §1.
+
+---
+
+## 1. The chat template is part of the model, and the modes do not ship the same one
+
+Read out of the GGUF headers with `scripts/gguf_probe.py`'s ranged fetch — off
+the Hub, no weights downloaded:
+
+| Mode | GGUF | `tokenizer.chat_template` |
+| --- | --- | --- |
+| `coding` | `unsloth/Qwen3.8-27B-GGUF` `UD-Q4_K_XL` | 9993 chars — a fork |
+| `uc-coding` | `orcarouter/…-Uncensored-GGUF` `Q4_K_M` | 8952 chars |
+| `prose` | `orcarouter/…-Uncensored-GGUF` `Q4_K_M` | 8952 chars |
+
+8952 is **byte-identical to Qwen's published `chat_template.jinja`**, sha256
+`c3cf9e34…`. unsloth's own trailing line says what its fork is:
+`{#- Unsloth fixes - developer role, merged system messages, tool calling #}`.
+
+So `modes/uc-coding.env`'s opening claim — "The ONLY difference from coding is
+MODEL_REPO/GGUF_FILE" — is true of the file and **false of the behaviour**.
+
+`scripts/template_probe.py` (new) measures which shapes the *active* template
+refuses. Ten cases, four of them controls; the llama column uses
+`/apply-template` and generates nothing, the forge column sends one token.
+
+    docker compose --profile tools run --rm --build \
+        --entrypoint python bench /work/scripts/template_probe.py
+
+Four shapes render on `coding` and are **HTTP 500** on `uc-coding`/`prose`:
+`reasoning_effort=high` (both the top-level field and `chat_template_kwargs`), a
+`developer` role, and a second leading system message. A fifth — a genuinely
+late system message — is refused by **both** templates and is not a mode
+difference.
+
+**Two hypotheses read off the template diff were REFUTED by hitting the server**,
+which is why the probe measures rather than reasons:
+
+- OpenAI-wire `arguments` arriving as a JSON **string** render fine. llama.cpp
+  parses them to an object before templating — string and object forms produce
+  **byte-identical 1411-char prompts**. The fork's guard is defensive, not a fix
+  for anything reachable here.
+- A message list ending on a tool result renders fine (1383 chars). unsloth's
+  deletion of the `No user query found in messages.` guard fixes a shape this
+  stack does not produce.
+
+**Severity: `reasoning_effort=high` is the one that matters.** It is baked into
+llama-server's launch flags (`docker-compose.yml:93`), so setting it means
+*every* request fails — and `.env` and `docs/reasoning.md` both called it
+"silently rewritten to `xhigh`". That reading was correct **for the GGUF it was
+taken from**; the pin moved to orcarouter on 2026-08-25 and the docs did not.
+All three modes ship `medium`, so nothing is down.
+
+---
+
+## 2. Patch 13 — a backend fault now says why
+
+Every one of those five refusals reached the client as the identical
+`{"error": {"message": "Backend returned 500", "type": "proxy_error"}}` while
+llama-server's body named each one. Identifying a one-word config error took a
+template diff, a live probe and a log dig.
+
+**The obvious patch is the wrong patch.** Upstream keeps a backend's raw body off
+the exception message *deliberately* and says so in `forge/errors.py`: the
+message is logged and returned, and an intermediary can echo an inbound
+credential into a body. Every call site already captures it as `raw_body=`.
+
+`patches/forge_backend_error_detail.py` lifts **one string** — `error.message`
+out of a well-formed JSON error envelope, the shape a backend authors to be
+read. HTML, plain text, JSON arrays and message-less envelopes are passed over
+and stay on `exc.body` exactly as upstream left them. Status codes untouched: a
+backend 500 is still forge's 502. minja's backtrace is trimmed to the sentence,
+because left-truncating it prints the same forty characters of `While executing
+CallExpression at` for every distinct fault.
+
+It runs **last** in `Dockerfile.forge`, because its anchor is the line patch 12
+leaves behind. `FORGE_BACKEND_ERROR_DETAIL=0` restores upstream exactly;
+default-on is a judgement about a loopback backend with no gateway, not a claim
+that upstream is wrong.
+
+Live, after recreating forge:
+
+    502 Backend returned 500: Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.
+    502 Backend returned 500: System message must be at the beginning.
+
+---
+
+## 3. Are those shapes reachable from pi? No — and finding out expired three claims
+
+Session entries cannot answer it: they hold only `user`/`assistant`/`toolResult`,
+and the prompt is assembled at request time. So pi's shipped adapter was read
+instead — `dist/bundle/chunks/openai-completions-*.js`, the chunk this provider
+selects. It constructs `role: "system"` in exactly two places:
+
+1. `payload.messages.unshift({role:"system", …})` — position 0, legal.
+2. `params.push(kimiToolMessage)` — a **mid-conversation** system message
+   carrying deferred tools, which is the shape that raises. Gated on
+   `compat.deferredToolsMode === "kimi"`, which `pi-local.sh` does not set.
+
+The single `role:"developer"` in the bundle is on the **Responses API** path
+(`convertResponsesTools`), which this stack does not take.
+
+**So both refusals are unreachable from pi as configured** — a property of two
+flags in a generated config, not of the stack. Checking those flags found their
+justification had expired, in both halves:
+
+- **"The ENGINE is what does not [forward it]"** — expired. The pin is
+  `server-cuda-b10689`, well past commit `7e4c0a9`; the note was written when
+  the newest image was `b10423`. Measured, not assumed: a top-level
+  `{"reasoning_effort":"high"}` **reached the template and raised**, which it
+  could not do if the field were being dropped.
+- **"The MODEL supports both"** — true of the *unsloth* template, which that
+  sentence names, and the stack stopped serving unsloth on 2026-08-25.
+
+**Both values are still `False`** — flipping either is a behaviour change needing
+measurement, not a comment fix. `supportsDeveloperRole: True` would be a 500 on
+every turn on two of three modes. `supportsReasoningEffort` now stays false for a
+*different* reason: pi sends a level NAME and the levels are not portable — the
+strict template accepts only `xhigh`/`medium`/`low` and raises on `high`, which
+pi's `thinkingLevelMap` emits. Corrected in `scripts/pi-local.sh` and
+`docs/pi.md`; the generator was re-run against a throwaway `MODELS_JSON` to
+confirm it still emits byte-equivalent config.
+
+The `KV_TAIL_TOKENS` block in `.env` carried two more stale sentences, both now
+answered in place: **#27109 does NOT reproduce under KVarN** (~18% prefill cost,
+not a 10× collapse — so that refusal is about `q4_x` specifically and must not be
+generalised), and "refused by 22 MiB" is stale in both terms — see §6.
+
+---
+
+## 4. ninfer is NOT blocked by the reason this repo wrote down
+
+`ngram-mod-and-the-load-confound.md` dismisses ninfer with one factual claim:
+*"ninfer loads only the official artifact."* **It is false.** From
+`Neroued/ninfer@master`:
+
+- `tools/convert/qwen3_8_27b/convert.py` takes `--model /path/to/anything`. No
+  repo allow-list, no artifact allow-list.
+- Weights are **not** hash-pinned — `recipe.py` preflights shape and dtype only,
+  against a 1,118-tensor inventory.
+- Six **frontend** files are sha256-pinned in `OFFICIAL_RESOURCE_SHA256`.
+
+Measured, control first: `Qwen/Qwen3.8-27B` matches **6 of 6** by
+download-and-hash. `orcarouter/Qwen3.8-27B-Uncensored` matches **5 of 6** — only
+`tokenizer.json` differs (same 12,809,320-byte length, different content),
+compared by HF LFS object ids, which are sha256 of content, both sides LFS.
+
+**Where it actually stops is not engineering.** The safetensors repo and its
+`-NVFP4` sibling are **gated**: 401 anonymous, **403 with the `HF_TOKEN` in
+`.env.local`** — the token is valid and this account has not been granted
+access. The `-GGUF` repo the stack downloads is ungated, which is why nobody
+noticed. Full entry with the ordered next steps: **OPEN-WORK §00**.
+
+A warning found on the way: `orcarouter/…-Uncensored-MLX` ships a *third*
+tokenizer (19,989,325 B) with the same 248,044-entry vocab but a
+**pre_tokenizer regex that drops `\p{M}`** from its letter classes. It does NOT
+affect the served GGUF — both the orcarouter and unsloth GGUFs stamp
+`tokenizer.ggml.pre = qwen35` with identical 247,587 merges — but it means
+"the fine-tune keeps the stock tokenizer" must be verified **per repo**.
+
+---
+
+## 5. `--chat-template-file`, plumbed and inert
+
+`CHAT_TEMPLATE_FILE=` in `.env`, empty, following the `KV_TAIL_TOKENS` /
+`LLAMA_IMAGE` precedent — plumbed so the measurement becomes possible without
+changing behaviour. No new mount: `/models` is already bind-mounted, so a
+filename resolves as `${MODELS_DIR}/<name>`.
+
+`scripts/gguf_probe.py --dump-template <repo> <file> <out>` is what makes the key
+usable — getting 9 KB of Jinja out of a 16 GB artifact is otherwise a download.
+Same ranged header fetch; `read_header()` was extracted so there is one walk and
+not two. Verified byte-identical to an independent extraction (`12827f24b742…`,
+9993 bytes), and `probe()`'s output is unchanged.
+
+**A trap found while wiring it, and fixed:** `mode.sh` only rewrites keys the
+target mode file *declares*, so a key set in one mode and absent from another
+**survives the switch** — and this one is model-coupled. Setting it under
+`coding` and switching to `prose` would silently run orcarouter's weights under
+unsloth's template with nothing in mode.sh's output saying so. It is now
+declared empty in all three `modes/*.env`, so every switch resets it.
+
+**Do not adopt it without measuring.** A template swap changes the prompt bytes
+of every request: it invalidates the prefix cache wholesale, and the
+spec-decoding pin was chosen on the repeat workload against *this* prompt shape.
+unsloth's fork also merges a leading run of system/developer messages into one
+block — a different prefix on any turn carrying more than one, and the KV prefix
+cache is what `FORGE_MERGE_ACROSS_TOOLS=0` exists to protect.
+
+---
+
+## 6. 128K: the model gave back 678 MiB and the desktop took 1240
+
+`kvarn-measured-and-refused.md` named the next cheap measurement. It was run —
+`./scripts/vram-floor.sh --samples 48 --interval 15`, llama untouched and flat
+to **0.0 MiB** across the whole capture.
+
+| | min | median | max |
+| --- | --- | --- | --- |
+| host floor, 2026-08-23 (90 samples) | 1477.9 | **1500.8** | 1517.5 |
+| host floor, 2026-09-02 (48 samples) | 2528.1 | **2741.3** | 2823.6 |
+| free at 128K, today | -371 | **-584** | -667 |
+| free at 96K, today | 1037 | **824** | 741 |
+
+Both inputs to `ctx_128k_verdict` moved, in opposite directions:
+
+- **The model shrank 678.3 MiB** — llama via vmwp reads 20999.1 against the
+  21677.4 constant across all 137 samples in August. That is orcarouter `Q4_K_M`
+  replacing unsloth `UD-Q4_K_XL`. On the old floor **that alone would have turned
+  -22 into +656 and opened 128K**.
+- **The floor grew 1240 MiB**, which is more.
+
+The floor moved only 295.5 MiB *within* the capture, so this is a new steady
+state, not the GPU-heavy foreground August left unmeasured. Per-pid
+`\GPU Process Memory(*)\Dedicated Usage` names it rather than guessing:
+**NVIDIA Broadcast, 920.1 MiB**, absent from the August list at any size; brave
+(390.3 vs 138) and chrome (294.4 vs 169) are most of the rest.
+
+**128K is one process away from fitting.** It is still not a recommendation:
++336 MiB with Broadcast closed is thinner than the ~824 MiB 96K keeps free now,
+it depends on a process staying shut, and nothing re-measured prefill or decode
+at 128K on the current model. Re-open condition, so it need not be re-derived:
+close Broadcast, re-run `vram-floor.sh`, and if the median lands near 1821 run
+**one** `capacity-probe.sh` arm at `CTX_SIZE=131072` and read `free` off the
+engine's own exit table — a sampled cross-run delta got this same comparison
+wrong by 1163 MiB once.
+
+`versions.lock` is updated in place (`update.sh` preserves hand-written notes):
+`ctx_128k_verdict` keeps its verdict and replaces its reason; `vram_note` is
+marked superseded as a description of today — **2027, which it calls "the worst
+ever observed", is now below the best sample of an ordinary capture.**
+
+**The transferable rule, and it outranks the number:** the floor is not a
+property of the hardware, it is a property of what happens to be open, and it
+drifted 1.2 GiB in ten days with nobody noticing. Any decision that spends VRAM
+headroom needs the floor measured **on the day**.
+
+---
+
+## 7. What is verified, and how
+
+| Claim | Evidence |
+| --- | --- |
+| 13 patches behave, both directions of the new flag | `test_forge_patches.py` **115/115** in the rebuilt image (was 97) |
+| The stack still works end to end | `./scripts/smoke-test.sh` **11/11**, incl. a real tool call |
+| The template refusals are real | `template_probe.py` in-network, 4 controls passing in the same run |
+| The sentence now reaches the client | live `502 … : Unexpected reasoning effort high…` after recreating forge |
+| `CHAT_TEMPLATE_FILE` is inert | `docker compose config` → **0** occurrences of `--chat-template-file` |
+| `--dump-template` is correct | byte-identical to an independent extraction, `12827f24b742…` |
+| `pi-local.sh` still emits the same config | generator re-run against a throwaway `MODELS_JSON` |
+| The host floor | 48 samples, llama flat to 0.0 MiB, per-pid counters |
+| No-GPU CI | 14/14 repeat detector, CJK both directions, `compose config`, `bash -n` |
+
+---
+
+## 8. What is NOT verified, and what to pick up
+
+Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
+
+1. **The HF gate (needs the operator).** Accept the terms on
+   `orcarouter/Qwen3.8-27B-Uncensored`, then diff its `tokenizer.json` against
+   `Qwen/Qwen3.8-27B`'s — vocab, added_tokens, merges, pre_tokenizer, decoder.
+   If only merges *serialisation* differs, substituting the official file is
+   defensible. **If `pre_tokenizer` differs, stop** — the artifact would tokenise
+   differently from the GGUF and no speed number is worth that.
+2. **128K (needs the operator).** Close NVIDIA Broadcast, re-run
+   `vram-floor.sh`. §6 has the threshold and the single probe arm to run.
+3. **The novel-text cost of the live pin — OPEN-WORK 0e, 19 rounds, ~4h.**
+   *(This slot previously said `map-k4v` "has still never run here". That was
+   WRONG — 0c measured it at -6.5%/p=0.0514 on 2026-09-01 and 0d closed the
+   family with a direct three-way. Do not re-run the grid; the open question
+   moved.)* What is genuinely unsettled is whether `ngram-map-k` costs anything
+   on synthetic/novel text: the run that asked returned **-6.6% at p=0.2256 with
+   a 10.6% detection floor**, i.e. "cannot tell", and the same instrument gave
+   `ngram-mod` its "no measurable cost" verdict, so that one reads as *no LARGE
+   cost* too. Settling it needs ~3.1x the samples. Needs a quiet box — read
+   `==> load` before believing any table.
+4. **A `--chat-template-file` measurement**, if the mode-portability of `high`
+   and `developer` is ever wanted. §5 says what it costs.
+5. **Nothing re-measured decode or prefill this session.** No spec-sweep, no
+   `bench.sh`, no `capacity-probe.sh` arm was run — the only GPU-touching work
+   was `vram-floor.sh` (which does not stop llama) and one-token probes.
+
+---
+
+## 9. Tooling note: how to actually read Reddit from this box
+
+Both sweeps needed this and the first one did not write it down. Recorded so a
+third does not re-derive it.
+
+**What does not work:**
+
+- `www.reddit.com/*.json` from `curl` — **403**, with a full Chrome UA too. The
+  block is not user-agent based.
+- `old.reddit.com` — requires a login.
+- **redlib mirrors**, probed in one pass: `catsarch` 403, `perennialte.ch` 410,
+  `freedit.eu` 403, `l.opnxng.com` 302, `libreddit.privacydev.net` 502,
+  `reddit.baby` / `rl.bloat.cat` / `redlib.kittywi.re` no connection at all.
+  **`redlib.privacyredirect.com` was the only one that answered 200** — and it
+  sits behind an **Anubis proof-of-work interstitial**, so it is useless from
+  `curl` (`safereddit.com` is 200 + Anubis too). A real browser would pass it.
+- `api.pullpush.io` — **429**, and says outright it does not serve agents.
+
+**What works, and is cheap:**
+
+1. **The browser MCP on `www.reddit.com`, fetching JSON from inside the page.**
+   Real Chromium passes the block; then `execute_js` a `fetch()` of
+   `/r/<sub>/search.json?q=…&restrict_sr=1&sort=new&limit=100` or
+   `/comments/<id>.json?limit=200&sort=top` and return a **compacted digest**.
+   Full structured data, no scraping, no HTML parsing. Two gotchas: `execute_js`
+   does not await a promise, so assign the result to a `window.__X` and poll for
+   it; and keep the digest small — one search page is ~1 MB of JSON.
+2. **`arctic-shift.photon-reddit.com/api/posts/search`** from bare `curl`, as an
+   archive fallback. `query` **requires** `subreddit` or `author` alongside it
+   (400 otherwise), and it rate-limits with a **422 `"Timeout. Maybe slow down a
+   bit"`** that must not be retried tightly.
+
+---
 # Handoff — 2026-09-01 (a dead backend that reported itself as a protocol bug: two forge patches aimed at the wrong file, a healthcheck that now ends its own container, and the VRAM leak that is not there; the forge image REBUILT)
 
 ## Read this first

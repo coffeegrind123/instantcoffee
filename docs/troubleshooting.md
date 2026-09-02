@@ -33,6 +33,57 @@ cap every turn is not a model that is thinking hard — and `.pi-loop-log.jsonl`
 in the working directory, whose `stuckStreak` says whether the ladder is
 actually climbing.
 
+**Every request fails with `502 Backend returned 500`, and nothing else changed
+but `.env`.**
+Read the rest of that sentence — since 2026-09-02 forge appends the backend's
+own explanation, so the message names the cause:
+
+    502 Backend returned 500: Unexpected reasoning effort high.
+        Supported types are xhigh (default), medium, and low.
+    502 Backend returned 500: System message must be at the beginning.
+
+Both come from the **chat template**, which ships inside the GGUF — so switching
+mode switches it, and the modes do not carry the same one. `coding`'s unsloth
+GGUF has a 9993-char fork with "Unsloth fixes - developer role, merged system
+messages, tool calling" in it; `uc-coding` and `prose` carry Qwen's published
+8952-char original, which is stricter. Shapes that work on `coding` and fail on
+the other two:
+
+- `REASONING_EFFORT=high` — **the one that takes the whole stack down**, because
+  it is baked into llama-server's launch flags, so every request fails rather
+  than one. `medium`, `low` and `xhigh` work on both templates. `.env` and
+  `docs/reasoning.md` called `high` "silently rewritten to `xhigh`" until
+  2026-09-02; that was true of the GGUF it was read out of and false since the
+  pin moved on 2026-08-25.
+- a `developer` role, or a second leading system message.
+
+`./scripts/smoke-test.sh` prints the active template's length ("jinja chat
+template loaded — template is 8952 chars"), which is the fastest way to tell
+which one is in service. To see every shape the active template refuses:
+
+```bash
+docker compose --profile tools run --rm --build \
+    --entrypoint python bench /work/scripts/template_probe.py
+```
+
+If the message is a bare `Backend returned 500` with nothing after the code,
+either the backend sent an unparsable body (an HTML error page — the detail is
+still on `docker logs instantcoffee-llama`) or `FORGE_BACKEND_ERROR_DETAIL=0`.
+
+**The fix is normally to change the value, not the template.** `medium`, `low`
+and `xhigh` work on both templates, and one leading system message is legal
+everywhere. If you genuinely need the fork's behaviour on the uncensored
+weights, `CHAT_TEMPLATE_FILE` exists for it — but read its block in `.env`
+first: swapping the template changes the prompt bytes of every request and
+invalidates both the prefix cache and every benchmark in `context/bench/`.
+
+```bash
+python3 scripts/gguf_probe.py --dump-template unsloth/Qwen3.8-27B-GGUF \
+    Qwen3.8-27B-UD-Q4_K_XL.gguf /d/llm-models/unsloth-3.8.jinja
+```
+
+Full account: `context/design/the-template-is-part-of-the-model.md`.
+
 **Tool calls never come back / the model "won't use tools".**
 Run `./scripts/smoke-test.sh`. It asserts on `tool_calls` specifically, because
 llama.cpp *silently ignores* the `tools` parameter when `--jinja` is missing — which

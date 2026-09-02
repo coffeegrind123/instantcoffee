@@ -10,6 +10,163 @@ re-learn expensively.
 
 ---
 
+## 00. ninfer is NOT blocked by the reason this repo wrote down — REOPENED 2026-09-02
+
+`ngram-mod-and-the-load-confound.md` ("Also unevaluated") dismisses ninfer with
+one factual claim: *"both would cost the uncensored fine-tune this stack serves
+— ninfer loads only the official artifact."* **That claim is false**, and it is
+the only thing standing between this stack and a documented 262,144-token window
+at ~126 t/s decode on this card against our 98,304 at ~43.
+
+Read out of `Neroued/ninfer` at `master` (2026-09-02), not inferred:
+
+- `tools/convert/qwen3_8_27b/convert.py` exists and its canonical invocation is
+  `--model /path/to/Qwen3.8-27B --out out/qwen3_8_27b.ninfer`. **An arbitrary
+  local directory.** There is no download, no repo allow-list, no artifact
+  allow-list.
+- Weights are **not** hash-pinned. `tools/convert/qwen3_6/common/recipe.py`
+  preflights *shape and dtype only* (`source shape != required`,
+  `source dtype != required`), against a 1,118-tensor inventory.
+- What IS pinned is six FRONTEND files, by sha256, in `OFFICIAL_RESOURCE_SHA256`:
+  `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`,
+  `generation_config.json`, `preprocessor_config.json`,
+  `video_preprocessor_config.json`. `load_resources()` reads them as raw bytes
+  from the model dir and raises on any mismatch.
+
+So the constraint is "official *tokenizer and frontend*", not "official
+weights". Measured against that constraint, **with the control run first**:
+
+| repo | files matching ninfer's pins |
+| --- | --- |
+| `Qwen/Qwen3.8-27B` (control) | **6 of 6**, by download-and-hash |
+| `orcarouter/Qwen3.8-27B-Uncensored` | **5 of 6** — only `tokenizer.json` differs |
+
+The five matches were established by comparing HF LFS object ids (which are
+sha256 of content) against the control's, both sides LFS, so it is a real
+content comparison and not a size coincidence. `tokenizer.json` is the same
+LENGTH as official (12,809,320 B) with a different hash.
+
+**Where it actually stops today, and it is not engineering:** the safetensors
+repo `orcarouter/Qwen3.8-27B-Uncensored` and its `-NVFP4` sibling are **gated**
+— 401 anonymous, **403 with the HF_TOKEN in `.env.local`**, i.e. the token is
+valid and this account has not been granted access. The `-GGUF` repo the stack
+downloads today is ungated, which is why nobody noticed. Accepting the gate on
+the Hub is a click; until then the conversion cannot be attempted at all.
+
+**What is still unknown, stated plainly:** whether that one differing
+`tokenizer.json` is a semantic change or a re-serialisation. It could not be
+read (gated). A neighbouring repo was readable and is NOT a substitute for the
+answer, but is worth recording because it is a warning:
+`orcarouter/…-Uncensored-MLX` ships a *third* tokenizer (19,989,325 B) with the
+same 248,044-entry vocab and same 33 added_tokens, but a **pre_tokenizer regex
+that drops `\p{M}` from its letter classes** — the old GPT-2 form, not
+Qwen3.8's. That would retokenise any text carrying combining marks. It does NOT
+affect the GGUF this stack serves: both the orcarouter and unsloth GGUFs stamp
+`tokenizer.ggml.pre = qwen35` with identical 247,587 merges and identical token
+counts, checked with a ranged header read. But it means orcarouter's repos do
+not all carry the same tokenizer, so "the fine-tune keeps the stock tokenizer"
+must be verified per repo rather than assumed.
+
+**Order to do this in, cheapest first:**
+
+1. Accept the gate on `orcarouter/Qwen3.8-27B-Uncensored`. One click — and
+   **re-checked 2026-09-03: still not accepted, but the wait is zero.** The repo
+   is `"gated": "auto"`, which is instant self-approval on accepting the terms,
+   not a request queued for a human. So this is a click and a re-run of the
+   check below, not a click and a wait.
+
+   **Check it the right way — the API endpoint lies about this.**
+   `api/models/<repo>` now returns **200** with the token for both gated repos,
+   which reads like access and is not; the previous record's "403 with the
+   HF_TOKEN" was taken against the file path. Only `resolve/` proves access:
+
+   ```
+   curl -sIL -H "Authorization: Bearer $HF_TOKEN" -H 'Range: bytes=0-99' \
+     https://huggingface.co/<repo>/resolve/main/tokenizer.json | grep -iE '^HTTP|x-error-code'
+   ```
+
+   Today: `403` + `x-error-code: GatedRepo` on the orcarouter repo, against
+   `302`->`206` on the `Qwen/Qwen3.8-27B` control run in the same command.
+2. Fetch its `tokenizer.json` and diff it against `Qwen/Qwen3.8-27B`'s the way
+   `scratchpad` did for MLX: vocab, added_tokens, merges, pre_tokenizer,
+   decoder. If only `merges` serialisation differs, substituting the official
+   file is defensible and the converter's pin is satisfied. If `pre_tokenizer`
+   differs, **stop** — the artifact would tokenise differently from the GGUF and
+   no speed number is worth that.
+3. Only then consider the conversion, and cost it honestly: it needs the bf16
+   safetensors on disk (tens of GB) on top of the GGUF already there, and the
+   ~19 GB `.ninfer` artifact after it.
+
+**Everything else in that dismissal still stands** and should not be
+re-litigated: it is an engine change, not a knob; the vLLM-beats-ninfer-above-8k
+comment is unaddressed; and the `sergiuszm/ninfer-4090` fork named there is now
+one of three (`UDPSendToFailed/ninfer-4090` at 90★ carries the 2.1k t/s prefill
+and DirectStorage disk-cache claim, `ruwwww/ninfer-5060ti` the Blackwell
+`sm_120a` fix). A disk cache is the interesting one for THIS stack for a reason
+that has nothing to do with tok/s: cold load here is 9-20 minutes.
+
+---
+
+## 00b. 128K: the model gave back 678 MiB and the DESKTOP took 1240 — measured 2026-09-02
+
+`kvarn-measured-and-refused.md` ends by naming the next cheap measurement:
+*"re-run bee-128k-q8 on a quiet box and read `free` off the engine's exit
+table. If it is comfortably positive at the 1501 floor, 128K is available on the
+current model with no fork, no quality question, and no decode cost."*
+
+**It was run, and the box is not quiet — but not for the reason anyone was
+watching for.** `./scripts/vram-floor.sh --samples 48 --interval 15`, llama
+untouched and flat to 0.0 MiB across the whole capture:
+
+| | min | median | max |
+| --- | --- | --- | --- |
+| host floor, 2026-08-23 (90 samples) | 1477.9 | **1500.8** | 1517.5 |
+| host floor, 2026-09-02 (48 samples) | 2528.1 | **2741.3** | 2823.6 |
+| free at 128K, today | -371 | **-584** | -667 |
+| free at 96K, today | 1037 | **824** | 741 |
+
+Both inputs to `ctx_128k_verdict` moved, in opposite directions:
+
+- **The model shrank by 678.3 MiB** — llama via vmwp reads 20999.1 against the
+  21677.4 that was constant across all 137 samples in August. That is orcarouter
+  `Q4_K_M` replacing unsloth `UD-Q4_K_XL` on 2026-08-25, and it is the thing the
+  kvarn note spotted. On the old floor it alone would have turned the -22 MiB
+  refusal into **+656 and opened 128K**.
+- **The floor grew by 1240 MiB**, which is more, so the answer is still no.
+
+The floor moved only 295.5 MiB *within* the capture, so this is a new steady
+state, not the GPU-heavy foreground August left unmeasured. Per-pid
+`\GPU Process Memory(*)\Dedicated Usage` names it rather than guessing:
+**NVIDIA Broadcast, 920.1 MiB**, which does not appear in the August list at any
+size. brave (390.3 vs 138) and chrome (294.4 vs 169) account for most of the
+rest.
+
+**So 128K is one process away from fitting, and that is a different situation
+from the one closed "permanently" in August** — that refusal was against an
+ordinary desktop, this one is against an ordinary desktop plus a camera/mic
+effects daemon.
+
+**It is still not a recommendation to switch**, and the reasons are worth
+keeping: +336 MiB with Broadcast closed is thinner than the ~824 MiB that 96K
+keeps free today, it depends on a process staying shut, and nothing here
+re-measured prefill or decode at 128K on the current model.
+
+**The re-open condition, so nobody has to re-derive it:** close NVIDIA
+Broadcast, re-run `vram-floor.sh`, and if the median lands near 1821 run ONE
+`capacity-probe.sh` arm at `CTX_SIZE=131072` and read `free` off the engine's
+own exit table rather than off this arithmetic — a sampled cross-run delta got
+this same comparison wrong by 1163 MiB once (`vram_note`).
+
+**The transferable part, and it is the reason this entry is not just a number:**
+the floor is not a property of the hardware, it is a property of what happens to
+be open, and it drifted 1.2 GiB in ten days with nobody noticing. `versions.lock`
+called 1501 "the ORDINARY state of the machine" and 2027 "the worst ever
+observed"; 2027 is now below the *best* sample of an ordinary capture. Any
+decision that spends VRAM headroom needs the floor measured **on the day**.
+Both records are updated in place — `vram_note` and `ctx_128k_verdict`.
+
+---
+
 ## 0. Re-run a real unattended `/loop` — the 2026-08-27 fixes are unproven END TO END
 
 **Cheapest item here and the only one blocking a claim.** Four defects were

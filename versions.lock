@@ -1309,6 +1309,24 @@ host_floor_note     = THE FLOOR IS THE WINDOWS DESKTOP, ATTRIBUTED 2026-08-23.
                       unmeasured and 2027 remains the worst ever observed,
                       unreproduced since. It changes no decision — see
                       ctx_128k_verdict, which 1501 alone already closes.
+                      SUPERSEDED 2026-09-02 as a description of TODAY, and kept
+                      because it is what the machine was. Re-measured with the
+                      same instrument, 48 samples: 2528.1 / 2741.3 / 2823.6,
+                      +1240 MiB at the median, with 2027 — "the worst ever
+                      observed" above — now BELOW the best sample of an ordinary
+                      capture. The floor still moves barely at all within a
+                      capture (295.5 MiB over 12 min), so this is a new steady
+                      state and not the GPU-heavy foreground that was left
+                      unmeasured. The single biggest line is NVIDIA Broadcast at
+                      920.1 MiB, which does not appear in the 08-23 list above
+                      at any size; brave and chrome have also roughly doubled
+                      (390.3 and 294.4 against 138 and 169). Full per-pid table
+                      and what it does to the window decision: ctx_128k_verdict.
+                      THE TRANSFERABLE PART: this floor is not a property of the
+                      hardware, it is a property of what happens to be open, and
+                      it drifted by ~1.2 GiB in ten days with nobody noticing.
+                      Any decision that spends VRAM headroom needs the floor
+                      re-measured ON THE DAY, not read out of this file.
 ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
                       free at 128K = 24564 - (device total at 96K + 1408), where
                       +1408 is the engine's own -lv 5 delta (20426 -> 21834) and
@@ -1354,6 +1372,56 @@ ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
                       120,029-token prompt at 1726/1720/1705 tok/s prefill. This
                       is a headroom refusal, not a function one, so do not go
                       looking for a bug.
+                      RE-MEASURED 2026-09-02. Verdict UNCHANGED, reason
+                      REPLACED. Both inputs moved and they moved in opposite
+                      directions, so the arithmetic above is stale in BOTH
+                      terms even though its answer survives:
+                        the MODEL got smaller. llama via vmwp now reads 20999.1
+                          MiB against the 21677.4 that was constant across all
+                          137 samples of the 08-23 capture — 678.3 MiB less,
+                          which is the orcarouter Q4_K_M (15339) replacing
+                          unsloth UD-Q4_K_XL (16053) on 2026-08-25. On the old
+                          floor that alone would have turned -22 into +656 and
+                          OPENED 128K.
+                        the HOST FLOOR got bigger, by more. 48 samples, 15 s
+                          apart, llama untouched and flat to 0.0 MiB across the
+                          whole capture: 2528.1 / 2741.3 / 2823.6
+                          min/median/max, against the 1477.9 / 1500.8 / 1517.5
+                          this file calls the ORDINARY state. +1240 MiB at the
+                          median, and steady — the floor moved only 295.5 MiB
+                          over the capture, so it is tenancy, not a spike.
+                        free at 128K = -371 / -584 / -667 best/median/worst.
+                          STILL DOES NOT FIT. Free at 96K is 1037/824/741.
+                      WHAT IS HOLDING IT, named rather than inferred — per-pid
+                      \GPU Process Memory(*)\Dedicated Usage, dwm excluded
+                      because it double-counts:
+                        NVIDIA Broadcast  920.1   <- not present at all in the
+                                                    08-23 desktop state above
+                        brave             390.3   (was 138)
+                        chrome            294.4   (was 169)
+                        explorer          234.5   WindowsTerminal 188.6
+                        csrss             102.0   steamwebhelper   59.0
+                        Notepad            57.4   Docker Desktop   47.5
+                        claude             46.6   VSCodium         42.6
+                        msedgewebview2     40.9   SearchHost       22.7
+                      NVIDIA Broadcast alone is 920 MiB against a 584 MiB
+                      deficit. So 128K is now ONE PROCESS away from fitting,
+                      which is a different situation from the one this record
+                      closed "permanently" on 08-23 — that refusal was against
+                      an ordinary desktop, and this one is against an ordinary
+                      desktop plus a camera/mic effects daemon.
+                      NOT A RECOMMENDATION TO SWITCH. +336 MiB at the median
+                      with Broadcast closed is thinner than the ~824 MiB that
+                      96K keeps free right now, it depends on a process staying
+                      shut, and nothing here re-measured decode or prefill at
+                      128K on the current model. The re-open condition, stated
+                      so the next reader does not have to guess: measure the
+                      floor again with Broadcast closed, and if the median lands
+                      near 1821 run one capacity-probe arm at CTX_SIZE=131072
+                      and read `free` off the engine's own exit table rather
+                      than off this arithmetic.
+                      1501 IS NO LONGER "THE ORDINARY STATE OF THE MACHINE" —
+                      see vram_note, which says it is, and was right in August.
 ngram_size_m_note   = LEAVE IT AT 48. Swept 2026-08-23 (context/bench/capacity/
                       sizem-*.json). VRAM is flat within 6 MiB across 48/32/24/
                       16, so there is nothing to reclaim, and lowering it only

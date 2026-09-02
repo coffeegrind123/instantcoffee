@@ -913,6 +913,30 @@ this block cannot drift the running system — only a reader who hand-copies it.
   newest published CUDA image at migration time was `server-cuda-b10423`, cut a
   day earlier — so a client that sends the field has it silently dropped. Effort
   is set server-side instead; see below.
+
+  **Corrected 2026-09-02. Both stay false; both reasons above are now wrong.**
+
+  The engine objection **expired** — the pin is `server-cuda-b10689`, well past
+  `7e4c0a9`. Measured rather than assumed: a request carrying a top-level
+  `{"reasoning_effort": "high"}` reaches the template and raises out of it,
+  which it could not do if the field were being dropped.
+
+  "Qwen3.8's template supports the `developer` role" was true of the **unsloth**
+  template, and this stack stopped serving unsloth on 2026-08-25. The chat
+  template ships inside the GGUF, so `uc-coding` and `prose` carry Qwen's
+  published 8952-char original, which has no developer-role handling and raises
+  `Unexpected message role.` Setting `supportsDeveloperRole: true` there is a
+  500 on every turn.
+
+  `supportsReasoningEffort` stays false for a different reason than before: pi
+  would send a level NAME, and the levels are not portable — the strict template
+  accepts only `xhigh`/`medium`/`low` and raises on `high`, which pi's
+  `thinkingLevelMap` emits.
+
+  The useful consequence: with both false, **pi cannot produce either shape the
+  strict template refuses**, which is why nothing is broken today. See
+  `context/design/the-template-is-part-of-the-model.md` for the adapter reading
+  behind that claim and `scripts/template_probe.py` to reproduce the refusals.
 - **`maxTokens` well under `contextWindow`** — with `--no-context-shift` an
   overflowing request fails loudly, and an agent loop's prompt grows every turn.
   It comes from `PI_MAX_TOKENS`, and `LLAMA_EXTRA_FLAGS` carries the same number

@@ -95,6 +95,40 @@ providers["forge"] = {
         # --chat-template-kwargs from REASONING_EFFORT in .env, which applies to
         # the whole server rather than per request. Flip these to True only after
         # checking that the running build actually honours them.
+        #
+        # CHECKED 2026-09-02, and BOTH stay False — but neither for the reason
+        # above, so do not re-derive it from that paragraph.
+        #
+        # supportsReasoningEffort: THE ENGINE OBJECTION HAS EXPIRED. The pin is
+        #   server-cuda-b10689, long past 7e4c0a9 (b10423 was the image at
+        #   migration time). Measured rather than assumed: a request carrying a
+        #   TOP-LEVEL {"reasoning_effort": "high"} reaches the template and
+        #   raises out of it, which it could not do if the field were being
+        #   dropped. So the field is forwarded now. It stays False because what
+        #   pi would send is a LEVEL NAME, and the levels are not portable: the
+        #   template two of the three modes ship accepts only xhigh/medium/low
+        #   and raises on `high`, which pi's thinkingLevelMap emits. Turning this
+        #   on without pinning that map is a 500 per turn, not a feature.
+        #
+        # supportsDeveloperRole: "The MODEL supports both" was true of the
+        #   UNSLOTH template, which is what that sentence names — and this stack
+        #   stopped serving unsloth on 2026-08-25. orcarouter's GGUF carries
+        #   Qwen's published template, which has no developer-role handling at
+        #   all and raises 'Unexpected message role.' Flipping this to True is
+        #   now a hard failure on uc-coding and prose regardless of the engine.
+        #
+        # The happy consequence, and the reason this is not urgent: with both
+        # False, pi CANNOT produce either shape that the strict template
+        # refuses. It never sends a developer role, and the one place its
+        # openai-completions adapter pushes a MID-CONVERSATION system message
+        # (the `kimiToolMessage` deferred-tools path, read out of
+        # dist/bundle/chunks/openai-completions-*.js) is gated on
+        # compat.deferredToolsMode === "kimi", which this provider does not set.
+        # The main system prompt is unshift()ed to position 0, which is legal.
+        # So the template refusals measured in
+        # context/design/the-template-is-part-of-the-model.md are real and are
+        # NOT reachable from pi as configured here — they are reachable from any
+        # other client, and from this one the moment either flag flips.
         "supportsDeveloperRole": False,
         "supportsReasoningEffort": False,
     },

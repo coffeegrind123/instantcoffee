@@ -173,12 +173,28 @@ RUN pip install --no-cache-dir \
 # NOT "stop", because patches 3, 8 and 9 all exist because a failure that ends
 # the stream like a natural completion is invisible to everything above it.
 # See patches/forge_sse_error_shape.py.
+#
+# PATCH 13 says WHY the backend failed. Patch 12 guaranteed a non-empty message;
+# this one makes it informative. Five distinct chat-template refusals — a bad
+# reasoning_effort, a second system message, a developer role — all reached the
+# client as the same "Backend returned 500", while llama-server's own body named
+# each one. Upstream keeps a backend's RAW body off the exception message on
+# purpose (a gateway can echo a credential into it, and the message is logged
+# and returned), so this does NOT append the body: it lifts the one
+# ``error.message`` string out of a well-formed JSON error envelope and leaves
+# every other body shape exactly where upstream put it, on exc.body. Status
+# codes are untouched — a backend 500 is still forge's 502. Runs LAST because
+# its anchor is the line patch 12 leaves behind. FORGE_BACKEND_ERROR_DETAIL=0
+# restores upstream's behaviour; default on is a judgement about a loopback
+# backend with no gateway in front of it.
+# See patches/forge_backend_error_detail.py.
 COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py \
      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py \
      patches/forge_llamafile_timeout.py patches/forge_sse_error_shape.py \
+     patches/forge_backend_error_detail.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -193,6 +209,7 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_stream_timeout.py "$SITE" \
     && python /tmp/patches/forge_llamafile_timeout.py "$SITE" \
     && python /tmp/patches/forge_sse_error_shape.py "$SITE" \
+    && python /tmp/patches/forge_backend_error_detail.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"
@@ -211,6 +228,7 @@ COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py \
      scripts/bench_quality.py \
      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py \
      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py \
+     scripts/template_probe.py \
      scripts/test_forge_patches.py /work/scripts/
 # probe_lib.py is in that list even though nothing runs it directly: ctx_needle.py
 # and bench_literal.py both import it, and a missing IMPORT fails at start-up with

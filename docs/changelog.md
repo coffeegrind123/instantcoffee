@@ -10,6 +10,48 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**The chat template ships inside the GGUF, so the three modes do not run the
+same one.** `coding`'s unsloth GGUF carries a 9993-char fork ("Unsloth fixes -
+developer role, merged system messages, tool calling"); `uc-coding` and `prose`
+carry Qwen's published 8952-char original, byte-identical to the Hub copy. They
+disagree about which requests are legal: `reasoning_effort=high`, a `developer`
+role and a second leading system message all render under `coding` and are
+**HTTP 500** on the other two. `modes/uc-coding.env`'s "the ONLY difference from
+coding is MODEL_REPO/GGUF_FILE" was true of the file and false of the behaviour.
+
+The one to know about is **`REASONING_EFFORT=high`**, which `.env` and
+`docs/reasoning.md` both described as "silently rewritten to `xhigh`". That was
+read out of the unsloth GGUF and the pin moved to orcarouter on 2026-08-25. It
+is baked into llama-server's launch flags, so on two of three modes it is not a
+slower regime, it is a stack that answers nothing. `medium`, `low` and `xhigh`
+work on both templates. All three modes ship `medium`, so nothing was down.
+
+New: `scripts/template_probe.py` measures which shapes the *active* template
+refuses (ten cases, four controls). `scripts/gguf_probe.py --dump-template`
+extracts a template from any GGUF on the Hub without downloading the weights.
+`CHAT_TEMPLATE_FILE` is plumbed and **inert** — declared empty in all three mode
+files, because `mode.sh` only rewrites keys the target mode declares, and a
+model-coupled key that survives a switch would run one model's weights under
+another's template in silence.
+
+**Patch 13: a backend fault now says why.** All five of those refusals reached
+the client as the same `Backend returned 500` while llama-server's body named
+each one. Upstream keeps a backend's raw body off the message deliberately — an
+intermediary can echo a credential into one — so the patch does not append the
+body: it lifts the single `error.message` string out of a well-formed JSON error
+envelope and leaves HTML, plain text and non-object bodies exactly where
+upstream put them. Status codes unchanged. `FORGE_BACKEND_ERROR_DETAIL=0`
+restores upstream. `test_forge_patches.py` is now 115/115.
+
+**128K is still refused, for a new reason: the desktop, not the model.** The
+model gave back 678 MiB when the pin moved to orcarouter — which alone would
+have opened 128K — and the Windows VRAM floor grew 1240 MiB over the same ten
+days, to 2528/2741/2824 against the 1501 `versions.lock` calls "the ORDINARY
+state". `NVIDIA Broadcast` alone holds 920 MiB. 128K is now one process away
+from fitting at +336 MiB, which is thinner than the ~824 MiB 96K keeps free, so
+nothing changed. The floor is a property of what happens to be open: **measure
+it on the day** before spending headroom.
+
 **A restart policy only sees processes that end, and llama-server did not end.**
 The same 2026-09-01 abort that produced the two forge patches below had a second
 half: the container stayed `Up 7 hours (unhealthy)` with a dead server inside

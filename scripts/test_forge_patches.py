@@ -50,6 +50,11 @@ WHAT IT PINS
   sse_error_shape       a failure after the SSE headers went out reaches the
                         client as a non-empty error OBJECT and a terminal
                         finish_reason — and never as a natural "stop"
+  backend_error_detail  the backend's own sentence reaches the client instead of
+                        a bare "Backend returned 500" — lifted out of a JSON
+                        error envelope only, with an HTML body, a non-object
+                        body and a message-less envelope all left exactly where
+                        upstream put them, and the status code unchanged
 
 text_sse_passthrough is checked in both directions on purpose. A test that only
 proves the new behaviour cannot tell a working flag from a flag that is never
@@ -629,6 +634,88 @@ def main() -> int:
     check("...which is 'error', never 'stop'",
           '"finish_reason": "error"' in wire
           and '"finish_reason": "stop"' not in wire, wire[:300])
+
+    # ── backend_error_detail ──────────────────────────────────────────────
+    #
+    # Patch 12 guaranteed the message is not empty. Patch 13 makes it say what
+    # went wrong. The design constraint is the interesting part to pin: upstream
+    # keeps a backend's RAW body off the message on purpose, so the patch is
+    # only allowed to lift `error.message` out of a well-formed JSON envelope.
+    # Every "leave it alone" case below is therefore a REQUIREMENT, not an
+    # edge case — a version of this patch that appended exc.body would pass the
+    # first check and fail these, which is the whole point of having them.
+    print("\npatches/forge_backend_error_detail.py")
+    from forge.errors import BackendError as _BE
+
+    detail = _srv._forge_backend_detail
+
+    MINJA = (
+        '{"error":{"code":500,"message":"\\n------------\\nWhile executing '
+        "CallExpression at line 49, column 28 in source:\\n...', 'low') %}\\u21b5"
+        "        {{- raise_exception('Unexpected reasoning effort ' ~ reason...\\n"
+        '   ^\\nError: Jinja Exception: Unexpected reasoning effort high. '
+        'Supported types are xhigh (default), medium, and low.","type":"server_error"}}'
+    )
+    got = detail(_BE(500, raw_body=MINJA))
+    check("the backend's sentence reaches the message",
+          "Unexpected reasoning effort high." in got, got)
+    check("...and minja's backtrace does not",
+          "CallExpression" not in got and "raise_exception" not in got, got)
+    check("...on one line, so the log line it goes into is not broken",
+          "\n" not in got, repr(got))
+
+    eq("a plain OpenAI error envelope works too",
+       detail(_BE(400, raw_body='{"error": {"message": "bad model"}}')),
+       ": bad model")
+    eq("...as does a bare string error field",
+       detail(_BE(400, raw_body='{"error": "bad model"}')), ": bad model")
+    eq("...and a top-level message",
+       detail(_BE(400, raw_body='{"message": "bad model"}')), ": bad model")
+
+    # The four shapes that must stay exactly where upstream put them. An HTML
+    # error page is the one a credential-echoing intermediary actually produces.
+    eq("an HTML body is left alone",
+       detail(_BE(502, raw_body="<html><body>proxy error</body></html>")), "")
+    eq("a non-object JSON body is left alone",
+       detail(_BE(502, raw_body='["not", "an", "envelope"]')), "")
+    eq("an envelope with no message is left alone",
+       detail(_BE(502, raw_body='{"error": {"code": 500}}')), "")
+    eq("an empty body is left alone", detail(_BE(502, raw_body="")), "")
+    eq("a non-BackendError has no envelope to read",
+       detail(RuntimeError("boom")), "")
+
+    eq("a detail already in the message is not said twice",
+       detail(_BE(408, "Read timeout")), "")
+
+    long_msg = '{"error": {"message": "' + "x" * 900 + '"}}'
+    got = detail(_BE(500, raw_body=long_msg))
+    check("an over-long message is capped, not passed through",
+          len(got) < 320 and got.endswith("…"), f"len={len(got)}")
+
+    # End to end, on the path a non-streaming client takes: the sentence has to
+    # survive _send_exception and reach the wire, not merely exist in a helper.
+    writer = _CapturingWriter()
+    asyncio.run(server._send_exception(
+        writer, _BE(500, raw_body=MINJA), "openai", as_stream=False,
+    ))
+    wire = b"".join(writer.chunks).decode()
+    check("the sentence reaches the client, not just the log",
+          "Unexpected reasoning effort high." in wire, wire[:300])
+    check("...alongside the status forge already reported",
+          "Backend returned 500" in wire, wire[:300])
+    check("...and the response is still a 502, unchanged by this patch",
+          "502" in wire.split("\r\n", 1)[0], wire[:80])
+
+    # The other direction. Without this, a flag that is never read passes.
+    os.environ["FORGE_BACKEND_ERROR_DETAIL"] = "0"
+    importlib.reload(_srv)
+    eq("FORGE_BACKEND_ERROR_DETAIL=0 restores upstream's behaviour",
+       _srv._forge_backend_detail(_BE(500, raw_body=MINJA)), "")
+    os.environ.pop("FORGE_BACKEND_ERROR_DETAIL", None)
+    importlib.reload(_srv)
+    check("...and clearing it restores the patched behaviour",
+          "Unexpected reasoning effort high."
+          in _srv._forge_backend_detail(_BE(500, raw_body=MINJA)))
 
     total = PASSED + FAILED
     print(f"\n{PASSED}/{total} passed", end="")
