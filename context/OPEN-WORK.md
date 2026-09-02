@@ -932,7 +932,7 @@ without new evidence; both tests are recorded above and both were negative.
 
 ---
 
-## 2. What sets the misfire rate — NARROWED 2026-08-31 to the boundary offset
+## 2. What sets the misfire rate — the boundary-offset result is ALIASED (2026-09-03); token-matched arms running
 
 §3f of `context/design/kv-cache-fidelity-measured.md` established WHAT a cliff
 is: a per-token misfire rate. The model puts ~0.2 probability on an unrelated
@@ -990,6 +990,67 @@ So: within a matched region, offset moves the rate ~3.4x. Offset is NOT a global
 determinant of the rate, and **any sweep that mixes corpus regions will measure
 difficulty instead of offset.** (Recorded because the wider claim was made here
 first and walked back within the hour.)
+
+### 2026-09-03: the 3.4x is ALIASED with block identity, and no data on disk can separate them
+
+The numbers above reproduce exactly from the raw `nll_series` (8.2 / 27.5
+region-matched, 26.7 / 28.2 pooled — recomputed independently, not re-read).
+But laying every scored chunk out in CORPUS ORDER shows what "region-matched"
+actually bought:
+
+| scored block | filler | misfire |
+|---|---:|---:|
+| 8193..12287 | 4096 | 31.2% |
+| 12289..16383 | 0 | 11.8% |
+| 16385..20479 | 4096 | 23.8% |
+| 20481..24575 | 0 | 5.5% |
+| 24577..28671 | 4096 | 29.5% |
+| 28673..32767 | 0 | 7.2% |
+
+The offsets **alternate in lockstep with which 4096-block is being scored**:
+every `f4096` chunk is an odd block, every `f0` chunk is an even one. So
+"offset = 4096" and "this particular block" are the same variable in this
+design, and the 3.4x is equally consistent with *offset matters* and with
+*those three blocks are harder*.
+
+**And nothing on disk can break the tie: every scored range is disjoint.** Across
+all six cliff runs no corpus token is scored twice, so no token has ever been
+seen under two offsets. `--chunk N:A:K` scores `[A+N/2+1, A+N-1]`, and every A
+used so far is a multiple of 4096, which makes the windows tile rather than
+overlap.
+
+**What supports the offset reading anyway** (and it is support, not proof): the
+corpus is a plain concatenation — `deep-s26b5bb` + `"\n\n"` + pi — not
+interleaved blocks, and 8k-32k sits inside the first document. So "odd blocks
+are harder" has no mechanism to point at, and a clean six-block alternation is
+~3% likely under exchangeable block difficulty.
+
+**THE PROPOSED SWEEP DOES NOT FIX THIS.** Sweeping `A` over
+`{0, 2048, 4096, 6144}` moves the scored window with every step, so each arm
+scores a *different* set of tokens and the comparison is back to region
+difficulty. The fix is not more offsets, it is **overlap**:
+
+| new arm | scores | overlaps | shared tokens |
+|---|---|---|---|
+| `8192:10240:1` (f2048) | 14337..18431 | 12289..16383 (**f0**) | 14337..16383 |
+| | | 16385..20479 (**f4096**) | 16385..18431 |
+| `8192:6144:1` (f6144) | 10241..14335 | 8193..12287 (**f4096**) | 10241..12287 |
+| | | 12289..16383 (**f0**) | 12289..14335 |
+
+Because `A` is no longer a multiple of 4096, these windows straddle the existing
+ones, and the rate can be compared **on the same corpus tokens under two
+different offsets**. If offset drives the rate, the shared tokens change rate
+with offset; if block identity drives it, they do not. That is the experiment,
+and it is two arms rather than a corpus build.
+
+**A memory note that matters more than it looks.** Preflight REFUSED both arms
+at first: a `--kl-divergence-base` pass needs **~8536 MiB resident** (3880 logits
++ 3880 log_probs +10%) and the Docker VM had **5325 MiB** free. Dropping the
+Docker VM page cache freed 4.8 GiB (5363 -> 10121) and both passed. **This is
+direct support for section 1's SIGKILL hypothesis**: these passes run with a
+~1.6 GiB margin against a VM whose cache fills during the run, which is exactly
+the shape that gets a process killed without its EXIT trap firing. Drop the
+cache before any cliff run, and read `restore.log` after.
 
 ### And an offset sweep CANNOT replace the corpus construction. Here is why.
 
