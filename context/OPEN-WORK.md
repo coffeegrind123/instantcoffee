@@ -988,7 +988,7 @@ without new evidence; both tests are recorded above and both were negative.
 
 ---
 
-## 2. What sets the misfire rate — the boundary-offset result is ALIASED (2026-09-03); token-matched arms running
+## 2. What sets the misfire rate — token-matched 2026-09-03: real, 1.44x, and it is DEPTH not offset
 
 §3f of `context/design/kv-cache-fidelity-measured.md` established WHAT a cliff
 is: a per-token misfire rate. The model puts ~0.2 probability on an unrelated
@@ -1098,6 +1098,48 @@ ones, and the rate can be compared **on the same corpus tokens under two
 different offsets**. If offset drives the rate, the shared tokens change rate
 with offset; if block identity drives it, they do not. That is the experiment,
 and it is two arms rather than a corpus build.
+
+### MEASURED 2026-09-03: the effect is REAL on identical tokens, and the variable is DEPTH
+
+Two arms run (`8192:10240:1`, `8192:6144:1`), giving four windows that straddle
+the existing ones. Every comparison below is **the same corpus tokens scored
+twice**, so block difficulty is held exactly fixed and cancels:
+
+| shared tokens | n | depth 6145 | depth 4097 | fillers |
+|---|---:|---:|---:|---|
+| 10241..12287 | 2047 | **33.8%** | 22.5% | 4096 / 6144 |
+| 12289..14335 | 2047 | **26.9%** | 12.8% | 6144 / 0 |
+| 14337..16383 | 2047 | **10.8%** | 8.2% | 0 / 2048 |
+| 16385..18431 | 2047 | 14.3% | **16.3%** | 2048 / 4096 |
+
+**Pooled, each token its own control (8188 paired comparisons): 21.4% vs 14.9%,
+ratio 1.44x. McNemar chi2 = 358.7 on 665 vs 130 discordant pairs** — p far below
+anything that matters.
+
+**So the aliasing question is settled in favour of a real effect: it is not
+block identity.** The same tokens change rate when the chunk start moves.
+
+**But the ordering variable is NOT boundary phase.** Read the filler column: the
+worse arm is filler 4096, then 6144, then 0, then (against the trend) 4096. No
+phase ordering survives. What is constant is DEPTH — overlapping windows differ
+by 2048 in start, so every pair contrasts a scored token sitting at **6145 vs
+4097 tokens into its chunk**, and the deeper arm is worse in three of four and
+overwhelmingly in the pooled test. **1.50x more history buys 1.44x the misfire
+rate.** Section 2 and section 3 being "one phenomenon" holds; the phenomenon is
+the DEPTH effect sections 3d/3e already measure, and boundary offset was only
+ever a way of moving depth.
+
+**And the 3.4x shrinks to 1.44x once blocks are controlled**, which is what the
+aliasing predicted: the region-matched figure was carrying block difficulty as
+well as depth.
+
+**WHAT THIS STILL DOES NOT SEPARATE, and the record already said so:** history
+AMOUNT from history CONTENT. Moving `s` moves both — a deeper token has more
+history *and* different, earlier history — and with contiguous history there is
+no third degree of freedom. **So corpus construction is still the only route to
+the standing hypothesis**, and this result raises its value rather than
+replacing it: there is now a measured 1.44x to explain, on identical tokens,
+with a known 1.50x amount contrast.
 
 **A memory note that matters more than it looks.** Preflight REFUSED both arms
 at first: a `--kl-divergence-base` pass needs **~8536 MiB resident** (3880 logits

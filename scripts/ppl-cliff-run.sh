@@ -359,6 +359,18 @@ token_pass() {
 # ---------------------------------------------------------------------------
 main_run() {
   mkdir -p "$LOCAL_LOGDIR"
+  # --analyse-only needs the corpus and cannot guess it. Recorded here so a
+  # finished run can be re-read with just its directory, which is what the
+  # header promises. Before this, --analyse-only handed the analyser an EMPTY
+  # --corpus and died on FileNotFoundError: '' — and then ran the log-prob
+  # cleanup with CORPUS_BASE defaulted to "none", which deleted nothing purely
+  # by luck. With a real corpus that same path would have destroyed the GiB of
+  # log-probs the re-read exists to use.
+  {
+    printf 'CORPUS=%s\n' "$CORPUS"
+    printf 'KV_TYPE=%s\n' "$KV_TYPE"
+    printf 'SPECS=%s\n' "$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)"
+  } > "${LOCAL_LOGDIR}/run.meta"
   echo "cliff probe   ${STAMP}"
   echo "  image       ${IMAGE}"
   echo "  corpus      ${CORPUS}"
@@ -525,6 +537,33 @@ analyse() {
 }
 
 if [[ -n "$ANALYSE_ONLY" ]]; then
+  # Recover the corpus from the run itself; an explicit --corpus still wins.
+  if [[ -f "$ANALYSE_ONLY/run.meta" ]]; then
+    [[ -z "$CORPUS" ]] && CORPUS="$(sed -n 's/^CORPUS=//p' "$ANALYSE_ONLY/run.meta" | head -1)"
+    if (( ! ${#CHUNK_SPECS[@]} )); then
+      metaspecs="$(sed -n 's/^SPECS=//p' "$ANALYSE_ONLY/run.meta" | head -1)"
+      [[ -n "$metaspecs" ]] && IFS=, read -ra CHUNK_SPECS <<< "$metaspecs"
+    fi
+  fi
+  # RECOVER THE SPECS FROM THE LOGS if there is no run.meta. The pass logs are
+  # named c<N>-a<A>-k<K>.log, which is the spec with different punctuation, so a
+  # run made before run.meta existed is still re-readable.
+  if (( ! ${#CHUNK_SPECS[@]} )); then
+    nm=""
+    for g in "$ANALYSE_ONLY"/c*.log; do
+      [[ -e "$g" ]] || continue
+      nm="$(basename "$g" .log)"
+      [[ "$nm" =~ ^c([0-9]+)-a([0-9]+)-k([0-9]+)$ ]] \
+        && CHUNK_SPECS+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}")
+    done
+    (( ${#CHUNK_SPECS[@]} )) && info "specs recovered from pass logs: ${CHUNK_SPECS[*]}"
+  fi
+  [[ -n "$CORPUS" ]] || die "no corpus: this run predates run.meta and no --corpus was given.
+       Re-run as: $0 --analyse-only $ANALYSE_ONLY --corpus /captures/corpus/<name>.txt
+       (add --keep-logits to keep the log-probs for further analysis)"
+  (( ${#CHUNK_SPECS[@]} )) || die "no chunk specs: none in run.meta, none recoverable from
+       the pass logs in $ANALYSE_ONLY, and none given with --chunk."
+  CORPUS_BASE="$(basename "$CORPUS" .txt)"
   analyse "$ANALYSE_ONLY"
   exit 0
 fi
