@@ -254,7 +254,14 @@ def main() -> int:
     import subprocess as _sp
 
     print("\nstale pid file")
-    marker_port = 8931
+    # A port nothing can already be using. Hardcoding the real one (8931) made
+    # this pass here and FAIL in the container it was deployed to, where a live
+    # server owns that port and find_supervisor correctly returned it instead of
+    # the fixture -- a test that only worked where the thing it tests was absent.
+    _probe = _socket.socket()
+    _probe.bind(("127.0.0.1", 0))
+    marker_port = _probe.getsockname()[1]
+    _probe.close()
     saved_port = bc.PORT
     bc.PORT = marker_port
     # A real process whose /proc cmdline carries both markers. Extra argv words
