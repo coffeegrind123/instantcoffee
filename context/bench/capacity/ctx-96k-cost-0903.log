@@ -471,3 +471,92 @@ instantcoffee-llama  | 3.07.667.384 D srv          stop: all tasks already finis
 bench — qwen3.8-27b via http://llama:8080
 prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
 
+  pp=90000  prompt=90029  prefill=  1515.3 tok/s  decode=  44.4 tok/s  wall= 65.53s draft=172/324 (53% accepted)
+  pp=90000  prompt=90029  prefill=  1833.6 tok/s  decode=  53.7 tok/s  wall= 54.22s draft=183/312 (59% accepted)
+  pp=90000  prompt=90029  prefill=  1797.8 tok/s  decode=  50.2 tok/s  wall= 55.49s draft=185/272 (68% accepted)
+
+best prefill: 1833.6 tok/s     best decode: 53.7 tok/s
+MTP draft acceptance: 540/908 = 59.5% across 3 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 65.53,
+      "prompt_n": 90029,
+      "prompt_tps": 1515.3127139111173,
+      "predicted_n": 256,
+      "predicted_tps": 44.423686291425305,
+      "cache_n": 0,
+      "draft_n": 324,
+      "draft_accepted": 172,
+      "draft_acceptance": 0.531
+    },
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 54.22,
+      "prompt_n": 90029,
+      "prompt_tps": 1833.5537132013567,
+      "predicted_n": 256,
+      "predicted_tps": 53.732569839171035,
+      "cache_n": 0,
+      "draft_n": 312,
+      "draft_accepted": 183,
+      "draft_acceptance": 0.587
+    },
+    {
+      "requested": 90000,
+      "status": 200,
+      "wall_s": 55.49,
+      "prompt_n": 90029,
+      "prompt_tps": 1797.7569104133015,
+      "predicted_n": 256,
+      "predicted_tps": 50.24275130094245,
+      "cache_n": 0,
+      "draft_n": 272,
+      "draft_accepted": 185,
+      "draft_acceptance": 0.68
+    }
+  ]
+}
+
+===== engine memory breakdown (ctx-96k-cost-0903) =====
+instantcoffee-llama  | 0.01.975.056 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.01.975.078 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19911 = 15339 +    4012 +     560) +      -17590 |
+instantcoffee-llama  | 0.01.975.078 I common_memory_breakdown_print: |   - Host               |                    798 =   682 +       0 +     116                |
+instantcoffee-llama  | 0.02.068.087 I operator(): getting device memory data for the extra model at a context size of 98304:
+instantcoffee-llama  | 0.02.714.687 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.02.714.752 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.02.714.757 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.02.714.758 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.02.714.759 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.02.714.765 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+instantcoffee-llama  | 0.02.714.765 I llama_model_loader: - kv   4:                      general.sampling.temp f32              = 1.000000
+instantcoffee-llama  | 0.02.714.766 I llama_model_loader: - kv   5:                               general.name str              = Qwen3.8 27B Abliterated
+instantcoffee-llama  | 0.02.714.767 I llama_model_loader: - kv   6:                           general.finetune str              = abliterated
+--
+instantcoffee-llama  | 0.03.175.554 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.03.175.575 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22992 + (15887 = 15339 +     384 +     164) +      -14316 |
+instantcoffee-llama  | 0.03.175.576 I common_memory_breakdown_print: |   - Host               |                    798 =   682 +       0 +     116                |
+instantcoffee-llama  | 0.03.266.588 I common_params_fit_impl: projected to use 20459 MiB of device memory vs. 22242 MiB of free device memory
+instantcoffee-llama  | 0.03.266.620 I common_params_fit_impl: will leave 1782 >= 1024 MiB of free device memory, no changes needed
+instantcoffee-llama  | 0.03.266.621 I common_fit_params: successfully fit params to free device memory
+instantcoffee-llama  | 0.03.266.626 I common_fit_params: fitting params to free memory took 2.54 seconds
+instantcoffee-llama  | 0.03.894.105 I llama_model_loader: loaded meta data with 42 key-value pairs and 866 tensors from /models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.03.894.153 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.03.894.157 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.03.894.158 I llama_model_loader: - kv   1:                               general.type str              = model
+instantcoffee-llama  | 0.03.894.159 I llama_model_loader: - kv   2:                     general.sampling.top_k i32              = 20
+instantcoffee-llama  | 0.03.894.164 I llama_model_loader: - kv   3:                     general.sampling.top_p f32              = 0.950000
+--
+instantcoffee-llama  | 6.08.304.440 I common_memory_breakdown_print: | memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 6.08.304.470 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 2116 + (19911 = 15339 +    4012 +     560) +        2535 |
+instantcoffee-llama  | 6.08.304.471 I common_memory_breakdown_print: |   - Host               |                   798 =   682 +       0 +     116                |
+instantcoffee-llama  | 6.08.304.671 D set_sampler: seq_id = 0, sampler = (nil)
+instantcoffee-llama  | 6.08.312.285 D ~llama_context:      CUDA0 compute buffer size is 164.0157 MiB, matches expectation of 164.0157 MiB
+instantcoffee-llama  | 6.08.312.314 D ~llama_context:  CUDA_Host compute buffer size is 116.0176 MiB, matches expectation of 116.0176 MiB
+instantcoffee-llama  | 6.08.372.053 D ~llama_context:      CUDA0 compute buffer size is 560.2816 MiB, matches expectation of 560.2816 MiB
+instantcoffee-llama  | 6.08.372.084 D ~llama_context:  CUDA_Host compute buffer size is 116.2834 MiB, matches expectation of 116.2834 MiB

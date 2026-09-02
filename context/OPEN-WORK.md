@@ -1160,7 +1160,7 @@ the inline version, so pass logs do not change shape.
 
 ---
 
-## 5. Browser anti-injection — shipped and AUDITED 2026-08-31; two unwrapped paths remain
+## 5. Browser anti-injection — shipped, AUDITED 2026-08-31, mcp.sh CLOSED 2026-09-03; one path remains
 
 Three layers went in on 2026-08-24:
 
@@ -1234,12 +1234,34 @@ from a prefix deny-list to a name allow-list — which is the plausible regressi
    tools, nothing web-facing), so nothing web-derived currently flows through
    it.
 
-   **The trigger to watch for:** this becomes a real hole the moment a
-   web-facing server is registered — a fetch/search/scrape server, or the kind
-   of custom reddit/searxng extension other setups in this space add. If that
-   happens, `scripts/mcp.sh` needs the same `wrap_if_needed` treatment
-   `browser_cli.py` already has; the function is importable and the rule is one
-   line.
+   **CLOSED 2026-09-03 — done before the trigger, not after.** Waiting for a
+   web-facing server to be registered meant relying on whoever registers it
+   having read this file, which is exactly the person who will not have. So the
+   default is now to wrap, and inertness must be *claimed*:
+
+   - `mcp/servers.json` gains an **`inert`** key. **Absent means untrusted.**
+     Only `everything` (the reference demo) declares it, and a test asserts no
+     other entry may claim it without a reader confirming it.
+   - `scripts/mcp.sh` no longer `exec`s mcp2cli — it cannot, because something
+     has to outlive the call to close the envelope. It pipes stdout through
+     `untrusted_content.py`, with `pipefail` so a server failure still
+     propagates its exit status instead of being masked as 0 by the envelope.
+   - **stderr is deliberately not piped.** A transport or usage error is the
+     tool's own voice, not server-controlled content — fencing it is the same
+     bug `browser-guard.ts` already had to fix once.
+   - **Discovery is not wrapped** (`--list`, `--search`, `--version`, and
+     `<tool> --help`): those describe the server's own surface, and burying
+     every tool lookup in a banner teaches that the envelope is noise.
+   - `untrusted_content.py` grew a stdin-filter CLI so the shell path reuses
+     the one banner. It is **not** re-implemented in bash — there are already
+     two copies (py and ts) held byte-identical by a test, and a third would be
+     the one that drifts.
+
+   Eight tests added (`test_untrusted_content.py`, **22 total**, was 14) and
+   **controlled in both directions**: with `WRAP=1` forced to 0, three fail;
+   with the gate loosened from `is True` to a truthy check, exactly the test
+   written for that regression fails. Verified end to end against a stub that
+   emits an injection payload on stdout, an error on stderr, and exit 7.
 
 The general principle both covered paths follow, and which any third should:
 **wrap unless the tool is known-inert.** An allow-list of content tools is the

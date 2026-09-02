@@ -17,6 +17,13 @@
     "  auth_header  Name:Value — supports env:VAR and file:/path for the value,",
     "               so no credential has to be written into this committed file",
     "  env          {\"KEY\": \"VALUE\"} passed to a stdio server's environment",
+    "  inert        true ONLY if this server cannot return web-derived text.",
+    "               ABSENT MEANS UNTRUSTED: scripts/mcp.sh wraps tool output in",
+    "               an untrusted-content envelope unless a server is explicitly",
+    "               marked inert here. That default is the point — a web-facing",
+    "               server registered by someone who never read this file is",
+    "               wrapped anyway. Do not set it to skip the envelope because",
+    "               the output looks noisy.",
     "",
     "Keys starting with _ are ignored."
   ],
@@ -24,7 +31,8 @@
   "servers": {
     "everything": {
       "stdio": "npx -y @modelcontextprotocol/server-everything",
-      "description": "MCP reference server (13 demo tools). Verifies the plumbing without touching anything real."
+      "description": "MCP reference server (13 demo tools). Verifies the plumbing without touching anything real.",
+      "inert": true
     }
   },
 

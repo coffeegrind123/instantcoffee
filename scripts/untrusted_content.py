@@ -39,6 +39,7 @@ silently are worse than one copy in the wrong language.
 from __future__ import annotations
 
 import secrets
+import sys
 
 # Keep in sync with BANNER in .pi/extensions/browser-guard.ts — tested.
 BANNER = (
@@ -85,3 +86,43 @@ def wrap(body: str, tool: str = "", url: str = "", nonce: str | None = None) -> 
 
 def wrap_if_needed(body: str, tool: str, url: str = "") -> str:
     return wrap(body, tool=tool, url=url) if needs_wrapping(tool) else body
+
+
+# --- CLI -------------------------------------------------------------------
+# A stdin filter, so a SHELL script can wrap output without reimplementing the
+# banner. scripts/mcp.sh is the caller: an MCP server reached over the CLI
+# returns whatever it likes, and a web-facing one returns page text with no
+# envelope at all unless something puts one there.
+#
+# Reads stdin to EOF before writing, which gives up streaming. That is the right
+# trade here — an envelope whose closing marker can be interleaved with other
+# output is not an envelope — but it does mean a long call shows nothing until
+# it finishes.
+def _main(argv: "list[str]") -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Wrap stdin in a nonce-delimited untrusted-content envelope.",
+    )
+    ap.add_argument("--tool", default="", help="origin shown in the envelope header")
+    ap.add_argument("--url", default="", help="origin URL, if there is one")
+    ap.add_argument(
+        "--respect-control-list",
+        action="store_true",
+        help="skip wrapping when --tool names a known-inert control call; "
+             "off by default, because a caller reaching for this CLI has "
+             "already decided the content is untrusted",
+    )
+    args = ap.parse_args(argv)
+
+    body = sys.stdin.read()
+    if args.respect_control_list:
+        out = wrap_if_needed(body, args.tool, args.url)
+    else:
+        out = wrap(body, tool=args.tool, url=args.url)
+    sys.stdout.write(out + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main(sys.argv[1:]))

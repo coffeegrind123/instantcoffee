@@ -1,0 +1,64 @@
+{
+  "label": "ctx-96k-cost-0903",
+  "settings": "CTX_SIZE=98304",
+  "loaded": true,
+  "server_n_ctx": "98304",
+  "vram_used_mib": "22535",
+  "vram_total_mib": "24564",
+  "vram_idle_mib": "1284",
+  "engine_memory_breakdown": "| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22242 + (19911 = 15339 +    4012 +     560) +      -17590 |\n|   - Host               |                    798 =   682 +       0 +     116                |\n| memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 22992 + (15887 = 15339 +     384 +     164) +      -14316 |\n|   - Host               |                    798 =   682 +       0 +     116                |\n| memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |\n|   - CUDA0 (RTX 4090)   | 24563 = 2116 + (19911 = 15339 +    4012 +     560) +        2535 |\n|   - Host               |                   798 =   682 +       0 +     116                |",
+  "bench": "prefill",
+  "measured_utc": "2026-09-02T22:53:38Z",
+  "pins": {
+    "llama_tag": "server-cuda-b10689",
+    "llama_digest": "sha256:e52c610406cd18714902d1ca3bffadebca4a2a8370faaba8a5be5cc5d5203921",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479"
+  },
+  "result": {
+    "model": "qwen3.8-27b",
+    "rows": [
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 65.53,
+        "prompt_n": 90029,
+        "prompt_tps": 1515.3127139111173,
+        "predicted_n": 256,
+        "predicted_tps": 44.423686291425305,
+        "cache_n": 0,
+        "draft_n": 324,
+        "draft_accepted": 172,
+        "draft_acceptance": 0.531
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 54.22,
+        "prompt_n": 90029,
+        "prompt_tps": 1833.5537132013567,
+        "predicted_n": 256,
+        "predicted_tps": 53.732569839171035,
+        "cache_n": 0,
+        "draft_n": 312,
+        "draft_accepted": 183,
+        "draft_acceptance": 0.587
+      },
+      {
+        "requested": 90000,
+        "status": 200,
+        "wall_s": 55.49,
+        "prompt_n": 90029,
+        "prompt_tps": 1797.7569104133015,
+        "predicted_n": 256,
+        "predicted_tps": 50.24275130094245,
+        "cache_n": 0,
+        "draft_n": 272,
+        "draft_accepted": 185,
+        "draft_acceptance": 0.68
+      }
+    ]
+  }
+}

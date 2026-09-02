@@ -19,7 +19,9 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-REGISTRY="$REPO_ROOT/mcp/servers.json"
+# Overridable so the wrapping gate can be tested against a scratch registry
+# without editing the committed one.
+REGISTRY="${REGISTRY:-$REPO_ROOT/mcp/servers.json}"
 VERSION="$(env_get MCP2CLI_VERSION)"; : "${VERSION:=3.3.1}"
 MCP_SDK="$(env_get MCP_SDK_VERSION)"; : "${MCP_SDK:=1.29.0}"
 
@@ -90,6 +92,20 @@ sys.stdout.write("\0".join(out))
 '
 }
 
+# Is this server declared inert? ABSENT MEANS UNTRUSTED — see mcp/servers.json.
+# Anything that is not an explicit `"inert": true` gets the envelope, including
+# a server this registry has never heard of.
+server_is_inert() {
+  local name="$1"
+  [[ -f "$REGISTRY" ]] || return 1
+  REGISTRY="$REGISTRY" NAME="$name" json_eval '
+import json, os, sys
+reg = json.load(open(os.environ["REGISTRY"], encoding="utf-8"))
+entry = (reg.get("servers") or {}).get(os.environ["NAME"]) or {}
+sys.exit(0 if entry.get("inert") is True else 1)
+'
+}
+
 list_servers() {
   [[ -f "$REGISTRY" ]] || die "no registry at $REGISTRY"
   REGISTRY="$REGISTRY" json_eval '
@@ -127,6 +143,20 @@ case "${1:-}" in
     ;;
 esac
 
+# Mirrors lib.sh's json_eval fallback: host python3 if there is one, otherwise a
+# throwaway container. The banner lives in scripts/untrusted_content.py and is
+# NOT duplicated here — there are already two copies of it (py and ts) kept
+# byte-identical by a test, and a third in shell would be the one that drifts.
+json_eval_wrap() {
+  local origin="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$REPO_ROOT/scripts/untrusted_content.py" --tool "$origin"
+  else
+    docker run --rm -i -v "$REPO_ROOT/scripts:/s:ro" python:3.13-slim \
+      python /s/untrusted_content.py --tool "$origin"
+  fi
+}
+
 SERVER="$1"; shift
 ensure_mcp2cli
 
@@ -136,5 +166,39 @@ while IFS= read -r -d '' f; do FLAGS+=("$f"); done < <(server_flags "$SERVER"; p
 # server_flags exits non-zero with its own message on an unknown name; the
 # subshell above cannot propagate that, so check for an empty result instead.
 (( ${#FLAGS[@]} )) || die "could not resolve server '$SERVER' — ./scripts/mcp.sh --servers"
+
+# WRAP TOOL OUTPUT UNLESS THE SERVER IS DECLARED INERT.
+#
+# An MCP server reached this way returns whatever it likes straight into the
+# transcript as ordinary bash output, with none of the envelope that
+# browser_cli.py and browser-guard.ts put around browser results. That was
+# harmless only for as long as the one registered server was the reference demo
+# — a fetch/search/scrape server makes it a live injection path, and the person
+# who registers one is exactly the person who will not remember this note. So
+# the default is to wrap, and inertness has to be claimed explicitly.
+#
+# DISCOVERY IS NOT WRAPPED. --list/--search/--help/--version describe the
+# server's own surface; wrapping them would bury every tool lookup in a banner
+# and teach that the envelope is noise. Tool RESULTS are what carry fetched
+# content, and they are what gets the envelope — the same split browser_cli.py
+# makes.
+WRAP=1
+server_is_inert "$SERVER" && WRAP=0
+case "${1:-}" in
+  --list|--search|--help|-h|--version|--servers) WRAP=0 ;;
+esac
+# `<tool> --help` prints that tool's schema, not its output.
+for a in "$@"; do [[ "$a" == "--help" || "$a" == "-h" ]] && WRAP=0; done
+
+if (( WRAP )); then
+  # NOT exec: something has to still be alive after mcp2cli exits to close the
+  # envelope. stderr is deliberately left unpiped — a transport or usage error
+  # is the tool's own voice, not server-controlled content, and wrapping it
+  # would be the same bug browser-guard.ts already had to fix once.
+  set -o pipefail
+  "$MCP2CLI" "${FLAGS[@]}" "$@" \
+    | json_eval_wrap "mcp.sh:${SERVER}${1:+:$1}"
+  exit $?
+fi
 
 exec "$MCP2CLI" "${FLAGS[@]}" "$@"
