@@ -1327,7 +1327,38 @@ host_floor_note     = THE FLOOR IS THE WINDOWS DESKTOP, ATTRIBUTED 2026-08-23.
                       it drifted by ~1.2 GiB in ten days with nobody noticing.
                       Any decision that spends VRAM headroom needs the floor
                       re-measured ON THE DAY, not read out of this file.
-ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
+                      RE-MEASURED 2026-09-03, 44 samples: 1045.1 / 1460.9 /
+                      1810.9 — the 1240 MiB came BACK, one day later, and the
+                      09-02 median is now 1280 MiB above today's. Two things in
+                      the 09-02 entry above do not survive it:
+                        (1) "a new steady state" — the floor moved 765.8 MiB
+                            WITHIN this 11-minute capture against 295.5 within
+                            that one, so the box wanders during a measurement by
+                            more than half the drift being explained.
+                        (2) the ATTRIBUTION to NVIDIA Broadcast. It has run
+                            continuously since 2026-08-25 20:01 — through BOTH
+                            captures — at 70.4 CPU-seconds over nine days, and
+                            its dedicated usage read 920.1 MiB then and 0.1 MiB
+                            now with its run state unchanged. A process at a
+                            fixed state cannot explain a 1280 MiB swing in
+                            either direction, so the per-pid column is a weak
+                            hint about WHAT moved and never the measurement.
+                            It is the same column vram-floor.sh's own header
+                            says DO NOT SUM (dwm alone reads ~4 GB and the
+                            column totals ~27 GB on a 24.5 GB card).
+                      So the rule above is right and was still too weak: a floor
+                      is a snapshot with a shelf life of HOURS, not days, and
+                      naming a process to close is a stronger claim than this
+                      instrument can support.
+ctx_128k_verdict    = STAY ON 96K -- but as of 2026-09-03 that is a COST
+                      question, not a fit one. 128K was refused on fit from
+                      2026-08-23 to 2026-09-02; a probe on 09-03 LOADED it with
+                      921 MiB free off the engine's own table, so that refusal
+                      is overturned. Read the last block of this entry first;
+                      the history below is kept because it is how the fit answer
+                      was got wrong twice, in both directions.
+                      HISTORY -- REFUSED, and since 2026-08-23 refused on
+                      MEASUREMENT.
                       free at 128K = 24564 - (device total at 96K + 1408), where
                       +1408 is the engine's own -lv 5 delta (20426 -> 21834) and
                       not a sampled one; a sampled delta got this same
@@ -1422,6 +1453,45 @@ ctx_128k_verdict    = REFUSED, and since 2026-08-23 refused on MEASUREMENT.
                       than off this arithmetic.
                       1501 IS NO LONGER "THE ORDINARY STATE OF THE MACHINE" —
                       see vram_note, which says it is, and was right in August.
+                      ---- THE FIT REFUSAL IS OVERTURNED 2026-09-03 ----
+                      The re-open condition above was executed, except for the
+                      one step it opened with: NOTHING WAS CLOSED. Broadcast has
+                      run continuously since 08-25 20:01, through BOTH the 09-02
+                      and 09-03 captures, at 70.4 CPU-s over nine days, and its
+                      dedicated usage read 920.1 MiB then and 0.1 MiB now with
+                      its run state never changing. The floor came back on its
+                      own: 44 samples gave 1045.1 / 1460.9 / 1810.9.
+                      ONE capacity-probe arm was then run at CTX_SIZE=131072
+                      (label ctx-128k-0903, current stack: b10689 + orcarouter
+                      Q4_K_M) and IT LOADED. Off the engine's own settled exit
+                      table -- the third breakdown block, the only one whose
+                      unaccounted is positive and whose three terms sum to the
+                      device (921 + 21159 + 2481 = 24561); blocks one and two
+                      read `free` before other allocations were visible and
+                      report -18838 and -14476 unaccounted, so DO NOT QUOTE
+                      THEM:
+                        CUDA0 24563 = 921 free
+                                    + 21159 self (15339 model + 5100 context
+                                                  + 720 compute)
+                                    + 2481 unaccounted, i.e. everything else
+                                           on the device
+                      READ THE 2481 BEFORE READING THE 921. That is the desktop
+                      DURING the probe -- close to the 09-02 median of 2741 and
+                      ~1000 MiB above the median measured half an hour earlier.
+                      So 128K did not fit because the box happened to be quiet;
+                      it fit with the desktop at roughly its 09-02 level, which
+                      is the state that produced the -584 refusal. The refusal
+                      was arithmetic (device total at 96K + a 1408 delta carried
+                      from the OLD stack); the engine says llama's whole 128K
+                      footprint is 21159, and the arithmetic assumed 22407.
+                      A CARRIED-OVER DELTA MEASURED ON DIFFERENT WEIGHTS IS NOT
+                      A MEASUREMENT -- that is the same lesson as the 1163 MiB
+                      error this entry already cites, in the same direction.
+                      STILL NOT A RECOMMENDATION TO SWITCH, and the reason is
+                      now the only one left: nothing has measured PREFILL or
+                      DECODE at 128K on the current model. The fit question is
+                      answered; the cost question has never been asked on this
+                      stack. 96K remains the pin until it is.
 ngram_size_m_note   = LEAVE IT AT 48. Swept 2026-08-23 (context/bench/capacity/
                       sizem-*.json). VRAM is flat within 6 MiB across 48/32/24/
                       16, so there is nothing to reclaim, and lowering it only

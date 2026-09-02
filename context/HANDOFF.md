@@ -305,8 +305,14 @@ Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
    If only merges *serialisation* differs, substituting the official file is
    defensible. **If `pre_tokenizer` differs, stop** — the artifact would tokenise
    differently from the GGUF and no speed number is worth that.
-2. **128K (needs the operator).** Close NVIDIA Broadcast, re-run
-   `vram-floor.sh`. §6 has the threshold and the single probe arm to run.
+2. **128K — DONE 2026-09-03, and the fit refusal is OVERTURNED.** It needed
+   no operator and no process closed: the floor came back on its own
+   (1045.1 / **1460.9** / 1810.9 over 44 samples) and Broadcast had been running
+   throughout at 0.1 MiB. The probe arm loaded 128K with **921 MiB free** off
+   the engine's settled exit table, *with the desktop at 2481 MiB* — i.e. at
+   roughly the 09-02 level that produced the `-584` refusal. **The only open
+   question is now cost:** prefill and decode at 128K have never been measured
+   on this model. 96K stays the pin until a `--bench` arm says otherwise.
 3. **The novel-text cost of the live pin — OPEN-WORK 0e, 19 rounds, ~4h.**
    *(This slot previously said `map-k4v` "has still never run here". That was
    WRONG — 0c measured it at -6.5%/p=0.0514 on 2026-09-01 and 0d closed the

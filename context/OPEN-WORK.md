@@ -157,6 +157,78 @@ Broadcast, re-run `vram-floor.sh`, and if the median lands near 1821 run ONE
 own exit table rather than off this arithmetic — a sampled cross-run delta got
 this same comparison wrong by 1163 MiB once (`vram_note`).
 
+### RE-MEASURED 2026-09-03 — the condition was met without doing the thing it asked
+
+`./scripts/vram-floor.sh --samples 44 --interval 15 --label 0903`, llama again
+flat to **0.0 MiB** across the capture:
+
+| | min | median | max |
+| --- | --- | --- | --- |
+| host floor, 2026-08-23 (90 samples) | 1477.9 | **1500.8** | 1517.5 |
+| host floor, 2026-09-02 (48 samples) | 2528.1 | **2741.3** | 2823.6 |
+| host floor, 2026-09-03 (44 samples) | 1045.1 | **1460.9** | 1810.9 |
+| free at 128K, 09-03 | 1112 | **696** | 346 |
+| free at 96K, 09-03 | 2520 | **2104** | 1754 |
+
+**Nobody closed anything.** `NVIDIA Broadcast` has been running continuously
+since **2026-08-25 20:01** — through the 09-02 capture AND this one — at 70.4
+CPU-seconds total across nine days, i.e. near-idle in both. Its dedicated usage
+read **920.1 MiB on 09-02 and 0.1 MiB today** with its run state never changing.
+So "close NVIDIA Broadcast" was an action that was never available and was never
+needed: the 1280 MiB came back on its own.
+
+**What that does to the 09-02 reasoning above, precisely.** The floor number
+(adapter total minus vmwp) is sound in both captures — it is the additive
+counter, and llama was flat in both. What does NOT survive is the *attribution*:
+naming Broadcast as "the single biggest line" implied a tenancy that could be
+evicted, and a process at a fixed run state does not explain a 1280 MiB swing in
+either direction. Treat the per-pid column as a weak hint about WHAT moved and
+never as the measurement — it is the same column whose header in
+`vram-floor.sh` says **DO NOT SUM THESE** (dwm maps every other window's surface
+and alone reads ~4 GB; the column sums to ~27 GB on a 24.5 GB card).
+
+### The probe was run, and 128K LOADS
+
+`./scripts/capacity-probe.sh --config 'ctx-128k-0903|CTX_SIZE=131072'` on the
+current stack (`b10689` + orcarouter `Q4_K_M`). `.env` restored and verified,
+llama back up healthy at `-c 98304`. Off the engine's **settled** exit table:
+
+```
+CUDA0 24563 = 921 free
+            + 21159 self (15339 model + 5100 context + 720 compute)
+            + 2481 unaccounted  <- everything else on the device
+```
+
+**Read the 2481 before the 921.** That is the desktop *during the probe* —
+close to 09-02's 2741 median and ~1000 MiB above the median measured half an
+hour earlier. So this is not "it fit because the box was quiet": it fit with
+the desktop at roughly the level that produced the `-584` refusal.
+
+**Quote the third breakdown block only.** llama.cpp prints three; blocks one and
+two read `free` before other allocations are visible and report `-18838` and
+`-14476` unaccounted. Only block three has a positive unaccounted and sums to
+the device (`921 + 21159 + 2481 = 24561`).
+
+**Why the arithmetic was wrong by ~1500 MiB.** It computed
+`24564 - (device total at 96K + 1408)`, where `+1408` is an engine delta
+measured on the **old** stack (unsloth `UD-Q4_K_XL`, b10573). It implied a 128K
+footprint of 22407; the engine says **21159**. A carried-over delta measured on
+different weights is not a measurement — the same lesson, in the same direction,
+as the 1163 MiB error `vram_note` already records.
+
+**What is still not answered, and it is now the only thing:** nothing has
+measured **prefill or decode at 128K on this model**. The fit question is
+closed; the cost question has never been asked on this stack. **96K stays the
+pin until it is** — that is a `capacity-probe.sh --bench` arm, not a guess.
+
+**And the volatility is the finding, not the headroom.** The floor moved
+**765.8 MiB within this 11-minute capture**, against 295.5 on 09-02. So 09-02's
+"this is a new steady state" does not hold today: the desktop is drifting during
+the measurement, the worst sample here (1810.9) is close to 09-02's *best*
+(2528.1) only in the sense that neither is stable, and the whole 09-02 → 09-03
+delta is inside the range this box wanders on its own. **A floor is a snapshot
+with a shelf life of hours, not days.**
+
 **The transferable part, and it is the reason this entry is not just a number:**
 the floor is not a property of the hardware, it is a property of what happens to
 be open, and it drifted 1.2 GiB in ten days with nobody noticing. `versions.lock`
