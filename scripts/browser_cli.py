@@ -214,6 +214,38 @@ def _descends_from(pid: int, ancestor: int, limit: int = 12) -> bool:
     return False
 
 
+def find_supervisor() -> int | None:
+    """Locate the running server for OUR port when the pid file cannot name it.
+
+    A STALE PID FILE IS NOT A STOPPED SERVER, and treating it as one is silent.
+    Measured 2026-09-02: the pid file named a process that no longer existed
+    while the real supervisor had been up for 26 hours. read_pid() correctly
+    returned None, stop_server() took that as "nothing to stop" and returned,
+    start_server() then found the port answering and printed "already up" — so
+    `restart` reported success and changed nothing. A freshly deployed fix sat
+    on disk, unloaded, and the only clue was that the pid file's mtime did not
+    match the process's age.
+
+    Matched on the port, not just the name: several agent sessions on this box
+    run their own zendriver bridge, and killing one of those because it shares a
+    script name would break somebody else's browser.
+    """
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        cmd = _read_cmdline(pid)
+        if "zendriver-mcp" not in cmd or f"--port {PORT}" not in cmd:
+            continue
+        # The supervisor is what the pid file is supposed to name, and what has
+        # the shutdown handler that closes Chrome; prefer it over its child.
+        parent = _ppid(pid)
+        if parent and parent > 1 and "browser_cli.py supervise" in _read_cmdline(parent):
+            return parent
+        return pid
+    return None
+
+
 def find_chrome() -> tuple[int, int] | None:
     """(pid, cdp_port) of the Chrome this server launched, or None if there is none.
 
@@ -521,6 +553,12 @@ def stop_server(quiet: bool = False) -> None:
             err(f"warn stop_browser failed ({e}); the Chrome process may be left behind")
 
     pid = read_pid()
+    if pid is None and up:
+        # The port answers, so something IS running; the pid file just cannot say
+        # what. Find it rather than reporting a stop that did not happen.
+        pid = find_supervisor()
+        if pid is not None and not quiet:
+            print(f"  .. pid file was stale; found the running server at pid {pid}")
     if pid is None:
         if not quiet:
             print("  ok browser MCP is not running" if not up else "  ok stopped (no pid file)")

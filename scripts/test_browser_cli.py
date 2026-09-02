@@ -244,6 +244,70 @@ def main() -> int:
     check("nothing listening still exits 1", (code, traced), (1, False))
     check("and still says down", "down" in out, True)
 
+    # --- a stale pid file is not a stopped server -----------------------------
+    #
+    # Measured 2026-09-02: the pid file named a process that no longer existed
+    # while the real supervisor had been up 26 hours. read_pid() returned None,
+    # stop_server() read that as "nothing to stop", start_server() then found the
+    # port answering and said "already up" — so `restart` reported success and
+    # changed nothing, leaving a freshly deployed fix on disk and unloaded.
+    import subprocess as _sp
+
+    print("\nstale pid file")
+    marker_port = 8931
+    saved_port = bc.PORT
+    bc.PORT = marker_port
+    # A real process whose /proc cmdline carries both markers. Extra argv words
+    # land in cmdline verbatim, which is exactly what find_supervisor matches on.
+    child = _sp.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", "zendriver-mcp",
+         "--port", str(marker_port)]
+    )
+    try:
+        time.sleep(0.3)
+        check("finds the running server when the pid file cannot", bc.find_supervisor(), child.pid)
+
+        # It must key on the PORT, not the script name: other agent sessions run
+        # their own bridges and killing one of those breaks somebody else.
+        bc.PORT = marker_port + 1
+        check("ignores a server on a different port", bc.find_supervisor(), None)
+        bc.PORT = marker_port
+
+        # Prefers the supervisor over its child: the supervisor is what the pid
+        # file names and what closes Chrome on the way out.
+        real_cmdline, real_ppid = bc._read_cmdline, bc._ppid
+        try:
+            bc._read_cmdline = lambda pid: (
+                "python browser_cli.py supervise" if pid == 4242 else real_cmdline(pid)
+            )
+            bc._ppid = lambda pid: 4242 if pid == child.pid else real_ppid(pid)
+            check("prefers the supervisor over its child", bc.find_supervisor(), 4242)
+        finally:
+            bc._read_cmdline, bc._ppid = real_cmdline, real_ppid
+
+        # And stop_server must actually signal it instead of returning quietly.
+        signalled: list[int] = []
+        real_up, real_read, real_kill, real_call = bc.is_up, bc.read_pid, os.kill, bc.call_tool
+        try:
+            bc.is_up = lambda *a, **k: True          # the port answers
+            bc.read_pid = lambda: None               # the pid file cannot say who
+            bc.call_tool = lambda *a, **k: None      # no server to ask
+            os.kill = lambda pid, sig: signalled.append(pid) if sig != 0 else None
+            bc.stop_server(quiet=True)
+        finally:
+            bc.is_up, bc.read_pid, os.kill, bc.call_tool = real_up, real_read, real_kill, real_call
+        check("stop_server signals the found server", child.pid in signalled, True)
+    finally:
+        child.kill()
+        child.wait()
+        bc.PORT = saved_port
+
+    # The control: with no such process, find_supervisor must say so rather than
+    # returning some other python it happened to see.
+    bc.PORT = 65001
+    check("no server means None, not a guess", bc.find_supervisor(), None)
+    bc.PORT = saved_port
+
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s): {', '.join(FAILURES)}")
         return 1
