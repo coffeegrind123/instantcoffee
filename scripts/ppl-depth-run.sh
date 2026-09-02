@@ -61,8 +61,21 @@
 # WHAT IT COSTS. llama-perplexity loads its own copy of the weights, so
 # instantcoffee-llama must be STOPPED for the probe and pass stages. ~3.5 min per load,
 # ~13 min of scoring, eleven loads: about an hour, then one cold reload.
-set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# AFTER the source, NOT before, and this ordering is load-bearing.
+# lib.sh line 4 runs `set -euo pipefail`, so a `set -uo pipefail` placed
+# above it is silently overridden and errexit comes back ON — defeating the
+# deliberate choice this script makes. That cost four wedged ppl-cliff runs
+# and a whole OPEN-WORK section: restore() begins with a `docker kill` of a
+# --rm container that has already exited, which always returns 1, and under
+# errexit that killed the script before it could restart llama. The symptom
+# was silent (stderr went to /dev/null) and looked like the trap not firing.
+#
+# AND `set -uo pipefail` ALONE DOES NOT UNDO IT. `set -u`/`-o pipefail` only
+# ENABLE those options; nothing in that line turns errexit off. Disabling it
+# takes `set +e` explicitly, which is why the line below is not decoration.
+set -uo pipefail
+set +e
 # lib.sh sets -e. Turn it back off DELIBERATELY and after the source, not before:
 # a failed pass here is data (it gets reported and the run continues to the
 # next arm), and a bare `cmd; rc=$?` under -e exits before the assignment.

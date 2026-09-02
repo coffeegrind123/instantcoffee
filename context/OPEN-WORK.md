@@ -775,7 +775,7 @@ own evidence rather than added pre-emptively.
 
 ---
 
-## 1. The runner exits 1 and skips its own last two steps — NARROWED to the launch shape
+## 1. The runner exits 1 and skips its own last two steps — SOLVED 2026-09-03 (lib.sh re-enables errexit)
 
 **Highest value because it will cost you an hour of confusion otherwise.**
 
@@ -863,7 +863,63 @@ in the session's process group and dies with it; a `setsid` one does not. That
 is a one-word change to test, and it is the next thing to try rather than
 another environment probe.
 
-### BOTH OF THOSE ARE WRONG — read before acting on them (2026-09-03)
+### SOLVED 2026-09-03. It was `set -e`, re-enabled by `lib.sh` one line after the script turns it off.
+
+**Reproduced on the first real run with the instrument in place**, and the file
+named the line:
+
+```
+23:30:34  restore entered (caller rc=0)
+23:30:34  restore entered (caller rc=1)
+```
+
+Restore WAS reached — twice, the explicit call and then the EXIT trap — and both
+times execution stopped between the first `rlog` and the next statement. The
+only thing in between is `docker kill "$RUNNER_CT"`.
+
+**The mechanism, start to finish:**
+
+1. `ppl-cliff-run.sh:59` runs `set -uo pipefail` — deliberately WITHOUT `-e`.
+2. Line 60 sources `lib.sh`, whose line 4 is **`set -euo pipefail`**. Errexit
+   comes back on, one line after the script chose not to have it.
+3. `restore()` opens with `docker kill "$RUNNER_CT"`. The runner is `--rm` and
+   has already exited on the normal path, so **that command always returns 1**
+   (verified: rc=1).
+4. Under errexit the script dies there — before restarting llama, with stderr
+   already redirected to `/dev/null`, so in silence.
+5. The EXIT trap fires `restore` again, which dies at the same line. Exit 1.
+
+Every recorded symptom falls out of that and none needed a second cause: llama
+left stopped, neither restore message printed, exit 1, "the trap also did not
+fire" (it fired and died identically), "moving restore earlier did not fix it"
+(the same line fails wherever it sits), and no error anywhere.
+
+**"It is not `set -e` (never set)" was checked at the wrong line.** Line 59 is
+exactly what it says; the override is on line 60.
+
+**THE SECOND TRAP, which made the first fix a no-op.** `set -uo pipefail` does
+**not** undo `set -e` — `-u` and `-o pipefail` only ENABLE those options.
+Reordering the line so it runs after the source therefore changes nothing;
+turning errexit off takes an explicit **`set +e`**. Caught by running the check
+rather than reading it.
+
+**FIVE scripts had the identical shape**, all long-running runners:
+`kld-run.sh`, `ppl-cliff-run.sh`, `ppl-depth-run.sh`, `ppl-stride-run.sh`,
+`test_llama_watchdog.sh` — the last of which carries a comment saying `set -e`
+"turned the whole suite into one silent early exit", and then sources `lib.sh`
+one line later. All five now source first and `set +e` after, with the reason
+written at the top of each.
+
+`restore()` is additionally hardened so the restart never depends on that fix
+holding: both `docker kill` call sites are guarded, and `docker start` runs
+inside an `if`. `scripts/test_runner_errexit.py` (7 tests) pins errexit-off for
+all five, pins that `set -uo pipefail` does not disable `-e`, and carries two
+controls — that `lib.sh` really does set `-e`, and that the detector reports ON
+for a prologue that leaves it on. Its first version failed by matching
+`token_pass()`'s `docker kill` instead of `restore()`'s, which found a second
+unguarded call site.
+
+### The earlier reasoning, kept because it narrowed the search (2026-09-03)
 
 **The launch-shape step is aimed at code that does not exist.** There is no
 `nohup` anywhere in `ppl-cliff-run.sh` (the only `nohup` in `scripts/*.sh` is

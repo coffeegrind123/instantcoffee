@@ -56,8 +56,21 @@
 # --load-mode none IS NOT OPTIONAL, same as kld-run.sh and for the same reason:
 # demand-paging the GGUF through the 9p bind mount ran at 6.4 MB/s and is
 # indistinguishable from a hang.
-set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# AFTER the source, NOT before, and this ordering is load-bearing.
+# lib.sh line 4 runs `set -euo pipefail`, so a `set -uo pipefail` placed
+# above it is silently overridden and errexit comes back ON — defeating the
+# deliberate choice this script makes. That cost four wedged ppl-cliff runs
+# and a whole OPEN-WORK section: restore() begins with a `docker kill` of a
+# --rm container that has already exited, which always returns 1, and under
+# errexit that killed the script before it could restart llama. The symptom
+# was silent (stderr went to /dev/null) and looked like the trap not firing.
+#
+# AND `set -uo pipefail` ALONE DOES NOT UNDO IT. `set -u`/`-o pipefail` only
+# ENABLE those options; nothing in that line turns errexit off. Disabling it
+# takes `set +e` explicitly, which is why the line below is not decoration.
+set -uo pipefail
+set +e
 require_cmd docker
 
 CORPUS=""
@@ -331,7 +344,9 @@ token_pass() {
   docker run --rm --user 0:0 -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" \
     "${SCRIPT_STAGE}/ppl_cliff_wait.py" --path "$logits" --timeout 1800
   local waiter_rc=$?
-  docker kill "$RUNNER_CT" >/dev/null 2>&1
+  # Guarded for the same reason as restore()'s: an expected non-zero here must
+  # never be fatal. The runner may already have exited on its own.
+  docker kill "$RUNNER_CT" >/dev/null 2>&1 || true
   wait "$runner_pid" 2>/dev/null
   if (( waiter_rc )); then
     echo "    the token pass did not produce an array; see ${LOCAL_LOGDIR}/${log}"
@@ -404,12 +419,19 @@ main_run() {
   rlog() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*" >>"$restore_log" 2>/dev/null || true; }
   restore() {
     rlog "restore entered (caller rc=$?)"
-    docker kill "$RUNNER_CT" >/dev/null 2>&1
-    rlog "docker kill ${RUNNER_CT} rc=$?"
+    # BOTH of these are `|| true` / `if` on purpose, and it is belt-and-braces
+    # against the errexit bug fixed at the top of this file rather than trust in
+    # it. The runner is `--rm` and has normally exited by now, so `docker kill`
+    # returns 1 on the ORDINARY path — it is an expected failure, never a fatal
+    # one. Restarting llama is the single most important thing this script does;
+    # nothing in here may be allowed to abort it.
+    local kill_rc=0
+    docker kill "$RUNNER_CT" >/dev/null 2>&1 || kill_rc=$?
+    rlog "docker kill ${RUNNER_CT} rc=${kill_rc} (1 is normal: --rm already gone)"
     echo
     echo "==> restarting ${LLAMA_CT}"
-    local start_rc
-    docker start "$LLAMA_CT" >/dev/null 2>>"$restore_log"; start_rc=$?
+    local start_rc=0
+    if docker start "$LLAMA_CT" >/dev/null 2>>"$restore_log"; then start_rc=0; else start_rc=$?; fi
     rlog "docker start ${LLAMA_CT} rc=${start_rc}"
     rlog "state now: $(docker inspect -f '{{.State.Status}}' "$LLAMA_CT" 2>&1)"
     if (( start_rc == 0 )); then
