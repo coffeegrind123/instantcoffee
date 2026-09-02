@@ -310,9 +310,14 @@ Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
    (1045.1 / **1460.9** / 1810.9 over 44 samples) and Broadcast had been running
    throughout at 0.1 MiB. The probe arm loaded 128K with **921 MiB free** off
    the engine's settled exit table, *with the desktop at 2481 MiB* — i.e. at
-   roughly the 09-02 level that produced the `-584` refusal. **The only open
-   question is now cost:** prefill and decode at 128K have never been measured
-   on this model. 96K stays the pin until a `--bench` arm says otherwise.
+   roughly the 09-02 level that produced the `-584` refusal.
+   **Then the cost was measured and it CLOSES the item.** Both arms in one run,
+   same 90,029-token prompt: prefill **1797.8 -> 1200.7** tok/s (-33%), decode
+   **50.2 -> 26.1** (-48%), draft acceptance flat. The three 128K decode runs
+   are 26.1/25.3/26.3 — a 4% spread — so no 128K round comes near any 96K one.
+   **128K fits and is not worth taking**; 96K stays the pin on a cost
+   measurement rather than on headroom arithmetic. The carried-over +1408 MiB
+   delta is retired: measured on this stack it is **1248**.
 3. **The novel-text cost of the live pin — OPEN-WORK 0e, 19 rounds, ~4h.**
    *(This slot previously said `map-k4v` "has still never run here". That was
    WRONG — 0c measured it at -6.5%/p=0.0514 on 2026-09-01 and 0d closed the

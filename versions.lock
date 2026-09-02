@@ -1487,11 +1487,36 @@ ctx_128k_verdict    = STAY ON 96K -- but as of 2026-09-03 that is a COST
                       A CARRIED-OVER DELTA MEASURED ON DIFFERENT WEIGHTS IS NOT
                       A MEASUREMENT -- that is the same lesson as the 1163 MiB
                       error this entry already cites, in the same direction.
-                      STILL NOT A RECOMMENDATION TO SWITCH, and the reason is
-                      now the only one left: nothing has measured PREFILL or
-                      DECODE at 128K on the current model. The fit question is
-                      answered; the cost question has never been asked on this
-                      stack. 96K remains the pin until it is.
+                      THE COST WAS THEN MEASURED, SAME DAY, AND IT SETTLES IT:
+                      128K COSTS ABOUT HALF THE DECODE. Both arms in ONE run
+                      (labels ctx-96k-cost-0903 / ctx-128k-cost-0903), same
+                      90,029-token prompt, --repeat 3:
+                                            96K        128K      change
+                        prefill tok/s     1797.8      1200.7      -33%
+                        decode  tok/s       50.2        26.1      -48%
+                        draft acceptance  .53-.68     .52-.54      flat
+                        free (engine)       2116         702
+                      DECODE IS THE DECISIVE ROW AND IT IS NOT NOISE: the three
+                      128K runs are 26.1 / 25.3 / 26.3, a 4% spread, against
+                      96K's 44.4 / 53.7 / 50.2. No 128K round comes near any
+                      96K round. Draft acceptance barely moves, so this is not
+                      speculative decoding falling apart — it is the window.
+                      The two arms ran against near-identical desktops (2535 and
+                      2701 unaccounted), which is what makes it like-for-like;
+                      quoting the historical ctx-96k row instead would have
+                      compared across four different stacks.
+                      SO: 128K FITS AND IS NOT WORTH TAKING. Halving interactive
+                      decode to buy 32K of window is a bad trade for an agent
+                      workload, and the 96K pin now rests on a cost measurement
+                      rather than on arithmetic about headroom.
+                      AND THE +1408 CONSTANT IS RETIRED. Measured on this stack
+                      it is 1248 (context 4012 -> 5100, compute 560 -> 720).
+                      1408 came from the old weights and is what produced the
+                      wrong fit verdict; vram-floor.sh's report() still hardcodes
+                      delta_128k=1408, so its "free at 128K" column reads ~160
+                      MiB pessimistic. Left alone deliberately — the column is a
+                      screening estimate and the engine table is the authority,
+                      which is the whole lesson of this entry.
 ngram_size_m_note   = LEAVE IT AT 48. Swept 2026-08-23 (context/bench/capacity/
                       sizem-*.json). VRAM is flat within 6 MiB across 48/32/24/
                       16, so there is nothing to reclaim, and lowering it only

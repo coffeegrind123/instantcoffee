@@ -107,7 +107,7 @@ that has nothing to do with tok/s: cold load here is 9-20 minutes.
 
 ---
 
-## 00b. 128K: the model gave back 678 MiB and the DESKTOP took 1240 — measured 2026-09-02
+## 00b. 128K — CLOSED 2026-09-03: it fits, and it halves decode
 
 `kvarn-measured-and-refused.md` ends by naming the next cheap measurement:
 *"re-run bee-128k-q8 on a quiet box and read `free` off the engine's exit
@@ -216,10 +216,38 @@ footprint of 22407; the engine says **21159**. A carried-over delta measured on
 different weights is not a measurement — the same lesson, in the same direction,
 as the 1163 MiB error `vram_note` already records.
 
-**What is still not answered, and it is now the only thing:** nothing has
-measured **prefill or decode at 128K on this model**. The fit question is
-closed; the cost question has never been asked on this stack. **96K stays the
-pin until it is** — that is a `capacity-probe.sh --bench` arm, not a guess.
+### The cost was measured too, and it CLOSES the item: 128K halves decode
+
+Both arms in ONE run, same 90,029-token prompt, `--repeat 3`:
+
+| | 96K | 128K | change |
+|---|---:|---:|---:|
+| prefill tok/s (median) | 1797.8 | 1200.7 | **-33%** |
+| decode tok/s (median) | 50.2 | 26.1 | **-48%** |
+| draft acceptance | 0.53-0.68 | 0.52-0.54 | flat |
+| free, engine table | 2116 | 702 | -1414 |
+
+**Decode is decisive and it is not noise.** The three 128K runs are
+26.1 / 25.3 / 26.3 — a 4% spread — against 96K's 44.4 / 53.7 / 50.2. No 128K
+round comes near any 96K round. Draft acceptance barely moves, so this is not
+spec-decoding collapsing; it is the window.
+
+The arms saw near-identical desktops (2535 / 2701 unaccounted), which is what
+makes this like-for-like — quoting the historical `ctx-96k` row instead would
+have compared across four different stacks, which is what the script's
+"re-measure the baseline in the same run" rule exists to prevent.
+
+**VERDICT: 128K fits and is not worth taking.** Halving interactive decode to
+buy 32K of window is a bad trade for an agent workload. 96K stays the pin — now
+on a cost measurement rather than on arithmetic about headroom. **This item is
+closed**; re-open it only if the workload changes to something prefill-bound
+that genuinely needs >96K in one prompt.
+
+**The +1408 constant is retired**: measured on this stack it is **1248**
+(context 4012 -> 5100, compute 560 -> 720). `vram-floor.sh`'s `report()` still
+hardcodes 1408, so its "free at 128K" column reads ~160 MiB pessimistic. Left
+alone on purpose — that column is a screening estimate and the engine table is
+the authority, which is this entry's whole lesson.
 
 **And the volatility is the finding, not the headroom.** The floor moved
 **765.8 MiB within this 11-minute capture**, against 295.5 on 09-02. So 09-02's
