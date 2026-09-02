@@ -835,6 +835,65 @@ in the session's process group and dies with it; a `setsid` one does not. That
 is a one-word change to test, and it is the next thing to try rather than
 another environment probe.
 
+### BOTH OF THOSE ARE WRONG — read before acting on them (2026-09-03)
+
+**The launch-shape step is aimed at code that does not exist.** There is no
+`nohup` anywhere in `ppl-cliff-run.sh` (the only `nohup` in `scripts/*.sh` is
+`browser.sh`'s Xvfb). The chunk passes in `pass()` are **synchronous**
+`docker run` — no `&` at all. The single `&` in the file is in `token_pass()`,
+and it is `wait`ed and `docker kill`ed a few lines later, runs FIRST, and is
+skipped entirely under `--skip-tokens`. So nothing is backgrounded at the point
+where the failure happens, and changing a launch shape there cannot affect it.
+
+**The stdout hypothesis cannot explain the symptom on its own.** `restore` calls
+`docker start` **unconditionally**; a failing `echo` returns non-zero into
+nothing and `set -e` is not in force. A closed stdout would therefore still have
+restarted llama. For llama to stay STOPPED you need *either* restore never
+reached *or* `docker start` itself failing — two different bugs, and stdout
+cannot tell them apart because the evidence for both is an echo that does not
+appear.
+
+**So restore now writes a FILE, and the file is the evidence.**
+`${LOCAL_LOGDIR}/restore.log`, each line appended with its own redirection (the
+fd is opened and closed per write, so nothing depends on an inherited fd), and
+`docker start`'s exit status is *recorded* rather than inferred from which echo
+ran — with docker's own stderr captured into the same file. Exercised in
+isolation against a nonexistent container; it correctly reported the caller's
+rc, `start rc=1`, docker's reason, and the post-state.
+
+Read it after any run that ends with llama down:
+
+| restore.log says | what it means |
+| --- | --- |
+| file absent | restore never reached — the EXIT trap did not run either, which means **SIGKILL** |
+| `restore entered`, no `start` line | killed INSIDE restore, between kill and start |
+| `start rc=0` and llama down | docker reported success and it stopped anyway — look at docker, not this script |
+| `start rc=` non-zero | `docker start` failed, and the reason is on the line above it |
+
+**The SIGKILL row is the one to expect.** The trap not firing is the strongest
+signal in the whole section: `trap … EXIT` runs on a normal return, on `exit`,
+and on a caught signal, and the only common thing it does NOT survive is
+SIGKILL. On this box the routine source of SIGKILL is the OOM killer, and the
+comment in `main_run` already notes the failure sits at "a docker run that
+deletes several GiB across the 9p mount" — memory pressure is documented here as
+the standing hazard. That is a hypothesis, NOT a measurement: the next run's
+`restore.log` (absent vs present) discriminates it in one look.
+
+**How to check the kernel for it, because the obvious command does not work
+here.** `dmesg` from this container is `Operation not permitted`. The Docker
+VM's ring buffer is reachable the same way the global notes drop its page cache:
+
+```
+docker run --rm --privileged alpine sh -c \
+  'dmesg | grep -iE "killed process|oom-kill|out of memory"'
+```
+
+Run 2026-09-03: the command works (the buffer reads fine) and returns **0 hits**
+— but that is **not** evidence about the 08-24 runs, because the buffer only
+spans the Docker VM's uptime, which was 2.2 days. So it is a live check to run
+*right after* a failing run, not an archaeology tool. Check it while the run is
+still fresh or it tells you nothing.
+
 **Corroborating evidence from the same day, unplanned:** the crash also killed a
 `spec-sweep.sh` run that had been launched with `setsid nohup` — and that one
 did NOT survive, because the crash took the whole container's process tree, not

@@ -375,12 +375,48 @@ main_run() {
   echo
   echo "==> stopping ${LLAMA_CT} (it holds the card; a cold reload follows this run)"
   docker stop "$LLAMA_CT" >/dev/null || die "could not stop ${LLAMA_CT}"
+  # RESTORE WRITES TO A FILE AS WELL AS STDOUT, AND THE FILE IS THE EVIDENCE.
+  # Four runs on 2026-08-24 ended with ${LLAMA_CT} stopped and restore's two
+  # messages missing, and the record's best hypothesis was "stdout is closed, so
+  # every echo fails silently". THAT HYPOTHESIS CANNOT EXPLAIN THE CONTAINER
+  # STAYING DOWN ON ITS OWN: docker start below is unconditional, a failing echo
+  # returns non-zero into nothing, and set -e is not in force — so a closed
+  # stdout would still have restarted llama. For it to stay down you need EITHER
+  # restore never reached, OR docker start itself failing. Those are different
+  # bugs with different fixes and stdout cannot tell them apart.
+  #
+  # So each line is appended with its own redirection (the fd is opened and
+  # closed per write, so nothing here depends on an fd inherited from the
+  # session), and the exit status of docker start is recorded rather than
+  # inferred from which echo ran. Read ${LOCAL_LOGDIR}/restore.log after any run
+  # that ends with llama down:
+  #   file absent            -> restore was never reached (killed before it, or
+  #                             the process died without running its EXIT trap,
+  #                             which means SIGKILL)
+  #   "start rc=0" + down    -> docker start returned success and the container
+  #                             still stopped; look at docker, not at this script
+  #   "start rc=<non-zero>"  -> docker start failed, and the reason is on the line
+  #   entered, no start line -> killed INSIDE restore, between kill and start
+  # NOT `local`: the EXIT trap can fire after main_run has returned, and a local
+  # would be out of scope by then — the writes would silently go nowhere, which
+  # is the exact failure mode this instrument exists to rule out.
+  restore_log="${LOCAL_LOGDIR}/restore.log"
+  rlog() { printf '%s  %s\n' "$(date -u +%H:%M:%S)" "$*" >>"$restore_log" 2>/dev/null || true; }
   restore() {
+    rlog "restore entered (caller rc=$?)"
     docker kill "$RUNNER_CT" >/dev/null 2>&1
+    rlog "docker kill ${RUNNER_CT} rc=$?"
     echo
     echo "==> restarting ${LLAMA_CT}"
-    docker start "$LLAMA_CT" >/dev/null && echo "    started; the model is now reading off disk" \
-      || echo "    FAILED to start ${LLAMA_CT} — start it by hand with ./scripts/up.sh"
+    local start_rc
+    docker start "$LLAMA_CT" >/dev/null 2>>"$restore_log"; start_rc=$?
+    rlog "docker start ${LLAMA_CT} rc=${start_rc}"
+    rlog "state now: $(docker inspect -f '{{.State.Status}}' "$LLAMA_CT" 2>&1)"
+    if (( start_rc == 0 )); then
+      echo "    started; the model is now reading off disk"
+    else
+      echo "    FAILED to start ${LLAMA_CT} — start it by hand with ./scripts/up.sh"
+    fi
   }
   trap restore EXIT INT TERM
 
