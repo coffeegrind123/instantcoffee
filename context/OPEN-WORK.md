@@ -1623,8 +1623,15 @@ shape that fails, because the surface grows and the list does not.
 - **Yours rather than mine.** `FORGE_MERGE_ACROSS_TOOLS=1` at real depth (needs
   capture ON for a working session); the four `s735f17` records on the tape
   (real session data — do not use or delete without asking); a GPU-heavy
-  foreground VRAM floor (every "does it fit" verdict is priced against a floor
-  measured on an idle desktop).
+  foreground VRAM floor. **PARTLY OBSOLETE 2026-09-03.** The premise was that
+  every "does it fit" verdict is priced against an idle desktop. The 128K probe
+  that day ran with the desktop at **2481 MiB** — near the 09-02 *median*, not
+  idle — and 128K is no longer decided by fit at all: it is refused on **cost**
+  (decode 50.2 -> 26.1 tok/s). What survives, and is worth more than the
+  original item, is that the floor moved **765.8 MiB inside one 11-minute
+  capture** and ~1.2 GiB across a day in each direction. A GPU-heavy foreground
+  is one point on a distribution nobody should be sampling once. See
+  `vram_note` / `ctx_128k_verdict`.
 
 ---
 
