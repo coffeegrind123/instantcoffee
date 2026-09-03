@@ -10,6 +10,54 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**The llama arm of the ninfer comparison is now measured three times and agrees
+with itself; the ninfer arm has still never produced a number.** Runs 1 and 2,
+2.5 hours apart on a quiet box (load 1.49), land within 0.3% on prefill and 1.5%
+on decode: **2080.8 / 2087.1 tok/s prefill** and **93.0 / 94.4 tok/s decode** on
+~20,582 prompt tokens. Run 3 at load 4.00 gives **1998.1** and **88.2** — 4%
+and 6% slower — which is a useful scale for what the quiet-box rule is worth.
+Note that `--prompt-tokens 32768` produces ~20,580: `CHARS_PER_TOKEN_GUESS` is
+3.6 against an actual ~5.73 for this filler, the flag is documented as a target
+rather than a promise, and both arms share the generator. Do not quote 32768.
+
+**Three defects were fixed, all in our own harness and none in either engine.**
+(1) The ninfer readiness probe was `docker exec ninfer sh -c 'curl -sf
+.../health'` and that image ships **no curl, no wget and no python3** — so the
+probe exited **127**, command not found, on every iteration, which the loop
+cannot distinguish from "not ready yet". It sat for nine minutes against a
+server that had been answering `/health` in **0.43 s** since minute one, and
+would have reported *"ninfer did not become healthy within 1800s"* about a
+healthy engine. It now probes from the bench image over the compose network —
+the right prober precisely because the arm uses it — and keeps 0/1/other
+distinct so a broken probe stops the run instead of burning 1800 s. Controlled
+three ways: present → 0, absent → 1, probe broken → 9. **That control failed on
+its first attempt and the probe was innocent** — llama was still cold-loading
+and honestly answering 503. (2) `_post_stream` discarded the HTTP error body,
+so an entire ninfer arm reported `HTTPError: HTTP Error 400: Bad Request` four
+times and said nothing about which field; it now raises `BackendRefused`
+carrying what the server actually said. (3) The engine log was captured at
+readiness, so it stopped at "listening" and held nothing about the requests;
+`bench_arm` now also writes `<arm>.engine-after.log`.
+
+**ninfer itself loads clean and the `O_DIRECT`-on-9p worry is settled.** Three
+cold loads: 16.67 GiB of weights in **132.7 / 146.2 / 165.7 s**, once through to
+`model loaded in 547.519 s` and listening. It reads its artifact faster than
+llama reads its GGUF off the same mount. At our matched `--max-context 98304
+--kv-dtype int8` it reports `pages=1536/1536`, `slack=1.59 GiB` and
+**`headroom=0.00 MiB`** — worth knowing before anyone tries the 262K arm.
+
+**The 400 is still undiagnosed, deliberately.** Reading ninfer's C++ validation
+ruled out the obvious suspects — it does not reject unknown fields wholesale, so
+`timings_per_token` is not it; `stream_options.include_usage` is parsed and
+accepted; `max_tokens` is accepted as a fallback for `max_completion_tokens` —
+and the remaining candidates are not worth guessing at when the next run will
+print the server's own reason. Two of three attempts were stopped externally
+mid-flight, once at 99.7% of the weight load, leaving ninfer holding ~22 GiB of
+VRAM and llama `Exited (137)`; `restore()` is entered on a trap but is not proof
+against a second signal, so recovery was by hand both times.
+
+---
+
 **llama-server can stop serving for up to 18 minutes while reporting itself
 healthy, and the cause is its own prompt cache.** Every request through forge
 died with `ReadError`/502 and the smoke test failed `forge plain completion`,

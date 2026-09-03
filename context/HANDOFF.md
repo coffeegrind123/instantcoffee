@@ -1,3 +1,134 @@
+# Handoff — 2026-09-04 (part 5: the llama arm is now measured three times and agrees with itself; the ninfer arm has still never produced a number, and the three reasons are all known and two are fixed)
+
+## Read this first
+
+**Nothing in the running stack moved.** `git diff HEAD -- .env .env.local
+docker-compose.yml modes/` is still empty. llama was stopped and restarted by
+the comparison script (that is its job) and twice recovered by hand after the
+session's background tasks were killed mid-run.
+
+**Three comparison runs, three complete llama arms, zero ninfer arms.** The
+llama result is now replicated and the box effect is visible in it:
+
+| run | dir | load at start | prompt tok | prefill t/s (median, range) | decode t/s (median, range) |
+| --- | --- | ---: | ---: | --- | --- |
+| 1 | `20260903-193057` | 1.49 | 20,582 | 2080.8 [2080.0 .. 2095.1] | 93.0 [87.7 .. 95.3] |
+| 2 | `20260903-220703` | 1.49 | 20,582 | 2087.1 [1957.6 .. 2104.7] | 94.4 [93.5 .. 96.9] |
+| 3 | `20260903-223223` | **4.00** | 20,580 | **1998.1** [1856.3 .. 2015.1] | **88.2** [87.2 .. 89.7] |
+
+Runs 1 and 2 are 2.5 hours apart on a quiet box and land within 0.3% on prefill
+and 1.5% on decode. Run 3, at load 4.00 instead of 1.49, is **4% slower on
+prefill and 6% slower on decode** — a reminder that the quiet-box rule is worth
+what it costs, and a rough scale for how much load buys you.
+
+**`--prompt-tokens 32768` produces ~20,580.** Documented behaviour, not a bug:
+`CHARS_PER_TOKEN_GUESS = 3.6` against an actual ~5.73 for this filler, and
+`build_prompt`'s docstring says the flag is a target and the server's count is
+what gets reported. Both arms share the generator. **Do not quote 32768.**
+
+---
+
+## 1. Why the ninfer arm still has no number — three distinct causes
+
+**Attempt 1** (run 1): killed externally during ninfer warmup. `restore()` was
+entered and then killed before its `docker start`, leaving llama stopped.
+
+**Attempt 2** (run 2): reached the engine and returned **HTTP 400 on all three
+rounds and the warmup**. Two defects, both now fixed, neither in either engine:
+
+- *The readiness probe could never succeed.* It was `docker exec ninfer sh -c
+  'curl -sf .../health'`, and that image ships **no curl, no wget, no
+  python3** — the probe exited **127** on every iteration, which the loop cannot
+  tell apart from "not ready yet". It sat nine minutes against a server that had
+  answered `/health` in **0.43 s** since minute one, and would have declared
+  *"ninfer did not become healthy within 1800s"* about a healthy engine. That
+  arm only ran at all because a readiness shim was written into the live
+  container by hand from outside — recorded here rather than hidden.
+- *The server's reason for the 400 was discarded.* urllib raises
+  `HTTPError: HTTP Error 400: Bad Request` and the body — where the reason lives,
+  with `message`/`param`/`code` — is readable exactly once off the exception and
+  was never read. Four failures said only "Bad Request".
+
+**Attempt 3** (run 3): killed externally at 99.7% of the weight load, before the
+fixed probe had anything to probe. `restore()` never ran: **ninfer was left
+holding ~22 GiB of VRAM and llama was left `Exited (137)`**, both recovered by
+hand.
+
+**So the 400 is still undiagnosed, and the next run will diagnose it for free.**
+`_post_stream` now raises `BackendRefused` carrying the body, and `bench_arm`
+captures `<arm>.engine-after.log` after the arm instead of only at readiness.
+
+**What was ruled out by reading ninfer's source, so nobody re-walks it:** it does
+**not** reject unknown fields wholesale, so `timings_per_token` is not it;
+`stream_options.include_usage` is explicitly parsed and accepted;
+`max_tokens` is accepted as a fallback for `max_completion_tokens`. The
+remaining candidates are `ContextLengthExceeded`,
+`ThinkingBudgetCapacityInsufficient` (whose guard only fires when
+`effective_output_tokens > budget`, so `max_tokens=128` probably misses it), and
+something in the message/role path. **Do not guess further — the body will say.**
+
+---
+
+## 2. ninfer loads clean, and the O_DIRECT worry is settled
+
+Across three cold loads: **16.67 GiB of weights in 132.7 / 146.2 / 165.7 s**
+(~100–130 MB/s), and once through to `model loaded in 547.519 s` and
+`listening`. Part 3 §4 flagged `O_DIRECT` on the 9p mount as "the likeliest way
+to lose the whole effort" — it is not a problem, and ninfer reads the artifact
+faster than llama reads its GGUF off the same mount.
+
+Its own capacity line, at our matched `--max-context 98304 --kv-dtype int8`:
+
+    KV capacity explicit resolved=98304 tokens pages=1536/1536 runtime=3.83 GiB
+    free-after-weights=5.42 GiB free-after-startup=1.86 GiB headroom=0.00 MiB
+    slack=1.59 GiB
+    state pools: text-kv=3.09 GiB mtp-kv=198.13 MiB gdn-state=293.62 MiB
+    replay-records=6.82 MiB persistent-arena=3.59 GiB workspace=152.57 MiB
+
+**`headroom=0.00 MiB` at 98,304 tokens** is worth noting before anyone tries
+`--wide` (262K) on this card.
+
+---
+
+## 3. What is fixed, and how it was controlled
+
+| fix | control |
+| --- | --- |
+| readiness probe runs from the bench image over the compose network | host present -> **0**, host absent -> **1**, probe itself broken -> **9**; the script now dies on anything that is not 0 or 1 |
+| `_post_stream` reads the HTTP error body | pending — the next 400 proves it |
+| engine log captured after the arm | pending — same run |
+| `RUN_DIR` `chmod 0777` | run 2 wrote `llama.json`; run 1 had died on `PermissionError` after measuring |
+
+**The probe control failed on its first attempt and the probe was innocent.**
+llama was still cold-loading and honestly answering `503`, so `rc=1` was
+correct. A control is only a control once you have checked the thing it is
+controlling against is actually in the state you assume.
+
+---
+
+## 4. Pick this up next
+
+1. **The run needs ~25 uninterrupted minutes** — llama arm ~2 min, ninfer cold
+   load ~9 min (of which the last ~6 is post-weight setup), ninfer arm, then a
+   ~5 min llama reload on restore. Two of three attempts died to an external
+   stop, and each one costs the full cycle again. Start it when nothing will
+   interrupt it:
+
+       ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 3
+
+2. **If it is killed anyway, restore by hand — the trap is not proof against a
+   second signal.** `docker rm -f ninfer-bench` (frees ~22 GiB of VRAM), then
+   `docker start instantcoffee-llama`, then wait ~5 min for `/health` 200.
+   Worth making `restore()` reachable from outside the script (a
+   `--restore-only` flag) so this is one command rather than three remembered
+   ones.
+3. **Read the 400 body first.** It will be in the console, in
+   `<run>/ninfer.json` under `error`, and the engine's side in
+   `<run>/ninfer.engine-after.log`. Fix the payload, not the engine.
+4. Everything in part 4 §7 items 2–5 still stands, unchanged.
+
+---
+
 # Handoff — 2026-09-03 (part 4: llama can stop serving for 18 minutes and still report itself healthy — that, not a code regression, is what took the stack down; and the same mechanism would have biased the ninfer comparison in ninfer's favour)
 
 ## Read this first
