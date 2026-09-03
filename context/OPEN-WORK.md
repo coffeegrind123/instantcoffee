@@ -1282,6 +1282,39 @@ one-arm control of the CONSTRUCTION only; the same-model PPL control still wants
 the misfire rate, and add the same-model control chunk. Then the amount-vs-
 content question is fully closed on one stack.
 
+### REPLACED 2026-09-03: a WITHIN-MODEL depth measurement, 1.94x on two pairs
+
+The retracted comparison has been redone inside one stack. Starts 6144 and 10240
+were measured today; start 8192 was added with log-probs, giving two overlapping
+pairs that share no model boundary. Both on `orcarouter Q4_K_M`:
+
+| shared tokens | n | depth 6145 | depth 4097 | |
+|---|---:|---:|---:|---|
+| 12289..14335 | 2047 | **26.9%** | 11.1% | deeper worse |
+| 14337..16383 | 2047 | **10.5%** | 8.2% | deeper worse |
+
+**Pooled 18.7% vs 9.6% — 1.94x**, McNemar chi2 = 309.5 on 405 vs 35 discordant
+pairs, p < 0.0001. So the depth effect IS real; the retraction was about the
+*measurement* being uncontrolled, not about the effect being absent. The
+within-model estimate is LARGER than the discarded cross-model 1.44x.
+
+**Read it with three limits, all of which are the honest ones:**
+
+1. **Two pairs, not four.** Starts 4096 and 12288 would complete the set and are
+   still missing — their pass was killed by the OOM killer at GPU container init
+   (`nvidia-container-cli: ldcache error: ... signal 9`), not by anything in the
+   code. They are one successful pass away.
+2. **The two pairs are not independent.** Start 8192 is the shallow arm of the
+   first and the deep arm of the second.
+3. **Depth and history CONTENT remain confounded**, exactly as this section has
+   said since August: moving the start changes both. `ppl_history_build.py` is
+   what separates them, and it already showed content alone moves PPL 3.96x with
+   amount fixed. **So the 1.94x is an upper bound on what depth alone does.**
+
+`scripts/cliff_overlap_analyse.py` produces this and prints limit 3 with every
+result. It cannot produce the retracted number: pairing across `GGUF_FILE` is
+refused outright.
+
 ### RETRACTED 2026-09-03 (same day): that comparison straddled a MODEL CHANGE
 
 **The 1.44x below is not a depth measurement and must not be quoted as one.**
