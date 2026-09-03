@@ -306,12 +306,19 @@ Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
    `pre_tokenizer` stop condition cannot fire. The earlier "5 of 6, only
    `tokenizer.json` differs" was an artefact of comparing LFS oids through a
    closed gate — both repos carry the same LFS oid *and* the same git blob oid.
-   What remains before spending the **51.7 GiB** download: the index ships
-   **1199** tensors against the cited 1,118-tensor inventory (unexplained, and a
-   preflight rejects mismatches), and the repo's 15 `mtp.*` tensors are this
-   stack's `draft-mtp` speed — if ninfer's converter drops that head, "126 t/s
-   against our 43" is not like-for-like. NVFP4 is not a shortcut: the converter
-   requires BF16 and that repo is compressed-tensors.
+   Both follow-on flags then cleared — the 1199-vs-1,118 tensor gap is a false
+   alarm (the **official** repo ships 1199 too, byte-identical in names, shards,
+   sizes and shapes, and the source preflight only looks up the names it
+   requires), and ninfer *does* convert the MTP head.
+   **But a third blocker stops the path: upstream ninfer refuses this GPU.** Its
+   README says the build *"rejects CUDA architectures other than `sm_120a`"* —
+   Blackwell — and this box is an **RTX 4090** (sm_89). Its `performance.md`
+   also puts every published number on an **RTX 5090, 32 GiB**, so this repo's
+   "~126 t/s on this card" was never this card. And the 262,144-token window is
+   the **MTP0** figure; with **MTP3 it is 131,072** — the same 128K measured and
+   refused here on 2026-09-03 for halving decode, and MTP is what the live
+   +38.7% pin runs on. **Do not download 51.7 GiB against upstream.** The cheap
+   next step is to read a 4090 fork's build gate and resource pins.
 2. **128K — DONE 2026-09-03, and the fit refusal is OVERTURNED.** It needed
    no operator and no process closed: the floor came back on its own
    (1045.1 / **1460.9** / 1810.9 over 44 samples) and Broadcast had been running

@@ -10,7 +10,7 @@ re-learn expensively.
 
 ---
 
-## 00. ninfer: gate CLEARED 2026-09-03, frontend pin is 6 of 6, no substitution needed
+## 00. ninfer: gate cleared, pin is 6 of 6 — but upstream REJECTS the 4090 (2026-09-03)
 
 `ngram-mod-and-the-load-confound.md` ("Also unevaluated") dismisses ninfer with
 one factual claim: *"both would cost the uncensored fine-tune this stack serves
@@ -108,7 +108,50 @@ rather than assumed.
 artifact. `//c/llm-models` has **154 GiB free** and `//d/llm-captures` has
 **7.5 TiB** — stage on D, not C.
 
-**TWO FLAGS TO CLEAR BEFORE SPENDING THAT DOWNLOAD:**
+### BOTH FLAGS CLEARED — and a THIRD one stops the whole path (2026-09-03)
+
+**Flag 1, the tensor count: FALSE ALARM, with the strongest possible control.**
+`Qwen/Qwen3.8-27B` — the artifact ninfer is *built for* — ships **1199 tensors
+too**. Name sets identical, shard placement identical, `total_size` identical to
+the byte (51.75 GiB), and dtype+shape identical across sampled shards 1, 9 and
+18. The 1,118 figure is ninfer's own object/recipe count, not an HF tensor
+count, and `preflight_source_reader` only looks up the names it REQUIRES
+(`reader.metadata(requirements)`) — extra tensors are never read and nothing
+asserts a total. There is no count check to fail.
+
+**Flag 2, the MTP head: PRESENT.** `qwen3_8_27b/inventory.py` builds
+`TENSOR_SPECS = TEXT_CORE + DRAFT_HEAD_TENSOR_SPECS + MTP_TENSOR_SPECS +
+VISION`. ninfer converts the MTP head.
+
+**FLAG 3, WHICH IS FATAL FOR THIS BOX: ninfer will not build on a 4090.**
+From its README: *"NInfer requires 64-bit Linux, an NVIDIA GeForce RTX 5090 ...
+**The build rejects CUDA architectures other than `sm_120a`.**"* `sm_120a` is
+Blackwell. This box is an **RTX 4090** (sm_89, Ada) — read off the engine's own
+memory breakdown, not assumed.
+
+**And the headline numbers are not from this card.** `docs/performance.md`:
+GPU = **RTX 5090, 32 GiB** — a faster card with **8 GiB more VRAM**. So this
+entry's framing, *"a documented 262,144-token window at ~126 t/s decode on this
+card against our 98,304 at ~43"*, is wrong in the words **"on this card"**. It
+is a different, larger GPU.
+
+**The window claim also does not survive contact with speculative decoding.**
+Same table: *"Maximum context 262,144 tokens; **131,072 for Qwen3.8 MTP3**"*.
+262,144 is the **MTP0** figure — spec decoding OFF. With MTP3 the ceiling is
+131,072 — the *same* 128K this repo measured on 2026-09-03 and refused because
+it **halves decode** (50.2 -> 26.1 tok/s). And MTP is exactly what this stack's
+live +38.7% pin depends on.
+
+**So the honest status: the engineering blockers are all cleared and the path is
+still not available here.** It needs one of the three community 4090 forks
+(`UDPSendToFailed/ninfer-4090` at 90*, `sergiuszm/ninfer-4090`,
+`ruwwww/ninfer-5060ti` for `sm_120a` Blackwell-small), and a fork's converter
+pins and MTP support would have to be re-verified rather than inherited from
+this check. **Do not download 51.7 GiB against upstream.** The next cheap step,
+if anyone wants this, is to read a 4090 fork's build gate and its
+`OFFICIAL_RESOURCE_SHA256` — same method as above, no bytes moved.
+
+*(Historical: the two flags this section raised before that, now both cleared.)*
 
 1. **Tensor count.** The index ships **1199** tensors — 850 `model.language_model`,
    333 `model.visual`, 15 `mtp`, 1 `lm_head` — against the **1,118**-tensor
