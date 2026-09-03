@@ -36,6 +36,7 @@ results/
 .ppl-stride-logs/
 .ppl-depth-logs/
 .ppl-cliff-logs/
+.ninfer-compare/
 
 # Whole-file backup of versions.lock taken by scripts/update.sh before it edits
 # the fields it owns. update.sh no longer rewrites that file from a template
