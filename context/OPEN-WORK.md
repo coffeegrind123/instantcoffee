@@ -1125,7 +1125,7 @@ without new evidence; both tests are recorded above and both were negative.
 
 ---
 
-## 2. What sets the misfire rate — CONTENT does, 3.96x (2026-09-03); the 1.44x depth claim is RETRACTED
+## 2. What sets the misfire rate — CONTENT 3.96x, DEPTH 1.45x within-model (2026-09-03)
 
 §3f of `context/design/kv-cache-fidelity-measured.md` established WHAT a cliff
 is: a per-token misfire rate. The model puts ~0.2 probability on an unrelated
@@ -1282,7 +1282,45 @@ one-arm control of the CONSTRUCTION only; the same-model PPL control still wants
 the misfire rate, and add the same-model control chunk. Then the amount-vs-
 content question is fully closed on one stack.
 
-### REPLACED 2026-09-03: a WITHIN-MODEL depth measurement, 1.94x on two pairs
+### COMPLETE 2026-09-03: four within-model pairs, 1.45x — and it lands on the retracted number
+
+All five starts now measured on `orcarouter Q4_K_M` (4096 / 6144 / 8192 / 10240 /
+12288), giving four token-matched pairs over **disjoint** shared ranges:
+
+| shared tokens | n | depth 6145 | depth 4097 | |
+|---|---:|---:|---:|---|
+| 10241..12287 | 2047 | **30.2%** | 22.5% | deeper worse |
+| 12289..14335 | 2047 | **26.9%** | 11.1% | deeper worse |
+| 14337..16383 | 2047 | **10.5%** | 8.2% | deeper worse |
+| 16385..18431 | 2047 | 14.3% | **14.8%** | shallower worse |
+
+**Pooled 20.5% vs 14.1% — 1.45x**, McNemar chi2 = 386.3 on 605 vs 87 discordant,
+p < 0.0001, over 8188 paired token-comparisons. Three of four pairs deeper-worse;
+the fourth reverses by 0.5 points.
+
+**AND IT IS WITHIN 0.01 OF THE RETRACTED CROSS-MODEL FIGURE (1.44x). Say that
+out loud rather than quietly banking the agreement.** The retraction was still
+correct and would be correct again: that comparison pooled two models whose
+per-window ratio runs 0.59x-0.85x, its pairing was not within-model, and its
+p-value was therefore meaningless. **A wrong method that happens to land on the
+right answer is still a wrong method** — the agreement is luck, and the only
+reason we know it is luck is that the controlled version was run. Had the
+model delta been larger or asymmetric across depth, the same method would have
+produced a confidently wrong number with the same p-value.
+
+The intermediate two-pair figure (1.94x) was the outlier of the three, because
+those two pairs happened to be the ones with the widest deep/shallow gaps. With
+n=2 pairs that is sampling, not signal — which is the same lesson the sensitivity
+row exists for elsewhere in this file.
+
+**Still an UPPER BOUND on depth alone.** The four pairs move the chunk start, and
+that changes how deep the token sits AND what precedes it. Only a constructed
+history separates the two, and that half is already measured: content alone moves
+PPL **3.96x** at fixed amount (`ppl_history_build.py`). The two halves are not yet
+in the same units — this is misfire rate, that is chunk PPL — so re-running the
+history arms WITH log-probs is what makes them directly comparable.
+
+### SUPERSEDED: the two-pair intermediate, 1.94x
 
 The retracted comparison has been redone inside one stack. Starts 6144 and 10240
 were measured today; start 8192 was added with log-probs, giving two overlapping

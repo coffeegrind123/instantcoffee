@@ -332,6 +332,15 @@ Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
    **128K fits and is not worth taking**; 96K stays the pin on a cost
    measurement rather than on headroom arithmetic. The carried-over +1408 MiB
    delta is retired: measured on this stack it is **1248**.
+0b. **Section 2 is ANSWERED on both axes (2026-09-03).** History **content**
+   moves chunk PPL **3.96x** with the scored tokens and the history AMOUNT held
+   fixed (`ppl_history_build.py`, construction validated against a same-model
+   control at 15.4423). **Depth** moves the per-token misfire rate **1.45x**
+   across four within-model token-matched pairs (20.5% vs 14.1%, McNemar
+   chi2=386.3, p<0.0001, disjoint ranges). Depth is an UPPER bound — moving the
+   start changes content too. The two figures are not yet in the same units;
+   re-running the history arms with log-probs is what makes them comparable.
+
 0. **READ THIS BEFORE QUOTING ANY PER-TOKEN CLIFF NUMBER.** The
    `.ppl-cliff-logs/` runs span a MODEL CHANGE: everything dated 2026-08-24 was
    measured on `unsloth/Qwen3.8-27B-GGUF UD-Q4_K_XL`, and everything from
