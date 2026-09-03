@@ -10,7 +10,7 @@ re-learn expensively.
 
 ---
 
-## 00. ninfer is NOT blocked by the reason this repo wrote down — REOPENED 2026-09-02
+## 00. ninfer: gate CLEARED 2026-09-03, frontend pin is 6 of 6, no substitution needed
 
 `ngram-mod-and-the-load-confound.md` ("Also unevaluated") dismisses ninfer with
 one factual claim: *"both would cost the uncensored fine-tune this stack serves
@@ -66,6 +66,62 @@ affect the GGUF this stack serves: both the orcarouter and unsloth GGUFs stamp
 counts, checked with a ranged header read. But it means orcarouter's repos do
 not all carry the same tokenizer, so "the fine-tune keeps the stock tokenizer"
 must be verified per repo rather than assumed.
+
+### GATE ACCEPTED 2026-09-03 — and the tokenizer question does not exist: 6 of 6
+
+Access verified the right way (`resolve/`, not the API): **302 -> 206** on both
+`orcarouter/Qwen3.8-27B-Uncensored` and its `-NVFP4` sibling.
+
+**Every one of ninfer's six pinned frontend files is BYTE-IDENTICAL between the
+uncensored fine-tune and `Qwen/Qwen3.8-27B`**, and matches ninfer's own
+`OFFICIAL_RESOURCE_SHA256` constants at full 64-hex length:
+
+| file | sha256 (first 32) | vs ninfer pin |
+| --- | --- | --- |
+| `tokenizer.json` | `0997f410c57a1f4e53b09e4be8f4a172` | MATCH |
+| `tokenizer_config.json` | `b11349aafa7cdc6a320767cf7ceb29ed` | MATCH |
+| `chat_template.jinja` | `c3cf9e34abf4f9e36c2d72165aa9c132` | MATCH |
+| `generation_config.json` | `e70c136c1b78ddc1fb0905bac8e733a4` | MATCH |
+| `preprocessor_config.json` | `27225450ac9c6529872ee1924fcb0962` | MATCH |
+| `video_preprocessor_config.json` | `7768af27c1fafa9cc9011c1dc20067e0` | MATCH |
+
+**So no substitution is needed at all, and the stop condition never fires.** The
+plan below says "if `pre_tokenizer` differs, STOP" — `pre_tokenizer` cannot
+differ, because the entire file is the same bytes.
+
+**THIS CORRECTS THE "5 of 6" ABOVE.** That reading came from comparing HF **LFS
+object ids** while the repo was gated. Both repos' `tokenizer.json` carry the
+*same* LFS oid `0997f410c57a1f4e...` **and** the same git blob oid
+`9328ce9c41e8`. Checked three independent ways — sha256 of the downloaded bytes,
+the LFS oid, and the git blob oid — plus a cache-busted re-download that hashed
+identically. `chat_template.jinja` landing on `c3cf9e34...`, the sha this repo
+recorded independently on 2026-09-02, is the control that the hashing is right.
+
+**The NVFP4 shortcut is NOT available.** `recipe.py` sets
+`SOURCE_DTYPE = "BF16"` and rejects any mismatch (`source dtype X != required`).
+The `-NVFP4` repo is 23.0 GiB and `quant_method: compressed-tensors`, so it
+would fail that preflight. The bf16 repo's shard-1 safetensors header reads
+**BF16, 392 tensors** — read by ranged fetch, so the source dtype is confirmed
+rather than assumed.
+
+**Honest cost, measured:** 18 shards, **51.7 GiB**, plus the ~19 GB `.ninfer`
+artifact. `//c/llm-models` has **154 GiB free** and `//d/llm-captures` has
+**7.5 TiB** — stage on D, not C.
+
+**TWO FLAGS TO CLEAR BEFORE SPENDING THAT DOWNLOAD:**
+
+1. **Tensor count.** The index ships **1199** tensors — 850 `model.language_model`,
+   333 `model.visual`, 15 `mtp`, 1 `lm_head` — against the **1,118**-tensor
+   inventory this entry cites. The 81 difference is unexplained; `inventory.py`
+   for `qwen3_8_27b` delegates to `qwen3_6`'s, and it was not chased further.
+   A count mismatch is exactly what `preflight_sources` rejects, so resolve it
+   against the real inventory before downloading 51.7 GiB.
+2. **The MTP head, which is this stack's speed.** The repo carries 15 `mtp.*`
+   tensors, and **this stack's live +38.7% depends on `draft-mtp`**. If ninfer's
+   converter drops that head, "126 t/s against our 43" is not like-for-like and
+   the comparison has to be re-read. `convert.py` does call
+   `draft_head.compute_shortlist(...)`, so a draft head exists there — but that
+   it is THIS MTP head is unverified.
 
 **Order to do this in, cheapest first:**
 

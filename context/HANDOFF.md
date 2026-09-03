@@ -299,12 +299,19 @@ headroom needs the floor measured **on the day**.
 
 Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
 
-1. **The HF gate (needs the operator).** Accept the terms on
-   `orcarouter/Qwen3.8-27B-Uncensored`, then diff its `tokenizer.json` against
-   `Qwen/Qwen3.8-27B`'s — vocab, added_tokens, merges, pre_tokenizer, decoder.
-   If only merges *serialisation* differs, substituting the official file is
-   defensible. **If `pre_tokenizer` differs, stop** — the artifact would tokenise
-   differently from the GGUF and no speed number is worth that.
+1. **The HF gate — CLEARED 2026-09-03, and the tokenizer question does not
+   exist.** All **six** of ninfer's pinned frontend files are byte-identical
+   between the uncensored fine-tune and `Qwen/Qwen3.8-27B`, matching ninfer's own
+   `OFFICIAL_RESOURCE_SHA256` at full length. No substitution is needed and the
+   `pre_tokenizer` stop condition cannot fire. The earlier "5 of 6, only
+   `tokenizer.json` differs" was an artefact of comparing LFS oids through a
+   closed gate — both repos carry the same LFS oid *and* the same git blob oid.
+   What remains before spending the **51.7 GiB** download: the index ships
+   **1199** tensors against the cited 1,118-tensor inventory (unexplained, and a
+   preflight rejects mismatches), and the repo's 15 `mtp.*` tensors are this
+   stack's `draft-mtp` speed — if ninfer's converter drops that head, "126 t/s
+   against our 43" is not like-for-like. NVFP4 is not a shortcut: the converter
+   requires BF16 and that repo is compressed-tensors.
 2. **128K — DONE 2026-09-03, and the fit refusal is OVERTURNED.** It needed
    no operator and no process closed: the floor came back on its own
    (1045.1 / **1460.9** / 1810.9 over 44 samples) and Broadcast had been running
