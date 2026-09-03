@@ -10,6 +10,27 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**`ninfer-compare.sh --restore-only` puts the stack back in one command.** The
+script's EXIT/INT/TERM trap does work — an interrupted run on 2026-09-03
+recovered unaided — but it is not proof against a *second* signal, which one
+run took between `docker rm -f` and `docker start`, leaving ninfer holding
+~22 GiB of VRAM and llama `Exited (137)`. Recovery then meant remembering two
+commands and a five-minute wait at exactly the moment the operator has least
+context. The flag reaches the same `restore()` from outside the run that needed
+it, is safe to run when nothing needs restoring, and names which of the three
+states llama is actually in — already healthy, running but still loading, or
+failed to start — instead of telling you to wait five minutes for a container
+that is fine. Its run directory is suffixed `-restore` so a recovery can never
+be mistaken for a measurement.
+
+**It was controlled with a real container, not just an absent one.**
+`docker rm -f` on a container that is not there also returns 0, so "removed
+nothing successfully" and "removed the right thing" are indistinguishable from
+the exit code alone. A stand-in named `ninfer-bench` was planted and confirmed
+gone afterwards, with llama untouched and still healthy.
+
+---
+
 **The llama arm of the ninfer comparison is now measured four times and agrees
 with itself; the ninfer arm has still never produced a number.** The three quiet
 runs (1, 2 and 4) span **2066.1 to 2087.1 tok/s prefill — a 1.0% spread over

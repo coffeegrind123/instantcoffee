@@ -6,6 +6,7 @@
 #   ./scripts/ninfer-compare.sh --ninfer-only      # skip the llama arm
 #   ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 5
 #   ./scripts/ninfer-compare.sh --wide             # add ninfer's 262K arm
+#   ./scripts/ninfer-compare.sh --restore-only     # put the stack back, measure nothing
 #
 # WHY THE TWO ENGINES CANNOT BE INTERLEAVED
 #
@@ -100,6 +101,7 @@ REPEAT=3
 RUN_LLAMA=1
 RUN_NINFER=1
 WIDE=0
+RESTORE_ONLY=0
 KV_DTYPE="int8"
 CONTEXT=""
 OUT_DIR="${REPO_ROOT}/.ninfer-compare"
@@ -114,6 +116,7 @@ while [[ $# -gt 0 ]]; do
     --ninfer-only)   RUN_LLAMA=0; shift ;;
     --llama-only)    RUN_NINFER=0; shift ;;
     --wide)          WIDE=1; shift ;;
+    --restore-only)  RESTORE_ONLY=1; shift ;;
     --out)           OUT_DIR="$2"; shift 2 ;;
     -h|--help)       sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d'; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -128,7 +131,9 @@ fi
 
 mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-RUN_DIR="$OUT_DIR/$STAMP"
+# A --restore-only run is not a measurement and must never be mistaken for one
+# when someone lists this directory later, so it is named for what it is.
+RUN_DIR="$OUT_DIR/$STAMP$([[ "$RESTORE_ONLY" -eq 1 ]] && echo "-restore")"
 mkdir -p "$RUN_DIR"
 # 0777, and it is not laziness. This directory is created here as root and then
 # bind-mounted into the bench container as /out, where bench_cross_engine.py
@@ -224,6 +229,45 @@ restore() {
   return 0
 }
 trap restore EXIT INT TERM
+
+# --- --restore-only ----------------------------------------------------------
+#
+# PUT THE STACK BACK, WITHOUT MEASURING ANYTHING.
+#
+# The trap above is entered on INT/TERM and works -- attempt 4 on 2026-09-03 was
+# stopped from outside and restore() completed unaided. But it is not proof
+# against a SECOND signal: attempt 3 took one while restore was still running
+# and stopped between `docker rm -f` and `docker start`, leaving ninfer holding
+# ~22 GiB of VRAM and llama `Exited (137)`. Recovering that meant remembering
+# two commands and a five-minute wait, at the exact moment the operator has
+# least context.
+#
+# So the same code path is reachable from outside the run that needed it:
+#
+#     ./scripts/ninfer-compare.sh --restore-only
+#
+# It is deliberately safe to run when nothing needs restoring -- `docker rm -f`
+# on an absent container and an already-running llama are both normal outcomes,
+# not errors -- so it can be the reflex after any interrupted run without first
+# working out whether it was necessary.
+if [[ "$RESTORE_ONLY" -eq 1 ]]; then
+  info "restore-only: removing $NINFER_CT if present, starting $LLAMA_CT if stopped"
+  restore
+  cat "$RUN_DIR/restore.log"
+  # Say which of the three states it is actually in. "Running" alone would tell
+  # an operator to wait five minutes for a container that was already healthy,
+  # and a wrong instruction is worse than none at the point where someone is
+  # recovering from an interrupted run.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$LLAMA_CT" 2>/dev/null)" != "true" ]]; then
+    warn "$LLAMA_CT is NOT running and could not be started; check: docker logs $LLAMA_CT"
+  elif [[ "$(docker inspect -f '{{.State.Health.Status}}' "$LLAMA_CT" 2>/dev/null)" == "healthy" ]]; then
+    ok "$LLAMA_CT is up and healthy — nothing to wait for"
+  else
+    ok "$LLAMA_CT is running but still loading — expect ~5 minutes before /health returns 200"
+  fi
+  # RESTORED is already 1, so the EXIT trap will not run it a second time.
+  exit 0
+fi
 
 # --- arms --------------------------------------------------------------------
 bench_arm() {

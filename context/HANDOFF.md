@@ -135,12 +135,20 @@ controlling against is actually in the state you assume.
 
        ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 3
 
-2. **If it is killed anyway, restore by hand — the trap is not proof against a
-   second signal.** `docker rm -f ninfer-bench` (frees ~22 GiB of VRAM), then
-   `docker start instantcoffee-llama`, then wait ~5 min for `/health` 200.
-   Worth making `restore()` reachable from outside the script (a
-   `--restore-only` flag) so this is one command rather than three remembered
-   ones.
+2. **If it is killed anyway, one command puts it back:**
+
+       ./scripts/ninfer-compare.sh --restore-only
+
+   The trap DOES work — attempt 4 was stopped from outside and `restore()`
+   completed unaided. It is not proof against a SECOND signal, which is what
+   attempt 3 took, stopping it between `docker rm -f` and `docker start` and
+   leaving ninfer holding ~22 GiB of VRAM and llama `Exited (137)`. The flag
+   reaches the same code path from outside the run that needed it, is safe when
+   nothing needs restoring, and reports which of the three states llama is
+   actually in rather than telling you to wait five minutes for a container
+   that is already healthy. Controlled with a real stand-in container, because
+   `docker rm -f` on an absent one also returns 0 and the two are otherwise
+   indistinguishable.
 3. **Read the 400 body first.** It will be in the console, in
    `<run>/ninfer.json` under `error`, and the engine's side in
    `<run>/ninfer.engine-after.log`. Fix the payload, not the engine.
