@@ -407,6 +407,69 @@ the measurement stack has to stay regardless.
 
 ---
 
+## 10. UPDATE — it builds, on this box, and the binary is native sm_89
+
+Everything above was read-only. This section is the first part that was RUN.
+`sergiuszm/ninfer-4090` at `rtx4090-port` (`914e050`), built with its own
+`Dockerfile`, unmodified:
+
+    docker build --tag ninfer-4090:sm89 .
+
+**It builds clean.** 290 objects, zero errors, `nvidia/cuda:13.1.2-devel-ubuntu24.04`
+-> a 5.13 GB runtime image, `ninfer` and `ninfer-serve` both linking and running.
+No patches, no flags, no vcpkg, no Windows. The clone's own gate confirms locally
+what the API read said: default `89`, and `89` only.
+
+**The binary contains native Ada code, verified rather than assumed:**
+
+    ELF file 1: ninfer-serve.1.sm_89.cubin
+    ELF file 2: ninfer-serve.2.sm_89.cubin
+          2 sm_89     ELF cubins
+         (none)       PTX
+
+Two `sm_89` cubins and **zero PTX**, so there is no JIT fallback: the open gate
+is not cosmetic, and this build targets this card specifically.
+
+**That check needed its control, and the first run of it was wrong.** The first
+`cuobjdump` invocation returned empty for cubins AND for PTX — which reads as
+"no device code" and is a perfectly plausible wrong answer. The control (running
+`cuobjdump` against a binary known not to contain device code, and printing the
+raw first lines) showed the real cause: `cuobjdump fatal: Could not open input
+file`. The binary had been staged in `/tmp/claude-0/...`, which exists inside
+this container and **not on the host**, so Docker Desktop mounted an empty
+directory over it. Re-staged under the 9p mount and referenced by its `//c/...`
+path, the file opened and the cubins appeared. An empty grep result and a file
+that was never opened are indistinguishable without the control.
+
+**`O_DIRECT` on the 9p mount: NOT a blocker.** `src/artifact/reader.cpp:255`
+opens the artifact `O_RDONLY | O_CLOEXEC | O_DIRECT` and mmaps it. `O_DIRECT` is
+unsupported on many filesystems and fails `open()` with `EINVAL`, and the models
+volume is 9p — a prime candidate. Tested against a GGUF already on that mount,
+with plain `O_RDONLY` as the control:
+
+    mount: /models type=9p
+    O_RDONLY           -> OK
+    O_RDONLY|O_DIRECT  -> OK
+
+It opens. The second-order consequence still stands: `O_DIRECT` bypasses the
+page cache, so a re-load gets no help from it and cold load is genuinely a cold
+read of 16.96 GiB over 9p. That is why `ninfer-compare.sh` polls `/health` for
+up to 1800 s instead of sleeping a guess.
+
+**A third README-vs-code divergence in this family.** `ninfer-serve --help`:
+*"`--turn-checkpoints` is RETIRED and has no effect ... the value is accepted and
+ignored so existing command lines keep starting"* — while the fork's own quick
+start still recommends `--turn-checkpoints 32` and links a doc for it. Harmless,
+because it is accepted and ignored, but it is the same pattern as the UDP fork's
+`sm_86` default: **in this fork family the READMEs run ahead of the code, so
+check a flag against `--help` or the source before relying on it.** All thirteen
+flags `ninfer-compare.sh` passes were checked that way.
+
+**What is still not measured:** anything about speed. The artifact was still
+downloading when this was written.
+
+---
+
 ## Method note
 
 Everything here was read with `gh api -H "Accept: application/vnd.github.raw"`,
