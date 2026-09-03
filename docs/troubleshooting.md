@@ -215,3 +215,87 @@ of being bind-mounted.
 ---
 
 [← back to the README](../README.md)
+
+---
+
+## Every request 502s or hangs, but llama is "healthy" — the prompt-cache stall
+
+**Symptom.** forge answers `{"error":{"message":"ReadError (no message)",
+"type":"proxy_error"}}` or simply never answers; the smoke test fails
+`forge plain completion`; and every liveness signal on the box says the stack is
+fine. `docker ps` shows `Up N hours (healthy)`, `/health` returns 200 in ~5 ms,
+`nvidia-smi` shows the model resident. `llama-server` is at 100% of one core in
+`R` state with the GPU near idle.
+
+**It is not a crash, and probably not a wedge.** llama-server is inside a
+**prompt-cache update**, which runs on the main loop and services nothing while
+it does. Confirm it in one command:
+
+    docker logs instantcoffee-llama 2>&1 | grep -E 'updating prompt cache|prompt cache update took'
+
+An `updating prompt cache` with no matching `prompt cache update took` after it
+is a stall in progress. Note the `2>&1`: llama writes to **stderr**, so without
+it every grep of `docker logs` comes back empty and the absence reads as
+evidence.
+
+**How long it can last.** Measured on this box on 2026-09-03, same engine, same
+day: usually 1.3–2.9 s, but **24.78 s** on one of six otherwise identical quiet
+rounds, **39.06 s** and **81.12 s** under load, and once **1,109.11 s — 18
+minutes 29 seconds**. That last one ate a smoke-test request whole: forge
+cancelled it at exactly 600.000 s (`FORGE_BACKEND_TIMEOUT`) and reported a proxy
+error about a server that was, in its own terms, healthy throughout.
+
+**Why the healthcheck cannot see it.** `/health` is answered by an HTTP thread
+and never touches the inference loop. `/slots` and `/metrics` post a task to the
+same queue a completion goes through, so they answer only while the loop is
+turning. During the stall `/health` returned 200 in 37 ms while both of the
+others timed out at 10 s; five minutes after a restart all three answered in
+~5 ms. That contrast is the diagnostic:
+
+    for e in /health /slots /metrics; do \
+      printf '%-9s ' "$e"; \
+      curl -sS -o /dev/null -w 'HTTP %{http_code} in %{time_total}s\n' \
+        --max-time 10 "http://127.0.0.1:8080$e"; done
+
+`/health` fast + `/slots` and `/metrics` timing out = the loop is inside
+something. `/health` failing too = nobody is home, which is the case the
+watchdog in `docker-compose.yml` already handles by ending the container.
+
+**Do not turn that diagnostic into a watchdog.** An update that legitimately
+finishes after 18m29s is indistinguishable from outside from one that never
+will, so any kill threshold short enough to be useful would end a working engine
+mid-copy and buy a cold reload for nothing. This is a diagnosis, not a trigger.
+
+**Why the entries are so large here.** Qwen3.8-27B is a hybrid: 48 of its 64
+layers hold a constant-size recurrent state, so a cached prompt costs ~150 MiB
+before its first KV byte and each `CTX_CHECKPOINTS` copy adds ~150 MiB more. The
+server's own cache dump shows a **34-token** prompt occupying **300.559 MiB**,
+and a 29,714-token prompt **1,783.870 MiB** against the `CACHE_RAM=2048` cap —
+so at long contexts the cache holds exactly one prompt and every prompt switch
+evicts it and re-copies more than a gigabyte:
+
+    docker logs instantcoffee-llama 2>&1 | grep -E 'cache state:|- prompt 0x'
+
+**What to do about it.** In the moment: wait, or restart llama
+(`docker restart instantcoffee-llama`, then expect a ~5 minute warm reload) and
+accept that you may be killing an operation that was about to finish. Note that
+`docker restart` on a spinning llama-server can fail with *"tried to kill
+container, but did not receive an exit event"* and leave the container `exited`
+with the restart policy suppressed — `docker start` it, and if the NVIDIA
+prestart hook then dies with `ldcache error: process /sbin/ldconfig terminated
+with signal 9`, drop the Docker VM page cache and retry:
+
+    docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+
+Structurally, `CACHE_RAM=0` removes the path entirely at the cost of all
+cross-request prefix reuse. **That is a pin change and has not been made** — the
+trade has not been measured, only the tail has. `./scripts/cache_stall_probe.py`
+is the instrument for measuring it.
+
+**Size does not predict the stall.** Six quiet rounds with an identical
+~1252 MiB payload and one eviction each ran 1.32, 1.32, 1.38, 1.98, 2.86 and
+24.78 s, and the 24.78 s round had the *most* free memory of the six
+(5,460 MiB). So the obvious "it is memory pressure" reading is not supported by
+that data and was retracted. Contention makes the tail worse — both three-figure
+observations came from a box at load 16–34 with another build running — but the
+mechanism behind the variance is not identified.

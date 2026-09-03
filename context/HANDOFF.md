@@ -1,3 +1,265 @@
+# Handoff — 2026-09-03 (part 4: llama can stop serving for 18 minutes and still report itself healthy — that, not a code regression, is what took the stack down; and the same mechanism would have biased the ninfer comparison in ninfer's favour)
+
+## Read this first
+
+**Nothing in the running stack moved.** `git diff HEAD -- .env .env.local
+docker-compose.yml modes/` is empty for this whole session. `CACHE_RAM=2048`,
+`CTX_CHECKPOINTS=4`, `CTX_SIZE=98304` and every other pin are exactly as part 3
+left them, **including the two this session measured a real cost for**. llama
+was stopped and cold-loaded three times and is healthy.
+
+**The stack was DOWN when this session opened, and the smoke failures in part
+3's gates were not a code regression.** Both `forge plain completion` and
+`forge OpenAI tool call` were the same thing, and it is worth knowing by name:
+
+| | |
+| --- | --- |
+| **Symptom** | forge `502 {"type":"proxy_error","message":"ReadError (no message)"}`, or no answer at all |
+| **What every liveness signal said** | `Up 5 hours (healthy)`, `/health` 200 in **37 ms**, model resident, `FailingStreak=0` |
+| **What was actually true** | `llama-server` at **100% of one core**, `R` state, **0 voluntary context switches** in 15 s, GPU at **3%**, one task queued and unserved |
+| **Where it was** | inside a **prompt-cache update** — `--cache-ram 2048`'s save/evict/load, which runs on the main loop and services nothing while it does |
+| **Worst observed** | **1,109.11 s — 18 min 29 s** |
+| **Recovery** | `docker restart` (see §5 — it does not go smoothly), then smoke **11/11** |
+
+**§2 contains a retraction of a claim I made earlier in this same session.**
+Read it before trusting the word "wedge" anywhere.
+
+---
+
+## 1. The measurement, and it is the engine's own account
+
+`srv get_availabl: prompt cache update took N ms`. Not inferred from wall clock
+— llama prints it. Everything below is from one card over one day:
+
+| payload | evictions | took | box |
+| ---: | ---: | ---: | --- |
+| 157.9 MiB | 1 | **0.30 s** | quiet |
+| 150.0 MiB | 0 | **8.97 s** | loaded |
+| 538.1 MiB | 2 | **39.06 s** | loaded |
+| ~1252 MiB | 1 | **1.32 / 1.32 / 1.38 / 1.98 / 2.86 s** | quiet (4 of 6 rounds) |
+| 1252.4 MiB | 1 | **24.78 s** | quiet (1 of 6 rounds) |
+| 1253.7 MiB | 2 | **81.12 s** | loaded |
+| 924.1 MiB | 3 | **1109.11 s** | loaded |
+
+**The 1109 s one is not a curiosity — it is the outage.** The chain is exact,
+straight out of the log:
+
+    173:56.265  request arrives (20,845-token prompt)
+    173:56.714  prompt_save begins, 924.126 MiB
+    183:56.265  cancel task 374        <- +600.000000 s, to the microsecond
+    192:24.014  prompt cache update took 1109113.74 ms
+    192:25.818  release task 374, n_tokens = 20845, having served nothing
+
+`+600.000000 s` is `FORGE_BACKEND_TIMEOUT`. So the gates run reported
+`forge plain completion` failed, and what it had actually found was a healthy
+server 10 minutes into an 18-minute internal copy.
+
+**Why the entries are that large: the model is a hybrid.** 48 of Qwen3.8-27B's
+64 layers hold a constant-size recurrent state, so a cached prompt costs ~150
+MiB before its first KV byte and each `CTX_CHECKPOINTS` copy adds ~150 MiB more.
+The server's own dump is unambiguous — and a **34-token** prompt is the line to
+remember:
+
+    - prompt 0x608fe0d49cc0:      34 tokens, checkpoints:  1,   300.559 MiB
+    - prompt 0x608fe737c9a0:   29714 tokens, checkpoints:  2,  1783.870 MiB
+    - cache state: 1 prompts, 1783.870 MiB (limits: 2048.000 MiB, ...)
+
+At long contexts `CACHE_RAM=2048` holds **one** prompt. Every switch to a
+different prompt therefore evicts it and re-copies over a gigabyte, on the
+critical path, before prefill starts.
+
+`./scripts/cache_stall_probe.py` is the instrument: pairs of mutually-different
+long prompts (fresh nonce each, or `--cache-reuse 64` serves round two from
+round one and the probe measures nothing while reporting zeroes as good news),
+with `/health` and `/slots` sampled throughout so "nothing was served" is
+measured rather than asserted.
+
+---
+
+## 2. RETRACTED, mid-session: "the inference loop is wedged"
+
+I called it a wedge — an infinite spin — and restarted llama at ~13 minutes.
+**That call was wrong, or at least unproven.** The same operation, in the same
+container run, completed after **18 min 29 s**. The 13-minute stall I killed was
+inside the observed distribution and had every chance of finishing on its own.
+
+The signature that convinced me is real and still worth recording — 100% of one
+core, zero voluntary context switches, GPU idle, nothing logged — but **a tight
+spin that finishes and a tight spin that never does look identical from
+outside.** Duration is the only thing that separates them, and I did not wait
+long enough to have the datum.
+
+**A second retraction, in the same section because it has the same shape:**
+"it is memory pressure" was the obvious explanation and it does not survive its
+own control. Six quiet rounds with an **identical ~1252 MiB payload and one
+eviction each** ran 1.32, 1.32, 1.38, 1.98, 2.86 and **24.78** s — and the
+24.78 s round had the **most** free memory of the six (5,460 MiB). Contention
+makes the tail worse (both three-figure observations came from a box at load
+16–34 with another session building) but the mechanism behind an 18× spread at
+fixed payload, fixed eviction count and fixed free memory **is not identified
+here**, and nothing downstream should assume it is.
+
+---
+
+## 3. `/health` is the wrong probe, and the control is what makes that a fact
+
+`/health` is answered by an HTTP thread and never touches the inference loop.
+`/slots` and `/metrics` post a task to the same queue a completion goes through
+(`server-context.cpp`: `get_slots` builds a `SERVER_TASK_TYPE_SLOT_GET` and
+`post_task`s it), so they answer only while the loop is turning.
+
+| endpoint | wedged | 5 min after restart |
+| --- | ---: | ---: |
+| `/health` | **200 in 0.037 s** | 200 in 0.006 s |
+| `/props` | 200 in 0.414 s | 200 in 0.006 s |
+| `/slots` | **timeout at 10 s** | 200 in 0.006 s |
+| `/metrics` | **timeout at 10 s** | 200 in 0.006 s |
+
+The right-hand column is the whole point. "It hung" proves nothing until the
+same probe, by the same method, has found something known to be there.
+
+**AND IT MUST NOT BECOME A WATCHDOG. `docker-compose.yml` IS DELIBERATELY
+UNCHANGED.** The obvious fix — probe `/slots`, count failures, kill at N — was
+written, costed, and refused on its own measurement. A legitimate update that
+finishes after 18m29s is indistinguishable from one that never will, so any
+threshold short enough to be useful ends a working engine mid-copy and buys a
+cold reload for nothing. On a quiet box `/slots` already reached **1.03 s** and
+during ordinary work **12.4 / 15.1 / 18.7 / 19.1 s and three 20 s timeouts** —
+on a server that was serving perfectly. `/health` itself timed out once at 20 s
+in the same window. The existing `LLAMA_HEALTH_KILL_AFTER` path is untouched and
+still right: it fires only when nobody is home.
+
+`docs/troubleshooting.md` carries the diagnosis instead, with the one-liner to
+run when the stack is "healthy" and dead.
+
+---
+
+## 4. What this does to the ninfer comparison — it would have flattered ninfer
+
+`bench_cross_engine` gives every request a fresh nonce, so **on llama every
+round after the first takes the slot from a different prompt** and pays this
+update. ninfer has no equivalent step. And the tax lands **inside wall-clock
+TTFT and outside the engine's own prompt-eval timing**, so it is invisible in
+exactly the place a reader would check.
+
+Left unmeasured, a run that happened to catch a bad update would have shown
+llama losing catastrophically on time-to-first-token for a reason that is not
+the engine — the same shape as the leftover-container queue wait part 3 §6.2 had
+to retract. **`cache_stalls()` in `ninfer-compare.sh` now reports it**: the
+engine's own lines for each arm's window go to `<run>/<arm>.cache-stalls`, a
+summary to `run.meta`, and a warning to the console. `run.meta` also records
+`CACHE_RAM` and `CTX_CHECKPOINTS`, which size the entry.
+
+Measured on the real run below, quiet box: **4 updates, 578 / 991 / 1055 / 992
+ms**, about **1 s of a 9.9 s TTFT per round — ~10%**. That is the *good* case.
+
+---
+
+## 5. The comparison RAN, and it is HALF DONE. Do not read it as a result.
+
+`.ninfer-compare/20260903-193057/`, `--prompt-tokens 32768 --repeat 3`, load
+average 1.49 at start.
+
+**llama arm — complete:**
+
+| | prompt tok | TTFT s | prefill t/s | decode t/s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 20,582 | 9.89 | 2080.8 | 87.7 |
+| 2 | 20,582 | 9.90 | 2080.0 | 93.0 |
+| 3 | 20,582 | 9.82 | 2095.1 | 95.3 |
+| **median** | | | **2080.8** [2080.0–2095.1] | **93.0** [87.7–95.3] |
+
+**`--prompt-tokens 32768` produced 20,582.** That is documented behaviour, not a
+bug — `CHARS_PER_TOKEN_GUESS = 3.6` against an actual ~5.73 for this filler, and
+`build_prompt`'s docstring says the flag is a target and the server's count is
+what gets reported. Both arms use the same generator, so it stays matched. **Do
+not quote "32768" for this run.**
+
+**ninfer arm — NEVER RAN.** The artifact loaded fine (16.67 GiB of weights in
+**132.7 s**, ~130 MB/s — far quicker than llama's bind-mount read, and the
+`O_DIRECT`-on-9p worry from part 3 §4 is settled by it), reached 22,333 MiB of
+VRAM, and was in warmup when **every background task in the session was killed
+at 16:35:45**. So there is no ninfer number, and there is still **no measured
+comparison** — the headline of part 3 §10 is unchanged.
+
+**A robustness gap that showed up while it died, and is worth fixing.**
+`restore.log` reads:
+
+    llama stop rc=0
+    19:35:45  restore entered (caller rc=143)
+
+The EXIT/TERM trap fired and `restore()` was entered — and then the process was
+killed again before it reached its `docker start`, so **llama was left stopped**
+and had to be started by hand. The trap is correct; it just is not proof against
+a second signal. If that matters, `restore()` needs to be idempotent from
+outside the script (a small `--restore-only` flag, or the state written where a
+later invocation can find it).
+
+**One real bug, found and fixed.** The llama arm finished its three rounds,
+printed its table, and *then* died on
+`PermissionError: [Errno 13] ... '/out/llama.json'` — the run directory is
+created as root and bind-mounted into a bench container that runs as a non-root
+user, so every engine-native counter it had just collected was lost. Only the
+console table survived, because `bench_arm` tees it. The failure comes **after**
+the measurement, so it destroys results that cost GPU time. `RUN_DIR` is now
+`chmod 0777` at creation.
+
+---
+
+## 6. Verified, and how
+
+| claim | evidence |
+| --- | --- |
+| stall is real, not inferred | llama's own `prompt cache update took N ms`, 12 values, 0.30 s – 1109.11 s |
+| it caused the part-3 smoke failures | forge cancelled task 374 at **+600.000000 s** inside an 1109 s update |
+| loop is blocked, not merely slow | `/proc/7/task/7`: 1512 ticks/15 s, **0 voluntary** context switches; GPU 3% |
+| `/health` cannot see it | 37 ms while `/slots` and `/metrics` timed out at 10 s; all three ~5 ms after restart |
+| entry size is checkpoints, not KV | server's own dump: 34-token prompt = **300.559 MiB**, 1 checkpoint |
+| not memory pressure | identical payload, 1.32 s vs 24.78 s, and the slow round had the most free memory |
+| stack recovered | smoke **11/11** |
+| running stack untouched | `git diff HEAD` on `.env`, `.env.local`, `docker-compose.yml`, `modes/` is empty |
+
+---
+
+## 7. Pick this up next
+
+1. **Re-run the comparison — it is the same one-liner and the box is the only
+   variable.** `./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 3`,
+   on a quiet box, and **do not let anything kill it mid-flight**: the ninfer
+   cold load alone is ~2.5 minutes and the whole run is tens of minutes. Read
+   `<run>/llama.cache-stalls` before believing any TTFT comparison.
+2. **Then decide, and part 3 §10's framing still holds:** even a decisive ninfer
+   win leaves the `ppl-*` line needing llama.cpp, so the realistic outcome is
+   *two* engines, not a replacement.
+3. **Cost `CACHE_RAM` honestly, then decide it deliberately.** This session
+   measured only the tail: ~1 s per prompt switch when quiet, 24.78 s once when
+   quiet, 18m29s once when not. What it did **not** measure is what the cache
+   *buys* — the hit rate and prefill saved on real traffic. `CACHE_RAM=0`
+   removes the path and all cross-request prefix reuse with it. **That is a pin
+   change and it has not been made.** `cache_stall_probe.py` measures one side
+   of it; the other side needs a real workstream, which is what the capture
+   tape exists for.
+4. **Upstream has an open report of the same class, closed by a stale bot.**
+   `ggml-org/llama.cpp#24265` — hybrid model, prompt cache + context
+   checkpoints, "a tight spin, not a blocked wait", nobody from the project
+   looked at it. Its third comment is an independent reproduction on a DGX
+   Spark that ruled out `--ctx-checkpoints`, `--parallel` and `--cache-ram`
+   *values* (occurs at both settings of each). Our data would strengthen it:
+   we have the engine's own timing for the full distribution and a completed
+   1109 s instance, which they did not.
+5. **Carried over untouched:** everything in part 3 §10 item 4.
+
+**Two operational notes paid for today.** `docker restart` on a spinning
+llama-server can fail with *"tried to kill container, but did not receive an
+exit event"*, leaving it `exited` with the restart policy suppressed —
+`docker start` it. If the NVIDIA prestart hook then dies with `ldcache error:
+process /sbin/ldconfig terminated with signal 9`, drop the Docker VM page cache
+(`docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`)
+and retry; it worked first time with 8.7 GB already free, so read the signal 9
+as the hook being fragile rather than as a genuine OOM.
+
+---
+
 # Handoff — 2026-09-03 (part 3: the ninfer path is OPEN — it builds native sm_89 here, and the cost is 16.96 GiB not 51.7. Nothing is measured yet, and three of this session's measurements lied first)
 
 ## Read this first

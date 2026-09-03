@@ -10,6 +10,70 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**llama-server can stop serving for up to 18 minutes while reporting itself
+healthy, and the cause is its own prompt cache.** Every request through forge
+died with `ReadError`/502 and the smoke test failed `forge plain completion`,
+while `docker ps` said `Up 5 hours (healthy)`, `/health` answered 200 in 37 ms
+and the model sat resident in VRAM. `llama-server` was at 100% of one core in
+`R` state with **zero voluntary context switches** and the GPU at 3%: it was
+inside a **prompt-cache update**, which runs on the main loop and services
+nothing at all while it does — no request, no `/slots`, no `/metrics`. The
+engine's own log is the instrument (`prompt cache update took N ms`), and on
+this box on one day it read 1.3–2.9 s in the common case, **24.78 s** on one of
+six otherwise identical quiet rounds, **39.06 s** and **81.12 s** under load,
+and once **1,109.11 s — 18 min 29 s**. That longest one is not a curiosity: it
+is the exact cause of the smoke failure, which forge cancelled at 600.000 s to
+the microsecond, its full `FORGE_BACKEND_TIMEOUT`, against a server that never
+stopped answering `/health`.
+
+**The entries are that big because this model is a hybrid.** 48 of Qwen3.8-27B's
+64 layers hold a constant-size recurrent state, so a cached prompt costs ~150
+MiB before its first KV byte and each `CTX_CHECKPOINTS` copy adds ~150 MiB more.
+The server's own cache dump shows a **34-token** prompt occupying **300.559
+MiB** and a 29,714-token prompt **1,783.870 MiB** against the `CACHE_RAM=2048`
+cap — so at long contexts the cache holds one prompt, and every switch to a
+different prompt evicts it and re-copies over a gigabyte on the critical path.
+
+**`/health` is the wrong probe and `/slots` is the right diagnosis, but it must
+not become a watchdog.** `/health` is answered by an HTTP thread and never
+touches the inference loop; `/slots` and `/metrics` post a task to the same
+queue a completion does. While stalled, `/health` answered in 37 ms and both
+others timed out at 10 s; after the restart all three answered in ~5 ms — that
+control is what makes the asymmetry a measurement rather than a guess. It is
+deliberately NOT wired into the healthcheck: an update that legitimately
+finishes after 18m29s looks identical from outside to one that never will, so
+any threshold short enough to help would kill a working engine mid-copy.
+`docker-compose.yml` is unchanged, and `docs/troubleshooting.md` carries the
+diagnosis instead.
+
+**"It is memory pressure" was the first explanation and it does not hold.** Six
+quiet rounds with an identical ~1252 MiB payload and one eviction each ran 1.32,
+1.32, 1.38, 1.98, 2.86 and 24.78 s — and the 24.78 s round had the *most* free
+memory of the six (5,460 MiB). Contention makes the tail worse (both
+three-figure observations came from a box at load 16–34 with another session
+building) but the mechanism behind the variance is not identified, and the
+retraction is recorded rather than quietly dropped.
+
+**New: `./scripts/cache_stall_probe.py`** drives the operation deliberately —
+pairs of mutually-different long prompts, a fresh nonce on each so
+`--cache-reuse` cannot serve round two from round one — and samples `/health`
+and `/slots` throughout, so "nothing was served" is measured rather than
+asserted.
+
+**`ninfer-compare.sh` now reports the confound instead of absorbing it.** Its
+llama arm pays this tax on every round after the first (fresh nonce per request
+means every round takes the slot from a different prompt) and ninfer has no
+equivalent step. It lands inside wall-clock TTFT and *outside* the engine's own
+`prompt eval` timing, so left unmeasured it would have shown llama losing badly
+on time-to-first-token for a reason that is not the engine — the same shape as
+the leftover-container queue wait that had to be retracted from
+`bench_cross_engine.py`. `cache_stalls()` now writes the engine's own account of
+every update inside each arm's window to `<run>/<arm>.cache-stalls`, summarises
+it into `run.meta`, and warns on the console; `run.meta` also records
+`CACHE_RAM` and `CTX_CHECKPOINTS`, which size the entry.
+
+---
+
 **The ninfer path is open on this card, and it costs 16.96 GiB — not 51.7.**
 `OPEN-WORK.md` §00 had closed it twice over: upstream's build "rejects CUDA
 architectures other than `sm_120a`", and the cost was recorded as 18 shards and

@@ -130,6 +130,16 @@ mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="$OUT_DIR/$STAMP"
 mkdir -p "$RUN_DIR"
+# 0777, and it is not laziness. This directory is created here as root and then
+# bind-mounted into the bench container as /out, where bench_cross_engine.py
+# runs as the forge image's NON-ROOT user -- so on 2026-09-03 the llama arm
+# finished its three rounds, printed its table, and then died on
+# `PermissionError: [Errno 13] ... '/out/llama.json'`, losing every
+# engine-native counter it had just collected. The console table survived only
+# because bench_arm tees it. The failure comes AFTER the measurement, so it
+# destroys results that cost GPU time and cannot be recovered without re-running
+# the arm.
+chmod 0777 "$RUN_DIR"
 
 # --- provenance --------------------------------------------------------------
 # Same discipline as run.meta: a measurement that cannot say what produced it is
@@ -150,6 +160,11 @@ write_meta() {
     echo "llama_model_repo=$(env_get MODEL_REPO 2>/dev/null || echo unknown)"
     echo "llama_spec_type=$(env_get SPEC_TYPE 2>/dev/null || echo unknown)"
     echo "llama_cache_type_k=$(env_get CACHE_TYPE_K 2>/dev/null || echo unknown)"
+    # Both of these size the prompt-cache entry whose save blocks llama's main
+    # loop between rounds -- the confound cache_stalls() below reports. A run
+    # that cannot say what they were cannot be compared with another.
+    echo "llama_cache_ram=$(env_get CACHE_RAM 2>/dev/null || echo unknown)"
+    echo "llama_ctx_checkpoints=$(env_get CTX_CHECKPOINTS 2>/dev/null || echo unknown)"
     echo "llama_image=$(docker inspect "$LLAMA_CT" --format '{{.Config.Image}}' 2>/dev/null || echo unknown)"
     echo "git_head=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
     echo "gpu=$(docker exec "$LLAMA_CT" nvidia-smi --query-gpu=name,driver_version,memory.total,compute_cap --format=csv,noheader 2>/dev/null || echo unknown)"
@@ -215,6 +230,7 @@ bench_arm() {
   local label="$1" url="$2" out="$3"
   info "benching $label at $url"
   echo "loadavg_before_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
+  local arm_start; arm_start="$(date -u +%s)"
   # The bench image bakes /work in at build time -- it is NOT a bind mount --
   # so both the script and the output directory have to be mounted explicitly.
   # Without the output mount the --json file is written inside the container and
@@ -227,6 +243,59 @@ bench_arm() {
     --prompt-tokens "$PROMPT_TOKENS" --predict "$PREDICT" --repeat "$REPEAT" \
     --json "/out/$out" 2>&1 | tee "$RUN_DIR/$label.log"
   echo "loadavg_after_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
+  cache_stalls "$label" "$arm_start"
+}
+
+# --- the confound this comparison would otherwise hide -----------------------
+#
+# THE LLAMA ARM PAYS A TAX THE NINFER ARM DOES NOT, AND IT LANDS INSIDE WALL
+# CLOCK BUT NOT INSIDE prompt_ms.
+#
+# bench_cross_engine gives every request a fresh nonce, so on llama every round
+# after the first takes the slot from a DIFFERENT prompt -- which makes
+# llama-server save the old slot state into its `--cache-ram 2048` prompt cache
+# before prefill starts. On this hybrid model that entry is ~1.78 GiB at 30k
+# tokens (48 of 64 layers hold a constant-size recurrent state, so even a
+# 34-token prompt occupies 300 MiB, and each --ctx-checkpoints copy adds ~150
+# MiB), the cache holds one of them, and the switch evicts and re-copies the
+# lot.
+#
+# Measured on this box 2026-09-03: usually 1.3-2.9 s, but 24.78 s on one of six
+# otherwise identical quiet rounds, 39.06 s and 81.12 s under load, and
+# **1109.11 s -- 18 min 29 s -- once**. It runs on the main loop before prefill,
+# so it is inside time-to-first-token and OUTSIDE the engine's own prompt eval
+# timing. ninfer has no equivalent step.
+#
+# Left unmeasured it would show up as llama losing badly on TTFT for a reason
+# that is not the engine, exactly like the leftover-container queue wait that
+# had to be retracted from bench_cross_engine.py. So: read the engine's own
+# account of it out of the log for the arm's window, and put it in the run
+# directory next to the numbers it explains.
+cache_stalls() {
+  local label="$1" start="$2" window took n
+  [[ "$(docker inspect -f '{{.State.Running}}' "$LLAMA_CT" 2>/dev/null)" == "true" ]] || return 0
+  window=$(( $(date -u +%s) - start + 5 ))
+  docker logs "$LLAMA_CT" --since "${window}s" 2>&1 \
+    | grep -E 'prompt cache update took|prompt_save:|making room for prompt cache' \
+    > "$RUN_DIR/$label.cache-stalls" 2>/dev/null
+  # `docker logs` writes llama's output on STDERR, which is why the 2>&1 above
+  # is load-bearing and not decoration -- without it this file is always empty
+  # and the confound reads as absent rather than as unmeasured.
+  took="$(grep -oE 'prompt cache update took [0-9.]+ ms' "$RUN_DIR/$label.cache-stalls" \
+          | grep -oE '[0-9.]+' || true)"
+  n="$(printf '%s\n' "$took" | grep -c . || true)"
+  if [[ -z "$took" ]]; then
+    echo "cache_stalls_$label=none logged in ${window}s window" >> "$RUN_DIR/run.meta"
+    return 0
+  fi
+  local total_ms max_ms
+  total_ms="$(printf '%s\n' "$took" | awk '{s+=$1} END{printf "%.0f", s}')"
+  max_ms="$(printf '%s\n' "$took" | awk 'BEGIN{m=0} {if($1>m)m=$1} END{printf "%.0f", m}')"
+  echo "cache_stalls_$label=n=$n total_ms=$total_ms max_ms=$max_ms" >> "$RUN_DIR/run.meta"
+  warn "$label: $n prompt-cache update(s) inside this arm, worst \
+$(awk "BEGIN{printf \"%.2f\", $max_ms/1000}")s, total \
+$(awk "BEGIN{printf \"%.2f\", $total_ms/1000}")s -- that time is inside TTFT and \
+outside prompt_ms. See $RUN_DIR/$label.cache-stalls"
 }
 
 start_ninfer() {
