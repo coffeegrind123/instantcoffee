@@ -10,6 +10,54 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**The ninfer path is open on this card, and it costs 16.96 GiB — not 51.7.**
+`OPEN-WORK.md` §00 had closed it twice over: upstream's build "rejects CUDA
+architectures other than `sm_120a`", and the cost was recorded as 18 shards and
+**51.7 GiB** of bf16 safetensors plus a conversion. Both are now corrected.
+`sergiuszm/ninfer-4090` is `sm_89`-only by default against upstream's `120a`-only
+`FATAL_ERROR`, and it **builds clean here** from its own unmodified Dockerfile —
+290 objects, zero errors, and the binary carries **2 `sm_89` cubins with zero
+PTX**, so the open gate is native Ada code and not a JIT fallback. The official
+`.ninfer` artifact is published pre-converted and ungated: anonymous HEAD, no
+token, `content-length: 18210531328` = **16.96 GiB, one file**. The 51.7 GiB
+belongs only to converting the *uncensored fine-tune*, which is a separate and
+later decision. Both forks' converter files are byte-identical to upstream, so
+the previous session's 6-of-6 frontend-pin result and its MTP-head result
+transfer by hash with nothing to re-verify.
+
+**Their 223K–567K context ceilings check out arithmetically, on our own
+engine's geometry.** Qwen3.8-27B is a hybrid: only **16 of 64 layers cache KV**,
+which is the whole reason 400K+ windows fit in 24 GB. `llama_kv_cache` prints 16
+layers, `n_head_kv=4`, `n_embd_head_k=256`, and skips recurrent layers 3/7/11 —
+ninfer's `range(3,64,4)` exactly. `scripts/kv_ceiling_check.py` reproduces the
+engine's own `1632.00 MiB` to the hundredth, and all five published ceilings then
+land inside a **0.32 GiB band** of residual slack on this card. No row proves
+anything alone; the mutual agreement is the evidence. **Nothing about speed has
+been measured** — every throughput number is still theirs.
+
+**Keep llama.cpp regardless of how that measurement goes.** `ninfer-serve`
+registers no `/tokenize`, no `/completion` and no logits export, and its own
+perplexity tool is "not a serving endpoint or a logits-export API", reporting NLL
+per *window* rather than per token. Every misfire-rate result and the whole
+`ppl-*` family need per-token logprobs and `parse_special=False`. The realistic
+outcome here is two engines, not a replacement.
+
+**Three measurements lied before they were caught, all the same way.** A bench
+reported "no content token was ever streamed" because under
+`REASONING_EFFORT=medium` the model streams `delta.reasoning_content` with
+`delta.content` null — a broken parser presenting as a dead engine. A "~6 s
+hidden stall that scales with prompt length" was committed and then withdrawn: it
+was leftover bench containers queueing on llama's single slot, and measured quiet
+the gap is a flat 0.68–1.31 s across a 50× span of prompt length. And
+`cuobjdump` reported no cubins *and* no PTX because the binary had been staged on
+a path that exists inside the container but not on the host, so Docker mounted an
+empty directory over it. **A negative result is worth nothing until the same
+method has found something known to be there** — that control is what caught all
+three, and `ninfer-compare.sh` now refuses to start with stray bench containers
+alive.
+
+---
+
 **128K fits, and it halves decode.** The refusal that stood since 2026-08-23 was
 arithmetic: it carried a `+1408` MiB engine delta measured on the OLD weights,
 implying a 128K footprint of 22407 where the engine now says **21159**. A probe

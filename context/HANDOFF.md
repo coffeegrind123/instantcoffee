@@ -1,3 +1,319 @@
+# Handoff — 2026-09-03 (part 3: the ninfer path is OPEN — it builds native sm_89 here, and the cost is 16.96 GiB not 51.7. Nothing is measured yet, and three of this session's measurements lied first)
+
+## Read this first
+
+**Nothing in the running stack moved.** No `.env` key, no pin, no mode file, no
+compose value — `git diff HEAD -- .env .env.local docker-compose.yml modes/` is
+empty for the whole session. `instantcoffee-llama` was never stopped or
+reloaded; it has been up and healthy throughout and served every probe. **7
+commits, all pushed**, `main` level with `origin/main` at `ad7efc2`.
+
+**This session reopened a path the record had closed, and the correction is
+large.** `OPEN-WORK.md` §00 said ninfer needed a fork whose pins "would have to
+be re-verified rather than inherited", and costed the path at **51.7 GiB**. Both
+wrong:
+
+| | verdict |
+| --- | --- |
+| **4090 build gate** | **OPEN.** `sergiuszm/ninfer-4090` is `sm_89`-only by default, against upstream's `120a`-only `FATAL_ERROR` |
+| **The gate is not cosmetic** | Built here: **2 `sm_89` cubins, ZERO PTX**. Native Ada, no JIT fallback |
+| **Converter pins** | **Inherit by hash.** Both forks' `convert.py`/`inventory.py` byte-identical to upstream |
+| **Cost** | **16.96 GiB, one ungated file**, pre-converted. The 51.7 figure is the *fine-tune conversion* path only |
+| **Context ceilings** | **Arithmetically validated** against geometry read off our own engine |
+| **The cliff instrument** | **Does NOT port.** Keep llama.cpp regardless |
+| **Speed** | **NOT MEASURED.** Every throughput number is still theirs |
+
+**Read §6 before trusting anything here.** Three measurements this session
+produced confident, plausible, wrong answers, and all three were caught the same
+way — by running something with a known answer through the same method.
+
+---
+
+## 1. What is on disk and ready, and the one thing that is not
+
+| thing | state |
+| --- | --- |
+| `~/ninfer-4090` | `sergiuszm/ninfer-4090` @ `rtx4090-port` (`914e050`), shallow clone |
+| `ninfer-4090:sm89` | **BUILT**, 5.13 GB, both binaries run, 2 × `sm_89` cubins, 0 PTX |
+| `scripts/ninfer-compare.sh` | written, syntax-checked, flags verified, **never run** |
+| `scripts/bench_cross_engine.py` | 24 tests, validated against live llama |
+| `scripts/kv_ceiling_check.py` | 22 tests, control reproduces the engine's own number |
+| **the artifact** | **STILL DOWNLOADING — 14.06 of 16.96 GiB (83%) at handoff** |
+
+**Pick up here.** The downloader is `instantcoffee-downloader-run-e15013679e33`,
+started with `nohup` so it survives task kills. It resumes: if it died, re-run
+
+    HF=$(grep -m1 '^HF_TOKEN=' .env.local | cut -d= -f2-)
+    nohup docker compose --profile tools run --rm --user 0:0 \
+      -e MODEL_REPO=neroued/Qwen3.8-27B-NInfer \
+      -e GGUF_FILE=qwen3_8_27b.ninfer \
+      -e MMPROJ_FILE= -e DRAFT_MODEL_REPO= -e DRAFT_GGUF_FILE= \
+      -e HF_TOKEN="$HF" downloader &
+
+It lands at `//c/llm-models/qwen3_8_27b.ninfer` and **verifies sha256 against the
+Hub before declaring done** — presence of the final path means complete, because
+`hf_hub_download` writes to `.hf-cache/**.incomplete` and only then moves.
+**Do not judge progress by the final filename**; watch the `.incomplete` blob.
+
+Then, on a **quiet box**:
+
+    ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 3
+
+---
+
+## 2. The record was wrong twice, and this is what replaces it
+
+**The 51.7 GiB is not the cost of trying ninfer.** `neroued/Qwen3.8-27B-NInfer`
+publishes `qwen3_8_27b.ninfer` pre-converted and **ungated** — verified by
+anonymous `curl -sIL`, no token, 302 -> 200, `content-length: 18210531328` =
+**16.96 GiB exactly**, matching both forks' stated artifact size.
+`sergiuszm/ninfer-4090`'s `scripts/download-qwen38.sh` is fifteen lines of
+`curl`. The 51.7 GiB of bf16 safetensors is only needed to convert **the
+uncensored fine-tune**, which is a separate, later decision.
+
+**The fork pins are inherited, by hash, not by inspection:**
+
+| file | upstream | UDP fork | sergiuszm |
+| --- | --- | --- | --- |
+| `tools/convert/qwen3_8_27b/convert.py` | `71511a875a2cf8dd…` | same | same |
+| `tools/convert/qwen3_8_27b/inventory.py` | `915a4fb911ef65b3…` | same | same |
+
+So the previous session's **6/6 frontend-pin result and its MTP-head result
+transfer verbatim to both forks**. Nothing to re-verify.
+
+**A false alarm the next reader WILL hit.**
+`tools/convert/qwen3_6/common/official_resources.py` defines a constant also
+called `OFFICIAL_RESOURCE_SHA256`, and **three of its six hashes differ** from
+the ones this repo verified. That is **Qwen3.6's** frontend profile — a
+different model family that shares the vision/generation files, which is exactly
+why 3 of 6 collide and it looks like a near-miss on the same set. The Qwen3.8
+converter carries **its own** pin block at `convert.py:32-51`, and that one
+matches at all six files, full 64 hex. Reading the wrong module produces a
+confident "the pins have drifted, 3 of 6 fail".
+
+---
+
+## 3. The context ceilings are validated, and the geometry came off our engine
+
+`scripts/kv_ceiling_check.py`. **Qwen3.8-27B is a hybrid: only 16 of 64 layers
+cache KV at all** (the rest are gated-delta-net, constant-size state). That is
+the entire reason 400K+ windows are physically possible on 24 GB, and assuming
+64 KV layers overstates the cache 4x and makes every honest claim look like a
+lie.
+
+**Our own llama.cpp confirms ninfer's constant independently:**
+
+    llama_kv_cache: size = 3264.00 MiB ( 98304 cells, 16 layers, 1/1 seqs),
+                    K (q8_0): 1632.00 MiB, V (q8_0): 1632.00 MiB
+    llama_memory_recurrent: layer 3: skipped     <- range(3,64,4)
+    print_info: n_head_kv = 4 ; n_embd_head_k = 256
+
+The control reproduces `1632.00` to the hundredth. Applying it to the published
+ceilings against the 16.96 GiB artifact and this card's 24564 MiB:
+
+| claim | B/token | ceiling | KV GiB | +artifact | slack GiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `rk2v4-e8` | 12288 | 567,000 | 6.49 | 23.45 | 0.54 |
+| `rk4v4-e8` | 16384 | 433,000 | 6.61 | 23.57 | 0.42 |
+| `rk8v4` | 24576 | 294,000 | 6.73 | 23.69 | 0.30 |
+| `int8` | 32768 | 223,000 | 6.81 | 23.77 | 0.22 |
+
+**All five land inside a 0.32 GiB band**, monotone in bytes/token. No single row
+proves anything; the *mutual* agreement is the evidence — five numbers from one
+binary search against one wall must leave the same slack. `--budget-mib 3264`
+also shows what our *current* KV budget would buy: 98,304 tokens at `q8_0`,
+**208,896 at 4-bit**.
+
+**This does NOT say the model is any good at 433K on 4-bit keys.** They cite
+cosine-vs-FP32 (98.7% / 96.2%) and needle retrieval to 260K. This repo has
+refused a 4-bit KV scheme before (`kvarn-measured-and-refused.md`) on decode
+cost. Different implementation, open question.
+
+---
+
+## 4. It builds here, and the binary is native sm_89
+
+The first part of this that was RUN, not read. `docker build` on the fork's own
+unmodified `Dockerfile`: 290 objects, **zero errors**, 5.13 GB image.
+
+    ELF file 1: ninfer-serve.1.sm_89.cubin
+    ELF file 2: ninfer-serve.2.sm_89.cubin
+    2 sm_89 cubins, ZERO PTX
+
+No PTX means no JIT fallback — the build targets this card specifically. The
+box reads `compute_cap 8.9` off `nvidia-smi`, not assumed.
+
+**`O_DIRECT` on 9p: NOT a blocker, and it was the likeliest way to lose the
+whole effort.** `src/artifact/reader.cpp:255` opens the artifact
+`O_RDONLY|O_CLOEXEC|O_DIRECT` and mmaps it; `O_DIRECT` fails `EINVAL` on many
+filesystems and `/models` is 9p. Tested with plain `O_RDONLY` as control — both
+open. **But `O_DIRECT` bypasses the page cache**, so cold load is a genuine cold
+read of 16.96 GiB over 9p. That is why `ninfer-compare.sh` polls `/health` for
+1800 s rather than sleeping a guess. **Expect minutes, and do not read a slow
+load as a hang.**
+
+---
+
+## 5. What does NOT port — decided before a single byte moved
+
+`ninfer-serve` registers exactly (read off `src/serve/http_server.cpp`, with
+`/health`+`/metrics`+`/slots` as the control that the method finds what is
+there):
+
+    / /health /metrics /slots /v1/models /v1/chat/completions
+    /v1/messages /v1/messages/count_tokens /v1/responses
+    /v1/responses/compact /v1/responses/input_tokens
+
+**No `/tokenize`. No `/completion`. No logits export.** And its own
+`docs/perplexity.md` opens with *"It is an offline evaluator, **not a serving
+endpoint or a logits-export API**"*, reporting NLL **per window, not per token**.
+
+`ppl_history_build.py` needs `/tokenize` with `parse_special=False` (load-bearing
+— the default re-tokenised a contiguous 8192-token slice to 8114), and every
+misfire-rate result in part 2 §3 is a per-token NLL threshold with McNemar over
+token-matched pairs. **The entire `ppl-*` family is llama.cpp-only.** This is
+not a reason to refuse ninfer; it is a reason never to *replace* llama.cpp with
+it, and to keep the measurement stack where it is.
+
+---
+
+## 6. THREE measurements lied first. Read this before trusting §1-§5
+
+Each was confident, plausible, and wrong. Each was caught by running something
+with a **known** answer through the **same** method.
+
+1. **The bench reported "no content token was ever streamed".** Under
+   `REASONING_EFFORT=medium` this model streams `delta.reasoning_content` with
+   `delta.content` set to `null`. The parser read only `content`. A **broken
+   parser presenting as a dead engine.** Caught by `--probe`, which dumps raw
+   SSE frames instead of trusting a guess about a server we do not control.
+   Two tests now pin that frame shape verbatim.
+
+2. **"TTFT sits ~6 s above prompt_ms, and it scales with prompt length."**
+   I committed this. It was **my own leftover `instantcoffee-bench-run-*`
+   containers** queueing on llama's single slot — two were alive at once.
+   Re-measured quiet, the gap is a flat **0.68–1.31 s from 201 to 10,432 prompt
+   tokens**. Say the shape out loud: the contaminated numbers were large,
+   reproducible across rounds, and **rose with prompt length** — everything a
+   real effect looks like. Only re-running on a quiet box separated them.
+   `ninfer-compare.sh` now **refuses to start** with stray bench containers alive.
+
+3. **`cuobjdump` reported no cubins AND no PTX** — which reads as "no device
+   code" and is a plausible wrong answer. The control exposed
+   `cuobjdump fatal: Could not open input file`: the binary had been staged in
+   `/tmp/claude-0/...`, which exists **inside this container and not on the
+   host**, so Docker Desktop mounted an empty directory over it. **An empty grep
+   and a file that was never opened are indistinguishable without a control.**
+
+**The standing lesson:** a negative result is worth nothing until the same
+method has found something known to be there.
+
+---
+
+## 7. Traps in this fork family, all three found by checking rather than reading
+
+**Their READMEs run ahead of their code. Check every flag against `--help` or
+source.** All thirteen in `ninfer-compare.sh` were checked that way.
+
+1. **`UDPSendToFailed/ninfer-4090`'s README build line omits
+   `-DCMAKE_CUDA_ARCHITECTURES`, and that fork defaults to `86`** — while its
+   own `docs/rtx-4090-early.md` says *"Keep `CMAKE_CUDA_ARCHITECTURES=89`"*.
+   Following its README verbatim on a 4090 builds the 3090 target. **This is why
+   the session used `sergiuszm`'s fork**: 89-only, defaults to it, cannot make
+   this mistake.
+2. **`--turn-checkpoints` is RETIRED** per `--help` ("accepted and ignored so
+   existing command lines keep starting") while the quick start still
+   recommends `--turn-checkpoints 32`.
+3. **Its headline matrix contradicts its own early doc** — 218–230 tok/s at MTP7
+   above a `docs/rtx-4090-early.md` saying *"compatibility-qualified, not
+   Ada-optimized … an early baseline"* at 103 tok/s, whose C-cohort table is
+   **concurrency aggregate** (C8 = 8 concurrent at 315 tok/s total), trivially
+   misquoted as single-stream.
+
+---
+
+## 8. What the comparison will and will not answer
+
+`./scripts/ninfer-compare.sh` — llama arm first (production config, shortest
+downtime), then llama stopped, ninfer at matched `CTX_SIZE`, `--wide` optionally
+adds their 262K arm. `restore()` runs on every exit path including errors, and
+**sources `lib.sh` FIRST then `set +e`** — part 2 §1's trap, since `restore()`
+opens with a `docker rm -f` of containers that may already be gone.
+
+**Matched:** card, prompts (fresh leading nonce each), context, ~8-bit KV both
+sides, MTP-family spec decoding both sides, wall clock at the socket.
+
+**NOT matched, and it limits the conclusion:**
+- **The WEIGHTS.** llama serves the orcarouter Q4_K_M **fine-tune**; ninfer the
+  **official** groupwise-int artifact. A decode difference is engine AND weights.
+  To narrow it, point the stack at `Qwen3.8-27B-UD-Q4_K_XL.gguf` — **already on
+  disk**, and the same GGUF sergiuszm's published comparison used — via `.env` +
+  `mode.sh`. Deliberately no flag for that: switching GGUF means rewriting
+  `.env` and a cold reload, which is `capacity-probe.sh`'s discipline, not this
+  script's.
+- **Cache-guard asymmetry.** llama reports
+  `usage.prompt_tokens_details.cached_tokens` so a prefix hit is *detected* and
+  its prefill **withheld**; ninfer sends no equivalent, so the leading nonce is
+  the only guard there. `--no-prefix-reuse` exists and is deliberately NOT used —
+  llama runs `--cache-prompt` on, that is production on both sides.
+- Arms **cannot be interleaved** — ~17 GiB and ~20 GiB cannot coexist on 24 GB.
+  Substitutes: back to back, quiet, repeats with the spread, load average
+  recorded around every arm.
+
+**An outside check that already agrees with us:** sergiuszm's llama.cpp column
+puts a 128K prefill at ~1,788 tok/s server-measured; this repo measured
+**1,797.8 tok/s** on a 90,029-token prompt on 2026-09-03. An independent party,
+same card, lands on our number. That does not verify their ninfer column — but a
+source whose checkable column checks out is worth more than one whose does not.
+
+---
+
+## 9. Verified, and how
+
+| claim | evidence |
+| --- | --- |
+| gate open, not cosmetic | upstream `120a` FATAL_ERROR as control; built here; 2 `sm_89` cubins, 0 PTX |
+| pins inherit | sha256 of both converter files, three repos |
+| 16.96 GiB, ungated | anonymous HEAD, no token, 302->200, `content-length: 18210531328` |
+| ceilings consistent | 5 claims inside 0.32 GiB; control reproduces engine's `1632.00 MiB` |
+| geometry | our own engine's `print_info` + `llama_memory_recurrent` skip list |
+| `O_DIRECT` fine on 9p | tested on the real mount, `O_RDONLY` as control |
+| no logits export | route registrations, `/health`+`/metrics`+`/slots` as control |
+| stack unharmed | `.env` diff empty; llama never stopped; smoke 11/11 earlier |
+
+---
+
+## 10. Pick this up next
+
+1. **Finish the download, then run the comparison on a QUIET box.** Everything
+   else is ready. Load was 6.0 at handoff and the script warns above 4.0. A
+   20,822-token probe row already showed prefill collapsing to **573 tok/s**
+   against 1,686–1,829 quiet — that is the box, not the engine.
+2. **Then decide, and the decision is not "switch".** Even a decisive ninfer win
+   leaves §5: the `ppl-*` research line needs llama.cpp. The realistic outcome is
+   *two* engines, not a replacement — which is a bigger change than it sounds and
+   should be costed as one.
+3. **Only if it wins by a margin worth the disruption**, cost the 51.7 GiB
+   conversion of the uncensored fine-tune. `prose` and `uc-coding` serve it; the
+   downloaded artifact is the **official** model and is NOT a drop-in for them.
+4. **Carried over, untouched this session:** part 2 §10's items 1 (§3's
+   content-lands-deep mechanism, needs whole-arm per-token series, real GPU
+   cost — **ask first**), 2 (one unattended `/loop`), 3 (§0e's 19 synthetic
+   rounds), 5 (§0f the CUDA abort).
+
+**Operator-only, unchanged:** `FORGE_MERGE_ACROSS_TOOLS=1` at real depth, and
+the four `s735f17` records on the tape — real session data, do not use or delete
+without asking.
+
+**Memory and contention remain the binding constraints**, and this session added
+evidence: another session's `--no-cache` build plus this one's compile put load
+at 20 and free memory at 291 MiB. Drop the Docker VM page cache
+(`docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`)
+before anything heavy, and **take no measurement while another session is
+building.**
+
+---
+
 # Handoff — 2026-09-03 (part 2: 128K fits and halves decode; the wedged runner was `set -e` all along; section 2 answered on BOTH axes; and four of this session's own claims were retracted before they could set)
 
 ## Read this first
