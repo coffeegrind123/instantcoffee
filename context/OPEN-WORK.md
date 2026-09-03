@@ -1053,6 +1053,44 @@ Read it after any run that ends with llama down:
 | `start rc=0` and llama down | docker reported success and it stopped anyway — look at docker, not this script |
 | `start rc=` non-zero | `docker start` failed, and the reason is on the line above it |
 
+### The SIGKILL row was exercised for real, 2026-09-03, and it reads correctly
+
+A cliff run was killed from outside mid-pass (a harness task stop, not the bug).
+The aftermath matched the table exactly and is worth keeping as the worked
+example:
+
+- **`restore.log` ABSENT** -> "restore never reached ... which means SIGKILL".
+  Correct: the script was killed, so its EXIT trap could not run.
+- **`instantcoffee-llama` left `Exited (0)`** — nothing restarted it.
+- **An orphaned `ppl-cliff-pass-*` container still RUNNING and holding the GPU.**
+  This is the wedge the section 1 preamble mentions ("one run left an orphaned
+  pass container wedged for 25 minutes holding 17.5 GB of VRAM").
+
+**What the trap fix does and does not cover, stated plainly.** The `set +e` fix
+covers every path where the script keeps running — which is what the four
+2026-08-24 wedges actually were. It cannot cover SIGKILL, because no trap can.
+So the wedge is still reachable from outside, and the recovery is manual:
+
+```sh
+docker ps --format '{{.Names}}' | grep ppl-cliff-pass   # the orphan
+docker rm -f <that container>                            # frees the VRAM
+docker start instantcoffee-llama                         # cold reload
+```
+
+**An orphaned pass is readable ONLY WHILE IT RUNS, and that window is easy to
+miss.** `docker run`'s client dies with the script, so the redirect into
+`<label>.log` stops — but the container keeps going and `docker logs <name>`
+still returns its chunk lines. **The pass is `--rm`, so the moment it exits
+Docker deletes the container and the logs go with it.** Measured the hard way on
+2026-09-03: the control chunk had already been written to its log file before
+the kill and survived, while the three-chunk spec was still running, was watched
+for its results, exited, and took every line with it. Nothing reached
+`result.json` and nothing was recoverable afterwards.
+
+So on a killed run: **capture `docker logs <pass-container>` FIRST**, before
+restarting anything or waiting for it to finish. Then `docker rm -f` it and
+restart llama.
+
 **The SIGKILL row is the one to expect.** The trap not firing is the strongest
 signal in the whole section: `trap … EXIT` runs on a normal return, on `exit`,
 and on a caught signal, and the only common thing it does NOT survive is
@@ -1223,6 +1261,14 @@ Read the engine's chunk line correctly: llama-perplexity prints a RUNNING
 average (`[1]15.4423 [2]26.8383 [3]20.3877`), and the per-chunk values above are
 the analyser's de-cumulation — checked by hand
 (`exp((ln 15.4423 + ln 46.6442)/2) = 26.84`, matching `[2]`).
+
+**THE CONSTRUCTION IS VALIDATED (2026-09-03).** The missing same-model control
+was run: `--chunk 8192:8192:1` on the ORIGINAL corpus, which scores the same
+source tokens `12289..16383` by the normal slicing path rather than by
+concatenation. It returned **15.4423** — identical to the `natural` arm to four
+decimals. So a constructed chunk and a normally-sliced chunk of the same tokens
+are the same measurement, the join introduces nothing, and the 3.96x above rests
+on a verified build rather than on the token-identity check alone.
 
 **Caveats, stated rather than buried.** This is chunk PPL, not the per-token
 misfire rate — the run used `--no-logits` because a log-prob pass needs ~8536
