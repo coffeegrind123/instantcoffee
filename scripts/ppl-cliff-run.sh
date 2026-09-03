@@ -177,7 +177,10 @@ preflight() {
   docker run --rm -v "${CAPS}:/captures" alpine test -f "$CORPUS" \
     || die "corpus $CORPUS is not readable through the CAPTURES_DIR mount"
 
-  local nvocab; nvocab="$(gguf_n_vocab "$MODELS" "$GGUF" "$SIDECAR_IMAGE")"
+  # NOT `local`: the log-prob size check in analyse() needs it too, and
+  # hardcoding a vocab size is exactly the thing that breaks silently when the
+  # model changes — which is the failure this session spent its day on.
+  nvocab="$(gguf_n_vocab "$MODELS" "$GGUF" "$SIDECAR_IMAGE")"
   [[ "$nvocab" =~ ^[0-9]+$ ]] || die "could not read n_vocab from the GGUF: ${nvocab}"
   echo "    n_vocab       ${nvocab} (read from the GGUF, not assumed)"
 
@@ -529,17 +532,59 @@ analyse() {
     docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
       "cat > '${isodir}/$(basename "$g")'" < "$g"
   done
+  # CHECK THE LOG-PROB FILES BEFORE READING THEM. A short one used to surface as
+  # an EOFError from deep inside ppl_tokens.py naming a record index, which says
+  # nothing about which pass failed or by how much. Measured 2026-09-03: a pass
+  # that printed "Final estimate: PPL = 15.4423" and exited 0 still left its
+  # .logits 59% short, and the analysis died on the NEXT spec's file with no
+  # indication the pass had been fine.
+  if (( ! NO_LOGITS )) && [[ -n "${nvocab:-}" ]]; then
+    local nv_chk spec_chk want_b have_b lf short=0
+    if [[ ! "$nvocab" =~ ^[0-9]+$ ]]; then
+      warn "  n_vocab unknown here (analysis-only run?); skipping the log-prob size check"
+      nvocab=""
+    fi
+    nv_chk=$(( 2 * (((${nvocab:-0}) + 1) / 2) + 4 ))
+    for spec_chk in "${CHUNK_SPECS[@]}"; do
+      parse_spec "$spec_chk"
+      lf="${OUTDIR}/${CORPUS_BASE}-${SPEC_NAME}.logits"
+      want_b=$(( SPEC_K * (SPEC_N - 1 - SPEC_N / 2) * nv_chk * 2 ))
+      have_b=$(docker run --rm -v "${CAPS}:/captures" alpine \
+                 stat -c %s "$lf" 2>/dev/null || echo 0)
+      if (( have_b < want_b )); then
+        short=1
+        warn "  ${SPEC_NAME}.logits is SHORT: ${have_b} of ${want_b} bytes ($(( have_b * 100 / (want_b>0?want_b:1) ))%)"
+      fi
+    done
+    (( short )) && warn "  the analysis below will fail on the short file(s); the PASS numbers in
+       the c*.log files are still good, and --keep-logits would let you retry
+       the analysis without re-running the passes."
+  fi
+
   echo
   echo "==> analysis"
+  # Remove the SHARED result.json first. OUTDIR is /captures/<subdir>, one
+  # directory for every run, so this file is overwritten each time — and the
+  # copy below used to run with `|| true`, which meant a FAILED analysis left
+  # the PREVIOUS run's result.json sitting in this run's directory looking like
+  # its own. Found 2026-09-03: a crashed analysis produced a run dir whose
+  # result.json described a different corpus entirely.
+  docker run --rm -v "${CAPS}:/captures" alpine rm -f "${OUTDIR}/result.json" >/dev/null 2>&1
+  local analysis_rc=0
   docker run --rm --user 0:0 -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" \
     "${SCRIPT_STAGE}/ppl_cliff_analyse.py" \
       --outdir "$OUTDIR" --corpus "$CORPUS" --corpus-base "$CORPUS_BASE" \
       --specs "$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)" \
       --logdir "$isodir" --kv "$KV_TYPE" \
       $( [[ -n "$FROM_RUN" ]] && echo --arms "$armdir" ) \
-      --json "${OUTDIR}/result.json" | tee "${dir}/analysis.txt"
-  docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
-    "cat '${OUTDIR}/result.json'" > "${dir}/result.json" 2>/dev/null || true
+      --json "${OUTDIR}/result.json" | tee "${dir}/analysis.txt" || analysis_rc=1
+  if docker run --rm -v "${CAPS}:/captures" alpine test -s "${OUTDIR}/result.json" 2>/dev/null; then
+    docker run --rm -i -v "${CAPS}:/captures" alpine sh -c \
+      "cat '${OUTDIR}/result.json'" > "${dir}/result.json" 2>/dev/null || true
+  else
+    warn "  the analyser wrote no result.json — NOT copying a stale one."
+    warn "  ${dir}/result.json is deliberately absent; analysis.txt has what got through."
+  fi
   if (( ! KEEP_LOGITS )); then
     echo
     echo "==> removing the log-probs (they are GiB; --keep-logits keeps them)"
