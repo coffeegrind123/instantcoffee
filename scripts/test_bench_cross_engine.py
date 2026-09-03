@@ -224,3 +224,44 @@ def test_report_survives_a_failed_round():
     assert "FAILED" in out
     assert "ConnectionRefusedError" in out
     assert "no reading" in out
+
+
+# --- what the quiet-server measurement established ---------------------------
+
+
+def test_llama_ttft_gap_is_constant():
+    """TTFT - prompt_ms does NOT scale with prompt length on a quiet server.
+
+    Measured 2026-09-03 against llama b10689, one client, nothing else on the
+    slot. Recorded as a test because the FIRST version of this measurement was
+    taken with stray bench containers still holding the slot, which produced a
+    gap that appeared to grow with the prompt (11-17 s at ~1300 tokens) and was
+    pure queue wait. The retraction is the point: these are the clean numbers,
+    and any future reading far outside this band means contention, not a
+    regression.
+    """
+    observed = [
+        # prompt_tokens, TTFT s, prompt_ms
+        (201, 0.97, 291.435),
+        (688, 1.44, 683.247),
+        (2637, 2.75, 1441.621),
+        (10432, 7.23, 6186.416),
+    ]
+    gaps = [ttft - pms / 1000.0 for _, ttft, pms in observed]
+    assert all(0.5 < g < 1.5 for g in gaps), gaps
+    # A 50x span in prompt length moves the gap by well under a second.
+    assert max(gaps) - min(gaps) < 0.8
+
+
+def test_quiet_server_prefill_is_in_the_expected_band():
+    """The same rows put prefill where this repo's other instruments put it.
+
+    bench.py reported 718 tok/s at ~1053 tokens and the 2026-09-03 capacity
+    probe reported 1797.8 tok/s at 90,029. Prefill rises with prompt length as
+    the fixed cost amortises, so a mid-size prompt landing near 1700-1800 is
+    the expected shape, not a surprise.
+    """
+    rows = [(688, 683.247), (2637, 1441.621), (10432, 6186.416)]
+    rates = [n / (ms / 1000.0) for n, ms in rows]
+    assert rates[0] < rates[1], "prefill should improve as fixed cost amortises"
+    assert 1500 < rates[2] < 2000

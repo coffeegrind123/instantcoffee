@@ -237,9 +237,15 @@ def run_round(
         "stream_options": {"include_usage": True},
         # llama.cpp-only, and ignored by servers that do not know it: without
         # this the streamed response carries no `timings`, so the engine-side
-        # cross-check silently vanishes exactly where it is most needed. The
-        # gap between llama's `prompt_ms` and the measured TTFT is large on
-        # this stack (~6 s on a 1000-token prompt) and has to stay visible.
+        # cross-check silently vanishes exactly where it is most needed.
+        #
+        # Measured on a QUIET server, TTFT - prompt_ms is a flat 0.68-1.31 s
+        # from 201 to 10,432 prompt tokens -- a constant, not something that
+        # scales with the prompt. Keep the cross-check anyway: that constant is
+        # the number that tells you whether TTFT is a usable prefill proxy, and
+        # it is only small while nothing else holds the slot. See
+        # `test_llama_ttft_gap_is_constant` for why that word "quiet" is doing
+        # real work.
         "timings_per_token": True,
     }
     if model:
@@ -516,11 +522,18 @@ def main(argv: list[str] | None = None) -> int:
     rounds: list[Round] = []
 
     # One discarded warm-up per arm. A first request into an idle server pays
-    # for things the steady state does not -- CUDA graph capture, allocator
-    # warm-up, and any queue wait -- and those land entirely in TTFT, which is
-    # the prefill measurement. Measured on this stack: a 385-token prompt took
-    # 10.6 s to first token cold, against a prefill rate that should have made
-    # it 0.2 s. Reporting that as prefill would have been a 50x error.
+    # for things the steady state does not, and all of it lands in TTFT, which
+    # is the prefill measurement. Measured on this stack at a matched 256-token
+    # target: 2.09 s cold against 0.97 s warm, and prompt_ms 694.9 against
+    # 291.4 -- so the cold round more than doubles both.
+    #
+    # RUN THIS ON A QUIET BOX, and that is not advice. The single biggest error
+    # in the numbers below is not cold start, it is CONTENTION: a leftover
+    # bench container still holding llama's one slot pushed TTFT on a
+    # ~1300-token prompt to 11-17 s, which looked exactly like a real,
+    # prompt-proportional stall in the engine and was not. It survived long
+    # enough to get written down. Kill stray `instantcoffee-bench-run-*`
+    # containers before believing anything here.
     if not args.no_warmup:
         for label, url in arms:
             print(f"[warmup] {label} (discarded) ...", file=sys.stderr, flush=True)
