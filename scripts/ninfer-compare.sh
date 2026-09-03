@@ -51,6 +51,20 @@
 #     thinking tokens on the same prompt. Decode RATE is unaffected; time-to-
 #     answer is, and this script does not claim to measure time-to-answer.
 #
+# ASYMMETRY IN THE CACHE GUARD, AND WHY PREFIX REUSE STAYS ON ANYWAY
+#
+# llama reports usage.prompt_tokens_details.cached_tokens, so bench_cross_engine
+# can DETECT a prefix-cache hit on that arm and withhold the prefill rate.
+# ninfer sends no equivalent field, so on its arm the leading per-request nonce
+# is the ONLY defence -- there is no independent confirmation that a prefill
+# actually ran. That asymmetry is real and is not fixable from here.
+#
+# ninfer does have --no-prefix-reuse, which would make its prefill honest by
+# construction. It is deliberately NOT used: llama runs with --cache-prompt on,
+# that is the production configuration on both sides, and disabling reuse on one
+# arm only would stop the two being like-for-like. The nonce leads the prompt,
+# so no two requests share anything past the chat-template preamble.
+#
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # AFTER the source, NOT before -- lib.sh line 4 turns errexit back ON, and
