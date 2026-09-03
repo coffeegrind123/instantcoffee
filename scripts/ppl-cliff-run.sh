@@ -366,10 +366,22 @@ main_run() {
   # cleanup with CORPUS_BASE defaulted to "none", which deleted nothing purely
   # by luck. With a real corpus that same path would have destroyed the GiB of
   # log-probs the re-read exists to use.
+  # STAMP THE STACK, NOT JUST THE ARGUMENTS. capacity-probe.sh records the
+  # engine and the weights with every result and refuses to compare across them
+  # ("THIS TABLE MIXES 4 DIFFERENT STACKS"); these logs had no such stamp, and on
+  # 2026-09-03 that cost a wrong result — per-token series from 2026-08-24 were
+  # pooled with series measured today, and the model had changed underneath
+  # (unsloth UD-Q4_K_XL -> orcarouter Q4_K_M on 2026-08-25). Every pair in that
+  # comparison straddled the switch. A run that cannot say which weights produced
+  # it will eventually be compared with one that used different ones.
   {
     printf 'CORPUS=%s\n' "$CORPUS"
     printf 'KV_TYPE=%s\n' "$KV_TYPE"
     printf 'SPECS=%s\n' "$(printf '%s\n' "${CHUNK_SPECS[@]}" | paste -sd, -)"
+    printf 'GGUF_FILE=%s\n' "$GGUF"
+    printf 'MODEL_REPO=%s\n' "$(env_get MODEL_REPO)"
+    printf 'LLAMA_IMAGE=%s\n' "$IMAGE"
+    printf 'STAMPED_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${LOCAL_LOGDIR}/run.meta"
   echo "cliff probe   ${STAMP}"
   echo "  image       ${IMAGE}"

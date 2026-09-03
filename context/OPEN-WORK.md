@@ -1087,7 +1087,7 @@ without new evidence; both tests are recorded above and both were negative.
 
 ---
 
-## 2. What sets the misfire rate — token-matched 2026-09-03: real, 1.44x, and it is DEPTH not offset
+## 2. What sets the misfire rate — CONTENT does, 3.96x (2026-09-03); the 1.44x depth claim is RETRACTED
 
 §3f of `context/design/kv-cache-fidelity-measured.md` established WHAT a cliff
 is: a per-token misfire rate. The model puts ~0.2 probability on an unrelated
@@ -1197,6 +1197,82 @@ ones, and the rate can be compared **on the same corpus tokens under two
 different offsets**. If offset drives the rate, the shared tokens change rate
 with offset; if block identity drives it, they do not. That is the experiment,
 and it is two arms rather than a corpus build.
+
+### ANSWERED 2026-09-03: history CONTENT sets the rate. 3.96x, amount held fixed.
+
+`scripts/ppl_history_build.py` builds the degree of freedom no offset sweep has:
+the same 4095 scored tokens (corpus `12289..16383`) behind three different
+4097-token histories. **Amount is identical by construction; only content
+differs.** All three ran as three chunks of ONE pass on ONE model, so this
+comparison is internally valid in the way the retracted one below is not.
+
+| arm | history (corpus tokens) | isolated PPL |
+|---|---|---:|
+| `early-doc` | 1024..5120 | **11.77** |
+| `natural` | 8192..12288 (the real preceding text) | **15.44** |
+| `pi-progress` | 81920..86016 (the worst region in the corpus) | **46.64** |
+
+**3.96x between best and worst, on identical scored tokens with identical
+history length.** The standing hypothesis — *"the rate is set by what the
+chunk's HISTORY contains"* — is confirmed, and the size is large: prefixing the
+same text with progress-bar log output triples its perplexity against its own
+natural predecessor, and quadruples it against a different passage of the same
+document.
+
+Read the engine's chunk line correctly: llama-perplexity prints a RUNNING
+average (`[1]15.4423 [2]26.8383 [3]20.3877`), and the per-chunk values above are
+the analyser's de-cumulation — checked by hand
+(`exp((ln 15.4423 + ln 46.6442)/2) = 26.84`, matching `[2]`).
+
+**Caveats, stated rather than buried.** This is chunk PPL, not the per-token
+misfire rate — the run used `--no-logits` because a log-prob pass needs ~8536
+MiB resident and the Docker VM had 7039 MiB free with nine live sessions on the
+box, none of them abandoned. PPL and misfire rate track each other across seven
+chunks (§3f) but they are not the same instrument. And `natural` here is a
+one-arm control of the CONSTRUCTION only; the same-model PPL control still wants
+`--chunk 8192:8192:1` on the original corpus, which must return 15.4423.
+
+**Next, and now worth the memory:** re-run these three arms WITH log-probs for
+the misfire rate, and add the same-model control chunk. Then the amount-vs-
+content question is fully closed on one stack.
+
+### RETRACTED 2026-09-03 (same day): that comparison straddled a MODEL CHANGE
+
+**The 1.44x below is not a depth measurement and must not be quoted as one.**
+Every one of its four pairs compared a chunk measured on **2026-08-24** against
+one measured **today**, and the weights changed in between: `.env` at commit
+`895c17c` (the last one on or before 2026-08-24) reads
+`unsloth/Qwen3.8-27B-GGUF` / `UD-Q4_K_XL`, and the pin moved to `orcarouter`
+`Q4_K_M` on 2026-08-25.
+
+**How it surfaced:** a later construction reproduced the *identical text* of the
+`12289..16383` chunk and returned PPL **15.4423** where two independent
+2026-08-24 runs both recorded **18.2527**. The construction was verified token
+for token, so the ~15% gap is the model, not the build.
+
+**Why it is not simply "all model":** the deeper arm is the OLD model in pairs 1
+and 3 and the NEW one in pairs 2 and 4. A pure model effect predicts
+deeper-worse in 1,3 and deeper-BETTER in 2,4; a pure depth effect predicts
+deeper-worse in all four. Observed is worse in 1,2,3 and better in 4 — pair 2
+refutes pure-model, pair 4 refutes pure-depth. With four pairs and the two
+crossed, **neither is separable**, and the McNemar figure is meaningless because
+the pairing is not within-model.
+
+**What it would take to settle it:** re-measure the three 2026-08-24 windows on
+the CURRENT model — `--chunk 8192:4096:2` plus `--chunk 8192:8192:1`, with
+log-probs — and redo the overlap analysis entirely within one stack. Add
+`--chunk 8192:8192:1` on the ORIGINAL corpus as a same-model control: it must
+equal the `natural` arm's 15.4423 exactly.
+
+**The cause was a tooling gap, now closed.** `capacity-probe.sh` stamps the
+engine and weights on every result and refuses to compare across them; the cliff
+logs stamped nothing. `run.meta` now records `GGUF_FILE`, `MODEL_REPO`,
+`LLAMA_IMAGE` and a UTC stamp, and every existing run directory has been
+backfilled from git. **A run that cannot say which weights produced it will
+eventually be compared with one that used different ones.**
+
+*(The original entry follows, kept because the DESIGN — token-matched overlaps —
+is right and is what the re-measurement should use.)*
 
 ### MEASURED 2026-09-03: the effect is REAL on identical tokens, and the variable is DEPTH
 

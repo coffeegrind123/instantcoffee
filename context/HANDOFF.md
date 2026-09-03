@@ -332,6 +332,17 @@ Ranked. **OPEN-WORK §00 and §00b carry the full versions.**
    **128K fits and is not worth taking**; 96K stays the pin on a cost
    measurement rather than on headroom arithmetic. The carried-over +1408 MiB
    delta is retired: measured on this stack it is **1248**.
+0. **READ THIS BEFORE QUOTING ANY PER-TOKEN CLIFF NUMBER.** The
+   `.ppl-cliff-logs/` runs span a MODEL CHANGE: everything dated 2026-08-24 was
+   measured on `unsloth/Qwen3.8-27B-GGUF UD-Q4_K_XL`, and everything from
+   2026-09-02 on `orcarouter/…-Uncensored-GGUF Q4_K_M` (the pin moved
+   2026-08-25). The same chunk's identical text gives **18.2527** on the old
+   weights and **15.4423** on the new. A comparison that straddles that line is
+   measuring the model. One such comparison was made and retracted the same day
+   — OPEN-WORK 2. `run.meta` now stamps `GGUF_FILE`/`MODEL_REPO`/`LLAMA_IMAGE`
+   and every existing run has been backfilled, so `grep GGUF_FILE
+   .ppl-cliff-logs/*/run.meta` answers this in one line.
+
 3. **The novel-text cost of the live pin — OPEN-WORK 0e, 19 rounds, ~4h.**
    *(This slot previously said `map-k4v` "has still never run here". That was
    WRONG — 0c measured it at -6.5%/p=0.0514 on 2026-09-01 and 0d closed the
