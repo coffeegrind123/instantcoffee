@@ -244,6 +244,15 @@ bench_arm() {
     --json "/out/$out" 2>&1 | tee "$RUN_DIR/$label.log"
   echo "loadavg_after_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
   cache_stalls "$label" "$arm_start"
+  # The ninfer log captured at readiness stops at "listening" and therefore
+  # contains nothing about the REQUESTS. On 2026-09-03 every ninfer round
+  # returned 400 and the only record of it was the bench's own one-line
+  # summary; the engine's account of why was overwritten by restore before
+  # anyone could read it. Re-capture after the arm, into a separate file so the
+  # readiness snapshot is still there to compare against.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$NINFER_CT" 2>/dev/null)" == "true" ]]; then
+    docker logs "$NINFER_CT" > "$RUN_DIR/$label.engine-after.log" 2>&1
+  fi
 }
 
 # --- the confound this comparison would otherwise hide -----------------------
@@ -323,14 +332,49 @@ start_ninfer() {
   # mount. Poll /health rather than guessing a sleep, and capture the log
   # BEFORE the container can go away: `docker logs` on a removed container
   # returns nothing, and that lesson was paid for once already.
+  # THE PROBE RUNS FROM A CONTAINER WE CONTROL, NOT INSIDE NINFER'S.
+  #
+  # It used to be `docker exec ninfer sh -c 'curl -sf .../health'`. That image
+  # ships NO curl, NO wget and NO python3, so the probe exited 127 -- command
+  # not found -- on every one of 180 iterations, which this loop cannot tell
+  # apart from "not ready yet". On 2026-09-03 it sat there for nine minutes
+  # against a server that had been answering /health in 0.43 s since minute
+  # one, and would have declared "ninfer did not become healthy within 1800s"
+  # about a perfectly healthy engine. A guard that fails identically for "not
+  # ready" and "cannot ask" reports the wrong system as broken.
+  #
+  # The bench image is the right prober precisely because the ARM uses it: if
+  # this cannot reach ninfer, neither can the measurement, so a probe failure
+  # is never a false alarm about the wrong thing. Exit codes are kept distinct
+  # on purpose -- 0 healthy, 1 not yet, anything else means the probe itself is
+  # broken and we stop rather than burn 1800 s.
   info "waiting for ninfer /health (cold load of a 17 GiB artifact takes minutes)"
-  local waited=0
+  local waited=0 prc
+  # urllib.error imported EXPLICITLY: it resolves as a side effect of importing
+  # urllib.request today, and if that ever stops being true the NameError would
+  # surface as a traceback, exit 1, and read as "not ready yet" forever -- the
+  # same silent failure this rewrite exists to remove.
+  local probe_py='import sys,urllib.error,urllib.request
+try:
+    with urllib.request.urlopen("http://'"$NINFER_CT"':8080/health", timeout=5) as r:
+        sys.exit(0 if r.status == 200 else 1)
+except urllib.error.HTTPError:
+    sys.exit(1)
+except Exception:
+    sys.exit(1)'
   while [[ $waited -lt 1800 ]]; do
-    if docker exec "$NINFER_CT" sh -c \
-        'curl -sf http://127.0.0.1:8080/health >/dev/null 2>&1' 2>/dev/null; then
+    compose --profile tools run --rm --entrypoint python bench -c "$probe_py" \
+      >/dev/null 2>"$RUN_DIR/ninfer-probe.err"
+    prc=$?
+    if [[ $prc -eq 0 ]]; then
       ok "ninfer healthy after ${waited}s"
       docker logs "$NINFER_CT" > "$RUN_DIR/ninfer-$name.log" 2>&1
       return 0
+    fi
+    if [[ $prc -ne 1 ]]; then
+      warn "the READINESS PROBE ITSELF failed (rc=$prc) — this says nothing about ninfer:"
+      tail -5 "$RUN_DIR/ninfer-probe.err" >&2
+      die "cannot probe ninfer, so cannot measure it. Fix the probe, not the engine."
     fi
     if [[ "$(docker inspect -f '{{.State.Running}}' "$NINFER_CT" 2>/dev/null)" != "true" ]]; then
       warn "ninfer container exited during load — capturing its log now"

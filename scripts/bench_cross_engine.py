@@ -172,6 +172,25 @@ class Round:
         return (n - 1) / self.decode_s
 
 
+class BackendRefused(RuntimeError):
+    """An HTTP error status, carrying what the SERVER said about it.
+
+    urllib raises `HTTPError: HTTP Error 400: Bad Request` and the body -- which
+    is where every OpenAI-shaped server puts the actual reason -- is readable
+    exactly once, off the exception object, and is otherwise thrown away.
+
+    That cost a whole ninfer arm on 2026-09-03: three rounds and a warmup all
+    reported `HTTPError: HTTP Error 400: Bad Request`, which says only that the
+    request was wrong and nothing about WHICH field. ninfer had answered with a
+    JSON error carrying `message`, `param` and `code`, and none of it survived
+    to the run directory. Diagnosis then meant reading a third-party server's
+    C++ validation path and guessing, against a container that takes nine
+    minutes to reload.
+
+    The rule this enforces: log the raw evidence, not your interpretation of it.
+    """
+
+
 def _post_stream(url: str, payload: dict, timeout: float):
     """POST and yield (monotonic_timestamp, raw_line) for each SSE line."""
     req = urllib.request.Request(
@@ -180,7 +199,19 @@ def _post_stream(url: str, payload: dict, timeout: float):
         headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        # Read it HERE. The body is a one-shot stream on the exception and is
+        # gone by the time any caller sees it.
+        try:
+            body = exc.read().decode("utf-8", "replace").strip()
+        except Exception:  # noqa: BLE001 - a body we cannot read is still a datum
+            body = "<error body unreadable>"
+        raise BackendRefused(
+            f"HTTP {exc.code} {exc.reason}: {body[:600] or '<empty body>'}"
+        ) from exc
+    with resp:
         for raw in resp:
             yield time.monotonic(), raw
 
