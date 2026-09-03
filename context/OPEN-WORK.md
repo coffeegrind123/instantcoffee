@@ -10,7 +10,7 @@ re-learn expensively.
 
 ---
 
-## 00. ninfer: gate cleared, pin is 6 of 6 — but upstream REJECTS the 4090 (2026-09-03)
+## 00. ninfer: upstream rejects the 4090 — and a 4090 fork does not, for 16.96 GiB (2026-09-03; read the LAST subsection first)
 
 `ngram-mod-and-the-load-confound.md` ("Also unevaluated") dismisses ninfer with
 one factual claim: *"both would cost the uncensored fine-tune this stack serves
@@ -150,6 +150,74 @@ pins and MTP support would have to be re-verified rather than inherited from
 this check. **Do not download 51.7 GiB against upstream.** The next cheap step,
 if anyone wants this, is to read a 4090 fork's build gate and its
 `OFFICIAL_RESOURCE_SHA256` — same method as above, no bytes moved.
+
+### THAT STEP WAS TAKEN — the path IS available here, and it costs 16.96 GiB (2026-09-03)
+
+Full record: `context/design/ninfer-4090-forks-read-not-run.md`. Nothing was
+downloaded, built or run; the whole thing is `gh` reads plus one anonymous HEAD.
+**Two claims immediately above are now wrong and are corrected here.**
+
+1. **"a fork's converter pins and MTP support would have to be re-verified
+   rather than inherited"** — they do not. Both 4090 forks' `convert.py`
+   (`71511a875a2cf8dd…`) and `inventory.py` (`915a4fb911ef65b3…`) are
+   **byte-identical to upstream**, so the 6/6 frontend-pin result and the
+   MTP-head result transfer verbatim, by hash.
+2. **"Honest cost, measured: 18 shards, 51.7 GiB, plus the ~19 GB `.ninfer`
+   artifact"** — that is the cost of converting *the uncensored fine-tune*. The
+   **official artifact is published pre-converted and ungated**:
+   `neroued/Qwen3.8-27B-NInfer/resolve/main/qwen3_8_27b.ninfer`, anonymous HEAD
+   302 -> 200, `content-length: 18210531328` = **16.96 GiB, one file, no
+   conversion**. `sergiuszm/ninfer-4090`'s `scripts/download-qwen38.sh` is
+   fifteen lines of `curl`.
+
+**The build gate is open**, and not by relaxation: `UDPSendToFailed` accepts
+`86|89` (defaults 86 — a trap, see below), `sergiuszm` accepts `89` only and
+defaults to it, against upstream's `120a`-only `FATAL_ERROR` as the control.
+Behind the gate is a from-scratch GQA attention path on `m16n8k16` bf16 MMA +
+`cp.async` + `ldmatrix`, all `sm_80`-and-later, in 96 KiB of smem (fits Ada's
+99 KiB). **This box is `sm_89`** — `nvidia-smi` `compute_cap` = 8.9, read not
+assumed. **Linux is supported** despite the UDP fork's "OS: Windows 11"
+prerequisite: `sergiuszm` states "targets `sm_89` and Linux" and ships a plain
+two-stage `Dockerfile` on `nvidia/cuda:13.1.2-devel-ubuntu24.04`; the CUDA floor
+is 12.8, which `instantcoffee-llama` already ships.
+
+**Their published context ceilings are arithmetically validated** by
+`scripts/kv_ceiling_check.py` — 223K at int8 up to 567K at 2-bit keys all land
+inside a **0.32 GiB band** of residual slack on this 23.99 GiB card, which is
+the fingerprint of one real binary search. The geometry is not taken from a
+model card: our own llama.cpp prints 16 KV layers, `n_head_kv=4`,
+`n_embd_head_k=256` and skips recurrent layers 3/7/11 — i.e. ninfer's
+`range(3,64,4)` — and the script's control reproduces the engine's own
+`1632.00 MiB` to the hundredth. Large windows are possible because only **16 of
+64 layers cache KV at all**.
+
+**An outside measurement of llama.cpp on this same card agrees with ours**: they
+put a 128K prefill at ~1,788 tok/s server-measured; we measured 1,797.8 tok/s on
+a 90,029-token prompt on 2026-09-03.
+
+**Three things that do NOT follow, and matter:**
+
+- **The cliff instrument does not port.** `ninfer-serve` registers no
+  `/tokenize`, no `/completion`, no logits export (read off route
+  registrations, with `/health`+`/metrics`+`/slots` as the control). Its own
+  `docs/perplexity.md` says its evaluator is "not a serving endpoint or a
+  logits-export API" and reports NLL **per window, not per token**. The whole
+  `ppl-*` family and every misfire-rate result depend on per-token logprobs and
+  on `parse_special=False`. **Keep llama.cpp regardless of what ninfer measures.**
+- **The published artifact is the OFFICIAL model**, not the uncensored fine-tune
+  `uc-coding` and `prose` serve. The cheap path measures the ENGINE, not a
+  drop-in.
+- **Every throughput figure is theirs.** Reading cannot verify 148.6 tok/s.
+
+**Do not follow `UDPSendToFailed/ninfer-4090`'s README build line on this card**
+— it omits `-DCMAKE_CUDA_ARCHITECTURES` and that fork defaults to **86**, while
+its own `docs/rtx-4090-early.md` says "Keep `CMAKE_CUDA_ARCHITECTURES=89`".
+
+**Next, and it needs the operator's go-ahead (GPU time + ~17 GiB):** build
+`sergiuszm/ninfer-4090`'s Dockerfile, pull the 16.96 GiB artifact onto D:, and
+bench it against llama.cpp on `unsloth/Qwen3.8-27B-GGUF UD-Q4_K_XL` — the GGUF
+the `coding` mode already runs and the same one their comparison used, so the
+control is already on disk. Only if the engine wins does anyone spend the 51.7.
 
 *(Historical: the two flags this section raised before that, now both cleared.)*
 
