@@ -1,3 +1,189 @@
+# Handoff — 2026-09-04 (part 6: a runbook for the one job left — get the ninfer number in a single sitting)
+
+**This entry is not a record of work. It is instructions for one task.** Parts
+3–5 hold the reasoning; everything below is what to type, what to expect, and
+what to do when it goes wrong. Read §1–§4 before starting, not during.
+
+**The state you are inheriting:** stack healthy (llama up, forge up, smoke
+11/11), `main` level with `origin/main` at `a6412f0`, working tree clean,
+nothing in `.env`, `.env.local`, `docker-compose.yml` or `modes/` changed for
+three sessions. Four comparison runs done, four llama arms, **zero ninfer
+arms**. Every known harness defect is fixed and controlled. What is missing is
+one uninterrupted sitting.
+
+---
+
+## 1. Before you start
+
+**Budget ~25 minutes and do not start it inside anything that might end.**
+Three of the four previous attempts were killed from outside mid-run. That is
+now the only thing standing between this repo and the number.
+
+Check three things. They take fifteen seconds and each one has cost a run:
+
+    uptime                                    # want 1-min load under ~2
+    free -m                                   # want several GiB available
+    docker ps -aq --filter name=instantcoffee-bench-run | wc -l   # want 0
+
+**Load is not a formality.** Run 3 went at load 4.00 and came in **4% slower on
+prefill and 6% slower on decode** than the three quiet runs. The script warns
+above 4.0 and continues; it is your job to not be there.
+
+**A stray bench container is fatal to the result, not to the run.** It holds
+llama's single slot and the queue wait looks exactly like a real engine stall —
+that is the retraction in part 3 §6.2, and `preflight()` refuses to start
+because of it.
+
+---
+
+## 2. The command, and the timeline it should follow
+
+    ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 3
+
+| phase | expect | do not read as |
+| --- | --- | --- |
+| llama arm, warmup + 3 rounds | **~2 min** | |
+| llama stopped, ninfer container starts | seconds | |
+| ninfer weight load, 16.67 GiB | **132–166 s** (~100–130 MB/s) | a hang |
+| ninfer post-weight setup to `model loaded` | **~6 more min** — it logs NOTHING in this window | a hang |
+| ninfer warmup, then `listening on http://0.0.0.0:8080` | ~2 s after that | |
+| ninfer arm, warmup + 3 rounds | ~2 min | |
+| restore: ninfer removed, llama cold-reloaded | **~5 min to `/health` 200** | |
+
+**The six silent minutes between 100% weights and `model loaded in 547.519 s`
+are normal.** Measured three times. Nothing is printed. Do not intervene.
+
+**`--prompt-tokens 32768` will produce ~20,580 and that is correct.**
+`CHARS_PER_TOKEN_GUESS` is 3.6 against an actual ~5.73 for this filler;
+`build_prompt`'s docstring says the flag is a target and the server's count is
+what gets reported. Both arms share the generator, so it stays matched.
+**Never quote 32768 in a result.**
+
+---
+
+## 3. If it dies, this is the whole recovery
+
+    ./scripts/ninfer-compare.sh --restore-only
+
+Safe when nothing needs restoring. It removes `ninfer-bench` (which otherwise
+sits on ~22 GiB of VRAM) and starts llama if it is stopped, then tells you which
+of three states llama is in. If it says *running but still loading*, wait ~5
+minutes for `/health` to return 200 before doing anything else.
+
+The trap inside the script already handles a single INT/TERM — one killed run
+recovered unaided. The flag exists for the second signal, which caught another
+run between `docker rm -f` and `docker start`.
+
+---
+
+## 4. It will probably 400 again. Here is where to look, in order
+
+The ninfer arm returned **HTTP 400 on the warmup and all three rounds** the one
+time it reached the engine. That cause is still unknown — **on purpose**, see
+§5. It is now instrumented, so one run diagnoses it:
+
+1. **The console.** Failures now read
+   `BackendRefused: HTTP 400 Bad Request: {…}` with the server's own JSON —
+   ninfer sends `message`, `param` and `code`.
+2. **`<run>/ninfer.json`**, each round's `error` field, same string.
+3. **`<run>/ninfer.engine-after.log`** — the engine's side, captured *after* the
+   arm. (`ninfer-matched.log` is the readiness snapshot and stops at
+   `listening`; it will tell you nothing about the requests.)
+
+**Then fix the payload in `scripts/bench_cross_engine.py`, not the engine.** The
+400 is ninfer rejecting something we send. If a field has to be dropped for
+ninfer, drop it for that arm only and say so in the run's `run.meta` — a payload
+difference between arms is a confound and belongs next to the numbers.
+
+---
+
+## 5. Already ruled out — do not re-walk this
+
+Read out of `~/ninfer-4090/src/serve/openai_chat_request.cpp`, not guessed:
+
+- **It does not reject unknown fields wholesale.** So `timings_per_token` — the
+  llama.cpp-only field we send — is **not** the cause. The comment in
+  `bench_cross_engine.py` calling it "ignored by servers that do not know it"
+  is, for ninfer, correct.
+- **`stream_options` is parsed and accepted**, including `include_usage`.
+- **`max_tokens` is accepted**, as a fallback when `max_completion_tokens` is
+  absent.
+- The rejected-outright list is constrained-decoding fields (`grammar`,
+  `guided_*`, `structured_outputs`), `web_search_options`, `moderation`,
+  `store`, and non-neutral `repetition_penalty`. **We send none of them.**
+
+Remaining candidates, unverified: `ContextLengthExceeded`,
+`ThinkingBudgetCapacityInsufficient` (its guard only fires when
+`effective_output_tokens > budget`, so `max_tokens=128` probably misses it), and
+something in the message/role path. **Do not narrow these by reading. The body
+will say it in one run.**
+
+---
+
+## 6. The baseline it is being compared against
+
+Four llama arms, same script, same prompts, `.ninfer-compare/<stamp>/`:
+
+| run | load | prefill t/s (median, range) | decode t/s (median, range) |
+| --- | ---: | --- | --- |
+| `20260903-193057` | 1.49 | 2080.8 [2080.0 .. 2095.1] | 93.0 [87.7 .. 95.3] |
+| `20260903-220703` | 0.74 | 2087.1 [1957.6 .. 2104.7] | 94.4 [93.5 .. 96.9] |
+| `20260903-223223` | **4.00** | 1998.1 [1856.3 .. 2015.1] | 88.2 [87.2 .. 89.7] |
+| `20260903-224737` | 1.77 | 2066.1 [2053.7 .. 2112.0] | 86.4 [77.1 .. **93.8**] |
+
+**Prefill is stable to ~1% on a quiet box. Decode is not** — run 4 spans
+77.1–93.8 across three rounds with nothing else running. Quote decode with its
+range; a single round's decode figure is close to worthless.
+
+**Read `<run>/llama.cache-stalls` before believing any TTFT comparison.** llama
+pays a prompt-cache update on every round after the first and ninfer has no
+equivalent step; it lands inside wall-clock TTFT and outside the engine's own
+prompt-eval timing. Quiet, it is ~1 s per switch (n=4, worst 0.98–1.60 s across
+the four runs). It has been measured at **81 s** and once at **1,109 s**. If
+that file shows anything three-figure, the TTFT comparison for that run is void
+— the decode and prefill rates are not.
+
+---
+
+## 7. What a result will and will not settle
+
+Restating part 3 §8 only so it is not lost between the numbers and the
+conclusion:
+
+- **The weights differ.** llama serves the orcarouter Q4_K_M **fine-tune**;
+  ninfer the **official** groupwise-int artifact. A decode difference is engine
+  **and** weights. To narrow it, point the stack at `Qwen3.8-27B-UD-Q4_K_XL.gguf`
+  (already on disk, and the GGUF sergiuszm's own published comparison used) via
+  `.env` + `./scripts/mode.sh` and re-run. There is deliberately no flag.
+- **The cache guard is asymmetric.** llama reports `cached_tokens` so a prefix
+  hit is detected and withheld; ninfer sends no equivalent, so the leading nonce
+  is the only defence on that arm.
+- **The arms cannot be interleaved** — ~17 GiB and ~20 GiB will not coexist on
+  24 GB. Back-to-back, quiet, with the spread reported, is the substitute.
+- **`ninfer-serve` has no `/tokenize`, no `/completion`, no logits export**, so
+  the whole `ppl-*` research line stays on llama.cpp. **Even a decisive ninfer
+  win means two engines, not a replacement.** Cost it as one.
+
+---
+
+## 8. Do not
+
+- **Do not relaunch blind after a kill.** Each attempt takes the production
+  stack down for the whole cycle and costs a ~5 minute llama reload coming back.
+  Four attempts have already been spent this way.
+- **Do not `--wide` (262K) yet.** ninfer reports `headroom=0.00 MiB` and
+  `slack=1.59 GiB` at our matched 98,304 with `--kv-dtype int8`. Get the matched
+  number first.
+- **Do not change `.env`.** Three sessions have kept the running stack
+  untouched; the comparison is supposed to measure production.
+- **Do not edit `ninfer-compare.sh` while it is running.** bash reads scripts
+  incrementally.
+- **Do not take any measurement while another session is building.** Load 16–34
+  has been observed from exactly that, and it is what turned a ~1 s prompt-cache
+  update into 81 s.
+
+---
+
 # Handoff — 2026-09-04 (part 5: the llama arm is now measured three times and agrees with itself; the ninfer arm has still never produced a number, and the three reasons are all known and two are fixed)
 
 ## Read this first
@@ -13,13 +199,13 @@ llama result is now replicated and the box effect is visible in it:
 | run | dir | load at start | prompt tok | prefill t/s (median, range) | decode t/s (median, range) |
 | --- | --- | ---: | ---: | --- | --- |
 | 1 | `20260903-193057` | 1.49 | 20,582 | 2080.8 [2080.0 .. 2095.1] | 93.0 [87.7 .. 95.3] |
-| 2 | `20260903-220703` | 1.49 | 20,582 | 2087.1 [1957.6 .. 2104.7] | 94.4 [93.5 .. 96.9] |
+| 2 | `20260903-220703` | 0.74 | 20,582 | 2087.1 [1957.6 .. 2104.7] | 94.4 [93.5 .. 96.9] |
 | 3 | `20260903-223223` | **4.00** | 20,580 | **1998.1** [1856.3 .. 2015.1] | **88.2** [87.2 .. 89.7] |
 | 4 | `20260903-224737` | 1.77 | 20,583 | 2066.1 [2053.7 .. 2112.0] | 86.4 [77.1 .. **93.8**] |
 
-Runs 1, 2 and 4 are on a quiet box and their prefill medians span **2066.1 to
-2087.1 — a 1.0% spread across three runs taken over three hours**. Run 3, at
-load 4.00 instead of ~1.6, is **4% slower on prefill and 6% slower on decode**:
+Runs 1, 2 and 4 are on a quiet box (load 1.49 / 0.74 / 1.77) and their prefill
+medians span **2066.1 to 2087.1 — a 1.0% spread across three runs taken over
+three hours**. Run 3, at load 4.00, is **4% slower on prefill and 6% slower on decode**:
 a reminder that the quiet-box rule is worth what it costs, and a rough scale for
 what load takes from you.
 
