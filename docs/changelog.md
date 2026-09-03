@@ -10,6 +10,40 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**128K fits, and it halves decode.** The refusal that stood since 2026-08-23 was
+arithmetic: it carried a `+1408` MiB engine delta measured on the OLD weights,
+implying a 128K footprint of 22407 where the engine now says **21159**. A probe
+loaded 128K with 921 MiB free — with the desktop at 2481 MiB, near the level that
+had produced the previous refusal, so not because the box was quiet. Then the
+cost was measured, both arms in one run against the same 90,029-token prompt:
+prefill **1797.8 -> 1200.7** tok/s, decode **50.2 -> 26.1**, draft acceptance
+flat. The three 128K decode runs span 4%. **96K stays the pin, now on a cost
+measurement rather than on headroom arithmetic.**
+
+The re-open condition named the wrong lever: it said to close NVIDIA Broadcast,
+which has run continuously since 2026-08-25 through both captures, reading 920.1
+MiB then and 0.1 MiB now. The floor came back on its own (median 1460.9 against
+2741.3) and moved **765.8 MiB inside one 11-minute capture**. Measure it on the
+day; a floor has a shelf life of hours.
+
+**The experiment runner that wedged four times was `set -e`.** `ppl-cliff-run.sh`
+turns errexit off on line 59 and sources `lib.sh` on line 60, which turns it back
+on. `restore()` opens with a `docker kill` of a `--rm` container that has already
+exited — always exit 1 — so the script died there, before restarting llama, with
+stderr going to `/dev/null`. Every symptom follows, including "the trap did not
+fire" (it fired and died identically). **Five scripts had the identical shape**,
+one of them carrying a comment about `set -e` that the very next line undid. All
+five fixed, pinned by 7 tests with controls. Note `set -uo pipefail` does **not**
+disable `-e`; that takes an explicit `set +e`.
+
+**`./scripts/mcp.sh` now wraps MCP server output** in the untrusted-content
+envelope. `mcp/servers.json` gained an `inert` key and **absent means untrusted**,
+so a web-facing server registered later is wrapped by default rather than
+depending on whoever adds it having read the file. stderr stays outside the
+envelope and discovery is not wrapped. 22 tests, controlled both ways.
+
+---
+
 **The chat template ships inside the GGUF, so the three modes do not run the
 same one.** `coding`'s unsloth GGUF carries a 9993-char fork ("Unsloth fixes -
 developer role, merged system messages, tool calling"); `uc-coding` and `prose`

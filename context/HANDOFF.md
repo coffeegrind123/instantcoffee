@@ -1,3 +1,335 @@
+# Handoff — 2026-09-03 (part 2: 128K fits and halves decode; the wedged runner was `set -e` all along; section 2 answered on BOTH axes; and four of this session's own claims were retracted before they could set)
+
+## Read this first
+
+**Nothing in the running stack moved.** No pin changed: `CTX_SIZE=98304`,
+`SPEC_TYPE=ngram-map-k,draft-mtp`, `orcarouter Q4_K_M`, `CACHE_TYPE_K/V=q8_0`,
+`REASONING_EFFORT=medium`. Five `.env`-rewriting probes ran and every one
+restored — `git diff` on `.env` across the whole session shows only the two keys
+the *previous* session's work introduced (`CHAT_TEMPLATE_FILE=`,
+`FORGE_BACKEND_ERROR_DETAIL=1`). llama was stopped and cold-reloaded six times
+and is healthy. **19 commits, all pushed**, `main` level with `origin/main` at
+`65cc95b`.
+
+**This session was mostly measurement, and its most useful output is four
+RETRACTIONS.** Three of them were of claims made *earlier in the same session*.
+Read §7 before trusting any number in §1-§6, because the reason they are
+trustworthy is that the wrong versions were caught.
+
+| | verdict |
+| --- | --- |
+| **128K** | Fits. **Not worth taking** — halves decode. Closed on cost, not headroom |
+| **OPEN-WORK §1** (wedged runner) | **SOLVED.** `lib.sh` re-enables `set -e` one line after the script turns it off |
+| **OPEN-WORK §2** (misfire rate) | **ANSWERED both ways.** content **1.79x**, depth **1.45x**, same instrument |
+| **OPEN-WORK §3** (rotation) | Depth **ruled out**. Its "§2 and §3 are one phenomenon" inference retracted |
+| **ninfer** | Frontend pin is **6 of 6** — and upstream **rejects the 4090** (`sm_120a` only) |
+| **`mcp.sh`** | Latent injection path **closed before its trigger** |
+
+---
+
+## 1. 128K: the fit refusal was wrong, and the cost refusal that replaces it is stronger
+
+`ctx_128k_verdict` had refused 128K on fit since 2026-08-23. **That refusal was
+arithmetic carried over from different weights.** It computed
+`24564 - (device total at 96K + 1408)` where `+1408` was an engine delta measured
+on the OLD stack (unsloth `UD-Q4_K_XL`, b10573), implying a 128K footprint of
+22407. **The engine says 21159.** Measured on this stack the delta is **1248**.
+
+The probe loaded 128K with **921 MiB free** off the engine's settled exit table —
+*with the desktop at 2481 MiB*, near the 09-02 median that had produced the -584
+refusal. So it did not fit because the box happened to be quiet.
+
+**Then the cost was measured, and it closes the item.** Both arms in ONE run,
+same 90,029-token prompt, `--repeat 3`:
+
+| | 96K | 128K | |
+|---|---:|---:|---:|
+| prefill tok/s | 1797.8 | 1200.7 | -33% |
+| **decode tok/s** | **50.2** | **26.1** | **-48%** |
+| draft acceptance | .53-.68 | .52-.54 | flat |
+
+The three 128K decode runs are 26.1/25.3/26.3 — a 4% spread — against 96K's
+44.4/53.7/50.2. No 128K round comes near any 96K round, and draft acceptance
+barely moves, so this is the window and not spec-decoding collapsing. The arms
+saw near-identical desktops (2535 / 2701), which is what makes it like-for-like.
+
+**Halving interactive decode to buy 32K is a bad trade. 96K stays the pin — now
+on a cost measurement rather than on headroom arithmetic.**
+
+**The re-open condition named the wrong lever.** It said to close NVIDIA
+Broadcast. Broadcast has run continuously since 2026-08-25 20:01 — through the
+09-02 capture AND this one — at 70.4 CPU-seconds over nine days, reading 920.1
+MiB then and **0.1 MiB** now with its run state unchanged. The floor came back on
+its own: 1045.1 / **1460.9** / 1810.9 over 44 samples, against 09-02's 2741.3.
+
+**The floor is more volatile than any decision built on it.** It moved **765.8
+MiB inside one 11-minute capture**. A floor is a snapshot with a shelf life of
+hours. And the per-pid column that named Broadcast is the one `vram-floor.sh`'s
+own header says DO NOT SUM (dwm alone reads ~4 GB; the column totals ~27 GB on a
+24.5 GB card) — the adapter-total-minus-vmwp figure is the measurement.
+
+---
+
+## 2. OPEN-WORK §1 SOLVED: `lib.sh` turns `set -e` back on, one line after the script turns it off
+
+Four runs wedged on 2026-08-24 with llama left stopped, no output, exit 1, and
+"the trap did not fire". **All of it is one cause.**
+
+1. `ppl-cliff-run.sh:59` runs `set -uo pipefail` — deliberately without `-e`.
+2. Line 60 sources `lib.sh`, whose line 4 is **`set -euo pipefail`**.
+3. `restore()` opens with `docker kill "$RUNNER_CT"`. The runner is `--rm` and has
+   already exited on the normal path, so **that always returns 1**.
+4. Under errexit the script dies there, before restarting llama, with stderr
+   already redirected to `/dev/null` — in silence.
+5. The EXIT trap fires `restore` again; it dies at the same line. Exit 1.
+
+Every recorded symptom falls out of that, including the two that made it look
+mysterious: "the trap also did not fire" (it fired and died identically) and
+"moving restore earlier did not fix it" (the same line fails wherever it sits).
+The record's "it is not `set -e` (never set)" was checked at line 59; the
+override is line 60.
+
+**It reproduced on the first run with the instrument in place**, and
+`restore.log` named the line:
+
+```
+23:30:34  restore entered (caller rc=0)
+23:30:34  restore entered (caller rc=1)
+```
+
+**FIVE scripts had the identical shape** — `kld-run`, `ppl-cliff-run`,
+`ppl-depth-run`, `ppl-stride-run`, `test_llama_watchdog`. The last carries a
+comment saying `set -e` "turned the whole suite into one silent early exit", and
+then sources `lib.sh` one line below it. All five now source first and `set +e`
+after. `scripts/test_runner_errexit.py` (7 tests) pins it, with controls that
+`lib.sh` really does set `-e` and that the detector can report ON.
+
+**Confirmed working end to end**: a later run's `restore.log` shows both entries
+completing — `docker kill rc=1` survived, `docker start rc=0`, llama restarted
+with no intervention.
+
+**What it does NOT cover, and cannot:** SIGKILL. A run stopped from outside left
+`restore.log` absent (the documented signature), llama `Exited`, and an orphaned
+pass container holding the GPU. Recovery is manual: `docker rm -f` the orphan,
+`docker start` the server. **And capture `docker logs <pass>` FIRST** — the pass
+is `--rm`, so when it exits Docker deletes the container and its output with it.
+That was measured the hard way; a spec's results were watched, it exited, and
+every line went with it.
+
+---
+
+## 3. OPEN-WORK §2 ANSWERED — content 1.79x, depth 1.45x, same instrument
+
+Both figures are **misfire rate** (`nll > 10` nats), on `orcarouter Q4_K_M`.
+
+**CONTENT — the comparison no offset sweep can make.** `ppl_history_build.py`
+puts the SAME 4095 scored tokens behind three different 4097-token histories.
+Amount identical by construction; only content differs:
+
+| arm | history@ | PPL | mean NLL | **misfire** |
+|---|---:|---:|---:|---:|
+| `early-doc` | 1024 | 11.77 | 2.299 | **8.9%** |
+| `natural` | 8192 | 15.44 | 2.486 | **10.8%** |
+| `pi-progress` | 81920 | 46.64 | 3.460 | **15.9%** |
+
+**1.79x**, McNemar 332 vs 45 discordant, chi2 = 217.0, p < 0.0001.
+
+**DEPTH — four within-model token-matched pairs over DISJOINT ranges.** Two chunks
+whose scored windows overlap give the same tokens at two depths, so each token is
+its own control and block difficulty cancels:
+
+| shared tokens | depth 6145 | depth 4097 | |
+|---|---:|---:|---|
+| 10241..12287 | **30.2%** | 22.5% | deeper worse |
+| 12289..14335 | **26.9%** | 11.1% | deeper worse |
+| 14337..16383 | **10.5%** | 8.2% | deeper worse |
+| 16385..18431 | 14.3% | **14.8%** | shallower worse |
+
+Pooled **20.5% vs 14.1% = 1.45x**, McNemar chi2 = 386.3 on 605 vs 87 discordant,
+p < 0.0001, over 8188 paired comparisons.
+
+**Depth is an UPPER bound** — moving the start changes content too. That is
+structural, and it is why the constructed history exists.
+
+**A mechanistic detail worth more than either number:** across the content arms
+the misfire COUNT rises 1.79x while mean NLL rises 1.51x and PPL ~4x. **Hostile
+history inflates the SEVERITY of the worst tokens more than it multiplies their
+number.**
+
+**The construction is validated to the limit.** The `natural` arm is
+byte-identical to the start-8192 chunk, which was also measured through the
+ORDINARY slicing path. The two per-token series are **identical element-wise
+across all 4095 tokens** — different corpora, different code paths, bit-identical.
+
+---
+
+## 4. OPEN-WORK §3: depth is NOT the rotation asymmetry, and the section's own conclusion is retracted
+
+§3 ended by inferring that §2 and §3 are "probably one phenomenon", reasoning
+from §2's hypothesis being about history CONTENT. §2 is now measured, and the
+variable an offset sweep moves is **depth** — which §3 holds fixed by
+construction. That inference does not hold.
+
+Two independent reasons:
+
+- **Levels.** This session's two arms landed on the two rotations that had no
+  per-token data, so all four now have a series. All score in-chunk depths
+  4097..8191 — depth matched — and misfire still ranges 11.2% to 31.2%. The
+  per-depth profiles do not even share a shape.
+- **Magnitudes.** The 4-rotation grid scores almost every token **twice** (8188
+  of 8192 per period, verified), at two depths 4096 apart — those are exactly the
+  token-matched contrasts, and they come to 1.45x. **The arm spread is 15x.**
+
+What survives is an interaction: hard content landing deep in one rotation and
+shallow in another, which the grid cannot separate because rotation SETS depth.
+Testing it needs per-token series for **whole arms** (7 chunks x 2 rotations).
+
+**A trap for anyone cross-referencing the two scripts:** `ppl-depth-run.sh`'s
+`filler` F is tokens PREPENDED, so its chunks start at `-F (mod 8192)`, while a
+cliff chunk's natural label is `start mod 8192`. **They are negatives** —
+`my_filler = (8192 - F) mod 8192`. Only 0 and 4096 are fixed points, which is why
+it goes unnoticed: the two most-quoted arms are the two that agree.
+
+---
+
+## 5. ninfer: every pin passes and the build still refuses this card
+
+The HF gate was accepted (thank you). Access verified the right way — `resolve/`,
+not the API, which returns 200 for a gated repo without granting anything.
+
+**All SIX of ninfer's pinned frontend files are byte-identical between
+`orcarouter/…-Uncensored` and `Qwen/Qwen3.8-27B`**, matching ninfer's own
+`OFFICIAL_RESOURCE_SHA256` at full 64-hex length. No substitution is needed and
+the `pre_tokenizer` stop condition cannot fire. The recorded "5 of 6, only
+`tokenizer.json` differs" was an artefact of comparing LFS oids through a closed
+gate; both repos carry the same LFS oid *and* the same git blob oid.
+
+**Then it stops for a reason nothing in this repo had checked.** ninfer's README:
+the build *"rejects CUDA architectures other than `sm_120a`"* — Blackwell. **This
+box is an RTX 4090** (sm_89). And `docs/performance.md` puts every published
+number on an **RTX 5090, 32 GiB**, so §00's "~126 t/s on this card" was never this
+card. The 262,144-token window is the **MTP0** figure; **with MTP3 it is 131,072**
+— the same 128K measured and refused above for halving decode, and MTP is what
+the live +38.7% pin runs on.
+
+Both follow-on flags cleared on the way: the 1199-vs-1,118 tensor gap is a false
+alarm (the OFFICIAL repo ships 1199 too, identical names, shards, sizes and
+shapes), and ninfer does convert the MTP head.
+
+**Do not download 51.7 GiB against upstream.** Cheap next step: read a 4090
+fork's build gate and `OFFICIAL_RESOURCE_SHA256` the same way — no bytes moved.
+
+---
+
+## 6. `mcp.sh` wraps server output — closed BEFORE its trigger
+
+OPEN-WORK §5 listed `bash -> ./scripts/mcp.sh` as an unwrapped injection path and
+deferred it as "latent, not live", to be fixed *if* a web-facing MCP server is
+registered. That plan relies on whoever registers one having read
+`mcp/servers.json` — exactly the person who will not have.
+
+`mcp/servers.json` gains an **`inert`** key; **absent means untrusted**. `mcp.sh`
+no longer `exec`s mcp2cli (it cannot — something must outlive the call to close
+the envelope), pipes stdout through `untrusted_content.py` under `pipefail` so a
+server failure still propagates its status, leaves **stderr unwrapped** (a
+transport error is the tool's own voice — the bug `browser-guard.ts` already had
+to fix once), and does not wrap discovery. **22 tests** (was 14), controlled both
+ways.
+
+---
+
+## 7. What was RETRACTED, and why that matters more than the numbers
+
+**Three of these were my own claims, made earlier in this same session.**
+
+1. **"The 3.4x boundary-offset effect"** (pre-existing) — offset was perfectly
+   aliased with which 4096-block was scored; every `f4096` chunk is an odd block
+   and every `f0` chunk an even one. No token on disk was scored twice, so no
+   existing data could break the tie.
+2. **"1.44x, and the variable is DEPTH"** (mine) — every pair compared a
+   2026-08-24 chunk against one measured today, and the model changed in between
+   (unsloth -> orcarouter, 2026-08-25). Identical text scores **18.2527** on the
+   old weights and **15.4423** on the new. **The controlled redo gives 1.45x —
+   within 0.01 of the retracted figure.** Say that out loud: a wrong method that
+   lands on the right answer is still wrong, the agreement is luck, and the only
+   reason we know it is luck is that the controlled version was run.
+3. **"Content 3.96x against depth 1.45x"** (mine) — a units error. `PPL = exp(mean
+   NLL)`, so a PPL ratio is not commensurable with a rate ratio; in matched units
+   it is **1.79x against 1.45x**, comparable rather than dominant.
+4. **"NVIDIA Broadcast is holding 920 MiB"** (pre-existing) — it never changed
+   state across either capture.
+
+**Smaller corrections, same shape:** `set -uo pipefail` does **not** disable
+`-e` (my first fix was a no-op, caught by running the check instead of reading
+it); a multi-chunk spec's chunk *i* starts at `corpus_start + i*n_ctx`, not at
+`corpus_start` (my first depth calculation used the latter); an orphaned `--rm`
+pass is readable only *while it runs*; and the stale handoff claim that
+`ngram-map-k4v` "has still never run here" (§0c measured it 2026-09-01).
+
+---
+
+## 8. Tooling added, and the traps each one closes
+
+| tool / change | closes |
+| --- | --- |
+| `run.meta` stamps `GGUF_FILE`/`MODEL_REPO`/`LLAMA_IMAGE`; all runs backfilled | a run that cannot say which weights produced it |
+| `cliff_overlap_analyse.py` | **refuses** to pair across `GGUF_FILE`; derives chunk start per-chunk |
+| `ppl_history_build.py` | constructs history; verifies the join id-by-id |
+| `ppl_history_analyse.py` | reads constructed runs BY ARM; refuses unmarked runs |
+| auto `CONSTRUCTED_CORPUS=1` + manifest copy | analyser chunk labels that collide with real source windows |
+| `.logits` size check before analysis | an `EOFError` naming a record index instead of a file |
+| `result.json` guard | a FAILED analysis planted the PREVIOUS run's file in the new run dir |
+| `--analyse-only` corpus/spec recovery | it passed `--corpus ''` and died, then ran cleanup with `CORPUS_BASE=none` |
+| `set +e` in five runners + `test_runner_errexit.py` | §1 |
+| `mcp.sh` envelope + 8 tests | §6 |
+
+**`parse_special=False` is load-bearing** — `/tokenize` defaults it to True, and
+that alone re-tokenized a contiguous 8192-token slice to 8114.
+
+---
+
+## 9. Verified, and how
+
+| claim | evidence |
+| --- | --- |
+| 128K fits | engine's settled exit table: 921 free + 21159 self + 2481 unaccounted = 24561 |
+| 128K halves decode | 3 runs each arm, one pass, 4% spread on the 128K side |
+| §1 root cause | reproduced with the instrument; `restore.log` names the line; 7 tests + 2 controls |
+| content 1.79x / depth 1.45x | McNemar p<0.0001 both; disjoint ranges; same instrument |
+| the construction | per-token series **identical element-wise**, 4095/4095 |
+| ninfer 6/6 | full 64-hex match against ninfer's own constants |
+| stack unharmed | `.env` diff = 2 keys from the prior session; smoke-test 11/11; 22 + 7 + 14 tests |
+
+---
+
+## 10. Pick this up next
+
+1. **§3's mechanism — the one real thing still open.** Needs per-token series for
+   WHOLE arms (7 chunks x 2 rotations) to test the content-lands-deep interaction.
+   Real GPU cost; **ask before spending it**.
+2. **§0 — one unattended `/loop`.** Still the only claim in the file with no
+   end-to-end evidence. Needs a real goal and hours.
+3. **§0e — 19 synthetic rounds, ~4h**, to settle whether the live pin costs
+   anything on novel text. Needs a quiet box.
+4. **ninfer on a 4090 fork** — read `UDPSendToFailed/ninfer-4090`'s build gate and
+   resource pins. Cheap, no bytes moved. Its DirectStorage disk-cache claim is
+   interesting here for a different reason: cold load is 9-20 minutes.
+5. **§0f — the CUDA abort.** Four reproductions that did not crash; the
+   `ngram-map` shrink-cleanup path is implicated but unproven.
+
+**Operator-only:** `FORGE_MERGE_ACROSS_TOOLS=1` at real depth (needs capture ON in
+a working session), and the four `s735f17` records on the tape — real session
+data, do not use or delete without asking.
+
+**Memory is the binding constraint on cliff work.** A log-prob pass needs ~8536
+MiB resident and the Docker VM sits near that with nine live sessions open. Drop
+the VM page cache first (`docker run --rm --privileged alpine sh -c 'sync; echo 3
+> /proc/sys/vm/drop_caches'`); it freed 4.8 GiB repeatedly. `/free` found nothing
+to reap — every session was active. One pass was still killed by the OOM killer
+at GPU container init (`nvidia-container-cli: ldcache error ... signal 9`), which
+is not a code fault and simply needs retrying on a quieter box.
+
+---
 # Handoff — 2026-09-03 (the chat template ships inside the GGUF, so the modes do not run the same one; a thirteenth forge patch so a backend fault says why; 128K re-measured and refused for a NEW reason; the forge image REBUILT)
 
 ## Read this first
