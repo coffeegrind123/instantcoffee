@@ -1245,7 +1245,7 @@ have already measured can be re-analysed with no GPU at all.
 
 ---
 
-## 3. The rotation asymmetry — NARROWED 2026-08-31, mechanism still open
+## 3. The rotation asymmetry — NARROWED; 2026-09-03 rules OUT depth and retracts the "one phenomenon" inference
 
 *(It still taints per-span numbers: an 8192 per-span figure must carry its
 rotation. What changed is that two explanations are now dead and the effect
@@ -1314,6 +1314,61 @@ curve, which is a much stronger constraint on any mechanism.
 README: deep-s26b5bb alone gives 8 chunks at n_ctx 8192). The four-rotation run
 windows `[8192, 65536]`, ending at or before that junction, so the monotone
 ordering above is produced with **no junction inside the scored range**.
+
+### 2026-09-03: per-token data now exists for ALL FOUR rotations, and depth does NOT explain it
+
+**First, a trap that will misalign anyone cross-referencing the two scripts.**
+`ppl-depth-run.sh`'s `filler` F is the number of tokens PREPENDED, so its chunks
+start at corpus index `-F (mod 8192)`. A cliff chunk's natural label is
+`start mod 8192`. **They are negatives of each other:**
+
+```
+my_filler = (8192 - F) mod 8192      F=0 <-> 0, F=2048 <-> 6144,
+                                     F=4096 <-> 4096, F=6144 <-> 2048
+```
+
+Only 0 and 4096 are fixed points, which is exactly why this can go unnoticed —
+the two arms people quote most are the two that agree.
+
+**The two arms run for section 2 landed on the two rotations that had no
+per-token data**, so the first chunk of every rotation now has an `nll_series`:
+
+| F | scored | chunk ppl | misfire | arm ppl (7 chunks) |
+|---:|---|---:|---:|---:|
+| 0 | 12289..16383 | 13.8 | 11.8% | 14.77 |
+| 2048 | 10241..14335 | 114.6 | 24.7% | 36.58 |
+| 4096 | 8193..12287 | 400.0 | 31.2% | 227.67 |
+| 6144 | 14337..18431 | 16.7 | 11.2% | 48.98 |
+
+**All four score in-chunk depths 4097..8191 — depth is matched by construction —
+and the rates still differ nearly 3x.** So the rotation asymmetry is NOT the
+depth effect. Per-depth profiles say the same: they do not share a shape
+(F=0 is hump-shaped, F=6144 U-shaped, F=2048/4096 high throughout), so there is
+no common depth curve being shifted.
+
+**This RETRACTS the section's closing inference.** It ends "§2's standing
+hypothesis is that the misfire rate is set by what the history CONTAINS ... §2
+and §3 are probably one phenomenon". Section 2 has since been measured
+token-matched and the variable there is **depth**, not content — and depth is
+precisely what this section holds fixed. The two are therefore **not** obviously
+one phenomenon, and the inference should not be carried forward as though they
+are.
+
+**And the size does not work either.** The 4-rotation grid scores almost every
+token **twice** (8188 of 8192 per period, at two depths 4096 apart) — verified,
+not assumed. Those token-matched contrasts are exactly what section 2's overlap
+arms measured, and they came to **1.44x**. The arm spread here is **15x**. A
+1.44x per-token depth effect cannot produce it.
+
+**So what is left is narrower than before:** the rotations differ in WHICH
+tokens each scores at depth, and section 3's own test 1 already killed intrinsic
+span difficulty (rotation 4096's spans are EASIER at the balanced depth). What
+survives is an INTERACTION — hard content systematically landing deep in one
+rotation and shallow in another — which the grid cannot separate because
+rotation sets depth. Testing it needs the per-token series for whole arms, not
+first chunks: score one rotation's full window with `--kl-divergence-base` and
+compare the rate of the SAME tokens against the other rotation that scores them.
+That is a real GPU cost (7 chunks x 2 rotations) and is the honest next step.
 
 **What is left, and why it now points at §2.** The only thing that differs
 between rotations is where each scored token's HISTORY BEGINS: F=0's chunks
