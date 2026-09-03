@@ -10,12 +10,14 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
-**The llama arm of the ninfer comparison is now measured three times and agrees
-with itself; the ninfer arm has still never produced a number.** Runs 1 and 2,
-2.5 hours apart on a quiet box (load 1.49), land within 0.3% on prefill and 1.5%
-on decode: **2080.8 / 2087.1 tok/s prefill** and **93.0 / 94.4 tok/s decode** on
-~20,582 prompt tokens. Run 3 at load 4.00 gives **1998.1** and **88.2** — 4%
-and 6% slower — which is a useful scale for what the quiet-box rule is worth.
+**The llama arm of the ninfer comparison is now measured four times and agrees
+with itself; the ninfer arm has still never produced a number.** The three quiet
+runs (1, 2 and 4) span **2066.1 to 2087.1 tok/s prefill — a 1.0% spread over
+three hours** — on ~20,582 prompt tokens. Run 3 at load 4.00 gives **1998.1**
+and **88.2** — 4% and 6% slower — which is a useful scale for what the quiet-box
+rule is worth. **Decode is the noisier half and should always be quoted with its
+range:** run 4 spans 77.1–93.8 tok/s across three rounds on a quiet box, against
+run 2's 93.5–96.9. Prefill is stable to ~1%; decode is not.
 Note that `--prompt-tokens 32768` produces ~20,580: `CHARS_PER_TOKEN_GUESS` is
 3.6 against an actual ~5.73 for this filler, the flag is documented as a target
 rather than a promise, and both arms share the generator. Do not quote 32768.
@@ -53,8 +55,12 @@ accepted; `max_tokens` is accepted as a fallback for `max_completion_tokens` —
 and the remaining candidates are not worth guessing at when the next run will
 print the server's own reason. Two of three attempts were stopped externally
 mid-flight, once at 99.7% of the weight load, leaving ninfer holding ~22 GiB of
-VRAM and llama `Exited (137)`; `restore()` is entered on a trap but is not proof
-against a second signal, so recovery was by hand both times.
+VRAM and llama `Exited (137)`. A fourth attempt was stopped the same way, and
+that one clarified the trap: `restore()` completed on its own — `ninfer rm
+rc=0`, llama back unaided — so the earlier hand recovery was a second signal
+arriving mid-restore, not a broken trap. **Three of four failures were the run
+being stopped from outside, not anything about ninfer**, which makes ~25
+uninterrupted minutes the binding constraint rather than code.
 
 ---
 

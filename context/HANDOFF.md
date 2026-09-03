@@ -15,11 +15,18 @@ llama result is now replicated and the box effect is visible in it:
 | 1 | `20260903-193057` | 1.49 | 20,582 | 2080.8 [2080.0 .. 2095.1] | 93.0 [87.7 .. 95.3] |
 | 2 | `20260903-220703` | 1.49 | 20,582 | 2087.1 [1957.6 .. 2104.7] | 94.4 [93.5 .. 96.9] |
 | 3 | `20260903-223223` | **4.00** | 20,580 | **1998.1** [1856.3 .. 2015.1] | **88.2** [87.2 .. 89.7] |
+| 4 | `20260903-224737` | 1.77 | 20,583 | 2066.1 [2053.7 .. 2112.0] | 86.4 [77.1 .. **93.8**] |
 
-Runs 1 and 2 are 2.5 hours apart on a quiet box and land within 0.3% on prefill
-and 1.5% on decode. Run 3, at load 4.00 instead of 1.49, is **4% slower on
-prefill and 6% slower on decode** — a reminder that the quiet-box rule is worth
-what it costs, and a rough scale for how much load buys you.
+Runs 1, 2 and 4 are on a quiet box and their prefill medians span **2066.1 to
+2087.1 — a 1.0% spread across three runs taken over three hours**. Run 3, at
+load 4.00 instead of ~1.6, is **4% slower on prefill and 6% slower on decode**:
+a reminder that the quiet-box rule is worth what it costs, and a rough scale for
+what load takes from you.
+
+**Decode is the noisier of the two and should be quoted with its range.** Run 4
+spans 77.1–93.8 tok/s across three rounds on a quiet box, wider than run 1's
+87.7–95.3 and run 2's 93.5–96.9. Prefill is stable to ~1%; decode is not, and a
+single decode number from one round would be worth very little.
 
 **`--prompt-tokens 32768` produces ~20,580.** Documented behaviour, not a bug:
 `CHARS_PER_TOKEN_GUESS = 3.6` against an actual ~5.73 for this filler, and
@@ -53,6 +60,18 @@ rounds and the warmup**. Two defects, both now fixed, neither in either engine:
 fixed probe had anything to probe. `restore()` never ran: **ninfer was left
 holding ~22 GiB of VRAM and llama was left `Exited (137)`**, both recovered by
 hand.
+
+**Attempt 4** (run 4): killed externally again, during the ninfer cold load.
+This time `restore()` DID complete on its own — `ninfer rm rc=0` and llama came
+back without help — so the trap works when it is given a moment; attempt 3's
+hand recovery was a second signal arriving mid-restore, not a broken trap.
+
+**Four attempts, four times the ninfer arm did not produce a number, and three
+of those were the run being stopped from outside rather than anything about
+ninfer.** That is the binding constraint now, not code: the fixes are in, the
+probe is controlled, and what the run needs is ~25 minutes nobody interrupts.
+**Do not keep relaunching it blind** — each attempt takes the production stack
+down for the whole cycle and costs a ~5 minute llama reload on the way back.
 
 **So the 400 is still undiagnosed, and the next run will diagnose it for free.**
 `_post_stream` now raises `BackendRefused` carrying the body, and `bench_arm`
