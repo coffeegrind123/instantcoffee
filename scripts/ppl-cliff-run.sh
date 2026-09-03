@@ -386,6 +386,25 @@ main_run() {
     printf 'LLAMA_IMAGE=%s\n' "$IMAGE"
     printf 'STAMPED_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${LOCAL_LOGDIR}/run.meta"
+
+  # A CONSTRUCTED corpus must say so, because the analyser labels every chunk
+  # with its range in the corpus it was GIVEN. On a built corpus those are
+  # positions in the construction and they collide with real source windows: the
+  # 2026-09-03 history probe reported "12289..16383" and "20481..24575", both of
+  # which are genuine windows measured in August, while all three of its arms
+  # actually scored source tokens 12289..16383. ppl_history_build.py writes
+  # <corpus>.manifest.json beside its output, so the marker is derivable rather
+  # than remembered — and the manifest is copied in, so the two never separate.
+  local manifest="${CORPUS%.txt}.manifest.json"
+  if docker run --rm -v "${CAPS}:/captures" alpine test -f "$manifest" 2>/dev/null; then
+    {
+      printf 'CONSTRUCTED_CORPUS=1\n'
+      printf 'WARNING=%s\n' "result.json's scored_corpus values are positions in the CONSTRUCTED corpus, NOT source windows. Chunk i is arms.manifest.json arms[i]."
+    } >> "${LOCAL_LOGDIR}/run.meta"
+    docker run --rm -v "${CAPS}:/captures" alpine cat "$manifest" \
+      > "${LOCAL_LOGDIR}/arms.manifest.json" 2>/dev/null || true
+    info "constructed corpus: manifest copied to arms.manifest.json, run.meta marked"
+  fi
   echo "cliff probe   ${STAMP}"
   echo "  image       ${IMAGE}"
   echo "  corpus      ${CORPUS}"

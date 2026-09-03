@@ -1282,6 +1282,39 @@ one-arm control of the CONSTRUCTION only; the same-model PPL control still wants
 the misfire rate, and add the same-model control chunk. Then the amount-vs-
 content question is fully closed on one stack.
 
+### BOTH AXES IN MATCHED UNITS 2026-09-03 — and the 3.96x/1.45x contrast was inflated
+
+The history arms were re-run WITH log-probs, so content and depth are now both
+misfire rate (`nll > 10` nats), the same instrument:
+
+| arm | history@ | PPL | mean NLL | **misfire** |
+|---|---:|---:|---:|---:|
+| `early-doc` | 1024 | 11.77 | 2.299 | **8.9%** |
+| `natural` | 8192 | 15.44 | 2.486 | **10.8%** |
+| `pi-progress` | 81920 | 46.64 | 3.460 | **15.9%** |
+
+**CONTENT: 1.79x** (McNemar 332 vs 45 discordant, chi2 = 217.0, p < 0.0001).
+**DEPTH: 1.45x** (the four within-model pairs below).
+
+**So the earlier "content 3.96x against depth 1.45x" OVERSTATED content and must
+not be quoted.** `PPL = exp(mean NLL)`, so a PPL ratio is the exponential of a
+mean-NLL difference and is not commensurable with a rate ratio: the 1.16-nat gap
+between `pi-progress` and `early-doc` becomes ~3.2-4x in PPL and only **1.79x**
+in misfire rate. Comparing a PPL ratio to a rate ratio is a units error, and it
+made content look ~2.7x more important than depth when the honest figure is
+**1.79 against 1.45 — comparable, content somewhat larger.**
+
+**A mechanistic detail worth keeping:** across those arms the misfire COUNT rises
+1.79x while mean NLL rises 1.51x and PPL rises ~4x. Hostile history inflates the
+SEVERITY of the worst tokens more than it multiplies their number, which is why
+the PPL view exaggerates it.
+
+**And the construction is now validated in the strongest available way.** The
+`natural` arm is byte-identical to the start-8192 chunk, which was also measured
+through the ORDINARY slicing path in the overlap run. The two per-token series
+are **identical element-wise across all 4095 tokens** (10.82% both ways) —
+different corpora, different code paths, bit-identical results.
+
 ### COMPLETE 2026-09-03: four within-model pairs, 1.45x — and it lands on the retracted number
 
 All five starts now measured on `orcarouter Q4_K_M` (4096 / 6144 / 8192 / 10240 /
