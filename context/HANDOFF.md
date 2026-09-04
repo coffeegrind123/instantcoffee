@@ -1,3 +1,77 @@
+# Handoff — 2026-09-04 (part 11: part 10's own commands, checked against the scripts instead of the prose — two of the five jobs were mis-specified, and §3's rotation table straddled the model change)
+
+**No GPU was available this session** (box at load ~5 with another session's
+rust build running, so `wait-quiet.sh` would not pass) and the two jobs that
+need an owner decision still need it. So this pass did the work that needs
+neither: it read every runnable command in part 10 against the script it calls,
+and re-derived from data already on disk what could be re-derived.
+
+**Everything below was found by checking, not by reading.** Part 10's commands
+look right on the page; three of them do the wrong thing.
+
+## 1. JOB D's acceptance null (§6.1) — the flag is accepted and silently dropped
+
+Part 10 correctly caught that OPEN-WORK §6 paired `--workload` with
+`--bench-args` and offered `--prompt-len` as the repair. **The repair is worse
+than the error:** `spec-sweep.sh` forwards `--prompt-len` only on the synthetic
+branch (`spec-sweep.sh:723`), and `bench_repeat.py` has no such option, so under
+`--workload repeat` the depth is accepted and thrown away. The knob is
+`--funcs`, at a measured **93 tokens per function** (llama `/tokenize`, exactly
+linear). `--max-tokens`/`--min-echo` are not plumbed through the sweep at all,
+so generation stays at 2048 however long the prompt: **tighten the null with
+`--repeat`, not with depth.** Corrected in part 10 §6 and in the register.
+
+## 2. JOB C (§5) — three defects, each one a lost GPU window
+
+1. **The obvious rotation pair shares nothing.** Rotations 4096 apart score
+   complementary halves of the corpus: F=0 and F=4096 — the pair the 14.77 vs
+   227.67 arm spread invites you to pick — have **zero** scored tokens in
+   common. Only adjacent (2048-apart) rotations overlap.
+2. **2 passes, not 14.** One `--chunk N:A:K` spec is one model load carrying K
+   chunks, confirmed by `--dry-run`.
+3. **`--from-run` against the depth run straddles the model change.**
+   `20260824T114717Z` is `UD-Q4_K_XL` — identified by reproducing its 400.0
+   chunk, since it carries no `run.meta` — and `.env` today is `Q4_K_M`, where
+   that chunk is 260.84.
+
+Part 10 §5 now carries the offsets (`A = (k-1)*8192 - F`, checked against all
+four `corpus_first` values and both of §2's existing cliff arms), the two
+commands, and the runner's own costs: **27,153 MiB of log-probs** and **~8536
+MiB resident per pass** — preflight REFUSED both at 5305 MiB free.
+
+## 3. OPEN-WORK §3's four-rotation table mixed two models
+
+Its F=0 and F=4096 rows were `UD-Q4_K_XL`; F=2048 and F=6144 were `Q4_K_M`.
+**§2 caught this exact defect on 2026-09-03, prescribed the re-measurement, and
+the re-measurement was run** (`20260903T100705Z`, `20260903T094414Z`) — then
+applied to §2 only, while the sibling table one section below kept the old
+numbers. Recomputed within one model from `nll_series` already on disk, no GPU:
+**12.02 / 114.56 / 260.84 / 16.74**, misfire **10.8 / 24.7 / 28.2 / 11.2%**.
+
+**The conclusion survives**: depth is matched by construction and the rates still
+differ **2.61x** (the mixed table said "nearly 3x"), and the per-depth profiles
+keep their shapes (hump, high, high, U). The arm-ppl column was removed rather
+than corrected — it is old-model throughout, and so is the 15x arm spread.
+Also corrected: §3 said the grid's paired tokens sit at "two depths 4096 apart";
+they are **2048** apart, which §2's own 6145-against-4097 table already states.
+
+## 4. The tool that would have put the old numbers back
+
+`rotation_asymmetry_analyse.py`'s `cliff_cross_check` was pinned to the
+2026-08-24 run — a deliberate region-match, and an accidental weights pin. It
+now runs **twice**, old weights and current, prints `GGUF_FILE` from `run.meta`
+beside every source, and **refuses to pool runs whose weights disagree**. The
+region-matched offset effect is **3.4x on the old weights, 2.3x on the current
+ones**. `flatness_check` gained a `weights` column — the same scored range
+appears twice on disk at 31.2% and 28.2% and read as noise without it — and a
+`(built)` marker, because two constructed-corpus runs were presenting file
+positions as source windows, which their own `run.meta` warns about.
+
+`python3 -m pytest scripts/ -q` → **251 passed, 14 subtests**. `.env`,
+`docker-compose.yml` and `modes/` untouched; nothing was run on the GPU.
+
+---
+
 # Handoff — 2026-09-04 (part 10: everything that is left, with the commands, the decision each one needs before it can start, and what would make it void)
 
 **Part 9 is the record. This is the instruction sheet.** Nothing below repeats
@@ -134,11 +208,14 @@ not* rests on that asymmetry, so one wide arm is worth confirming or dismissing.
 ## 5. JOB C — OPEN-WORK §3, the rotation interaction. The tooling exists.
 
 **What is left is now narrow and specific.** Depth is ruled out (all four
-rotations score in-chunk depths 4097..8191 and still differ ~3x), intrinsic span
-difficulty is ruled out the other way (rotation 4096's spans are EASIER at the
-balanced depth), and the per-token depth effect is 1.44x against an arm spread
-of 15x. What survives is an **INTERACTION**: hard content landing deep in one
-rotation and shallow in another.
+rotations score in-chunk depths 4097..8191 and still differ **2.61x** — §3's
+"~3x" was a table that mixed two models, corrected 2026-09-04; the conclusion
+survives within one), intrinsic span difficulty is ruled out the other way
+(rotation 4096's spans are EASIER at the balanced depth), and the per-token
+depth effect is 1.44x against an arm spread of 15x (that 15x is an old-model
+figure and cannot be put in a column beside current-model numbers). What
+survives is an **INTERACTION**: hard content landing deep in one rotation and
+shallow in another.
 
 **Do NOT run the corpus-construction experiment.** §3's closing paragraph
 recommends it and that paragraph is **retracted** — it was still sitting there
@@ -149,16 +226,43 @@ retracted conclusion gets acted on. It is now fenced.
 runner (`rotation_asymmetry_analyse.py:169`; `ppl-depth-run.sh` deliberately
 omits `--kl-divergence-base` because it is ~10x faster and byte-identical for
 per-span numbers). So score **whole arms** at two rotations and compare the rate
-of the SAME tokens:
+of the SAME tokens.
+
+**Worked out and dry-run on 2026-09-04. Three things the earlier sketch got
+wrong, all of which would have cost a GPU window:**
+
+1. **It must be an ADJACENT pair of rotations.** Rotations 4096 apart score
+   COMPLEMENTARY halves of the corpus — F=0 and F=4096 share not one scored
+   token — and that is exactly the pair the arm spread (14.77 against 227.67)
+   invites you to pick. Only rotations 2048 apart overlap. Use **F=2048 against
+   F=4096**: 14,336 shared tokens, the widest arm gap among the pairs that share
+   any, each shared token at depth ~4096 in one arm and ~6144 in the other.
+2. **It is 2 passes, not 14.** One `--chunk N:A:K` spec is one model load and
+   carries K chunks; the kept chunks of each arm are contiguous, so a whole
+   7-chunk arm is one spec.
+3. **`--from-run` against the depth run STRADDLES THE MODEL CHANGE.**
+   `20260824T114717Z` has no `run.meta`, but its F=4096 arm reproduces this
+   chunk's 400.0, which is the `unsloth`/`UD-Q4_K_XL` value; `.env` today is
+   `orcarouter`/`Q4_K_M`, where the same chunk is 260.84. The free control would
+   fail by ~1.5x and read as a slicing bug. Either restore the old pin, or drop
+   `--from-run` and control against the current-model chunk numbers already on
+   disk (`20260903T100705Z`, `20260903T094414Z`, `20260902T231517Z`).
+
+**The offsets, derived and checked rather than typed.** An arm's chunk `k`
+(1-based) with filler `F` starts at corpus token `A = (k-1)*8192 - F`. That
+reproduces all four `corpus_first` values in the depth run's `result.json`, and
+both of §2's existing cliff arms: `8192:6144:1` is F=2048's chunk 2 and
+`8192:10240:1` is F=6144's chunk 3. Kept chunks are 2..8 for F=0/2048/4096 and
+3..8 for F=6144.
 
     ./scripts/ppl-cliff-run.sh --corpus /captures/corpus/deep-plus-pi.txt \
-        --from-run .ppl-depth-logs/20260824T114717Z \
-        --chunk 8192:<start>:<i>   ... one per chunk, both rotations
+        --chunk 8192:6144:7 --chunk 8192:4096:7 --dry-run
 
-`20260824T114717Z` is the four-rotation run at n_ctx 8192 and is on disk. **Cost:
-7 chunks x 2 rotations = 14 passes**, GPU, so it needs the same quiet discipline
-as everything else. `--dry-run` prints every command without running one — use it
-first to fix the chunk list.
+`--chunk 8192:6144:7` is F=2048's whole arm, `8192:4096:7` is F=4096's. Drop
+`--dry-run` to run it. **Costs, from the runner's own preflight, not estimated:
+27,153 MiB of log-probs on the tape** (it reports 7.6 TiB free) and **~8536 MiB
+resident per pass**. On 2026-09-04 preflight REFUSED both passes at 5305 MiB
+free — drop the Docker VM page cache first, exactly as §2's memory note says.
 
 ---
 

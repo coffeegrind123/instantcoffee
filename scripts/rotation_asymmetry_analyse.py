@@ -163,7 +163,57 @@ def test_dose_response(doc, label):
     return True
 
 
-def cliff_cross_check(path=".ppl-cliff-logs/20260824T164959Z/result.json"):
+def run_weights(result_path):
+    """The weights that produced a run, read from its run.meta.
+
+    EVERY NUMBER THIS SCRIPT PRINTS CARRIES ITS WEIGHTS, and that is not
+    decoration. OPEN-WORK section 2 retracted a whole depth measurement on
+    2026-09-03 because its four pairs straddled the `unsloth`/UD-Q4_K_XL ->
+    `orcarouter`/Q4_K_M change, and section 3's four-rotation table repeated the
+    same mistake in the section below it -- two rows from each model, unnoticed
+    until 2026-09-04. run.meta was backfilled across every run directory for
+    exactly this; a run that cannot say which weights produced it will
+    eventually be compared with one that used different ones.
+
+    Returns the GGUF file name, or None when the directory predates the stamp.
+    """
+    return run_meta(result_path).get("GGUF_FILE")
+
+
+def run_meta(result_path):
+    """A run directory's run.meta as a dict; empty when it predates the stamp."""
+    meta = os.path.join(os.path.dirname(result_path), "run.meta")
+    out = {}
+    try:
+        with open(meta) as fh:
+            for line in fh:
+                key, sep, val = line.partition("=")
+                if sep:
+                    out[key.strip()] = val.strip()
+    except OSError:
+        pass
+    return out
+
+
+def short_weights(result_path):
+    """A column-width tag for the weights: 'UD-Q4_K_XL', 'Uncensored-Q4_K_M'."""
+    g = run_weights(result_path)
+    if not g:
+        return "UNSTAMPED"
+    return g.replace("Qwen3.8-27B-", "").replace(".gguf", "")
+
+
+# The 2026-08-24 run, region-matched (see the docstring below) but on the OLD
+# weights. Kept because it is the run section 3 was written from.
+CLIFF_OLD = [".ppl-cliff-logs/20260824T164959Z/result.json"]
+# The same two offsets on the CURRENT weights: section 2's prescribed
+# re-measurement, `--chunk 8192:4096:2` and `--chunk 8192:8192:1`. Two
+# directories because they were run an hour apart, same stack, same corpus.
+CLIFF_CURRENT = [".ppl-cliff-logs/20260903T094414Z/result.json",
+                 ".ppl-cliff-logs/20260903T100705Z/result.json"]
+
+
+def cliff_cross_check(paths=None, title="2026-08-24 run, OLD weights"):
     """The same offset effect, on PER-TOKEN data from a different instrument.
 
     The depth runs give per-span perplexity. The cliff runs give `nll_series`,
@@ -189,22 +239,34 @@ def cliff_cross_check(path=".ppl-cliff-logs/20260824T164959Z/result.json"):
     instead. (Recorded because the wider claim was made here first, on
     2026-08-31, and had to be walked back within the hour.)
     """
-    if not os.path.exists(path):
-        print("\n(cliff cross-check skipped: %s not present)" % path)
+    paths = list(paths or CLIFF_OLD)
+    present = [p for p in paths if os.path.exists(p)]
+    if not present:
+        print("\n(cliff cross-check skipped: %s not present)" % ", ".join(paths))
         return
-    doc = json.load(open(path))
+    weights = {run_weights(p) for p in present}
     print("\n=== cliff cross-check: misfire RATE by boundary offset (per-token) ===")
+    print("  %s" % title)
     print("  section 2's quantity, moved by section 3's variable, on a different instrument.")
+    for p in present:
+        print("  source %-46s weights %s"
+              % (os.path.basename(os.path.dirname(p)), run_weights(p) or "UNSTAMPED"))
+    if len(weights) > 1:
+        print("  REFUSED: these runs do not share weights, so pooling them would")
+        print("           measure the model change and call it boundary offset.")
+        return
     by_off = {}
-    for spec in doc.get("specs", []):
-        off = spec.get("corpus_start", 0) % 8192
-        for c in spec.get("by_chunk", []):
-            ser = [x for x in c.get("nll_series", []) if isinstance(x, (int, float))]
-            if not ser:
-                continue
-            rate = 100.0 * sum(1 for x in ser if x > 10.0) / len(ser)
-            mean = sum(ser) / len(ser)
-            by_off.setdefault(off, []).append((c.get("chunk"), c.get("scored_corpus"), mean, rate))
+    for p in present:
+        doc = json.load(open(p))
+        for spec in doc.get("specs", []):
+            off = spec.get("corpus_start", 0) % 8192
+            for c in spec.get("by_chunk", []):
+                ser = [x for x in c.get("nll_series", []) if isinstance(x, (int, float))]
+                if not ser:
+                    continue
+                rate = 100.0 * sum(1 for x in ser if x > 10.0) / len(ser)
+                mean = sum(ser) / len(ser)
+                by_off.setdefault(off, []).append((c.get("chunk"), c.get("scored_corpus"), mean, rate))
     for off in sorted(by_off):
         print("  offset %d:" % off)
         for chunk, scored, mean, rate in by_off[off]:
@@ -242,6 +304,17 @@ def flatness_check():
             doc = json.load(open(path))
         except (ValueError, OSError):
             continue
+        # THE WEIGHTS COLUMN IS LOAD-BEARING HERE. This pools every cliff run on
+        # disk, and several scored ranges appear TWICE because section 2's
+        # re-measurement re-ran them on the new weights: corpus 8193..12287 is
+        # 31.2% on UD-Q4_K_XL and 28.2% on Q4_K_M. Two rows with the same chunk
+        # label and different rates read as noise unless the column says why.
+        wts = short_weights(path)
+        # A CONSTRUCTED-CORPUS RUN'S CHUNK LABELS ARE NOT SOURCE WINDOWS, and
+        # its own run.meta says so: "the labels 12289..16383 and 20481..24575
+        # appear here by coincidence". Two such runs are on disk, and unlabelled
+        # they read as duplicate measurements of source windows that disagree.
+        built = run_meta(path).get("CONSTRUCTED_CORPUS") == "1"
         for spec in doc.get("specs", []):
             off = spec.get("corpus_start", 0) % 8192
             for c in spec.get("by_chunk", []):
@@ -257,22 +330,29 @@ def flatness_check():
                     bins.append(100.0 * sum(1 for x in seg if x > 10.0) / max(1, len(seg)))
                 q1 = statistics.mean(bins[:4])
                 q4 = statistics.mean(bins[-4:])
-                rows.append((c.get("scored_corpus"), off, rate, q1, q4,
-                             rate * b / 100.0))
+                label = str(c.get("scored_corpus"))
+                if built:
+                    label += " (built)"
+                rows.append((label, off, rate, q1, q4,
+                             rate * b / 100.0, wts))
     if not rows:
         print("\n(flatness check skipped: no nll_series on disk)")
         return
     print("\n=== section 3f flatness: misfire rate across the scored range ===")
-    print("  %-22s %6s %6s %6s %7s %9s" % ("chunk", "rate%", "Q1%", "Q4%", "Q4/Q1", "misfires/bin"))
-    for sc, off, rate, q1, q4, per_bin in sorted(rows, key=lambda r: -r[2]):
+    print("  %-22s %6s %6s %6s %7s %9s  %-18s"
+          % ("chunk", "rate%", "Q1%", "Q4%", "Q4/Q1", "misfires/bin", "weights"))
+    for sc, off, rate, q1, q4, per_bin, wts in sorted(rows, key=lambda r: -r[2]):
         ratio = (q4 / q1) if q1 else float("inf")
         note = "" if per_bin >= 30 else "   <- too sparse to read"
-        print("  %-22s %6.1f %6.1f %6.1f %7.2f %9.0f%s"
-              % (str(sc), rate, q1, q4, ratio, per_bin, note))
+        print("  %-22s %6.1f %6.1f %6.1f %7.2f %9.0f  %-18s%s"
+              % (sc, rate, q1, q4, ratio, per_bin, wts, note))
     high = [r for r in rows if r[2] > 20]
     flat = [r for r in high if 0.8 <= ((r[4] / r[3]) if r[3] else 9) <= 1.25]
     print("  high-rate chunks (>20%%): %d, of which flat (0.8-1.25x): %d"
           % (len(high), len(flat)))
+    if any(" (built)" in r[0] for r in rows):
+        print("  (built) = a CONSTRUCTED corpus: the range is a position in that")
+        print("           file, NOT the source window of the same numbers.")
     print("  -> 3f reproduces where it was claimed; it is NOT universal among")
     print("     high-rate chunks. Read it as 'it can be, and is in the worst", end="")
     print(" chunks'.")
@@ -298,7 +378,9 @@ def main():
         label = os.path.basename(os.path.normpath(r))
         did_any |= test_span_selection(doc, label)
         did_any |= test_dose_response(doc, label)
-    cliff_cross_check()
+    cliff_cross_check(CLIFF_OLD, "2026-08-24 run, OLD weights (UD-Q4_K_XL)")
+    cliff_cross_check(CLIFF_CURRENT,
+                      "2026-09-03 re-measurement, CURRENT weights -- quote THIS one")
     flatness_check()
     if not did_any:
         sys.exit("no run carried both a span_map and an 8192 arm")

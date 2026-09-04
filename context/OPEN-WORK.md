@@ -1285,6 +1285,15 @@ determinant of the rate, and **any sweep that mixes corpus regions will measure
 difficulty instead of offset.** (Recorded because the wider claim was made here
 first and walked back within the hour.)
 
+**The 3.4x is an OLD-WEIGHTS figure — 2026-09-04.** `20260824T164959Z` is
+`UD-Q4_K_XL`. The same region-matched contrast on the current `Q4_K_M` weights,
+from the re-measurement this section prescribes (`20260903T094414Z` +
+`20260903T100705Z`), is **10.8% against 24.8% = 2.3x** — same direction, same
+narrowness, smaller number. `cliff_cross_check` now prints BOTH, each stamped
+with the weights out of `run.meta`, and refuses to pool runs that disagree; the
+heading above is kept at 3.4x because that is the figure the section was written
+on, but 2.3x is the one to quote.
+
 ### 2026-09-03: the 3.4x is ALIASED with block identity, and no data on disk can separate them
 
 The numbers above reproduce exactly from the raw `nll_series` (8.2 / 27.5
@@ -1761,20 +1770,45 @@ Only 0 and 4096 are fixed points, which is exactly why this can go unnoticed —
 the two arms people quote most are the two that agree.
 
 **The two arms run for section 2 landed on the two rotations that had no
-per-token data**, so the first chunk of every rotation now has an `nll_series`:
+per-token data**, so the first chunk of every rotation now has an `nll_series`.
 
-| F | scored | chunk ppl | misfire | arm ppl (7 chunks) |
-|---:|---|---:|---:|---:|
-| 0 | 12289..16383 | 13.8 | 11.8% | 14.77 |
-| 2048 | 10241..14335 | 114.6 | 24.7% | 36.58 |
-| 4096 | 8193..12287 | 400.0 | 31.2% | 227.67 |
-| 6144 | 14337..18431 | 16.7 | 11.2% | 48.98 |
+**CORRECTED 2026-09-04 — this table used to straddle the MODEL CHANGE the
+section above documents.** Its F=0 and F=4096 rows were the 2026-08-24
+`unsloth`/`UD-Q4_K_XL` numbers (13.8 / 11.8% and 400.0 / 31.2%, from
+`.ppl-cliff-logs/20260824T164959Z`); F=2048 and F=6144 were `orcarouter`
+/`Q4_K_M` (`20260902T231517Z`). The re-measurement §2 prescribes —
+`--chunk 8192:4096:2` and `--chunk 8192:8192:1` on the current model — **had
+already been run** (`20260903T100705Z`, `20260903T094414Z`) and was applied to
+§2 only. Recomputed here from those runs' `nll_series`, entirely within
+`Qwen3.8-27B-Uncensored-Q4_K_M`, with no GPU:
+
+| F | scored | chunk ppl | misfire | source run |
+|---:|---|---:|---:|---|
+| 0 | 12289..16383 | 12.02 | 10.8% | `20260903T094414Z` |
+| 2048 | 10241..14335 | 114.56 | 24.7% | `20260902T231517Z` |
+| 4096 | 8193..12287 | 260.84 | 28.2% | `20260903T100705Z` |
+| 6144 | 14337..18431 | 16.74 | 11.2% | `20260902T231517Z` |
+
+**The arm-ppl column was REMOVED rather than corrected.** It came from
+`.ppl-depth-logs/20260824T114717Z`, which is the OLD model — that run's F=4096
+arm reproduces 400.0 for this chunk, which is how the provenance was identified,
+since the depth run carries no `run.meta`. So 14.77 / 36.58 / 227.67 / 48.98 and
+the 15x arm spread are `UD-Q4_K_XL` figures and must not be read down a column
+of `Q4_K_M` ones.
 
 **All four score in-chunk depths 4097..8191 — depth is matched by construction —
-and the rates still differ nearly 3x.** So the rotation asymmetry is NOT the
-depth effect. Per-depth profiles say the same: they do not share a shape
-(F=0 is hump-shaped, F=6144 U-shaped, F=2048/4096 high throughout), so there is
-no common depth curve being shifted.
+and the rates still differ 2.61x WITHIN ONE MODEL** (10.8% -> 28.2%; the mixed
+table said "nearly 3x"). So the rotation asymmetry is NOT the depth effect, and
+that conclusion is unchanged by the correction. Per-depth profiles say the same,
+and they survive it too — misfire % by eighth of the scored range, recomputed
+within model:
+
+    F=0      0.4 13.3 15.3 15.7 20.4 14.9  5.9  1.0    hump
+    F=2048  21.9 18.2 20.0 29.9 33.9 17.0 26.2 30.3    high throughout
+    F=4096  20.5 20.2 29.5 35.0 30.9 26.4 25.2 38.2    high throughout
+    F=6144  16.0 11.2  4.3  1.2 10.8 13.7 14.9 17.6    U
+
+They do not share a shape, so there is no common depth curve being shifted.
 
 **This RETRACTS the section's closing inference.** It ends "§2's standing
 hypothesis is that the misfire rate is set by what the history CONTAINS ... §2
@@ -1785,10 +1819,18 @@ one phenomenon, and the inference should not be carried forward as though they
 are.
 
 **And the size does not work either.** The 4-rotation grid scores almost every
-token **twice** (8188 of 8192 per period, at two depths 4096 apart) — verified,
-not assumed. Those token-matched contrasts are exactly what section 2's overlap
-arms measured, and they came to **1.44x**. The arm spread here is **15x**. A
-1.44x per-token depth effect cannot produce it.
+token **twice** (8188 of 8192 per period) — verified, not assumed. **The two
+depths are 2048 apart, not 4096** (corrected 2026-09-04; §2's own table states
+it — 6145 against 4097), because the two rotations that score a given token are
+always ADJACENT. **The 4096-apart pairs share no scored tokens at all:** F=0
+scores [12288,16384), [20480,24576), … and F=4096 scores exactly the gaps
+between them; likewise F=2048 against F=6144. Computed over the four arms' real
+chunk ranges, every token in the common range 14336..59391 is scored by exactly
+two rotations, and never by a 4096-apart pair. Those token-matched contrasts are
+exactly what section 2's overlap arms measured — read its filler column, every
+pair adjacent (4096/6144, 6144/0, 0/2048, 2048/4096) — and they came to
+**1.44x**. The arm spread is **15x** (old model). A 1.44x per-token depth effect
+cannot produce it.
 
 **So what is left is narrower than before:** the rotations differ in WHICH
 tokens each scores at depth, and section 3's own test 1 already killed intrinsic
@@ -1798,7 +1840,11 @@ rotation and shallow in another — which the grid cannot separate because
 rotation sets depth. Testing it needs the per-token series for whole arms, not
 first chunks: score one rotation's full window with `--kl-divergence-base` and
 compare the rate of the SAME tokens against the other rotation that scores them.
-That is a real GPU cost (7 chunks x 2 rotations) and is the honest next step.
+**It has to be an ADJACENT pair** — F=0 against F=4096, which is the pair the
+arm spread invites you to pick, shares not one scored token. **And it is 2
+passes, not 14:** one `--chunk N:A:K` spec is one model load and carries K
+chunks. HANDOFF part 10 §5 has the exact commands, the A-offset derivation and
+the model-pin trap.
 
 ### RETRACTED 2026-09-03 — kept below because it is why the search went where it did
 
