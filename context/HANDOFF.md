@@ -165,6 +165,9 @@ which is why it is kept.
 
 ## 6. What is left, in order
 
+*(§6.2 has since been DONE — its block below carries the result. §6.1 and §6.3
+are the two that remain.)*
+
 ### 6.1 A clean 32K re-run — and it has a trap part 8 did not flag
 
 Part 8 §5a asks for `--repeat 5`, both arms at comparable load, and *"llama's
@@ -177,8 +180,9 @@ free with 5.5 GiB in swap, and prompt processing collapsed to **2.83 tok/s** —
 the same 50× cliff `CTX_CHECKPOINTS=16` produced from one setting over on
 2026-09-02. See the notes beside both keys in `.env`, and `host-ram-floor.sh`.
 
-**As of this writing the box has 1.9 GiB free and 2.6 GiB already in swap**, with
-cs16 containers active. Do not raise `CACHE_RAM` into that. When it is quiet:
+**When this was written (2026-09-04 ~18:30) the box had 1.9 GiB free and 2.6 GiB
+already in swap**, with cs16 containers active — re-check before acting on it,
+the figure moves hourly on this machine. Do not raise `CACHE_RAM` into that. When it is quiet:
 raise to **4096, not 8192**, run `./scripts/host-ram-floor.sh` alongside, and
 **restore `.env` afterwards** — same discipline as the weight swap.
 
@@ -225,10 +229,11 @@ raise to **4096, not 8192**, run `./scripts/host-ram-floor.sh` alongside, and
 > §9 incident and the box was coming off load 25, which is squarely part 8 §2's
 > documented "busy, cold" band (200 s warm / 317 s quiet-cold / 810 s busy).
 
-`20260904-160606` changed the window and the KV dtype together. 262K at `int8`
-will not fit; **98,304 at `rk4v4-e8` will, and it is one run.** It is the only
-thing that separates "the window costs 55%" from "the KV dtype costs 55%", and
-until it is run neither sentence is available.
+*The original rationale, kept because it is why the run was worth four
+attempts:* `20260904-160606` changed the window and the KV dtype together. 262K
+at `int8` will not fit; **98,304 at `rk4v4-e8` will, and it is one run.** It was
+the only thing that separates "the window costs 55%" from "the KV dtype costs
+55%", and until it ran neither sentence was available.
 
     ./scripts/wait-quiet.sh && \
       setsid nohup ./scripts/ninfer-compare.sh --ninfer-only --kv-dtype rk4v4-e8 \
