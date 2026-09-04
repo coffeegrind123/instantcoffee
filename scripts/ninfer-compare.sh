@@ -275,6 +275,19 @@ bench_arm() {
   info "benching $label at $url"
   echo "loadavg_before_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
   local arm_start; arm_start="$(date -u +%s)"
+  # SAMPLE LOAD *DURING* THE ARM, not just side to side.
+  #
+  # On 2026-09-04 run 20260904-102103 recorded loadavg_before_ninfer=41.35 and
+  # loadavg_after_ninfer=72.40 against loadavg_before_llama=1.96 -- so the two
+  # arms were measured on what was effectively two different machines, and the
+  # ninfer numbers could not be quoted. Two endpoints and a lagging 5-minute
+  # average cannot tell a self-inflicted spike (ninfer runs with host-kv=8.00
+  # GiB on a 22 GiB box) from another session's build. A 5-second series can.
+  ( while :; do
+      echo "$(date -u +%H:%M:%S) $(cut -d' ' -f1-3 /proc/loadavg)"
+      sleep 5
+    done ) > "$RUN_DIR/$label.loadavg" 2>/dev/null &
+  local sampler=$!
   # The bench image bakes /work in at build time -- it is NOT a bind mount --
   # so both the script and the output directory have to be mounted explicitly.
   # Without the output mount the --json file is written inside the container and
@@ -286,7 +299,41 @@ bench_arm() {
     --url "$url" --label "$label" \
     --prompt-tokens "$PROMPT_TOKENS" --predict "$PREDICT" --repeat "$REPEAT" \
     --json "/out/$out" 2>&1 | tee "$RUN_DIR/$label.log"
+  kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
   echo "loadavg_after_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
+  # The peak is what disqualifies a measurement, and it is the one number an
+  # endpoint pair reliably misses.
+  if [[ -s "$RUN_DIR/$label.loadavg" ]]; then
+    awk -v label="$label" '
+      {n++; if ($2+0 > max) max=$2+0; sum+=$2+0}
+      END {if (n) printf "loadavg_during_%s=n=%d peak=%.2f mean=%.2f\n", label, n, max, sum/n}
+    ' "$RUN_DIR/$label.loadavg" >> "$RUN_DIR/run.meta"
+  fi
+  # A payload reduction is a REAL DIFFERENCE BETWEEN THE ARMS. It is negotiated
+  # inside the bench and would otherwise live only in that arm's console log and
+  # its own JSON -- so lift it into run.meta, which is the file anyone comparing
+  # two runs actually opens. "full" is written explicitly rather than omitted:
+  # an absent key reads as "not recorded", which is not the same as "nothing was
+  # dropped", and this is exactly the sort of caveat that goes missing.
+  if [[ -s "$RUN_DIR/$out" ]]; then
+    python3 - "$RUN_DIR/$out" "$label" >> "$RUN_DIR/run.meta" <<'PYRED'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as exc:
+    print(f"payload_{sys.argv[2]}=unreadable ({type(exc).__name__})")
+    raise SystemExit(0)
+label = sys.argv[2]
+adj = (d.get("payload_adjustments") or {}).get(label)
+print(f"payload_{label}=" + (",".join(adj) if adj else "full"))
+mid = (d.get("payload_model_ids") or {}).get(label)
+if mid:
+    print(f"payload_model_id_{label}={mid}")
+note = (d.get("payload_notes") or {}).get(label)
+if note:
+    print(f"payload_note_{label}={note}")
+PYRED
+  fi
   cache_stalls "$label" "$arm_start"
   # The ninfer log captured at readiness stops at "listening" and therefore
   # contains nothing about the REQUESTS. On 2026-09-03 every ninfer round
@@ -393,7 +440,18 @@ start_ninfer() {
   # on purpose -- 0 healthy, 1 not yet, anything else means the probe itself is
   # broken and we stop rather than burn 1800 s.
   info "waiting for ninfer /health (cold load of a 17 GiB artifact takes minutes)"
-  local waited=0 prc
+  # WALL CLOCK, NOT A SLEEP TALLY.
+  #
+  # This used to count only its own `sleep 10` and ignore what each iteration
+  # actually costs -- and each iteration is a `compose run --rm`, which is a
+  # container create, start, python, and teardown: 15-25 s. On 2026-09-04 it
+  # announced "healthy after 340s" for a load the engine's own log timed at
+  # 810.204 s. An operator reading that number cannot reconcile it with the
+  # runbook's timeline and has no way to tell a slow load from a stalled one.
+  # The 1800 budget was wrong in the same direction: 1800 SLEEP seconds is
+  # closer to 45 minutes of wall clock.
+  local probe_t0 waited prc
+  probe_t0="$(date -u +%s)"
   # urllib.error imported EXPLICITLY: it resolves as a side effect of importing
   # urllib.request today, and if that ever stops being true the NameError would
   # surface as a traceback, exit 1, and read as "not ready yet" forever -- the
@@ -406,12 +464,22 @@ except urllib.error.HTTPError:
     sys.exit(1)
 except Exception:
     sys.exit(1)'
-  while [[ $waited -lt 1800 ]]; do
+  while :; do
+    waited=$(( $(date -u +%s) - probe_t0 ))
+    [[ $waited -lt 1800 ]] || break
     compose --profile tools run --rm --entrypoint python bench -c "$probe_py" \
       >/dev/null 2>"$RUN_DIR/ninfer-probe.err"
     prc=$?
+    waited=$(( $(date -u +%s) - probe_t0 ))
     if [[ $prc -eq 0 ]]; then
-      ok "ninfer healthy after ${waited}s"
+      # The gate itself is sound: on 2026-09-04 the engine logged `listening
+      # on ...` at 00:53:46 and this probe passed at 00:53:58 -- 12 s later,
+      # never early. It was only the CLOCK that lied, reporting 340 s for a
+      # load that took 822 s wall (engine: "model loaded in 810.204 s").
+      # Both numbers are printed now so the two can never drift apart again
+      # without someone seeing it.
+      ok "ninfer answered /health after ${waited}s (wall clock)"
+      docker logs "$NINFER_CT" 2>&1 | grep -E "model loaded in|listening on" >&2 || true
       docker logs "$NINFER_CT" > "$RUN_DIR/ninfer-$name.log" 2>&1
       return 0
     fi
@@ -427,9 +495,8 @@ except Exception:
       return 1
     fi
     sleep 10
-    waited=$((waited + 10))
   done
-  warn "ninfer did not become healthy within 1800s"
+  warn "ninfer did not become healthy within 1800s of wall clock"
   docker logs "$NINFER_CT" > "$RUN_DIR/ninfer-$name.log" 2>&1
   return 1
 }

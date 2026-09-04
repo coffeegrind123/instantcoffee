@@ -66,6 +66,7 @@ import argparse
 from dataclasses import dataclass, field, asdict
 import json
 import random
+import re
 import statistics
 import string
 import sys
@@ -252,14 +253,221 @@ def _extract_content(obj: dict) -> tuple[str | None, str | None]:
     return None, None
 
 
-def run_round(
+# Ordered single-field payload adjustments tried against a server that 400s.
+#
+# WHY THIS EXISTS. On 2026-09-03 the ninfer arm answered HTTP 400 to the warmup
+# and all three rounds, and the reason was thrown away by urllib (see
+# BackendRefused). Even with the body captured, a 400 costs a WHOLE RUN: the
+# engine takes ~9 minutes to load a 16.67 GiB artifact and the production llama
+# server is down for the entire cycle, so "find out which field" and "get the
+# number" were two separate sittings. This makes them one.
+#
+# The ladder runs against a SHORT prompt (a few hundred tokens), so each rung
+# costs a second, not a 20k-token prefill. It fires ONLY on 400 -- a 500, a
+# refused connection or a timeout is a different fault and must reach the run
+# directory unmasked rather than being retried into silence.
+#
+# Anything dropped here is a REAL DIFFERENCE BETWEEN THE ARMS and is written to
+# the run JSON as `payload_adjustments` and printed above the table. A payload
+# difference is a confound and belongs next to the numbers, not in a commit
+# message.
+ADJUSTMENT_LADDER = (
+    # FIRST, AND IT IS NOT A GUESS. On 2026-09-04 ninfer answered every request
+    # with:
+    #     {"error":{"code":null,"message":"missing required field: model",
+    #               "param":"model","type":"invalid_request_error"}}
+    # `model` is OPTIONAL in llama.cpp's server and REQUIRED in ninfer's, and
+    # bench_cross_engine only ever sent it when --model was passed, which
+    # ninfer-compare.sh does not do. That is the whole of the 400 that cost
+    # four attempts and two sessions.
+    "add-model",
+    # llama.cpp-only; the one field we knowingly send that ninfer has no use
+    # for. Read out of ninfer's openai_chat_request.cpp, it does NOT reject
+    # unknown fields wholesale -- so this is here by cheapness, not suspicion.
+    "no-timings-per-token",
+    "no-stream-options",
+    "max-completion-tokens",
+    "no-temperature",
+    "no-model",
+)
+
+
+def _discover_model_id(base_url: str, timeout: float) -> str | None:
+    """Ask the server what it calls itself. `GET /v1/models` -> data[0].id.
+
+    Hard-coding the id would rot the moment the artifact is rebuilt or the
+    stack is pointed at a different GGUF, and would silently send one engine
+    the other's name. Asking costs one cheap GET against an endpoint the probe
+    path already exercises, and no prompt -- so unlike a chat request it does
+    NOT provoke llama's prompt-cache switch.
+    """
+    url = base_url.rstrip("/") + "/v1/models"
+    try:
+        with urllib.request.urlopen(url, timeout=min(timeout, 30.0)) as resp:
+            doc = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as exc:  # noqa: BLE001 - any failure here is just "no id"
+        print(f"      /v1/models unreadable: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        return None
+    data = doc.get("data") if isinstance(doc, dict) else None
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        mid = data[0].get("id")
+        if isinstance(mid, str) and mid:
+            return mid
+    print(f"      /v1/models gave no usable id: {str(doc)[:200]}",
+          file=sys.stderr, flush=True)
+    return None
+
+
+def _adjust_payload(payload: dict, name: str, model_id: str | None = None) -> None:
+    """Apply one named adjustment in place. Unknown names raise, never no-op."""
+    if name == "add-model":
+        if not model_id:
+            raise ValueError("add-model needs a model id")
+        payload["model"] = model_id
+    elif name == "no-timings-per-token":
+        payload.pop("timings_per_token", None)
+    elif name == "no-stream-options":
+        payload.pop("stream_options", None)
+    elif name == "max-completion-tokens":
+        if "max_tokens" in payload:
+            payload["max_completion_tokens"] = payload.pop("max_tokens")
+    elif name == "no-temperature":
+        payload.pop("temperature", None)
+    elif name == "no-model":
+        payload.pop("model", None)
+    else:
+        # A silently ignored adjustment would report the payload as changed
+        # when it was not, which is worse than crashing.
+        raise ValueError(f"unknown payload adjustment: {name!r}")
+
+
+def negotiate_payload(
     arm: str,
     base_url: str,
-    prompt: str,
-    predict: int,
     timeout: float,
     model: str | None,
-) -> Round:
+    refusal: str,
+    probe_tokens: int = 256,
+) -> tuple[tuple[str, ...], str | None, str | None]:
+    """Find the smallest set of adjustments this server will accept.
+
+    `refusal` is the error the caller ALREADY has from a full-payload request --
+    normally the discarded warm-up. This function does not re-send that request
+    itself, and the reason is not tidiness:
+
+        ON llama, ONE EXTRA REQUEST COSTS UP TO FOUR MINUTES.
+
+    A request whose prompt differs from the slot's makes llama-server save the
+    old slot state to its prompt cache first. Measured on this box 2026-09-04,
+    on a 353-token prompt with a 162.742 MiB state: `prompt cache update took
+    237398.29 ms`. A negotiation probe of its own would add exactly that switch
+    to the healthy arm, which does not need negotiating at all, and would
+    inflate that arm's cache-stall count against the four earlier runs.
+
+    Returns (adjustments, note, model_id). An EMPTY tuple with a None note
+    means nothing was changed -- the only outcome that leaves the arms
+    byte-identical.
+
+    Single adjustments are tried first so the culprit is ISOLATED and named,
+    rather than a cumulative pile in which four innocent fields sit next to one
+    guilty one. Only if no single field explains it does it fall back to
+    applying the ladder cumulatively.
+
+    If nothing works, it returns an empty tuple and a note: the measured rounds
+    then run the UNADJUSTED payload, so what lands in the run directory is the
+    server's own 400 body rather than a mutated request nobody chose.
+    """
+    if "HTTP 400" not in refusal:
+        # Not a validation refusal. A 500, a refused connection or a timeout is
+        # a different fault; retrying adjusted payloads against it would hide
+        # the real error behind a healthy-looking empty adjustment set.
+        return (), f"not negotiable ({refusal})", None
+
+    err = refusal
+    print(f"    [{arm}] 400 on the full payload: {err}", file=sys.stderr, flush=True)
+
+    # THE SERVER USUALLY NAMES THE FIELD. Read it before walking a ladder: an
+    # OpenAI-shaped error carries `param`, and ninfer's said `"param":"model"`.
+    # Rungs whose name mentions that field are tried first, so the common case
+    # costs ONE request instead of five.
+    ladder = list(ADJUSTMENT_LADDER)
+    named = sorted(
+        {tok for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", err) if len(tok) > 2}
+    )
+    hinted = [r for r in ladder if any(t in r.replace("-", "_") for t in named)]
+    if hinted:
+        ladder = hinted + [r for r in ladder if r not in hinted]
+        print(f"    [{arm}] server named a field; trying {hinted} first",
+              file=sys.stderr, flush=True)
+
+    model_id = _discover_model_id(base_url, timeout) if "add-model" in ladder else None
+    if not model_id:
+        # Without an id `add-model` cannot be applied at all. Drop the rung
+        # rather than let _adjust_payload raise mid-ladder.
+        ladder = [r for r in ladder if r != "add-model"]
+
+    # Short prompts from here on. A rung costs a second at 256 tokens and ten at
+    # 20,000, and a 400 is decided by the validator before either is read.
+    prompt = build_prompt(probe_tokens)
+
+    def changes_anything(adjustments: tuple[str, ...]) -> bool:
+        """Would this actually alter the request we already know is refused?
+
+        `no-model` pops a `model` key this bench does not send unless --model
+        was given, so its attempt would be byte-identical to the full payload
+        the caller already has a 400 for. Sending it again cannot teach us
+        anything and costs a request -- which on llama is a prompt-cache switch
+        measured at up to 237 s. Compare the built payloads instead of
+        hard-coding which rungs are inert, so the check keeps working when
+        fields are added.
+        """
+        base = _build_round_payload(prompt, 8, model)
+        after = _build_round_payload(prompt, 8, model)
+        for name in adjustments:
+            _adjust_payload(after, name, model_id)
+        return json.dumps(after, sort_keys=True) != json.dumps(base, sort_keys=True)
+
+    def attempt(adjustments: tuple[str, ...]) -> str | None:
+        """None on success, else the error string. `INERT` if it is a no-op."""
+        if not changes_anything(adjustments):
+            return "INERT (would resend the payload already refused)"
+        r = run_round(arm, base_url, prompt, 8, timeout, model, adjustments, model_id)
+        return None if r.ok else (r.error or "unknown error")
+
+    print(f"    [{arm}] isolating the field, one at a time", file=sys.stderr, flush=True)
+    last = err
+    for name in ladder:
+        e = attempt((name,))
+        print(f"      {name:24} {'ACCEPTED' if e is None else e[:120]}",
+              file=sys.stderr, flush=True)
+        if e is None:
+            return (name,), f"400 on full payload, accepted after {name}", model_id
+        last = e
+
+    print(f"    [{arm}] no single field explains it; applying the ladder cumulatively",
+          file=sys.stderr, flush=True)
+    acc: tuple[str, ...] = ()
+    for name in ladder:
+        acc += (name,)
+        e = attempt(acc)
+        print(f"      {'+'.join(acc)[:60]:60} {'ACCEPTED' if e is None else e[:80]}",
+              file=sys.stderr, flush=True)
+        if e is None:
+            return acc, ("400 on full payload, accepted only after "
+                         + ", ".join(acc)), model_id
+        last = e
+
+    return (), f"400 and no adjustment helped; last body: {last}", model_id
+
+
+def _build_round_payload(prompt: str, predict: int, model: str | None) -> dict:
+    """The request both the measured rounds and the negotiator reason about.
+
+    Factored out so `changes_anything` compares against the REAL payload rather
+    than a second copy of it that can drift. A drifted copy would silently
+    mis-classify a rung as inert and skip a request that mattered.
+    """
     payload = {
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": predict,
@@ -281,6 +489,24 @@ def run_round(
     }
     if model:
         payload["model"] = model
+    return payload
+
+
+def run_round(
+    arm: str,
+    base_url: str,
+    prompt: str,
+    predict: int,
+    timeout: float,
+    model: str | None,
+    adjustments: tuple[str, ...] = (),
+    model_id: str | None = None,
+) -> Round:
+    payload = _build_round_payload(prompt, predict, model)
+    # Applied LAST so an adjustment can override or remove a field
+    # _build_round_payload just set.
+    for _name in adjustments:
+        _adjust_payload(payload, _name, model_id)
 
     rnd = Round(arm=arm, ok=False)
     url = base_url.rstrip("/") + "/v1/chat/completions"
@@ -333,7 +559,21 @@ def run_round(
                 rnd.content_chars += len(text)
                 if source_field and source_field not in rnd.content_fields:
                     rnd.content_fields.append(source_field)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+    except (BackendRefused, urllib.error.URLError, urllib.error.HTTPError,
+            TimeoutError, OSError) as exc:
+        # BackendRefused IS LISTED FIRST AND IS NOT OPTIONAL.
+        #
+        # It is a RuntimeError, not a URLError, so when it was introduced to
+        # carry the server's 400 body it silently left this tuple -- and an
+        # HTTP error stopped being a recorded round failure and became an
+        # uncaught traceback that killed the whole arm. On 2026-09-04 that took
+        # out the ninfer arm at its warm-up: no ninfer.json was written, three
+        # rounds that should each have recorded an `error` recorded nothing,
+        # and the run cost a nine-minute engine load to produce one traceback.
+        #
+        # The instrumentation was right and worth it -- the body it printed is
+        # what finally named the field. But an exception type introduced to
+        # improve reporting must be caught everywhere the type it replaced was.
         rnd.error = f"{type(exc).__name__}: {exc}"
         return rnd
 
@@ -519,6 +759,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default=None, help="value for the `model` field")
     p.add_argument("--probe", action="store_true",
                    help="dump raw endpoint and SSE output, measure nothing")
+    p.add_argument("--no-negotiate", action="store_true",
+                   help="do not try reduced payloads when a server answers "
+                        "400; report the refusal and measure nothing")
     p.add_argument("--no-warmup", action="store_true",
                    help="skip the discarded warm-up round (you will measure "
                         "graph capture and queue wait as prefill)")
@@ -565,14 +808,57 @@ def main(argv: list[str] | None = None) -> int:
     # prompt-proportional stall in the engine and was not. It survived long
     # enough to get written down. Kill stray `instantcoffee-bench-run-*`
     # containers before believing anything here.
+    # THE WARM-UP IS ALSO THE NEGOTIATION PROBE. It is already a discarded
+    # full-payload request, so a server that is going to refuse the payload
+    # refuses it here -- and a healthy arm pays nothing at all for the
+    # machinery, which on llama matters: one extra request is one extra prompt
+    # switch, and that has been measured at 237.4 s on this box.
+    adjustments: dict[str, tuple[str, ...]] = {label: () for label, _ in arms}
+    model_ids: dict[str, str | None] = {label: None for label, _ in arms}
+    notes: dict[str, str] = {}
+
     if not args.no_warmup:
         for label, url in arms:
             print(f"[warmup] {label} (discarded) ...", file=sys.stderr, flush=True)
             w = run_round(
-                label, url, build_prompt(args.prompt_tokens), 8, args.timeout, args.model
+                label, url, build_prompt(args.prompt_tokens), 8, args.timeout,
+                args.model, (),
             )
-            if not w.ok:
-                print(f"    warmup FAILED: {w.error}", file=sys.stderr)
+            if w.ok:
+                continue
+            print(f"    warmup FAILED: {w.error}", file=sys.stderr, flush=True)
+            if args.no_negotiate:
+                continue
+
+            red, note, mid = negotiate_payload(
+                label, url, args.timeout, args.model, w.error or ""
+            )
+            adjustments[label] = red
+            model_ids[label] = mid
+            if note:
+                notes[label] = note
+                print(f"[payload] {label}: {note}", file=sys.stderr, flush=True)
+            if red:
+                # Warm up AGAIN, with the shape the server accepts. Skipping
+                # this would hand the first measured round the cold-start cost
+                # the warm-up exists to absorb -- 2.09 s against 0.97 s on this
+                # stack -- and that lands in TTFT, which is the prefill number.
+                print(f"[warmup] {label} (discarded, reduced payload) ...",
+                      file=sys.stderr, flush=True)
+                w2 = run_round(
+                    label, url, build_prompt(args.prompt_tokens), 8, args.timeout,
+                    args.model, red, mid,
+                )
+                if not w2.ok:
+                    print(f"    warmup FAILED AGAIN: {w2.error}", file=sys.stderr)
+    elif not args.no_negotiate:
+        # Nothing to negotiate from: the ladder needs a full-payload refusal to
+        # start from and --no-warmup removed the request that produces one. Say
+        # so rather than silently reporting "full payload" for an arm that was
+        # never asked.
+        print("[payload] --no-warmup: negotiation skipped (no full-payload "
+              "request to learn a refusal from)", file=sys.stderr, flush=True)
+        notes = {label: "not negotiated (--no-warmup)" for label, _ in arms}
 
     # Interleave the arms round by round rather than draining one then the
     # other: anything that drifts over the session -- thermals, another process
@@ -582,12 +868,27 @@ def main(argv: list[str] | None = None) -> int:
         for label, url in arms:
             prompt = build_prompt(args.prompt_tokens)
             print(f"[{i + 1}/{args.repeat}] {label} ...", file=sys.stderr, flush=True)
-            rnd = run_round(label, url, prompt, args.predict, args.timeout, args.model)
+            rnd = run_round(label, url, prompt, args.predict, args.timeout,
+                            args.model, adjustments[label], model_ids[label])
             if not rnd.ok:
                 print(f"    FAILED: {rnd.error}", file=sys.stderr)
             rounds.append(rnd)
 
     print()
+    # Printed ABOVE the table, not after it: a reduced payload is a difference
+    # between the arms, and a reader who sees the numbers first has already
+    # compared them before reaching the caveat.
+    if any(adjustments.values()) or notes:
+        print("PAYLOAD DIFFERENCES BETWEEN ARMS -- read before comparing:")
+        for label, _ in arms:
+            red = adjustments.get(label, ())
+            shape = ", ".join(red) if red else "full payload, unmodified"
+            if "add-model" in red and model_ids.get(label):
+                shape += f" (model={model_ids[label]})"
+            print(f"  {label:10} {shape}")
+            if label in notes:
+                print(f"  {'':10} {notes[label]}")
+        print()
     print(report(rounds))
 
     if args.json_out:
@@ -598,6 +899,9 @@ def main(argv: list[str] | None = None) -> int:
                     "predict": args.predict,
                     "repeat": args.repeat,
                     "arms": {label: url for label, url in arms},
+                    "payload_adjustments": {k: list(v) for k, v in adjustments.items()},
+                    "payload_model_ids": model_ids,
+                    "payload_notes": notes,
                     "rounds": [asdict(r) for r in rounds],
                 },
                 fh,

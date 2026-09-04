@@ -1,3 +1,177 @@
+# Handoff — 2026-09-04 (part 7: the ninfer number exists, the 400 was one field, and llama gives its prefill lead away in the server path)
+
+**Part 6 was a runbook for a job that is now done.** The ninfer arm has been
+measured twice — once contaminated, once clean — and the 400 that blocked four
+previous attempts is diagnosed and fixed. Read §1 for the result, §2 for the
+cause, §3 for what changed in the harness, and §4 for the claims in parts 5–6
+that this run contradicts.
+
+---
+
+## 1. The result
+
+**llama arm `20260904-102103` 10:21, ninfer arm `20260904-104132` 10:45.**
+Both on a quiet box; the ninfer arm carries a 5-second load series showing
+`peak=3.22 mean=2.66` falling monotonically through the arm.
+
+| | llama | ninfer | |
+| --- | ---: | ---: | --- |
+| prefill t/s, **wall clock** | 1931.2 | 1948.6 | tie, +0.9% ninfer |
+| prefill t/s, **engine-native** | 2158.1 | 1953.8 | **llama +10.5%** |
+| decode t/s, engine-native | 83.2 | 99.1 | **ninfer +19.1%** |
+| draft accepted | 98/112 (~88%) | 81/137 (~62%) | |
+| prompt tokens | 20578–20582 | 20621–20625 | different tokenisation, ~0.2% |
+
+Per-round, ninfer: prefill 1948.6 / 1913.7 / 1967.2, decode 96.6 / 98.1 / 114.6.
+Spread is 2.8% on prefill — tighter than any llama arm yet measured.
+
+**THE TWO PREFILL ROWS DISAGREE AND THAT IS THE FINDING.** llama's engine
+prefills ~10% faster and then hands the whole advantage back in its server
+path: llama's wall-to-native gap is **227 t/s (~10%)**, ninfer's is **5 t/s
+(~0.3%)**. The gap is the prompt-cache update — inside wall-clock TTFT, outside
+`prompt_ms`, and ninfer has no equivalent step. So *the engine* that prefills
+faster is llama, and *the server* a user actually talks to is a tie.
+
+**Decode is ninfer's by ~19%, and it wins despite far worse speculative
+acceptance** (62% against llama's 88%). Quote decode with its range: ninfer
+96.6–114.6, llama 77.5–84.0.
+
+**What this still does not settle** — unchanged from part 3 §8, and none of it
+is weakened by having a number:
+
+- **The weights differ.** llama serves the orcarouter Q4_K_M **fine-tune**,
+  ninfer the **official** groupwise-int artifact. The decode win is engine
+  **and** weights **and** quantisation. To narrow it, point the stack at
+  `Qwen3.8-27B-UD-Q4_K_XL.gguf` via `.env` + `./scripts/mode.sh` and re-run.
+- **The arms were 24 minutes apart, not interleaved.** ~17 GiB and ~20 GiB do
+  not coexist on 24 GB. Same morning, comparable load, load series recorded on
+  the ninfer side — that is the substitute, and it is weaker than back-to-back.
+- **The payloads differ by one field**, recorded as `payload_ninfer=add-model`.
+- **ninfer still has no `/tokenize`, no `/completion`, no logits export**, so
+  the whole `ppl-*` line stays on llama.cpp. **A decode win means two engines,
+  not a replacement. Cost it as one.**
+
+---
+
+## 2. The 400 was `model`, and that is the whole of it
+
+```
+{"error":{"code":null,"message":"missing required field: model",
+          "param":"model","type":"invalid_request_error"}}
+```
+
+`model` is **optional** in llama.cpp's server and **required** in ninfer's.
+`bench_cross_engine` sent it only under `--model`, which `ninfer-compare.sh`
+does not pass. Four attempts across two sessions died on that.
+
+Part 5 §5's remaining candidates — `ContextLengthExceeded`,
+`ThinkingBudgetCapacityInsufficient`, "something in the message/role path" —
+were **all wrong**. Part 5's instruction *not* to narrow them by reading was
+**right**: one run printed it. The previous session's `BackendRefused`
+instrumentation is what made that possible and was worth every line.
+
+**Part 6 §4 is wrong about where to look.** It sends you to
+`ninfer.engine-after.log`. The engine logs **nothing** about rejected requests;
+the console is the only place the body appears. Keep the file — it carries the
+load timings, the KV capacity line and the model id — but do not expect a 400
+in it.
+
+---
+
+## 3. What changed in the harness (46 tests)
+
+1. **A regression that cost a whole arm, and it was ours.** `BackendRefused` is
+   a `RuntimeError`; `run_round`'s except tuple listed only
+   `URLError/HTTPError/TimeoutError/OSError`. The exception introduced to
+   *carry* the 400 body therefore stopped being caught: the warm-up raised,
+   `main()` never reached the rounds, no `ninfer.json` was written, and a
+   13-minute engine load bought exactly one traceback (`20260904-003825`).
+   **A new exception type introduced for better reporting must be caught
+   everywhere the type it replaced was.**
+2. **Payload negotiation.** The discarded warm-up doubles as the probe — no
+   extra request on a healthy arm, which matters because one extra request on
+   llama is one extra prompt switch. On a 400 only, the ladder reads `param`
+   out of the server's own error and tries the matching rung first (one
+   request, not five), resolving the id from `GET /v1/models` rather than
+   hard-coding it. Inert rungs cost nothing: `no-model` pops a key we never
+   send, so its payload is byte-identical to one already refused and it is
+   skipped. Reductions are printed **above** the table and lifted into
+   `run.meta` as `payload_<arm>=`, written explicitly as `full` when nothing
+   changed — an absent key reads as "not recorded", a different claim.
+3. **The readiness timer was lying by 2.4×.** It counted its own `sleep 10` and
+   ignored each probe's `compose run` spin-up (15–25 s), reporting
+   "healthy after 340s" for an 822 s load. Now wall clock, and it prints the
+   engine's own `model loaded in` line beside it. **The `/health` gate itself
+   was never wrong** — `ninfer-matched.log` ends at `listening on ... 21:53:46`
+   and was written at 00:53:58, so the probe passes *after* listening, never
+   early.
+4. **Per-arm load sampling.** Every 5 s into `<run>/<label>.loadavg`, summarised
+   as `loadavg_during_<arm>=n= peak= mean=`. Two endpoints and a lagging 5-min
+   average cannot tell a self-inflicted spike from a neighbour's build; a series
+   can, and it is what made §1's arm quotable.
+
+---
+
+## 4. Claims in parts 5–6 this run contradicts
+
+- **§7: "ninfer sends no `cached_tokens` equivalent, so the leading nonce is the
+  only defence on that arm."** Wrong. ninfer reports `cached_tokens: 0` on every
+  round. Both arms are guarded.
+- **§6: large prompt-cache stalls are attributed to load.** Not only load.
+  `20260904-003825` took **40846.75 ms at `loadavg_at_start=1.10`**, and the log
+  says why: `prompt_save: length 20586, state 914.502 MiB` preceded by two
+  evictions of 450.229 MiB and 464.160 MiB. It is **eviction cost when the cache
+  must grow into a ~914 MiB entry**; once sized, the next three saves took 1121
+  and 1185 ms. Corollary: **do not send unrelated small-prompt requests to llama
+  shortly before a run** — they leave small entries round 1 then pays to evict.
+  (A smoke test of mine did exactly that.) Separately, **237398.29 ms** was
+  measured for a 353-token / 162.742 MiB save at load ~3, so state size is not
+  the only driver either.
+- **§6: "prefill is stable to ~1% on a quiet box."** True *within* a run, not
+  *between* runs. Seven llama arms now span **1931.2 – 2087.1 (~8%)**, and the
+  two lowest were the ones with the *cleanest* cache stalls — so the spread is
+  real throughput variation, not contamination.
+- **§2's timeline: "ninfer weight load 132–166 s, ~6 more min to model loaded."**
+  That is one point in a wide distribution. Measured today: **200 s** (artifact
+  warm in page cache), **317 s** (quiet, cold), **810 s** (busy), **>1260 s and
+  never finished** (load 20). Budget by the box, not by the number.
+
+---
+
+## 5. Preflight is not a formality, and it now has teeth
+
+Six attempts have died to interruption; three were this session, all killed from
+outside during the ninfer load. Two lessons:
+
+- **Run it detached.** `setsid nohup ./scripts/ninfer-compare.sh ... &` puts it
+  in its own process group, where a killed foreground task cannot reach it. The
+  arm that produced §1's number ran that way.
+- **`--restore-only` earned its keep three times.** One kill left `ninfer-bench`
+  holding ~22 GiB for 21 minutes because the trap was itself killed mid-restore.
+
+**Do not measure while another session builds.** Observed today: a neighbouring
+`cargo check --all-targets -j 4` / `cargo clippy` loop drove load to **20.59**,
+and the contaminated ninfer arm ran at **41.35 → 72.40** while its llama arm had
+run at **1.96 → 2.52**. Same engine, same prompt: **1025 t/s prefill under load,
+1948 t/s quiet — a 1.9× swing from the box alone.** A waiter that greps for
+`rustc` and `cargo` **misses `clippy-driver`**; match `\.rustup/toolchains`
+instead, and require the quiet to hold for several consecutive samples rather
+than one lucky instant.
+
+---
+
+## 6. The next question, and it is no longer about the harness
+
+**Re-run with matched weights.** `Qwen3.8-27B-UD-Q4_K_XL.gguf` is already on
+disk. Until that is done, "ninfer decodes 19% faster" is a statement about
+*ninfer serving the official groupwise-int artifact* versus *llama.cpp serving a
+Q4_K_M fine-tune*, and the two cannot be separated. There is deliberately no
+flag for this: it means editing `.env` and taking a cold reload, and that should
+be a decision, not a convenience.
+
+
+---
+
 # Handoff — 2026-09-04 (part 6: a runbook for the one job left — get the ninfer number in a single sitting)
 
 **This entry is not a record of work. It is instructions for one task.** Parts
