@@ -1,3 +1,265 @@
+# Handoff — 2026-09-04 (part 10: everything that is left, with the commands, the decision each one needs before it can start, and what would make it void)
+
+**Part 9 is the record. This is the instruction sheet.** Nothing below repeats
+part 9's findings; it tells you what to DO next and what each job costs. Read
+part 9 §2 before quoting any engine number and part 9 §10 before re-running
+anything on ninfer.
+
+**Two of these jobs cannot be started by an agent alone** — §3 needs a human
+decision about `CACHE_RAM`, and §8 is a design fork. They are marked. Everything
+else is runnable as written.
+
+---
+
+## 1. What you are inheriting
+
+**Clean.** `main` at `5177ac5`, working tree clean, three commits from the last
+session pushed. Stack: `instantcoffee-llama` up and healthy at `n_ctx 98304` on
+the production GGUF; no ninfer or bench containers. **`.env`, `.env.local`,
+`docker-compose.yml` and `modes/` have not been touched for six sessions** — if
+`git diff HEAD -- .env docker-compose.yml modes/` is non-empty, someone changed
+the running stack and nothing below is comparable to the recorded numbers.
+
+**The harness now recovers from things that used to cost you a session.** All
+three were paid for on 2026-09-04 (part 9 §9, §10):
+
+- `restore()` retries `docker start` **8 times** and shouts if the stack does not
+  come back. It used to try once and exit reporting success with llama down.
+- `start_ninfer` retries the create **4 times, 45 s apart**, and writes
+  `ninfer_create_attempts_<name>` so you learn whether the retry was needed.
+- The readiness budget is `NINFER_HEALTH_BUDGET`, **default 2700 s**. It was
+  hard-coded at 1800 and threw away a run whose engine was merely slow.
+
+`python3 -m pytest scripts/test_ninfer_create_retry.py scripts/test_restore_retry.py
+scripts/test_arm_quiet_gate.py scripts/test_cache_stall_summary.py
+scripts/test_runner_errexit.py scripts/test_bench_cross_engine.py -q`
+→ **95 passed, 14 subtests**. Run it before you change anything.
+
+---
+
+## 2. How to run anything here without wasting it
+
+Part 8 §2 still governs. **Three additions from the last session, each one
+bought with a lost run:**
+
+    HOLD=9 ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh <args> \
+        > .ninfer-compare/detached-<name>.log 2>&1 < /dev/null &
+
+1. **`HOLD=9`, not the default 3.** The default is 60 seconds of quiet. On a
+   shared box that opens a one-minute lull and then spikes to load 25, that is
+   not enough: two runs on 2026-09-04 passed the gate and lost the box
+   afterwards. `HOLD=9` is 3 minutes continuous and costs only patience.
+2. **`setsid nohup ... &` around the WHOLE chain**, including `wait-quiet.sh`.
+   Backgrounding only the inner command leaves the waiter attached to a shell
+   that may not outlive the call.
+3. **Read these `run.meta` keys before quoting anything**, every time:
+   `quiet_gate_<arm>` (only `result=ready` means the box was quiet),
+   `loadavg_during_<arm>` (**the arbiter — the gate cannot see the future**),
+   `container_age_s_<arm>`, `ninfer_create_attempts_<name>`, `payload_<arm>`,
+   and `cache_stalls_<arm>` — the last of which **lied on every run before
+   `20260904-160606`** (part 9 §5; re-derive from `<arm>.cache-stalls`).
+
+**A slow load and a dead one look identical here.** ninfer logs nothing between
+weights and readiness. Cold load measured on this box: 200 s (artifact warm in
+page cache), 317 s (quiet, cold), 810 s (busy), 901 s (busy and cold), >1260 s
+at load 20. Do not conclude anything about the engine from a timeout without
+checking the last progress line in `ninfer-<name>.log` first.
+
+---
+
+## 3. JOB A — the clean 32K re-run. **NEEDS A HUMAN DECISION FIRST.**
+
+**What it answers.** Part 8 §5a measured ~20.6K prompts at llama 69.7 vs ninfer
+118.4 t/s decode and the result is **direction only**, because of three defects
+it names: arms at load 3.81 against 1.40, a 165.63 s round-1 TTFT, and llama's
+prompt cache thrashing by construction. This run is what turns that into a
+figure.
+
+**THE DECISION, and do not make it for the owner.** A clean run wants llama's
+cache sized past a single ~20.6K entry (~1.37 GiB), i.e. `CACHE_RAM` ≈ **4096**.
+**`CACHE_RAM` is the setting that has taken this box down twice** — at 8192 the
+container sat at 9.02 GiB RSS, the host fell to 394 MiB free with 5.5 GiB in
+swap, and prompt processing collapsed to **2.83 tok/s**. `CTX_CHECKPOINTS=16`
+produced the same 50x cliff from one setting over. Read both notes in `.env`.
+
+**If and only if the owner says yes**, the protocol — and restore it afterwards:
+
+    free -h                       # want multiple GiB FREE, not just available
+    ./scripts/host-ram-floor.sh --label before-cacheram-4096 --samples 20 --interval 30
+    #   edit .env: CACHE_RAM=2048 -> 4096      (4096, NEVER 8192)
+    docker compose up -d --force-recreate llama     # compose re-reads .env here
+    ./scripts/host-ram-floor.sh --label after-cacheram-4096 --samples 40 --interval 30 &
+
+    HOLD=9 ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 5 \
+        --min-container-age 1200 \
+        > .ninfer-compare/detached-32k-clean.log 2>&1 < /dev/null &
+
+    #   THEN: restore .env to CACHE_RAM=2048 and recreate llama again.
+
+**`--repeat 5`, not 3**, so one thrash round cannot move the median.
+
+**What makes it void:** `loadavg_during_llama` and `loadavg_during_ninfer` far
+apart (that is what killed §5a), or `cache_stalls_llama` showing evictions still
+dominating — which would mean 4096 was not enough and the answer is to report
+that, not to reach for 8192.
+
+---
+
+## 4. JOB B — raise the repeat count on the decode claim (part 9 §6.3)
+
+**What it answers.** The ninfer decode advantage is **+25–30%** and its
+DIRECTION has held in every paired run, but within-arm decode spread is
+9.6–34.7%, so three rounds cannot pin the figure.
+
+**It is optional, and here is the honest cost/benefit.** The engine-level
+conclusions in part 9 §2 do NOT depend on it — the advantage is well outside
+llama's 12% arm-to-arm spread. Do this only if someone needs the NUMBER rather
+than the RANKING. Budget `--repeat 10` or more and several arms per condition:
+roughly an order of magnitude more measurement than the question has so far been
+worth.
+
+    HOLD=9 ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --repeat 10 --min-container-age 1200 \
+        > .ninfer-compare/detached-decode-repeat.log 2>&1 < /dev/null &
+
+**A second reason to want it, new on 2026-09-04:** the `20260904-213437` arm's
+within-arm PREFILL spread was **6.9%**, against a previous ninfer maximum of
+2.8%. Part 8 §4d's finding that *ninfer's prefill is reproducible and llama's is
+not* rests on that asymmetry, so one wide arm is worth confirming or dismissing.
+
+---
+
+## 5. JOB C — OPEN-WORK §3, the rotation interaction. The tooling exists.
+
+**What is left is now narrow and specific.** Depth is ruled out (all four
+rotations score in-chunk depths 4097..8191 and still differ ~3x), intrinsic span
+difficulty is ruled out the other way (rotation 4096's spans are EASIER at the
+balanced depth), and the per-token depth effect is 1.44x against an arm spread
+of 15x. What survives is an **INTERACTION**: hard content landing deep in one
+rotation and shallow in another.
+
+**Do NOT run the corpus-construction experiment.** §3's closing paragraph
+recommends it and that paragraph is **retracted** — it was still sitting there
+unmarked as the section's last word until 2026-09-04, which is exactly how a
+retracted conclusion gets acted on. It is now fenced.
+
+**The right run.** Per-token NLL comes from the CLIFF runner, not the depth
+runner (`rotation_asymmetry_analyse.py:169`; `ppl-depth-run.sh` deliberately
+omits `--kl-divergence-base` because it is ~10x faster and byte-identical for
+per-span numbers). So score **whole arms** at two rotations and compare the rate
+of the SAME tokens:
+
+    ./scripts/ppl-cliff-run.sh --corpus /captures/corpus/deep-plus-pi.txt \
+        --from-run .ppl-depth-logs/20260824T114717Z \
+        --chunk 8192:<start>:<i>   ... one per chunk, both rotations
+
+`20260824T114717Z` is the four-rotation run at n_ctx 8192 and is on disk. **Cost:
+7 chunks x 2 rotations = 14 passes**, GPU, so it needs the same quiet discipline
+as everything else. `--dry-run` prints every command without running one — use it
+first to fix the chunk list.
+
+---
+
+## 6. JOB D — OPEN-WORK §6, three cheap bench items
+
+All three are runs; none needs a decision.
+
+1. **Tighten the acceptance null.** One depth, one workload, detection floor
+   6.9% relative today. `--workload repeat` makes "the drafter did nothing"
+   distinguishable from "the model did not repeat anything", because
+   `bench_repeat.py` reports ECHO. Explicitly marked cheap.
+
+       ./scripts/spec-sweep.sh --workload repeat --prompt-len 60000 \
+           --only baseline --repeat 3 --dry-run     # drop --dry-run to run it
+
+   **The command in OPEN-WORK §6 will not run as written** — it pairs
+   `--workload` (which is `spec-sweep.sh`'s) with `--bench-args` (which is
+   `capacity-probe.sh`'s). `spec-sweep.sh` takes `--prompt-len` directly.
+   Checked 2026-09-04; the register was not edited, so fix it there when you
+   pick this up.
+2. **`eval_expr` at `--repeat 20`, two levels.** The task set is not
+   deterministic, so one grid cell is one sample; medium 6/5 clean against xhigh
+   5/3 is directional, not separable at n=5.
+3. **The VRAM-floor item is PARTLY OBSOLETE** — 128K is refused on cost, not
+   fit. What survives is worth more than the original: the desktop floor moved
+   **765.8 MiB inside one 11-minute capture** and ~1.2 GiB across a day. Any
+   "does it fit" verdict priced against one sample of that distribution is
+   worthless. Do not re-derive this; see `vram_note` / `ctx_128k_verdict`.
+
+---
+
+## 7. JOB E — OPEN-WORK §0 and §0f
+
+- **§0, the unattended `/loop`.** The 2026-08-27 fixes are unproven END TO END.
+  This is a long unattended run, so it wants a box nobody else is using.
+- **§0f, the CUDA abort.** Four reproductions that did not crash. **It has a
+  written "what to do, in order" — start there, not at the top of the section.**
+  The leak hypothesis is already dead; do not re-walk it.
+
+---
+
+## 8. THE DECISION THAT IS NOT AN AGENT'S: OPEN-WORK §5, `bash` → `curl`/`wget`
+
+§5 is down to this one enumerated path: web-derived text entering the transcript
+through `bash` with no envelope. **It cannot be closed the way the other two
+paths were**, and that is why it is still open rather than half-done.
+
+- The covered paths are DENY-lists — *wrap everything except a short control
+  set* — and the file's own conclusion is that **an allow-list is the shape that
+  fails**, because the surface grows and the list does not. `bash` is a general
+  tool: there is no deny-list analogue.
+- **Option 1, a wrapped `scripts/fetch.sh`** reusing the existing banner, plus a
+  line in `prompts/web-untrusted.md`. Cheap and honest, but it only covers the
+  path an agent CHOOSES to take, so it does not close the hole. **If you build
+  it, do not record §5 as covered** — that mislabelling is the specific failure
+  this file keeps having to correct.
+- **Option 2, a harness-level Bash hook** in settings. Larger, lives outside
+  this repo, and is the only shape that actually closes it.
+
+**Ask the owner which.** Do not pick one and write it up as done.
+
+---
+
+## 9. Still open and genuinely unexplained: the `ldcache` create fault
+
+Twice on 2026-09-04, `docker run` for ninfer died at container init with
+`nvidia-container-cli: ldcache error: process /sbin/ldconfig terminated with
+signal 9`. **Ruled out with controls:** memory (dropping the Docker VM page
+cache took the box 5.0 → 14 GiB free and it still failed) and a slow `ldconfig`
+in that image (instant; 739 shared objects against llama's 1173, and llama's
+image never reproduced it). **The documented "drop the page cache" remedy is not
+the operative step — waiting is**, and part 4's note is amended in place.
+
+**The only surviving correlate:** both landed within seconds of
+`docker stop instantcoffee-llama`, a precondition every passing control lacked.
+
+**If it recurs, capture these together** — the harness keeps the first two for
+you now: `ninfer-start-attempt<N>.err`, `ninfer_create_attempts_<name>`, and
+`/proc/loadavg` at that moment. **If attempt 2 routinely wins ~45 s later with
+nothing else changed, the fault is a settling window after the GPU is released**,
+and the fix becomes an explicit wait rather than a retry.
+
+---
+
+## 10. Do not
+
+Part 8 §7 and part 9 §8 apply in full. The three that cost the most recently:
+
+- **Do not read the register's headings as current.** Two of them advertised
+  numbers their own bodies retracted, and part 8 §6b called llama's 128K ceiling
+  unmeasured when OPEN-WORK §00b had closed it three weeks earlier. **Read
+  `OPEN-WORK.md` before measuring anything**, and read to the END of a section.
+- **Do not conclude a configuration is broken from a run on a loaded box.**
+  `20260904-204015` looked exactly like a hang and was a slow load; the next run
+  served the identical configuration. A confounded negative is not a finding.
+- **Do not edit a script while a copy of it is running.** bash reads by byte
+  offset; an edit mid-run resumed the live process in the wrong place and it had
+  to be killed.
+
+---
+
 # Handoff — 2026-09-04 (part 9: all four jobs are done — the engine verdict in the only form it should be quoted, three retractions, and six `run.meta` fields that claim a clean prompt cache they never measured)
 
 **Part 8 was a to-do list. Every item on it is now closed**, and each result is
