@@ -102,6 +102,7 @@ RUN_LLAMA=1
 RUN_NINFER=1
 WIDE=0
 RESTORE_ONLY=0
+CACHE_CONTROL=0
 KV_DTYPE="int8"
 CONTEXT=""
 OUT_DIR="${REPO_ROOT}/.ninfer-compare"
@@ -117,6 +118,7 @@ while [[ $# -gt 0 ]]; do
     --llama-only)    RUN_NINFER=0; shift ;;
     --wide)          WIDE=1; shift ;;
     --restore-only)  RESTORE_ONLY=1; shift ;;
+    --cache-control) CACHE_CONTROL=1; RUN_LLAMA=0; shift ;;
     --out)           OUT_DIR="$2"; shift 2 ;;
     -h|--help)       sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d'; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -133,7 +135,7 @@ mkdir -p "$OUT_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 # A --restore-only run is not a measurement and must never be mistaken for one
 # when someone lists this directory later, so it is named for what it is.
-RUN_DIR="$OUT_DIR/$STAMP$([[ "$RESTORE_ONLY" -eq 1 ]] && echo "-restore")"
+RUN_DIR="$OUT_DIR/$STAMP$([[ "$RESTORE_ONLY" -eq 1 ]] && echo "-restore")$([[ "$CACHE_CONTROL" -eq 1 ]] && echo "-cachecontrol")"
 mkdir -p "$RUN_DIR"
 # 0777, and it is not laziness. This directory is created here as root and then
 # bind-mounted into the bench container as /out, where bench_cross_engine.py
@@ -523,7 +525,27 @@ if [[ "$RUN_NINFER" -eq 1 ]]; then
   echo "llama stop rc=$?" >> "$RUN_DIR/restore.log"
 
   if start_ninfer "$CONTEXT" "$KV_DTYPE" "matched"; then
-    bench_arm "ninfer" "http://$NINFER_CT:8080" "ninfer.json"
+    if [[ "$CACHE_CONTROL" -eq 1 ]]; then
+      # THE CONTROL FOR HANDOFF part 7 section 4, NOT A MEASUREMENT.
+      #
+      # Both measured ninfer arms reported cached_tokens: 0, and that was used
+      # to correct part 3 section 8's "ninfer sends no equivalent". But every
+      # benched prompt carries a leading nonce, so zero is what you would see
+      # whether the field works or is hard-coded. Sending the SAME prompt twice
+      # is the only thing that tells those apart. See the docstring on
+      # cache_control() in bench_cross_engine.py.
+      info "cache control: same prompt twice, looking for a NON-zero cached_tokens"
+      compose --profile tools run --rm \
+        -v "$WIN_REPO/scripts/bench_cross_engine.py:/work/scripts/bench_cross_engine.py:ro" \
+        -v "$WIN_REPO/.ninfer-compare/$(basename "$RUN_DIR"):/out" \
+        --entrypoint python bench /work/scripts/bench_cross_engine.py \
+        --url "http://$NINFER_CT:8080" --label ninfer \
+        --prompt-tokens "$PROMPT_TOKENS" --cache-control \
+        2>&1 | tee "$RUN_DIR/ninfer.cache-control.log"
+      docker logs "$NINFER_CT" > "$RUN_DIR/ninfer.engine-after.log" 2>&1
+    else
+      bench_arm "ninfer" "http://$NINFER_CT:8080" "ninfer.json"
+    fi
   else
     warn "matched-context ninfer arm did not run"
   fi

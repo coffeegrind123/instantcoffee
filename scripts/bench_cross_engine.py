@@ -644,6 +644,84 @@ def probe(base_url: str, label: str, prompt_tokens: int, timeout: float) -> int:
     return 0
 
 
+def cache_control(
+    arm: str, base_url: str, prompt_tokens: int, timeout: float, model: str | None
+) -> int:
+    """Does this server's `cached_tokens` actually REPORT reuse, or is it always 0?
+
+    WHY THIS EXISTS. HANDOFF part 7 section 4 corrected part 3 section 8's claim
+    that ninfer "sends no cached_tokens equivalent" -- on the evidence that both
+    measured ninfer arms reported `cached_tokens: 0` on every round. That
+    evidence is weaker than the claim it was used for.
+
+    Every benched prompt carries a leading nonce, so no two requests share
+    anything past the chat-template preamble, so ZERO IS WHAT YOU WOULD SEE
+    EITHER WAY -- whether the field works and there was genuinely no reuse, or
+    whether the server hard-codes it. "Present and zero" proves the field
+    exists. It does not prove the cache guard is real, and the guard is the
+    whole reason the prefill numbers can be trusted.
+
+    A negative result is only as good as its control. So: send the SAME prompt
+    twice and look for a NON-zero. ninfer runs with prefix reuse ON (the bench
+    deliberately does not pass --no-prefix-reuse, because llama runs with
+    --cache-prompt on and disabling reuse on one arm only would stop the two
+    being like-for-like), so the second request SHOULD hit. If it reports zero
+    anyway, the field is decoration and the nonce is the only defence on that
+    arm -- which is exactly what part 3 section 8 said, and the correction in
+    part 7 needs withdrawing.
+    """
+    prompt = build_prompt(prompt_tokens)
+    print(f"=== CACHE CONTROL {arm} :: {base_url}")
+    print(f"    the SAME prompt twice ({len(prompt)} chars); a working "
+          f"cached_tokens must report a hit on the second")
+
+    adjustments: tuple[str, ...] = ()
+    model_id: str | None = None
+
+    first = run_round(arm, base_url, prompt, 8, timeout, model)
+    if not first.ok and "HTTP 400" in (first.error or ""):
+        adjustments, note, model_id = negotiate_payload(
+            arm, base_url, timeout, model, first.error or ""
+        )
+        if note:
+            print(f"    payload: {note}")
+        first = run_round(arm, base_url, prompt, 8, timeout, model,
+                          adjustments, model_id)
+
+    if not first.ok:
+        print(f"    FIRST REQUEST FAILED: {first.error}")
+        print("    VERDICT: inconclusive -- the control never ran")
+        return 1
+
+    second = run_round(arm, base_url, prompt, 8, timeout, model,
+                       adjustments, model_id)
+    if not second.ok:
+        print(f"    SECOND REQUEST FAILED: {second.error}")
+        print("    VERDICT: inconclusive -- the control never ran")
+        return 1
+
+    print(f"    request 1: prompt_tokens={first.reported_prompt_tokens} "
+          f"cached_tokens={first.cached_tokens!r}")
+    print(f"    request 2: prompt_tokens={second.reported_prompt_tokens} "
+          f"cached_tokens={second.cached_tokens!r}")
+
+    if second.cached_tokens is None:
+        print("    VERDICT: the field is ABSENT on this server. The leading "
+              "nonce is the only\n             defence on this arm. part 3 "
+              "section 8 stands; withdraw part 7 section 4's correction.")
+        return 0
+    if second.cached_tokens > 0:
+        print(f"    VERDICT: WORKS -- reported {second.cached_tokens} reused "
+              f"tokens on an identical\n             prompt. The guard is real "
+              f"and part 7 section 4's correction stands.")
+        return 0
+    print("    VERDICT: present but ZERO on an identical prompt. Either prefix "
+          "reuse did not\n             happen or the field is hard-coded. It "
+          "is NOT evidence of a working\n             guard -- soften part 7 "
+          "section 4 accordingly.")
+    return 0
+
+
 def _fmt(value: float | None, width: int = 8, prec: int = 1) -> str:
     return " " * (width - 1) + "-" if value is None else f"{value:{width}.{prec}f}"
 
@@ -759,6 +837,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model", default=None, help="value for the `model` field")
     p.add_argument("--probe", action="store_true",
                    help="dump raw endpoint and SSE output, measure nothing")
+    p.add_argument("--cache-control", action="store_true",
+                   help="send the SAME prompt twice and report cached_tokens "
+                        "for each; the control for whether that field reports "
+                        "reuse at all. Measures nothing.")
     p.add_argument("--no-negotiate", action="store_true",
                    help="do not try reduced payloads when a server answers "
                         "400; report the refusal and measure nothing")
@@ -790,6 +872,14 @@ def main(argv: list[str] | None = None) -> int:
         rc = 0
         for label, url in arms:
             rc |= probe(url, label, min(args.prompt_tokens, 2048), args.timeout)
+            print()
+        return rc
+
+    if args.cache_control:
+        rc = 0
+        for label, url in arms:
+            rc |= cache_control(label, url, args.prompt_tokens, args.timeout,
+                                args.model)
             print()
         return rc
 

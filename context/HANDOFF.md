@@ -1,3 +1,181 @@
+# Handoff — 2026-09-04 (part 8: four jobs left, in order, with the commands — and one claim in part 7 that needs a control before it is trusted)
+
+**Part 7 got the number. This is what is left.** Like part 6, this is
+instructions rather than a record: §1 is the state you inherit, §2 is how to run
+anything at all on this box without wasting it, and §3–§6 are the four jobs in
+recommended order. Do §3 first — it is a control, not a measurement, so it does
+not need a pristine box, and it either confirms something now sitting in `main`
+or forces an amendment.
+
+---
+
+## 1. What you are inheriting
+
+**Everything works.** The 400 is fixed, the harness is instrumented, `main` is
+pushed. `git log -1` should show the part-7 commit or later; the working tree
+was clean when this was written, and nothing in `.env`, `.env.local`,
+`docker-compose.yml` or `modes/` has been touched for four sessions. Stack: llama
+up and healthy, no ninfer or bench containers.
+
+**The result you are building on** (llama `20260904-102103`, ninfer
+`20260904-104132`, both quiet):
+
+| | llama | ninfer | |
+| --- | ---: | ---: | --- |
+| prefill t/s, wall clock | 1931.2 | 1948.6 | tie |
+| prefill t/s, engine-native | 2158.1 | 1953.8 | llama +10.5% |
+| decode t/s, engine-native | 83.2 | 99.1 | ninfer +19.1% |
+
+llama's engine prefills faster and gives it back in the server path (227 t/s of
+wall-to-native gap against ninfer's 5). ninfer decodes ~19% faster on worse
+speculative acceptance (62% vs 88%).
+
+---
+
+## 2. How to run anything here without wasting it
+
+**Three rules, each paid for.**
+
+    ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh <args> \
+        > .ninfer-compare/detached-$(date +%Y%m%d-%H%M%S).log 2>&1 < /dev/null &
+
+1. **`wait-quiet.sh`, not a glance at `uptime`.** A busy box does not give you a
+   slower number, it gives you a WRONG one: same engine, same prompt, ninfer
+   prefilled **1025 t/s at load 41–72 and 1948 t/s at mean load 2.66**. The
+   script matches `\.rustup/toolchains` (grepping `rustc`/`cargo` **misses
+   `clippy-driver`**, which is what `cargo clippy` spawns — that mistake sent a
+   run out into a live build) and requires the quiet to hold for three
+   consecutive samples, because a single passing sample caught a box at 1-min
+   load 1.36 with 5-min 7.36 on its way back up.
+2. **`setsid nohup ... &`, always.** Six attempts have died to interruption;
+   three were in one session, all killed from outside during the ninfer load. A
+   detached run is in its own process group and survives.
+3. **`./scripts/ninfer-compare.sh --restore-only` after any kill.** It earned its
+   keep three times. One kill left `ninfer-bench` holding ~22 GiB for 21 minutes
+   because the trap was itself killed mid-restore.
+
+**Timings are load-dependent; do not budget from a single figure.** ninfer's
+cold load today: **200 s** (artifact warm in page cache), **317 s** (quiet,
+cold), **810 s** (busy), **>1260 s and never finished** (load 20).
+
+---
+
+## 3. FIRST: the control for `cached_tokens` — part 7 §4 may be overstated
+
+    ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --cache-control \
+        > .ninfer-compare/detached-cachecontrol.log 2>&1 < /dev/null &
+
+**The problem.** Part 7 §4 corrected part 3 §8's "ninfer sends no
+`cached_tokens` equivalent" on the evidence that both ninfer arms reported
+`cached_tokens: 0` on every round. **That evidence does not support that
+claim.** Every benched prompt carries a leading nonce, so no two requests share
+anything past the template preamble — **zero is what you would see whether the
+field works or is hard-coded**. What was proved is that the field is *present*.
+What was asserted is that the guard is *real*, and the guard is the whole reason
+the prefill numbers can be trusted.
+
+**The control** sends the SAME prompt twice, with prefix reuse ON (the bench
+deliberately does not pass `--no-prefix-reuse`, because llama runs with
+`--cache-prompt` on and disabling reuse on one arm only would stop the two being
+like-for-like), so the second request SHOULD hit. It prints one of three
+verdicts and tells you what to do with each:
+
+- **`WORKS`** — non-zero reuse reported. Part 7 §4's correction stands.
+- **present but ZERO** — not evidence of a working guard. **Soften part 7 §4.**
+- **`ABSENT`** — the field is not there. **Withdraw part 7 §4; part 3 §8 stands**
+  and the nonce is the only defence on that arm.
+
+Results land in `.ninfer-compare/<stamp>-cachecontrol/` — named for what it is,
+so nobody later mistakes it for a measurement. It costs one ninfer load and two
+requests; llama is down for that, so it is not free, but it does not need a
+quiet box the way a measurement does.
+
+**Whatever it says, edit part 7 §4 to match.** A wrong correction sitting in
+`main` is worse than the original claim it corrected.
+
+---
+
+## 4. THEN: matched weights — the question the number cannot answer
+
+**The decode win is engine AND weights AND quantisation, and they cannot be
+separated as things stand.** llama serves the orcarouter Q4_K_M **fine-tune**;
+ninfer the **official** groupwise-int artifact.
+
+`Qwen3.8-27B-UD-Q4_K_XL.gguf` is already on disk — it is the GGUF sergiuszm's
+own published comparison used. Point the stack at it via `.env` +
+`./scripts/mode.sh`, take the cold reload, and re-run the full comparison.
+
+**There is deliberately no flag for this.** It means editing `.env` and a cold
+reload of the production stack, and that should be a decision someone makes on
+purpose, not a convenience. Restore `.env` afterwards.
+
+Until this is done, write the result as *"ninfer on the official groupwise-int
+artifact decodes ~19% faster than llama.cpp on a Q4_K_M fine-tune"* — never as
+*"ninfer decodes 19% faster"*.
+
+---
+
+## 5. THEN: paired arms in a single run
+
+    ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 3 \
+        > .ninfer-compare/detached-paired.log 2>&1 < /dev/null &
+
+The clean ninfer arm came from a `--ninfer-only` run at 10:45 and is paired
+against a llama arm from a **different run** at 10:21. Defensible — same
+morning, comparable load, load series on the ninfer side — but a single run with
+both arms back-to-back and a `loadavg_during_<arm>` series on each is strictly
+better, and now costs nothing extra because the harness works.
+
+**Check `loadavg_during_ninfer=` and `loadavg_during_llama=` in `run.meta`
+before believing anything.** If either `peak=` is far above the other, the two
+arms were measured on what is effectively two different machines and the
+comparison is void — that is exactly how `20260904-102103` was lost
+(llama 1.96→2.52, ninfer 41.35→72.40).
+
+---
+
+## 6. LAST: `--wide` (262K), now unblocked
+
+Part 6 §8 said not to attempt this until the matched number existed. It exists.
+
+    ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --wide \
+        > .ninfer-compare/detached-wide.log 2>&1 < /dev/null &
+
+ninfer reported `headroom=0.00 MiB slack=1.52 GiB` at the matched 98,304 with
+`--kv-dtype int8`, so whether it survives 262,144 at `rk4v4-e8` is a real open
+question rather than a deferred one. Expect it to be the most likely of the four
+to simply fail, and that is a result too — capture the engine log.
+
+---
+
+## 7. Do not
+
+- **Do not quote a number without its `run.meta`.** `payload_<arm>=`,
+  `cache_stalls_<arm>=` and `loadavg_during_<arm>=` are all there because each
+  one has, at least once, silently turned a wrong number into a believable one.
+- **Do not read `ninfer.engine-after.log` for a rejected request.** The engine
+  logs nothing about 400s; the console is the only place the body appears. The
+  file is still worth keeping for load timings, the KV capacity line and the
+  model id.
+- **Do not compare TTFT across engines without checking `llama.cache-stalls`.**
+  llama pays a prompt-cache update ninfer has no equivalent of, inside
+  wall-clock TTFT and outside `prompt_ms`. It is ~1 s quiet, and has been
+  measured at 40.8 s **at loadavg 1.10** — that one was eviction cost, growing
+  the cache into a 914 MiB entry over two ~450 MiB evictions, not load.
+- **Do not send small unrelated requests to llama shortly before a run.** They
+  leave small entries that round 1 then pays to evict. A smoke test did exactly
+  that and cost 40.8 s of round-1 TTFT.
+- **Do not treat "prefill is stable to ~1%" as a between-run claim.** It holds
+  within a run. Seven llama arms span 1931.2–2087.1 (~8%), and the two lowest
+  had the cleanest cache stalls.
+
+
+---
+
 # Handoff — 2026-09-04 (part 7: the ninfer number exists, the 400 was one field, and llama gives its prefill lead away in the server path)
 
 **Part 6 was a runbook for a job that is now done.** The ninfer arm has been

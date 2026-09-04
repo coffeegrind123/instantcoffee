@@ -650,3 +650,82 @@ def test_the_builder_is_the_one_the_rounds_use(monkeypatch):
     monkeypatch.setattr(bench_cross_engine, "_post_stream", capture)
     bench_cross_engine.run_round("eng", "http://x", "PROMPT", 64, 5.0, None)
     assert sent == bench_cross_engine._build_round_payload("PROMPT", 64, None)
+
+
+# --- the control for the cached_tokens claim --------------------------------
+
+
+def _cache_rounds(monkeypatch, seq):
+    """run_round returns the queued Rounds in order."""
+    it = iter(seq)
+
+    def fake(arm, base_url, prompt, predict, timeout, model, adjustments=(),
+             model_id_arg=None):
+        return next(it)
+
+    monkeypatch.setattr(bench_cross_engine, "run_round", fake)
+
+
+def test_cache_control_calls_a_nonzero_hit_a_working_guard(monkeypatch, capsys):
+    _cache_rounds(monkeypatch, [
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=0),
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=19980),
+    ])
+    rc = bench_cross_engine.cache_control("ninfer", "http://x", 64, 5.0, None)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WORKS" in out and "19980" in out
+
+
+def test_cache_control_does_not_call_zero_a_working_guard(monkeypatch, capsys):
+    """The whole point: present-and-zero is NOT evidence the guard works.
+
+    Every benched prompt carries a nonce, so zero is what you see either way.
+    Only an identical prompt can tell the two apart, and if that still reports
+    zero the claim in HANDOFF part 7 section 4 has to be softened.
+    """
+    _cache_rounds(monkeypatch, [
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=0),
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=0),
+    ])
+    rc = bench_cross_engine.cache_control("ninfer", "http://x", 64, 5.0, None)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "WORKS" not in out
+    assert "hard-coded" in out and "soften" in out
+
+
+def test_cache_control_distinguishes_absent_from_zero(monkeypatch, capsys):
+    _cache_rounds(monkeypatch, [
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=None),
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=None),
+    ])
+    bench_cross_engine.cache_control("ninfer", "http://x", 64, 5.0, None)
+    out = capsys.readouterr().out
+    assert "ABSENT" in out and "withdraw" in out
+
+
+def test_cache_control_reports_inconclusive_rather_than_guessing(monkeypatch, capsys):
+    _cache_rounds(monkeypatch, [
+        Round(arm="ninfer", ok=False, error="URLError: refused"),
+    ])
+    rc = bench_cross_engine.cache_control("ninfer", "http://x", 64, 5.0, None)
+    assert rc == 1
+    assert "inconclusive" in capsys.readouterr().out
+
+
+def test_cache_control_negotiates_a_400_like_the_arms_do(monkeypatch, capsys):
+    """It must survive ninfer's missing-`model` 400, or the control cannot run."""
+    _cache_rounds(monkeypatch, [
+        Round(arm="ninfer", ok=False, error=REFUSED),          # first, full payload
+        Round(arm="ninfer", ok=True),                          # ladder: add-model
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=0),
+        Round(arm="ninfer", ok=True, reported_prompt_tokens=20000, cached_tokens=19980),
+    ])
+    monkeypatch.setattr(
+        bench_cross_engine, "_discover_model_id", lambda url, timeout: "qwen3.8-27b"
+    )
+    rc = bench_cross_engine.cache_control("ninfer", "http://x", 64, 5.0, None)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "add-model" in out and "WORKS" in out
