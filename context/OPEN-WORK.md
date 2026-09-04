@@ -1961,8 +1961,27 @@ shape that fails, because the surface grows and the list does not.
 
 - **Tighten the acceptance null.** One depth (64K, 32K prompt), one workload,
   detection floor 6.9 % relative. `--workload repeat` (`bench_repeat.py` reports
-  ECHO, so "the drafter did nothing" is distinguishable from "the model did not
-  repeat anything") and `--bench-args '--prompt-len 60000'`. Cheap.
+  an `echo` fraction, so "the drafter did nothing" is distinguishable from "the
+  model did not repeat anything"). Cheap.
+
+  **CORRECTED 2026-09-04 — the command this item carried could not run, and the
+  obvious repair is worse than the error.** It asked for `--bench-args
+  '--prompt-len 60000'`; `--bench-args` is `capacity-probe.sh`'s flag, not
+  `spec-sweep.sh`'s. But passing `spec-sweep.sh --prompt-len` instead is
+  ACCEPTED AND SILENTLY DROPPED: that flag is forwarded only on the synthetic
+  branch (`spec-sweep.sh:723`), and `bench_repeat.py` has no such option. On
+  this path the prompt is sized by `--funcs`, at a measured **93 tokens per
+  function**, exactly linear (llama `/tokenize`: 12 → 1116, 200 → 18700,
+  400 → 37500). ~32K prompt = `--funcs 345`.
+
+      ./scripts/spec-sweep.sh --workload repeat --funcs 345 \
+          --only baseline --repeat 3 --dry-run
+
+  `--max-tokens` (default 2048) and `--min-echo` are not plumbed through
+  `spec-sweep.sh` at all, so generation does NOT grow with the prompt: a long
+  file comes back as a verbatim prefix (`echo` ~1.0, row still usable) and every
+  round measures acceptance over the same ~2048 output tokens. **Tighten the
+  null with `--repeat`, not with prompt length.** See HANDOFF part 10 §6.
 - **`eval_expr` at `--repeat 20`, two levels.** The task set is not
   deterministic, so one grid cell is one sample; existing evidence is medium 6/5
   clean and xhigh 5/3 clean — directionally what the bench detects, not

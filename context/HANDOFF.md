@@ -169,16 +169,32 @@ All three are runs; none needs a decision.
 1. **Tighten the acceptance null.** One depth, one workload, detection floor
    6.9% relative today. `--workload repeat` makes "the drafter did nothing"
    distinguishable from "the model did not repeat anything", because
-   `bench_repeat.py` reports ECHO. Explicitly marked cheap.
+   `bench_repeat.py` reports an `echo` fraction per row. Explicitly marked
+   cheap.
 
-       ./scripts/spec-sweep.sh --workload repeat --prompt-len 60000 \
+   **`--prompt-len` DOES NOT SET THE DEPTH ON THIS PATH, and it fails
+   silently.** `spec-sweep.sh` accepts the flag but forwards it only on the
+   synthetic branch (`spec-sweep.sh:723`), and `bench_repeat.py` has no such
+   option — it would exit 2 if it ever received one. Under `--workload repeat`
+   the prompt is sized by `--funcs` alone, at **93 tokens per function**,
+   exactly linear — measured on this model's tokenizer through llama
+   `/tokenize` on 2026-09-04 (12 → 1116, 200 → 18700, 400 → 37500). So a ~32K
+   prompt is `--funcs 345`, ~60K is `--funcs 640`.
+
+       ./scripts/spec-sweep.sh --workload repeat --funcs 345 \
            --only baseline --repeat 3 --dry-run     # drop --dry-run to run it
 
-   **The command in OPEN-WORK §6 will not run as written** — it pairs
-   `--workload` (which is `spec-sweep.sh`'s) with `--bench-args` (which is
-   `capacity-probe.sh`'s). `spec-sweep.sh` takes `--prompt-len` directly.
-   Checked 2026-09-04; the register was not edited, so fix it there when you
-   pick this up.
+   **The generation cap does not move with the prompt.** `--max-tokens`
+   (default 2048) and `--min-echo` are not plumbed through `spec-sweep.sh` —
+   only `--funcs` and `--repeat` reach `bench_repeat.py` — so a long file comes
+   back as a verbatim PREFIX: `echo` stays ~1.0 and the row is still usable, but
+   every round measures acceptance over the same ~2048 output tokens however big
+   the prompt gets. **Tighten the null with `--repeat`, not with prompt
+   length.**
+
+   **OPEN-WORK §6 was wrong in the same place and is now corrected there**
+   (2026-09-04): it paired `--workload`, which is `spec-sweep.sh`'s, with
+   `--bench-args`, which is `capacity-probe.sh`'s.
 2. **`eval_expr` at `--repeat 20`, two levels.** The task set is not
    deterministic, so one grid cell is one sample; medium 6/5 clean against xhigh
    5/3 is directional, not separable at n=5.
