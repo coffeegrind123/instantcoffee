@@ -406,3 +406,137 @@ except Exception as e:
     print("%s: %s" % (type(e).__name__, e)); sys.exit(1)
 GGUFPY
 }
+
+# --- per-arm quiet gate ------------------------------------------------------
+# Wait for the box to be quiet RIGHT BEFORE an arm is measured, not merely
+# before the run starts.
+#
+# WHY THIS EXISTS. wait-quiet.sh gates the START of a comparison, and that is
+# all it can do. The second arm begins ten to twenty minutes later, after
+# ninfer's cold load, on whatever the box has become in the meantime. Run
+# 20260904-120707 took its llama arm at mean load 2.12 and, 12 minutes and a
+# 696 s cold load later, its ninfer arm at mean 18.02 with a peak of 19.65 --
+# two arms on what was effectively two different machines, and the cross-arm
+# comparison was void. run.meta caught it, but only AFTERWARDS, once the run had
+# been spent. This catches it before.
+#
+# DELIBERATELY NOT the same check as wait-quiet.sh. That one requires
+# instantcoffee-llama to report healthy, and llama is STOPPED for the whole
+# ninfer arm -- reusing it here would block until timeout on every ninfer arm
+# and turn a guard into a hang.
+#
+# On timeout this returns 1 and the CALLER STILL MEASURES: an arm that never ran
+# is worse than one with a caveat attached. The caveat is what matters, so the
+# verdict is written to run.meta either way and a timeout says so in capitals.
+#
+# Overridable for tests and for deliberate under-load measurement:
+#   ARM_QUIET_MAX      1-minute loadavg that counts as quiet   (default 2.5)
+#   ARM_QUIET_HOLD     consecutive clean samples required      (default 3)
+#   ARM_QUIET_EVERY    seconds between samples                 (default 20)
+#   ARM_QUIET_TIMEOUT  give up after this many seconds; 0 disables the gate
+#                                                              (default 900)
+#   ARM_LOADAVG_FILE   where to read the load from       (default /proc/loadavg)
+#   ARM_BUSY_CMD       prints a count of disqualifying processes
+#                      (default: anything out of the rust toolchain, which is
+#                      what a `cargo clippy` looks like -- matching `rustc` or
+#                      `cargo` by name misses `clippy-driver`)
+arm_quiet_sample() {
+  local load busy
+  load="$(cut -d' ' -f1 "${ARM_LOADAVG_FILE:-/proc/loadavg}" 2>/dev/null || echo 999)"
+  busy="$(eval "${ARM_BUSY_CMD:-pgrep -f '\.rustup/toolchains' 2>/dev/null | wc -l}" 2>/dev/null || echo 0)"
+  [[ "$busy" =~ ^[0-9]+$ ]] || busy=0
+  printf '%s %s\n' "$load" "$busy"
+}
+
+wait_arm_quiet() {
+  local label="$1" meta="${2:-}"
+  local max="${ARM_QUIET_MAX:-2.5}"
+  local hold="${ARM_QUIET_HOLD:-3}"
+  local every="${ARM_QUIET_EVERY:-20}"
+  local budget="${ARM_QUIET_TIMEOUT:-900}"
+
+  # Every conditional below is a full `if`, never `[[ ... ]] && cmd`. lib.sh
+  # runs under errexit and an && list whose test fails returns 1, which aborts
+  # the function -- so the one-liner form would make this gate exit early and
+  # silently on the ordinary "no meta file" and "streak is already 0" paths.
+  if [[ "$budget" -le 0 ]]; then
+    if [[ -n "$meta" ]]; then echo "quiet_gate_$label=result=disabled" >> "$meta"; fi
+    return 0
+  fi
+
+  local t0 streak=0 waited=0 load busy sample
+  t0="$(date +%s)"
+  while :; do
+    sample="$(arm_quiet_sample)"
+    load="${sample% *}"; busy="${sample#* }"
+    if [[ "$busy" -eq 0 ]] && awk "BEGIN{exit !($load < $max)}"; then
+      streak=$(( streak + 1 ))
+      if [[ "$streak" -ge "$hold" ]]; then
+        waited=$(( $(date +%s) - t0 ))
+        ok "quiet gate [$label]: ready after ${waited}s (load=$load, ${streak} clean samples)"
+        if [[ -n "$meta" ]]; then
+          echo "quiet_gate_$label=result=ready waited=${waited}s load=$load hold=$hold max=$max" >> "$meta"
+        fi
+        return 0
+      fi
+    else
+      if [[ "$streak" -gt 0 ]]; then
+        dim "  quiet gate [$label]: reset (load=$load busy=$busy)"
+      fi
+      streak=0
+    fi
+    waited=$(( $(date +%s) - t0 ))
+    if [[ "$waited" -ge "$budget" ]]; then
+      warn "quiet gate [$label]: TIMEOUT after ${waited}s (load=$load busy=$busy) -- measuring anyway, and run.meta will say so"
+      if [[ -n "$meta" ]]; then
+        echo "quiet_gate_$label=result=TIMEOUT waited=${waited}s load=$load busy=$busy max=$max" >> "$meta"
+      fi
+      return 1
+    fi
+    sleep "$every"
+  done
+}
+
+# --- container age -----------------------------------------------------------
+# Seconds since a container last started, or empty if it is not running.
+#
+# WHY IT IS RECORDED ON EVERY ARM. On 2026-09-04 three llama arms on IDENTICAL
+# weights at effectively identical load gave wall-clock prefill 1567.8, 1686.8
+# and 1923.8 t/s. The variable was how long the container had been up: ~6 min,
+# 8.75 min, ~40 min. The engine's own counter moved ~10% and the server path
+# another ~90 t/s on top, and inside a fresh run the per-round trend RISES --
+# which is precisely what the bench's single discarded warm-up round cannot fix.
+# A throughput number whose container age is unknown is not comparable to one
+# with a different age, so the age stops being an assumption and becomes a field.
+container_age_s() {
+  local name="$1" started
+  started="$(docker inspect -f '{{.State.StartedAt}}' "$name" 2>/dev/null)" || return 0
+  [[ -n "$started" ]] || return 0
+  local epoch
+  epoch="$(date -d "$started" +%s 2>/dev/null)" || return 0
+  echo $(( $(date +%s) - epoch ))
+}
+
+# Hold until a container has been up at least N seconds. Returns 0 immediately
+# when N is 0 or the container is not running -- an arm that cannot find its
+# container is a different failure, and this is not the place to raise it.
+wait_container_age() {
+  local name="$1" want="${2:-0}" label="${3:-arm}" meta="${4:-}"
+  if [[ "$want" -le 0 ]]; then return 0; fi
+  local age
+  age="$(container_age_s "$name")"
+  if [[ -z "$age" ]]; then return 0; fi
+  if [[ "$age" -ge "$want" ]]; then
+    return 0
+  fi
+  info "warm-up hold [$label]: $name is ${age}s old, waiting for ${want}s"
+  while [[ -n "$age" && "$age" -lt "$want" ]]; do
+    sleep $(( want - age < 15 ? want - age : 15 ))
+    age="$(container_age_s "$name")"
+  done
+  ok "warm-up hold [$label]: $name now ${age}s old"
+  if [[ -n "$meta" ]]; then
+    echo "warmup_hold_$label=waited_to=${age}s want=${want}s" >> "$meta"
+  fi
+  return 0
+}

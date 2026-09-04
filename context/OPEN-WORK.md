@@ -272,6 +272,28 @@ and DirectStorage disk-cache claim, `ruwwww/ninfer-5060ti` the Blackwell
 `sm_120a` fix). A disk cache is the interesting one for THIS stack for a reason
 that has nothing to do with tok/s: cold load here is 9-20 minutes.
 
+### MEASURED 2026-09-04 — the comparison exists now; read HANDOFF parts 7-9
+
+This entry asks whether the ninfer path is worth taking. It has since been
+measured on this card, and the numbers live in `context/HANDOFF.md`:
+
+- **The engine verdict** (part 9 §2): on the same official 27B base at ~8-bit KV,
+  **ninfer decodes ~27% faster** than llama.cpp in the only paired, gated,
+  same-run measurement, while **llama's engine prefills faster and gives most of
+  it back in its server path**. Quote it with part 9 §2's three constraints
+  attached, never to three significant figures.
+- **262K fits on this card** and costs ~55% of throughput (part 8 §6a), and that
+  cost is **the WINDOW, not the KV dtype** — `int8`→`rk4v4-e8` at a fixed 98,304
+  is −7.8% prefill and −1.5% decode (part 9 §6.2, run `20260904-213437`).
+- **Cold load is confirmed as the operational cost** this entry predicted:
+  200 s warm, 317 s quiet-cold, 810 s busy, 901 s busy-and-cold, >1260 s at
+  load 20. The DirectStorage disk-cache idea above is therefore still the
+  interesting one, and for exactly the reason given.
+
+**Read this register BEFORE measuring.** Part 8 §6b called llama's 128K ceiling
+"unmeasured" when §00b below had closed it three weeks earlier; that cost a
+session's worth of re-derivation.
+
 ---
 
 ## 00b. 128K — CLOSED 2026-09-03: it fits, and it halves decode

@@ -1,3 +1,452 @@
+# Handoff — 2026-09-04 (part 9: all four jobs are done — the engine verdict in the only form it should be quoted, three retractions, and six `run.meta` fields that claim a clean prompt cache they never measured)
+
+**Part 8 was a to-do list. Every item on it is now closed**, and each result is
+written into part 8 as a `DONE` block beside the instructions that asked for it.
+That makes part 8 the evidence and this the verdict: it is now a thicket of DONE
+markers and three of my own retractions read in sequence, and nobody picking
+this up cold should have to reconstruct where it landed from that.
+
+**Nothing here re-derives part 8.** For evidence read part 8 §4a (the matched
+number), §4d (why llama's spread is unexplained), §5a (32K) and §6a (262K). Read
+this for what those add up to, what is safe to quote, and what is left.
+
+**§5 below is new work, not a summary**, and it touches every number in part 8
+§4–§5. Read it before quoting any of them.
+
+---
+
+## 1. The four jobs and their verdicts
+
+| # | job | run | verdict |
+| --- | --- | --- | --- |
+| §3 | `cached_tokens` control | `20260904-111653-cachecontrol` | **WORKS** — 0 then 5229 on the identical prompt. Part 7 §4's claim stands; its *evidence* was replaced with this control. |
+| §4 | matched weights | `20260904-123338` | **DONE, both arms gated `result=ready`.** The decode gap got *bigger*, not smaller: **+27.5%** against part 7's +19.1%. The fine-tune was not what flattered ninfer. |
+| §5 | paired arms in one run | `20260904-153020` | **DONE with three defects** — arms at load 3.81 vs 1.40, a 165.63 s round-1 TTFT, and llama's cache thrashing by construction at 20.6K. Direction only. |
+| §6 | `--wide` (262K) | `20260904-160606` | **SURVIVES, and costs ~55%.** Expected to be the likeliest of the four to fall over; it was the one that worked first time. |
+
+Two supporting controls were run that part 8 did not ask for, and both mattered
+more than the job that prompted them: `20260904-134909` (ruled load out of
+llama's spread) and `20260904-172126` / `20260904-174717` (ruled *requests
+served* out, refuting the mechanism §4d had just proposed).
+
+---
+
+## 2. The engine verdict, in the form it should be quoted
+
+> **On the same official Qwen3.8-27B base at ~8-bit KV on one 4090, ninfer
+> decodes materially faster than llama.cpp — ~27% in the only paired, gated,
+> same-run measurement — while llama's ENGINE prefills faster and hands most of
+> that back in its server path.**
+
+Matched in `20260904-123338`: base weights, context (98,304), KV dtype, box, run,
+and both arms gated quiet. **Still not matched:** quantisation (`UD-Q4_K_XL` vs
+groupwise-int) and the chat template (5189–5194 vs 5232 prompt tokens, ~0.8%).
+
+| `20260904-123338` | llama | ninfer | |
+| --- | ---: | ---: | --- |
+| native prefill t/s (median of 3) | 2349.5 | 2161.5 | llama +8.7% |
+| native decode t/s (median of 3) | 97.4 | 124.2 | **ninfer +27.5%** |
+| wall→native prefill gap | 425.7 | 12.2 | the server path |
+| speculative acceptance | 85–90% | 64–73% | llama far better |
+
+**Three constraints on quoting this, all paid for:**
+
+1. **Never to three significant figures.** llama's arm-to-arm spread on
+   identical weights at gated-quiet load is **~10–12% across nine arms**, and
+   §4d failed to explain it. A 10% difference between two llama arms is not a
+   result.
+2. **Decode is the noisy half on BOTH engines** — ninfer's within-arm spread
+   runs 9.6–34.7%, llama's is comparable. No decode claim smaller than ~35%
+   should rest on three rounds. The +27.5% has held in *direction* in every
+   paired run; the *figure* needs the repeat count raised (§6.3).
+3. **ninfer's PREFILL does none of this, and that asymmetry is itself a
+   finding.** Within-arm prefill spread: ninfer 0.8/1.1/1.3/2.8% (and 0.6% at
+   262K); llama 1.9/3.3/3.3/5.5/5.8/6.4/30.9%.
+
+---
+
+## 3. What this session retracted
+
+Four claims died this session. They are listed because the retraction rate is
+the useful signal here, not the survivors.
+
+1. **"Both ninfer arms reported `cached_tokens: 0`, so the field works."**
+   Every benched prompt leads with a nonce, so zero is what you would see
+   whether the field worked or was hard-coded. That proved the field *exists*,
+   not that the guard is *real*. Replaced by a control (§1).
+2. **"Load explains llama's prefill spread."** Refuted by `20260904-134909`:
+   the control and attempt 2 sit at effectively the same load (1.65 vs 1.54) and
+   differ by 14% of wall-clock prefill.
+3. **"Container age explains it"**, then **"requests already served explains
+   it"** — the replacement mechanism, proposed and refuted inside §4d.
+   `20260904-172126` (zero prior benches, age 1900 s) should have looked slow
+   and rising; it was already fast (2277.6) and already flat. **Net: llama's
+   ~10–12% arm-to-arm spread is UNEXPLAINED.** `container_age_s_<arm>` is
+   recorded so a future reader can test a mechanism, *not* because one is
+   established.
+4. **"llama's ~128K ceiling is unmeasured"** — written in part 8 §6b, and
+   wrong. It was measured and CLOSED on 2026-09-03: **OPEN-WORK §00b**. That
+   entry had already answered the llama half of the long-context question before
+   it was asked. §6b now says so. *Read the register before measuring.*
+
+---
+
+## 4. The finding most likely to outlive this session
+
+**A bigger window on this card costs roughly half your speed, and that is now
+measured twice, on different engines, by different people, three weeks apart:**
+
+| engine | window change | prefill | decode | when |
+| --- | --- | ---: | ---: | --- |
+| llama.cpp | 96K → 128K | −33% | −48% | 2026-09-03, OPEN-WORK §00b |
+| ninfer | 98K → 262K | −55% | −55% | 2026-09-04, part 8 §6a |
+
+Neither was taken as a test of the other, which is what makes the agreement
+worth something. The ninfer arm is flat across its rounds
+(`979.5, 973.8, 976.1`), gated at `peak=1.02 mean=0.97`, held to a 2005 s
+container age — so it is neither noise nor warm-up.
+
+**The 262K result in usable form:** *a 262K window is available on a single 4090
+at ~45% of the throughput of the 98K configuration, with essentially zero memory
+headroom* (`headroom=0.00 MiB slack=210.80 MiB`, all 4096 pages allocated).
+Whether that trade is worth taking is a workload question; this is the number to
+take to it.
+
+**Not separable from that run:** the window and the KV dtype changed together
+(`int8` → `rk4v4-e8`), because that is what it takes to fit 262K on this card.
+§6.2 below is the cheap half that separates them.
+
+---
+
+## 5. NEW: six `run.meta` files claim a clean prompt cache they never measured
+
+Part 8 §7 records that `cache_stalls_<arm>=none logged` was a lie until the
+summariser was fixed on 2026-09-04. **It does not say which runs are affected,
+and the answer includes the headline matched number.** Audited here by grepping
+the raw `*.cache-stalls` files that were kept alongside each run:
+
+| run | `run.meta` says | evictions actually in the file | what part 8 uses it for |
+| --- | --- | --- | --- |
+| `120707` | `none logged in 28s window` | 1 × 680.806 MiB | VOID run (§4 preamble) |
+| **`123338`** | `none logged in 21s window` | **1 × 680.716 MiB** | **the headline matched number, §4a** |
+| `134909` | `none logged in 27s window` | 1 × 680.896 MiB | the load control, §4b |
+| `141306` | `none logged in 25s window` | 1 × 680.986 MiB | the weights isolation, §4c |
+| `153020` | `none logged in 394s window` | **5, 4807.555 MiB total** | the 32K paired run, §5a |
+
+(Older runs `20260903-193057` … `20260904-102103` report `n=4 total_ms=…`. Those
+counted *update* lines only, so their eviction cost is also uncounted — but they
+never claimed absence, which is the part that misleads.)
+
+**What this does NOT change, and the reason is the interesting part.** Every
+llama arm at the ~5.2K bench prompt logged **exactly one eviction of ~681 MiB**
+— 680.716, 680.761, 680.806, 680.896, 680.896, 680.986 across six independent
+runs. That is a *constant*, not a variable: the arms being compared in §4a, §4b
+and §4c all paid the identical cache cost, so the comparisons between them are
+not differentially confounded. The false field was still worth finding, but it
+did not hide a real effect at 5.2K.
+
+**What it DOES change: §5a.** The 32K arm's five evictions total 4807.555 MiB —
+**4.69 GiB, not the "4.8 GiB" part 8 §7 states** (4807 MiB read as GiB by
+dividing by 1000). At 20.6K the cache cost is large, variable, and sits next to
+that arm's 165.63 s round-1 TTFT. Its round 1 was slow *in the engine's own
+counter too* — native prefill `520.4` against `2261.2, 2138.3` for rounds 2–3 —
+so ~126 s outside the engine on top of a genuine in-engine thrash.
+
+**The fix is validated against the raw files**, which is the control this
+deserves: `160606` meta `evictions=1 evicted_mib=681` vs file 680.761 ✓;
+`174717` meta `evictions=4 evicted_mib=2737` vs file
+685.219+685.399+685.264+680.896 = 2736.778 ✓.
+
+**Do not rewrite the affected `run.meta` files.** They are recorded evidence of
+what the harness believed at the time. Re-derive from `<arm>.cache-stalls`,
+which is why it is kept.
+
+---
+
+## 6. What is left, in order
+
+### 6.1 A clean 32K re-run — and it has a trap part 8 did not flag
+
+Part 8 §5a asks for `--repeat 5`, both arms at comparable load, and *"llama's
+cache sized past a single 20.6K entry"*. **Take that last one carefully.** A
+20.6K entry is ~1.37 GiB, so "past one" means `CACHE_RAM` ≈ 4096 MiB.
+
+**`CACHE_RAM` is the setting that has taken this box down twice.** At 8192 on
+2026-08-13 the llama container sat at 9.02 GiB RSS, the host fell to 394 MiB
+free with 5.5 GiB in swap, and prompt processing collapsed to **2.83 tok/s** —
+the same 50× cliff `CTX_CHECKPOINTS=16` produced from one setting over on
+2026-09-02. See the notes beside both keys in `.env`, and `host-ram-floor.sh`.
+
+**As of this writing the box has 1.9 GiB free and 2.6 GiB already in swap**, with
+cs16 containers active. Do not raise `CACHE_RAM` into that. When it is quiet:
+raise to **4096, not 8192**, run `./scripts/host-ram-floor.sh` alongside, and
+**restore `.env` afterwards** — same discipline as the weight swap.
+
+    ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 5 \
+        --min-container-age 1200 \
+        > .ninfer-compare/detached-32k-clean.log 2>&1 < /dev/null &
+
+### 6.2 98,304 at `rk4v4-e8` — DONE (`20260904-213437`). **It is the WINDOW.**
+
+> **The 55% belongs to the window, not the KV dtype.** Four attempts to get this
+> (§10 has what stopped the first three); the fourth is the cleanest arm of the
+> session — gate `result=ready` at load 1.26, `loadavg_during peak=1.56
+> mean=1.44`, `container_age_s_ninfer=start=1240 end=1258` **deliberately
+> matched to the int8 baseline's 1200 s hold**, so the two 98,304 arms are
+> like-for-like on both age and load.
+>
+> | ninfer, ~5.2K prompt | 98,304 `int8` | 98,304 `rk4v4-e8` | 262,144 `rk4v4-e8` |
+> | --- | ---: | ---: | ---: |
+> | native prefill t/s | 2168.8 | **1999.8** | 976.1 |
+> | native decode t/s | 128.3 | **126.4** | 57.7 |
+>
+> - **dtype**, window held at 98,304: prefill **−7.8%**, decode **−1.5%**
+> - **window**, dtype held at `rk4v4-e8`: prefill **−51.2%**, decode **−54.4%**
+> - the two together reproduce §6a exactly: −55.0% / −55.0%
+>
+> **The caveat, and it is real.** This arm's own within-arm prefill spread is
+> **6.9%** (1934.8 → 1999.8 → 2071.8, rising) against a previous ninfer maximum
+> of 2.8% — the widest ninfer prefill spread recorded. The dtype effect (−7.8%)
+> is therefore **suggestive, not established**: the true figure could be ~3% or
+> ~11%. What is robust is that **the dtype cannot account for anything close to
+> 55%**, and that decode's −1.5% is inside noise, i.e. no measurable dtype cost
+> to decode at all.
+>
+> **So part 8 §6a's result now reads:** *a 262K window is available on a single
+> 4090 at ~45% of 98K throughput, and essentially all of that cost is the
+> WINDOW; switching KV dtype from `int8` to `rk4v4-e8` is close to free.*
+> The two-engine corroboration in §4 is unaffected and if anything strengthened
+> — both halves of it are window effects.
+>
+> Incidental, and it resolves a puzzle raised mid-run: this arm's cold load took
+> **901.395 s** against §6a's 230 s for the *larger* window. That is the page
+> cache, not the configuration — the Docker VM cache had been dropped during the
+> §9 incident and the box was coming off load 25, which is squarely part 8 §2's
+> documented "busy, cold" band (200 s warm / 317 s quiet-cold / 810 s busy).
+
+`20260904-160606` changed the window and the KV dtype together. 262K at `int8`
+will not fit; **98,304 at `rk4v4-e8` will, and it is one run.** It is the only
+thing that separates "the window costs 55%" from "the KV dtype costs 55%", and
+until it is run neither sentence is available.
+
+    ./scripts/wait-quiet.sh && \
+      setsid nohup ./scripts/ninfer-compare.sh --ninfer-only --kv-dtype rk4v4-e8 \
+        --min-container-age 1200 \
+        > .ninfer-compare/detached-98k-rk4v4.log 2>&1 < /dev/null &
+
+### 6.3 Raise the repeat count on the decode claim
+
+The +25–30% decode advantage has held in direction in every paired run, but
+within-arm decode spread is 9.6–34.7% and three rounds cannot pin the figure.
+`--repeat 10` or more, several arms per condition. Part 8 §4d puts this at
+roughly an order of magnitude more measurement than the question has so far been
+worth — **the engine-level conclusions in §2 do not depend on it**, so this is
+only for someone who needs the number rather than the ranking.
+
+### 6.4 Pre-existing, from `context/OPEN-WORK.md`
+
+Untouched this session, listed so they are not lost: **§0** the unattended
+`/loop` re-run (the 2026-08-27 fixes are unproven end to end); **§0f** the CUDA
+abort (has a written *"what to do, in order"* — start there, not at the top);
+**§3** the rotation asymmetry (narrowed, depth ruled out, open); **§5** one
+remaining browser path; **§6** a backlog marked untouched.
+
+---
+
+## 7. The tree as this was written
+
+Uncommitted, all of it this session's work:
+
+    M context/HANDOFF.md          part 8's DONE blocks + this part
+    M scripts/lib.sh              wait_arm_quiet(), container_age_s(), wait_container_age()
+    M scripts/ninfer-compare.sh   per-arm gate, age fields, --cache-control,
+                                  --no-quiet-gate, --min-container-age,
+                                  eviction-aware cache_stalls(),
+                                  restore() retry (§9)
+    ?? scripts/test_arm_quiet_gate.py
+    ?? scripts/test_cache_stall_summary.py
+    ?? scripts/test_restore_retry.py
+    ?? scripts/test_ninfer_create_retry.py
+
+`python3 -m pytest scripts/test_ninfer_create_retry.py scripts/test_restore_retry.py
+scripts/test_arm_quiet_gate.py scripts/test_cache_stall_summary.py
+scripts/test_runner_errexit.py scripts/test_bench_cross_engine.py -q`
+→ **95 passed, 14 subtests passed**.
+
+Harness changes this session, each with the trap it closes: the per-arm quiet
+gate (§2 of part 8), container-age fields, `--cache-control`, eviction-aware
+`cache_stalls()` (§5), `restore()` retry (§9), ninfer create retry (§10), and a
+configurable readiness budget defaulting to 2700 s (§10).
+
+Untouched for five sessions: `.env`, `.env.local`, `docker-compose.yml`,
+`modes/`. Stack: llama up and healthy, no ninfer or bench containers.
+
+---
+
+## 8. Do not (part 8 §7 still applies in full; these are the additions)
+
+- **Do not trust `cache_stalls_<arm>=none logged` on any run before
+  `20260904-160606`.** It means "nobody counted the evictions". §5 has the
+  audit; `<arm>.cache-stalls` has the truth.
+- **Do not raise `CACHE_RAM` without reading its `.env` note and checking
+  `free -h` first.** It is the single largest avoidable host-RAM consumer on
+  this box and it has produced a 50× prefill collapse twice.
+- **Do not propose a mechanism for llama's spread without a control that could
+  refute it.** Two were proposed this session and both died to one — the second
+  within an hour of being written down. The spread is real, ~10–12%, and
+  unexplained; that is the honest state.
+- **Read `OPEN-WORK.md` before measuring anything.** §00b had already closed the
+  llama long-context question three weeks before part 8 §6b called it
+  unmeasured.
+
+---
+
+## 9. Postscript, same session: the restore path did not restore, and the documented remedy is not the operative one
+
+**§6.2 was launched and it took the production stack down.** Recording it here
+because both halves are reusable: a harness defect that is now fixed, and a note
+elsewhere in this file that would have sent the next person the wrong way.
+
+**What happened.** `20260904-191655`, ninfer-only at 98,304/`rk4v4-e8`. The
+quiet gate passed at 19:16:55, llama was stopped to free the card, and the
+ninfer `docker run` died at container init:
+
+    nvidia-container-cli: ldcache error: process /sbin/ldconfig terminated with signal 9
+
+The script handled that correctly — arm skipped, restore entered. **Then
+restore's own `docker start instantcoffee-llama` died of the identical fault,
+rc=1, and restore returned 0 anyway.** The run exited reporting nothing wrong
+with llama down. It stayed down about six minutes, and that it was six rather
+than six hours was luck: I was watching a monitor.
+
+**The documented remedy did not work, and the reason matters.** Part 4's
+operational note (search `ldcache` above) says to drop the Docker VM page cache
+and retry. Done: **5.0 GiB → 14 GiB free, and `docker start` still failed with
+the same error.** Then three controls — `alpine --gpus all`, the llama CUDA
+image with `--gpus all` (which is what puts the hook in the `legacy` mode the
+error names), and the same image with no GPU — **all started cleanly** about
+three minutes later, and so did llama, with nothing changed in between.
+
+So part 4's *reading* is right and now better supported — **signal 9 here is not
+a genuine OOM** — but its *remedy* is not the operative step. **Waiting is.**
+Dropping the cache is harmless and worth doing when memory really is tight; do
+not conclude the box is fine because it did not help, and do not conclude the
+hook is permanently broken because one start failed. Retry, with a control
+(`docker run --rm --gpus all alpine true`) to tell a transient fault from a real
+one.
+
+**The harness defect, and it was two defects.** `restore()` ran `docker start`
+**once**, and sent its output to `/dev/null`:
+
+- One attempt is exactly the wrong number, because **the fault that makes
+  restore necessary is the same fault that makes a single start fail.** The
+  retry is not belt-and-braces here; it is the mechanism.
+- `restore.log` recorded `llama start rc=1` and not one word of why. The reason
+  only survived because the *arm* path happened to print it to the run log.
+
+Now: **8 attempts, 30 s apart** (`RESTORE_RETRY_EVERY` to change it), each
+attempt's stderr appended to `restore.log` under its attempt number, the last
+one kept as `llama-restart.err`, and on final failure a `warn` that says
+**`RESTORE FAILED ... IS DOWN AND THE STACK IS NOT SERVING`** with the path to
+the evidence and the `--restore-only` command. `restore()` still returns 0 — it
+runs from an EXIT trap and must not replace the caller's exit status.
+
+`scripts/test_restore_retry.py`, **6 tests**, driving the real extracted
+`restore()` against a stub daemon: clean start attempts once, two failures then
+success recovers, the reasons are accumulated in `restore.log`, permanent
+failure is bounded at 8 and loud on the console, a running llama is left alone,
+and the double invocation (failure path + EXIT trap) still restores exactly
+once.
+
+**What this does NOT explain.** Why the hook was fragile at that moment. The box
+had just come off a heavy build (15-min load 5.29) and cs16 containers were
+cycling, so load is the obvious suspect and is not established — the same
+category of unexplained-but-recorded as llama's prefill spread in §3. If it
+recurs, capture `docker start` stderr and the load together; the harness now
+keeps the first for you.
+
+---
+
+## 10. §6.2 has not landed in four attempts. What stopped each one, and what that is worth
+
+**Read this before re-running it.** The measurement is still open; what follows
+is the cost of trying, which is information the next person should not have to
+re-buy. Every attempt restored the stack (§9's fix earned its keep twice more).
+
+| # | run | got as far as | stopped by |
+| --- | --- | --- | --- |
+| 1 | `20260904-191655` | ninfer create | `ldcache`/signal 9 — **and restore failed too, stack DOWN 6 min** (§9) |
+| 2 | `20260904-203444` | ninfer create | `ldcache`/signal 9; restore recovered on attempt 1 |
+| 3 | `20260904-204015` | **weights 100% in 173 s** | never answered `/health`; timed out at 1800 s wall |
+| 4 | `20260904-213437` | **the whole run** | nothing — **LANDED**, see §6.2 |
+
+**The create fault did not recur on attempt 3** — `ninfer_create_attempts_matched=1`,
+first try. So the retry added in §9 is insurance that has not yet been exercised
+in anger, and the two `ldcache` failures remain **unexplained**. Ruled out:
+memory (5.0 → 14 GiB free changed nothing) and a slow `ldconfig` in this image
+(instant, and the image has 739 shared objects against llama's 1173, while
+llama's image never reproduced it). Not ruled out, and the only surviving
+correlate: **both landed within seconds of `docker stop instantcoffee-llama`**,
+a precondition every passing control lacked. `ninfer_create_attempts_<name>` in
+`run.meta` is the instrument — if a future attempt 2 wins ~45 s later with
+nothing else changed, the fault is a settling window after the GPU is released.
+
+### Attempt 3 was NOT a stall — attempt 4 refuted that reading
+
+> **RESOLVED by `20260904-213437`.** ninfer loaded the identical configuration
+> and served: `model loaded in 901.395 s`, then `listening on`. So attempt 3 was
+> **slow post-weights initialisation that the 1800 s budget did not cover under
+> load 25**, not a hang and not a broken configuration. Weights are only the
+> first ~170 s of a ~900 s load; the rest is KV/graph work that the log is
+> silent through, which is what made a slow load look like a dead one.
+>
+> **The refusal below to call the configuration broken was the right call**, and
+> the reasoning is worth keeping because the tempting conclusion was wrong and
+> one more data point overturned it. The discriminator proposed below was also
+> wrong in its premise: the absence of the `KV capacity` line meant "not there
+> yet", not "never getting there". **A silent phase is not a stalled one.**
+> **FIXED the same evening:** the budget is no longer hard-coded at 1800 s. It
+> defaults to **2700 s** and honours `NINFER_HEALTH_BUDGET`, and the give-up
+> message now says in as many words that a slow load and a dead one look
+> identical here. Cold load on this box has been measured at 200 s (artifact
+> warm in page cache), 317 s (quiet, cold), 810 s (busy), 901 s (busy and cold)
+> and >1260 s at load 20, so 2700 covers the measured range with headroom.
+
+### Attempt 3 read as a NEW failure mode, and why that must not be over-read
+
+ninfer loaded **all 16.67 GiB of weights in 173.267 s** and then logged nothing
+further for 27 minutes — not even the `KV capacity explicit resolved=... pages=`
+line that part 8 §6a records at 262K. The readiness probe ran and returned "not
+ready" (its stderr shows an ordinary compose create, so this is not the
+probe-is-broken case that §`start_ninfer`'s comment block exists for). So it
+stalled *after* weights, plausibly at KV allocation.
+
+**Do NOT conclude that 98,304 at `rk4v4-e8` is broken.** The box hit
+**loadavg 25.16 / 19.22 / 14.40** during that window — chrome, a `docker-buildx`,
+and six other agent sessions — against `loadavg_at_start=1.54 3.11 4.86`. The
+gate opened on a lull and the box exploded underneath it, which is part 8 §5b
+exactly: *the gate only improves the odds.* One observation under load 25 is a
+confounded negative, and reading it as a property of the configuration is the
+same error as reading a failed parse as "their system does not support it".
+
+**What to check on the next attempt, in order:** does `ninfer-matched.log` reach
+the `KV capacity ... pages=` line? If it does and `/health` still never answers,
+the stall is in serving and the load confound is irrelevant. If it never reaches
+that line on a genuinely quiet box, then KV allocation at this
+window/dtype pair is the suspect and *that* is the finding — and it would be a
+real one, because the same dtype allocates 4096 pages fine at 262,144.
+
+**Operational note that cost three attempts.** The gate's default is three
+clean samples 20 s apart — 60 seconds of quiet. On a box that repeatedly opens a
+one-minute lull and then spikes to load 25, that is not enough: attempts 2 and 3
+both passed the gate and then lost the box. `HOLD=9` (3 minutes continuous)
+costs nothing but patience and is the right default for a shared box under this
+kind of weather.
+
+
+---
+
 # Handoff — 2026-09-04 (part 8: four jobs left, in order, with the commands — and one claim in part 7 that needs a control before it is trusted)
 
 **Part 7 got the number. This is what is left.** Like part 6, this is
@@ -54,6 +503,17 @@ speculative acceptance (62% vs 88%).
 3. **`./scripts/ninfer-compare.sh --restore-only` after any kill.** It earned its
    keep three times. One kill left `ninfer-bench` holding ~22 GiB for 21 minutes
    because the trap was itself killed mid-restore.
+4. **The arms are now gated on quiet SEPARATELY, and that is not the same thing
+   as rule 1.** `wait-quiet.sh` gates the start of a run and structurally cannot
+   do more: the second arm begins ten to twenty minutes later, after ninfer's
+   cold load. `bench_arm` now calls `wait_arm_quiet()` (lib.sh) immediately
+   before each arm — three clean samples under load 2.5, no rust toolchain
+   running, 900 s budget by default, `ARM_QUIET_TIMEOUT` to change it and
+   `--no-quiet-gate` to measure under load on purpose. **On timeout it measures
+   anyway** — an arm that never ran is worse than one with a caveat — and writes
+   `quiet_gate_<arm>=result=TIMEOUT ...` into `run.meta`. **Read that key before
+   quoting a number**; `result=ready` is the only value that means the box was
+   quiet for that arm. Tests: `scripts/test_arm_quiet_gate.py`.
 
 **Timings are load-dependent; do not budget from a single figure.** ninfer's
 cold load today: **200 s** (artifact warm in page cache), **317 s** (quiet,
@@ -62,6 +522,15 @@ cold), **810 s** (busy), **>1260 s and never finished** (load 20).
 ---
 
 ## 3. FIRST: the control for `cached_tokens` — part 7 §4 may be overstated
+
+> **DONE, 2026-09-04 11:24 — verdict `WORKS`.** Run
+> `.ninfer-compare/20260904-111653-cachecontrol/`: request 1
+> `cached_tokens=0`, request 2 `cached_tokens=5229` on the identical prompt.
+> Part 7 §4's *claim* stands; its *evidence* has been replaced with this control
+> in the part 7 text. Nothing below needs re-running. (Incidental: the
+> `missing required field: model` 400 recurred and the harness negotiated it
+> away by itself — `add-model ACCEPTED` — so that path works outside the arms
+> too. ninfer cold load was 409 s at loadavg 1.12.)
 
     ./scripts/wait-quiet.sh && \
       setsid nohup ./scripts/ninfer-compare.sh --cache-control \
@@ -98,6 +567,235 @@ quiet box the way a measurement does.
 ---
 
 ## 4. THEN: matched weights — the question the number cannot answer
+
+> **Attempt 1 (`20260904-120707`) is VOID — the whole run, both arms.** The swap
+> itself worked (`mode.sh coding --restart`; `/props` confirmed
+> `model_path: /models/Qwen3.8-27B-UD-Q4_K_XL.gguf` at `n_ctx: 98304`). What
+> failed is that ninfer's 696 s cold load gave three other sessions on this
+> shared box time to fill it, so the ninfer arm was taken at
+> `peak=19.65 mean=18.02` against a llama arm at `mean=2.12` — the §5
+> disqualifier. `run.meta` caught it, but only after the run was spent, which is
+> why the per-arm gate in §2 rule 4 now exists.
+>
+> **Attempt 1's llama arm is not usable either, and the reason is NOT load.**
+> I wrote here first that it was "sound on its own", then that load 2.12 vs 1.54
+> had moved prefill 19%. **Both were wrong; the control in §4b rules load out.** Keep the arm out of any comparison, but for the
+> right reason: its container was 6 minutes old. Eviction is not the difference
+> either — attempts 1 and 2 logged all-but-identical prompt-cache evictions
+> (680.806 vs 680.716 MiB).
+>
+> Incidental and worth keeping: **ninfer still prefilled 1915.5 t/s at mean load
+> 18** — so the "1025 t/s at load 41–72" collapse is not a smooth function of
+> load, and load 18 is nowhere near as ruinous to prefill as load 41 was.
+> Decode at that load was the noisy half, as ever: `73.7 .. 98.8` across three
+> rounds against llama's tight `88.3 .. 95.6`.
+
+### 4a. THE MATCHED NUMBER (`20260904-123338`) — and what it does to part 7's table
+
+**Both arms gated `result=ready`.** llama at `mean=1.54 peak=1.94`, ninfer at
+`mean=1.89 peak=1.95`, in one run, back to back. The ninfer arm **waited 1663 s
+(28 minutes) at the gate** for the box to come back — attempt 1 is what that
+wait bought.
+
+| matched weights | llama (UD-Q4_K_XL) | ninfer (groupwise-int) | |
+| --- | ---: | ---: | --- |
+| prefill t/s, wall clock | 1923.8 | 2149.3 | ninfer +11.7% |
+| prefill t/s, engine-native | 2349.5 | 2161.5 | llama +8.7% |
+| decode t/s, engine-native | 97.4 | 124.2 | **ninfer +27.5%** |
+| wall-to-native prefill gap | 425.7 | 12.2 | the server path |
+| speculative acceptance | 85–90% | 64–73% | llama far better |
+
+**The decode gap got BIGGER on matched weights, not smaller — +27.5% against
+part 7's +19.1%.** The fine-tune was not what was flattering ninfer.
+
+**But do not read this as "the weights explain it", because ninfer moved too and
+its weights did not change.** Same artifact, same image id, same context and KV
+dtype: **decode 99.1 → 124.2 t/s, +25%**, prefill 1953.8 → 2161.5, +10.6%.
+
+**Do not attribute that decode shift to anything.** §4d ends up unable to pin a
+mechanism, and decode is the noisy half on BOTH engines: ninfer's own
+within-arm decode spread runs 9.6–34.7% across the runs measured, so a 25%
+between-run move is inside its own noise. The prefill half (+10.6%) is the more
+interesting number, because ninfer's within-arm prefill spread is only 0.6–2.8%.
+
+One confound this run did introduce and which must be recorded rather than
+enjoyed: the new quiet gate held the ninfer arm 1663 s, so **the ninfer container
+was ~28 minutes old when measured**, against a few minutes in part 7. The gate
+ages the container it is gating. Here it happened to make the run MORE comparable
+— llama ~40 minutes, ninfer ~28 — not less. See §4e.
+
+So the honest form of the matched result is: **on the same official 27B base at
+~8-bit KV on one 4090, ninfer decodes materially faster than llama.cpp — ~27% in
+the only paired, gated, same-run measurement — while llama's ENGINE prefills
+faster and hands most of that back in its server path.** Still not matched:
+**quantisation** (UD-Q4_K_XL vs groupwise-int) and the **chat template** (5189–5194
+vs 5232 prompt tokens, ~0.8%). It is no longer a fine-tune comparison, which is
+what §4 asked for.
+
+### 4b. The control that ruled LOAD out (`20260904-134909`)
+
+**The control.** Same matched weights, box gated quiet *before* the recreate,
+llama force-recreated into that window, measured immediately with the arm gate
+tightened to 1.5. Container age at the end of the arm: **525 s**, recorded in
+`run.meta` as `llama_container_age_s` rather than asserted.
+
+| llama, matched weights | container age | `loadavg_during` mean | native prefill (median) | wall prefill (median) | wall→native gap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| attempt 1 `120707` | ~6 min | 2.12 | 2081.2 | 1567.8 | 513 |
+| **control `134909`** | **8.75 min** | **1.65** | **2143.6** | **1686.8** | **457** |
+| attempt 2 `123338` | ~40 min | 1.54 | 2349.5 | 1923.8 | 425 |
+
+**The control and attempt 2 sit at effectively the same load — 1.65 against
+1.54 — and differ by 14% of wall-clock prefill. The variable that moved is
+container age.** Load in the 1.5–2.1 band is not what did it, so scrap the
+"2.5 is too loose a bar" claim I made earlier; the bar is fine, the *age* is not.
+
+**The signature is a rising trend inside the run**, which is what a single
+discarded warm-up round cannot fix:
+
+    120707  fresh   native prefill [2176.0, 2081.2, 2062.7]   (noisy)
+    134909  fresh   native prefill [2108.5, 2143.6, 2149.2]   RISING
+    123338  warm    native prefill [2306.3, 2349.5, 2382.8]   high and flat
+
+Both halves move: the engine's own counter is ~10% lower on a fresh container,
+**and** the server path costs an extra ~90 t/s on top. So warm-up is not a
+prompt-cache artefact — it is in the engine as well.
+
+### 4c. The weights, finally isolated (`20260904-141306`) — they are nearly a wash
+
+With age known to dominate, the weights question can be asked properly: same
+engine, same box, **matched container ages**, both quiet. `--min-container-age
+400` made the age match deliberate rather than lucky, and the run recorded
+`warmup_hold_llama=waited_to=400s`, `quiet_gate_llama=result=ready load=0.89`,
+`container_age_s_llama=start=640 end=660`, `loadavg_during mean=1.07`.
+
+| llama, fresh-ish and quiet | age | load | native prefill | native decode |
+| --- | ---: | ---: | ---: | ---: |
+| matched `UD-Q4_K_XL` (`134909`) | 525 s | 1.65 | 2143.6 | 93.5 |
+| production `Uncensored-Q4_K_M` (`141306`) | 650 s | 1.07 | 2105.3 | 86.0 |
+
+**Prefill is a wash — 1.8% apart, well inside the round-to-round spread.** Decode
+favours the matched GGUF by ~9%, but the per-round ranges overlap heavily
+(`85.5–101.4` against `79.0–99.8`, with one production round dropping to 79.0 on
+a 2601 ms prompt) and three rounds cannot separate 9% from that noise. Treat it
+as *suggestive, not established*.
+
+**What this settles for §4:** the ninfer decode advantage is not a fine-tune
+artefact. llama decodes 86–97 t/s on EITHER GGUF at any age tested, while ninfer
+decoded 124.2 warm. Swapping llama onto the official weights moved llama by less
+than the warm-up effect does.
+
+### 4d. Two attempts at a mechanism for llama's spread, and neither survived
+
+§4b concluded "warm-up, not load". The load half stands. **The mechanism did
+not**, and neither did the replacement proposed here — read to the end before
+using either. What follows is the evidence in the order it arrived. Run
+`20260904-160606` held llama to a container age of 1240 s before measuring and
+still produced this native prefill series inside one arm:
+
+    1774.0 -> 2089.2 -> 2322.0        (+31% across three rounds, after a
+                                       discarded warm-up round)
+
+ninfer, held to the identical 1240 s in the same run, was flat from its first
+round: `2155.7, 2171.9, 2168.8`. So this is llama-specific and it is not the
+clock.
+
+**Sort every llama arm by whether its container had already served a full bench,
+and the pattern is clean:**
+
+| run | container | bench # on it | native prefill series | median |
+| --- | --- | ---: | --- | ---: |
+| `120707` | recreated 11:5x | 1st | 2176.0, 2081.2, 2062.7 | 2081 |
+| `134909` | recreated 13:46 | 1st | 2108.5, 2143.6, 2149.2 | 2144 |
+| `141306` | recreated 14:10 | 1st | 2105.3, 1996.6, 2112.3 | 2105 |
+| `160606` | recreated 15:59 | 1st | 1774.0, 2089.2, 2322.0 | 2089 |
+| **`123338`** | **same as `120707`** | **2nd** | **2306.3, 2349.5, 2382.8** | **2349** |
+
+Four first-benches land at 2081–2144. The one second-bench lands at 2349, ~10%
+above all of them, and is flat from round 1. Container age does not order this
+table; **number of inference requests already served does.**
+
+**Consequence: the bench's single discarded warm-up round is not enough for
+llama**, and `--min-container-age` buys nothing on its own — waiting 20 minutes
+without sending requests leaves the engine exactly as cold as it was.
+
+**THE CONTROL WAS RUN, AND IT REFUTES THE MECHANISM ABOVE.** `20260904-172126`
+(age 1900 s, ZERO prior benches) against `20260904-174717` (age 1959 s, one bench
+served), same container, both gated at load <0.9:
+
+    bench 1, zero benches served, age 1900s:  2289.0, 2277.6, 2216.4   median 2277.6
+    bench 2, one bench served,    age 1959s:  2336.1, 2341.3, 2200.3   median 2336.1
+
+**+2.6%, and bench 1 was already fast and already flat.** If requests-served were
+the variable, bench 1 — with none — should have looked like the 2081–2144 group
+and shown the rising trend. It did not. The 10% gap between `120707` and `123338`
+that motivated §4e is not reproduced by a controlled repeat of the same
+comparison.
+
+**So neither mechanism is established.** Put every llama arm in one table and
+nothing orders it cleanly:
+
+| run | container age | bench # | native prefill median |
+| --- | ---: | ---: | ---: |
+| `120707` | ~360 s | 1st | 2081 |
+| `134909` | 525 s | 1st | 2144 |
+| `141306` | 650 s | 1st | 2105 |
+| `160606` | 1240 s | 1st | 2089 |
+| `172126` | 1900 s | 1st | **2278** |
+| `174717` | 1959 s | 2nd | 2336 |
+| `123338` | ~2400 s | 2nd | 2349 |
+
+Age is *broadly* increasing down that column and bench index is not, but 1240 s
+sits below 650 s and the whole spread is ~12% — which is the same size as the
+effect being chased, measured three rounds at a time.
+
+**What IS established, and it is the part that matters:**
+
+1. **llama's arm-to-arm spread is ~10–12% on identical weights at gated-quiet
+   load.** Nine arms now. Do not quote a single llama arm to three significant
+   figures, and do not read a 10% difference between two llama arms as real.
+2. **Some llama arms open with a low round that climbs** (`160606`:
+   1774 → 2089 → 2322 after a discarded warm-up round). Others do not. The
+   median absorbs it; a mean would not.
+3. **ninfer's PREFILL does none of this, and that asymmetry is itself a
+   finding.** Within-arm prefill spread, native counters:
+
+       ninfer   0.8%, 1.1%, 1.3%, 2.8%   (and 0.6% at 262K)
+       llama    1.9%, 3.3%, 3.3%, 5.5%, 5.8%, 6.4%, 30.9%
+
+   ninfer's prefill is reproducible to a couple of percent in every run at every
+   window size; llama's is not. **DECODE is noisy on both** — ninfer 9.6–34.7%
+   within a single arm, llama comparable — so no decode claim smaller than about
+   35% should rest on three rounds, on either engine. That the ninfer decode
+   advantage is 25–30% means it needs the repeat count raised before it is
+   quoted as a precise figure, even though its DIRECTION has held in every
+   paired run.
+
+**To settle it properly** would take `--repeat 10` or more per arm and several
+arms per condition — roughly an order of magnitude more measurement than the
+question has so far been worth. The engine-level conclusions in this file do not
+depend on it: the ninfer decode advantage is 25–30%, well outside llama's 12%
+spread.
+
+### 4e. What this means for every number in this file
+
+Two rules, and they are not optional any more:
+
+1. **Record the container age on every arm, but do not treat it as an
+   explanation.** `bench_arm` writes `container_age_s_<arm>` at both ends of
+   every arm and `--min-container-age SECONDS` holds an arm until its container
+   has been up that long. §4d tried and failed to make age (or requests served)
+   order the llama numbers, so the field is there to let a future reader test a
+   mechanism, NOT because one is established. Matching ages across arms is still
+   worth doing — it removes a variable cheaply — but it does not license
+   comparing two llama arms 10% apart.
+2. **The quiet gate ages the container it gates.** A run that waits 28 minutes
+   for quiet measures a 28-minute-old engine. That is usually an improvement, and
+   it is always a thing you must read out of `run.meta` rather than assume.
+
+Part 7's table was taken without either control. Its engine RANKING has survived
+every measurement since; its PERCENTAGES have not, and nothing in it should be
+quoted to three significant figures.
 
 **The decode win is engine AND weights AND quantisation, and they cannot be
 separated as things stand.** llama serves the orcarouter Q4_K_M **fine-tune**;
@@ -137,6 +835,52 @@ comparison is void — that is exactly how `20260904-102103` was lost
 
 ---
 
+### 5a. DONE, with defects (`20260904-153020`) — and the 32K picture
+
+Paired arms in one run, as §5 asked, with the new fields on both:
+`container_age_s_llama=start=4837 end=5225`, `warmup_hold_ninfer=waited_to=1200s`,
+`container_age_s_ninfer=start=1240 end=1292`. Target 32768 resolved to ~20.6K
+actual prompt tokens on both sides.
+
+| ~20.6K prompt | llama | ninfer | |
+| --- | ---: | ---: | --- |
+| wall prefill t/s (median) | 1843.8 | 1864.0 | a wash |
+| wall decode t/s (median) | 69.7 | 118.4 | ninfer +70% |
+| native decode per round | 54.5 / 92.7 / 69.7 | 106.8 / 119.6 / 122.1 | |
+| `loadavg_during` mean / peak | **3.81 / 5.16** | **1.40 / 1.75** | **asymmetric** |
+
+**Read the decode gap as a direction, not a figure.** Three defects, all visible
+in `run.meta`:
+
+1. **The arms were not measured at comparable load** — 3.81 mean against 1.40.
+   The gate passed both (it checks *before* an arm), but the llama arm ran 394 s
+   against ninfer's 55 s and load drifted up throughout. By §5's own
+   disqualifier this is not a clean cross-arm comparison. Part of that load is
+   llama's own footprint during a 394 s arm, so it is not purely contamination —
+   which is exactly why it cannot be adjudicated from here.
+2. **llama's round 1 cost 165.63 s of wall TTFT against 39.5 s of engine
+   `prompt_ms`** — ~126 s outside the engine — while rounds 2 and 3 took 11 s.
+   The median hides it; the mean would not have.
+3. **llama's prompt cache thrashes at this prompt size, by construction.**
+   `llama_cache_ram=2048` MiB and a ~20.6K-token entry is ~1.37 GiB, so at most
+   one fits and every round evicts. The arm logged five evictions —
+   685 + 685 + 685 + 1373 + 1378 MiB — the three small ones being 8K-era entries
+   left by earlier runs. **This is a real cost llama pays at long context**, not
+   merely contamination, but it is a CONFIGURATION cost and a bigger
+   `llama_cache_ram` may remove most of it.
+
+**A clean 32K re-run wants:** `--repeat 5` (so one thrash round cannot move the
+median), llama's cache sized past a single 20.6K entry, and both arms held to
+comparable load rather than merely gated at their start.
+
+### 5b. The quiet gate checks BEFORE an arm, and a long arm outruns it
+
+`loadavg_during_llama=n=77 peak=5.16 mean=3.81` on an arm whose gate had passed
+at 2.08. Nothing is wrong with the gate — it cannot see the future — but a
+394 s arm is long enough for the box to change underneath it, and the 8K arms
+that motivated the gate ran ~25 s. **The `during` series remains the arbiter;
+the gate only improves the odds.**
+
 ## 6. LAST: `--wide` (262K), now unblocked
 
 Part 6 §8 said not to attempt this until the matched number existed. It exists.
@@ -152,11 +896,105 @@ to simply fail, and that is a result too — capture the engine log.
 
 ---
 
+### 6a. DONE — 262K SURVIVES, and it is expensive (`20260904-160606`)
+
+**It did not fail.** ninfer loaded the 262,144-token window at `rk4v4-e8` in
+230 s, served, and completed three rounds. §6 expected this to be the most likely
+of the four jobs to simply fall over; it is the one that worked first time.
+
+It is, however, running on nothing:
+
+    KV capacity explicit resolved=262144 tokens pages=4096/4096 runtime=5.06 GiB
+    free-after-startup=396.38 MiB headroom=0.00 MiB slack=210.80 MiB
+
+`headroom=0.00 MiB` with **210.80 MiB of slack** — tighter than the 1.52 GiB the
+matched 98,304/int8 configuration reported. All 4096 pages allocated.
+
+**The window is not free, and the same short prompt costs more than twice as
+much inside it.** Same ~5.2K prompt, same engine, same container, same run:
+
+| ninfer, ~5.2K prompt | 98,304 / `int8` | 262,144 / `rk4v4-e8` | |
+| --- | ---: | ---: | --- |
+| native prefill t/s | 2168.8 | 976.1 | **−55%** |
+| native decode t/s | 128.3 | 57.7 | **−55%** |
+| wall TTFT s | 2.43 | 5.38 | 2.2× |
+
+Both arms were held to a long container age and gated quiet
+(`loadavg_during_ninfer262k=peak=1.02 mean=0.97`, gate waited 804 s), and the
+262K arm is flat across its rounds (`979.5, 973.8, 976.1`), so this is not noise
+and not warm-up.
+
+**Not separable from this run:** the window changed AND the KV dtype changed
+(`int8` → `rk4v4-e8`) together, because that is what it takes to fit 262K on this
+card. To attribute the 55% you would need 262K at `int8` (will not fit) or 98,304
+at `rk4v4-e8` (will, and is the cheap half of the experiment — do that one).
+
+**So the useful form of the result:** *a 262K window is available on a single
+4090 at ~45% of the throughput of the 98K configuration, with essentially zero
+memory headroom.* Whether that trade is worth taking is a workload question, and
+this is the number to take to it.
+
+### 6b. A long-context llama mode was considered and dropped (2026-09-04)
+
+Asked and answered, so nobody re-derives it: **262K is a ninfer-only capability
+on this card.** llama's KV at `q8_0` is 36 KiB/token, so 262,144 tokens needs
+~9 GiB of KV against the ~2 GiB free at the current window (llama sits at
+22512/24564 MiB).
+
+**And 128K on llama is not an open question — it was measured and CLOSED on
+2026-09-03; see OPEN-WORK §00b.** It fits, and it **halves decode**: 96K vs 128K
+in one run on the same 90,029-token prompt gave prefill 1797.8 → 1200.7 (−33%)
+and decode 50.2 → 26.1 (−48%), with draft acceptance flat, so it is the window
+and not spec decoding. That entry's verdict — *"128K fits and is not worth
+taking; 96K stays the pin"* — already answers the llama half of this question,
+and I did not know it when I first wrote this section.
+
+**Today's 262K result independently corroborates it on the other engine.** Two
+engines, two window increases, both cost about half the throughput: llama
+96K→128K at −33%/−48%, ninfer 98K→262K at −55%/−55%. Whatever else is uncertain
+in this file, *a bigger window on this card costs roughly half your speed* has
+now been measured twice, on different engines, by different people, three weeks
+apart.
+
+The obvious escape is closed: **`q4_0` KV is known-broken on this architecture**,
+not a quality trade — see the CACHE_TYPE_K block in `.env` and upstream
+ggml-org/llama.cpp#27109 (open), where 4-bit KV collapses prefill to 34–106 t/s
+while leaving decode untouched. Public 4090 "130K–250K window" recipes using
+`-ctk q4_0` are a prefill trap here.
+
+And a long window breaks the prompt cache, which §5a measured: a 20.6K entry is
+1.37 GiB against `CACHE_RAM=2048` MiB, so every round evicts; at 128K one entry
+would be ~8.5 GiB, and `CACHE_RAM=8192` was already measured to take this box to
+394 MiB free with prefill at 2.83 t/s. Any future long-context work must decide
+what happens to the prompt cache rather than inheriting the current setting.
+
+Structural note if it is ever revisited: context is **orthogonal** to weights and
+samplers, but `active_mode()` returns the first mode whose declared keys all
+match, so a mode declaring only `CTX_SIZE`/cache keys would collide with the
+active base mode and misreport it.
+
 ## 7. Do not
 
 - **Do not quote a number without its `run.meta`.** `payload_<arm>=`,
   `cache_stalls_<arm>=` and `loadavg_during_<arm>=` are all there because each
   one has, at least once, silently turned a wrong number into a believable one.
+- **NEVER EDIT A SCRIPT WHILE A COPY OF IT IS RUNNING.** bash reads a script
+  incrementally by byte offset. Editing `ninfer-compare.sh` mid-run on
+  2026-09-04 shifted every offset after the insertion point, and the live process
+  resumed in the wrong place — it finished the ninfer arm, then jumped BACK into
+  the llama-arm block and began a second llama arm that would have overwritten
+  `llama.json` in the same run directory. It had to be killed. The already-written
+  data was intact (the bench itself runs in a container and is untouched), but the
+  control flow after the edit point is not trustworthy. Wait for the run, or edit
+  a copy.
+- **`cache_stalls_<arm>=none logged` was a lie until 2026-09-04.** The summary
+  counted only `prompt cache update took ... ms` lines, so an arm that logged
+  nothing but EVICTIONS — five of them, 4.8 GiB total, next to a 165.63 s
+  TTFT — was recorded as having no prompt-cache confound at all. It now reports
+  `updates=.. evictions=.. evicted_mib=..`, and when it meets lines it does not
+  recognise it says `UNPARSED -- read <arm>.cache-stalls` rather than claiming
+  absence. Any `none logged` written before this date means "nobody counted the
+  evictions", not "there were none".
 - **Do not read `ninfer.engine-after.log` for a rejected request.** The engine
   logs nothing about 400s; the console is the only place the body appears. The
   file is still worth keeping for load timings, the KV capacity line and the
@@ -293,8 +1131,16 @@ in it.
 ## 4. Claims in parts 5–6 this run contradicts
 
 - **§7: "ninfer sends no `cached_tokens` equivalent, so the leading nonce is the
-  only defence on that arm."** Wrong. ninfer reports `cached_tokens: 0` on every
-  round. Both arms are guarded.
+  only defence on that arm."** Wrong — but the evidence first given here did not
+  show it. That evidence was `cached_tokens: 0` on every round, which proves only
+  that the field is **present**: every benched prompt carries a leading nonce, so
+  zero is what you would see whether the field works or is hard-coded to 0.
+  **The control has since been run** (`--cache-control`, run
+  `20260904-111653-cachecontrol`, 2026-09-04 11:24): the same prompt sent twice
+  with prefix reuse on gave `request 1: prompt_tokens=5234 cached_tokens=0` then
+  `request 2: prompt_tokens=5234 cached_tokens=5229`. The field tracks real
+  reuse, so the guard is real and both arms are guarded — on that evidence, not
+  on the zeros.
 - **§6: large prompt-cache stalls are attributed to load.** Not only load.
   `20260904-003825` took **40846.75 ms at `loadavg_at_start=1.10`**, and the log
   says why: `prompt_save: length 20586, state 914.502 MiB` preceded by two
@@ -953,6 +1799,15 @@ process /sbin/ldconfig terminated with signal 9`, drop the Docker VM page cache
 (`docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`)
 and retry; it worked first time with 8.7 GB already free, so read the signal 9
 as the hook being fragile rather than as a genuine OOM.
+
+> **AMENDED 2026-09-04 — the cache drop is NOT the operative step; see part 9
+> §9.** Hit again during a ninfer run. Dropping the cache took the box from
+> 5.0 to **14 GiB free and the start still failed**; ~3 minutes later the same
+> command worked untouched, alongside three GPU-container controls that all
+> started cleanly. **Retry and wait**, and use
+> `docker run --rm --gpus all alpine true` as the control that separates a
+> transient hook fault from a real one. The "fragile, not OOM" reading above is
+> correct and is now better supported.
 
 ---
 

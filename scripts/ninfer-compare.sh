@@ -7,6 +7,9 @@
 #   ./scripts/ninfer-compare.sh --prompt-tokens 32768 --repeat 5
 #   ./scripts/ninfer-compare.sh --wide             # add ninfer's 262K arm
 #   ./scripts/ninfer-compare.sh --restore-only     # put the stack back, measure nothing
+#   ./scripts/ninfer-compare.sh --cache-control    # is cached_tokens real? control, not a measurement
+#   ./scripts/ninfer-compare.sh --no-quiet-gate    # measure under load on purpose
+#   ./scripts/ninfer-compare.sh --min-container-age 1800   # only measure warm engines
 #
 # WHY THE TWO ENGINES CANNOT BE INTERLEAVED
 #
@@ -52,19 +55,49 @@
 #     thinking tokens on the same prompt. Decode RATE is unaffected; time-to-
 #     answer is, and this script does not claim to measure time-to-answer.
 #
-# ASYMMETRY IN THE CACHE GUARD, AND WHY PREFIX REUSE STAYS ON ANYWAY
+# THE CACHE GUARD ON BOTH ARMS, AND WHY PREFIX REUSE STAYS ON ANYWAY
 #
 # llama reports usage.prompt_tokens_details.cached_tokens, so bench_cross_engine
 # can DETECT a prefix-cache hit on that arm and withhold the prefill rate.
-# ninfer sends no equivalent field, so on its arm the leading per-request nonce
-# is the ONLY defence -- there is no independent confirmation that a prefill
-# actually ran. That asymmetry is real and is not fixable from here.
+# SO DOES NINFER, and it is not decoration: --cache-control (run
+# 20260904-111653-cachecontrol) sent one prompt twice with reuse on and got
+# cached_tokens=0 then cached_tokens=5229. Both arms are guarded by a field that
+# demonstrably tracks real reuse, and the nonce is a second line of defence
+# rather than the only one.
+#
+# That control had to be run because the earlier evidence -- cached_tokens: 0 on
+# every benched round -- proved only that the field EXISTS. Every benched prompt
+# leads with a nonce, so zero is what you would see whether the field worked or
+# was hard-coded. A negative result is only as good as its control.
 #
 # ninfer does have --no-prefix-reuse, which would make its prefill honest by
 # construction. It is deliberately NOT used: llama runs with --cache-prompt on,
 # that is the production configuration on both sides, and disabling reuse on one
 # arm only would stop the two being like-for-like. The nonce leads the prompt,
 # so no two requests share anything past the chat-template preamble.
+#
+# CONTAINER AGE IS PART OF THE MEASUREMENT
+#
+# Three llama arms on IDENTICAL weights at effectively identical load gave
+# wall-clock prefill 1567.8 (container ~6 min old), 1686.8 (8.75 min) and 1923.8
+# (~40 min). The engine's own prompt_per_second moved ~10% of that and the server
+# path the rest, and the per-round trend inside a fresh run RISES -- so the one
+# discarded warm-up round this bench already does is not enough. run.meta now
+# carries container_age_s_<arm>=start=..,end=.. for every arm, and
+# --min-container-age SECONDS holds an arm until its engine has been up that
+# long. COMPARE LIKE AGES. Note also that the quiet gate below AGES the container
+# it is gating: a run that waits 28 minutes for a quiet box measures a
+# 28-minute-old engine, which is usually an improvement and always a fact to read
+# out of run.meta rather than assume.
+#
+# THE ARMS ARE GATED ON QUIET SEPARATELY
+#
+# wait-quiet.sh gates the START of a run and cannot do more: the second arm
+# begins after ninfer's cold load, ten to twenty minutes later. Run
+# 20260904-120707 took llama at mean load 2.12 and ninfer at mean 18.02 and was
+# void across arms. bench_arm now calls wait_arm_quiet() immediately before each
+# arm, and on timeout measures anyway with the caveat written to run.meta --
+# see quiet_gate_<arm>= there before quoting anything.
 #
 set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -104,6 +137,7 @@ WIDE=0
 RESTORE_ONLY=0
 CACHE_CONTROL=0
 KV_DTYPE="int8"
+MIN_CONTAINER_AGE="${MIN_CONTAINER_AGE:-0}"
 CONTEXT=""
 OUT_DIR="${REPO_ROOT}/.ninfer-compare"
 
@@ -118,6 +152,8 @@ while [[ $# -gt 0 ]]; do
     --llama-only)    RUN_NINFER=0; shift ;;
     --wide)          WIDE=1; shift ;;
     --restore-only)  RESTORE_ONLY=1; shift ;;
+    --no-quiet-gate) export ARM_QUIET_TIMEOUT=0; shift ;;
+    --min-container-age) MIN_CONTAINER_AGE="$2"; shift 2 ;;
     --cache-control) CACHE_CONTROL=1; RUN_LLAMA=0; shift ;;
     --out)           OUT_DIR="$2"; shift 2 ;;
     -h|--help)       sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d'; exit 0 ;;
@@ -223,8 +259,39 @@ restore() {
 
   if [[ "$(docker inspect -f '{{.State.Running}}' "$LLAMA_CT" 2>/dev/null)" != "true" ]]; then
     info "restarting $LLAMA_CT"
-    docker start "$LLAMA_CT" >/dev/null 2>&1
-    echo "  llama start rc=$?" >> "$RUN_DIR/restore.log"
+    # RETRY, AND SAY SO IF IT NEVER COMES BACK.
+    #
+    # The fault that makes restore necessary is the SAME one that makes a single
+    # `docker start` fail, so one attempt is exactly the wrong number. On
+    # 2026-09-04 the ninfer create died with
+    #   nvidia-container-cli: ldcache error: process /sbin/ldconfig terminated
+    #   with signal 9
+    # and restore's one and only `docker start` died with it too (rc=1). The
+    # script then exited reporting nothing wrong, WITH THE PRODUCTION STACK
+    # DOWN, and it stayed down until a human happened to look. The old form also
+    # sent the reason to /dev/null, so restore.log recorded `rc=1` and not one
+    # word of why.
+    #
+    # It is not memory, whatever HANDOFF part 4's note says: dropping the Docker
+    # VM page cache took the box from 5.0 to 14 GiB free and the start STILL
+    # failed. Three fresh GPU containers then started cleanly ~3 min later and
+    # so did llama, unchanged. The hook is transiently fragile under load; the
+    # operative remedy is WAITING, not reclaiming.
+    local i start_rc=1
+    for i in 1 2 3 4 5 6 7 8; do
+      start_rc=0
+      docker start "$LLAMA_CT" > "$RUN_DIR/llama-restart.err" 2>&1 || start_rc=$?
+      echo "  llama start attempt $i rc=$start_rc" >> "$RUN_DIR/restore.log"
+      if [[ "$start_rc" -eq 0 ]]; then break; fi
+      sed 's/^/    /' "$RUN_DIR/llama-restart.err" >> "$RUN_DIR/restore.log" 2>/dev/null || true
+      sleep "${RESTORE_RETRY_EVERY:-30}"
+    done
+    if [[ "$start_rc" -ne 0 ]]; then
+      warn "RESTORE FAILED after 8 attempts -- $LLAMA_CT IS DOWN AND THE STACK IS NOT SERVING"
+      warn "  why: $RUN_DIR/llama-restart.err   log: $RUN_DIR/restore.log"
+      warn "  retry by hand: ./scripts/ninfer-compare.sh --restore-only"
+      echo "  RESTORE FAILED -- $LLAMA_CT IS DOWN" >> "$RUN_DIR/restore.log"
+    fi
   else
     echo "  llama already running" >> "$RUN_DIR/restore.log"
   fi
@@ -274,8 +341,25 @@ fi
 # --- arms --------------------------------------------------------------------
 bench_arm() {
   local label="$1" url="$2" out="$3"
+  # GATE ON QUIET HERE, not only at the start of the run. wait-quiet.sh can only
+  # gate the first arm; the second one begins after ninfer's cold load, on a box
+  # that has had ten to twenty minutes to become someone else's. Run
+  # 20260904-120707 lost its ninfer arm exactly that way. See wait_arm_quiet()
+  # in lib.sh -- it measures anyway on timeout and records the caveat.
+  # WHICH CONTAINER IS THIS ARM'S ENGINE. Needed for the age fields below, and
+  # the ninfer262k arm reuses the same container name as the matched one.
+  local ct; case "$label" in llama) ct="$LLAMA_CT" ;; *) ct="$NINFER_CT" ;; esac
+  # Warm-up hold BEFORE the quiet gate, because the gate can itself spend
+  # minutes and there is no sense waiting twice in a row.
+  wait_container_age "$ct" "$MIN_CONTAINER_AGE" "$label" "$RUN_DIR/run.meta"
+  wait_arm_quiet "$label" "$RUN_DIR/run.meta" || true
   info "benching $label at $url"
   echo "loadavg_before_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
+  # CONTAINER AGE IS A MEASUREMENT INPUT, NOT TRIVIA. Three llama arms on
+  # identical weights at identical load spanned 1567.8-1923.8 t/s on age alone;
+  # see HANDOFF part 8 section 4a. Recorded at both ends so a long arm cannot
+  # hide a container that was fresh when it started.
+  local age_start; age_start="$(container_age_s "$ct")"
   local arm_start; arm_start="$(date -u +%s)"
   # SAMPLE LOAD *DURING* THE ARM, not just side to side.
   #
@@ -303,6 +387,7 @@ bench_arm() {
     --json "/out/$out" 2>&1 | tee "$RUN_DIR/$label.log"
   kill "$sampler" 2>/dev/null; wait "$sampler" 2>/dev/null
   echo "loadavg_after_$label=$(cut -d' ' -f1-3 /proc/loadavg)" >> "$RUN_DIR/run.meta"
+  echo "container_age_s_$label=start=${age_start:-unknown} end=$(container_age_s "$ct")" >> "$RUN_DIR/run.meta"
   # The peak is what disqualifies a measurement, and it is the one number an
   # endpoint pair reliably misses.
   if [[ -s "$RUN_DIR/$label.loadavg" ]]; then
@@ -386,38 +471,122 @@ cache_stalls() {
   took="$(grep -oE 'prompt cache update took [0-9.]+ ms' "$RUN_DIR/$label.cache-stalls" \
           | grep -oE '[0-9.]+' || true)"
   n="$(printf '%s\n' "$took" | grep -c . || true)"
-  if [[ -z "$took" ]]; then
+  # EVICTIONS COUNT TOO, and leaving them out made this guard lie. The 32K arm
+  # of 20260904-153020 logged FIVE "making room for prompt cache entry" lines --
+  # 685, 685, 685, 1373 and 1378 MiB -- while its round 1 took 165.63 s of wall
+  # TTFT against 39.5 s of engine prompt_ms. run.meta said
+  # `cache_stalls_llama=none logged in 394s window`, because the summary only
+  # ever counted "prompt cache update took ... ms" lines and llama had logged
+  # none of those. The file held the evidence; the field that people actually
+  # read reported its absence. A guard that reports a false negative is worse
+  # than no guard, because it is trusted.
+  local ev ev_n ev_total ev_max
+  ev="$(grep -oE 'removing oldest entry \(size = [0-9.]+ MiB' "$RUN_DIR/$label.cache-stalls" \
+        | grep -oE '[0-9.]+' || true)"
+  ev_n="$(printf '%s\n' "$ev" | grep -c . || true)"
+  if [[ -z "$took" && -z "$ev" ]]; then
+    # NEVER claim absence while the file has content. If a new llama build
+    # renames these lines, this says "go and read it" instead of "nothing
+    # happened", which is the failure this whole function exists to prevent.
+    if [[ -s "$RUN_DIR/$label.cache-stalls" ]]; then
+      echo "cache_stalls_$label=UNPARSED lines=$(wc -l < "$RUN_DIR/$label.cache-stalls") -- read $label.cache-stalls" \
+        >> "$RUN_DIR/run.meta"
+      warn "$label: prompt-cache lines were logged but none matched the known \
+formats -- read $RUN_DIR/$label.cache-stalls before trusting TTFT"
+      return 0
+    fi
     echo "cache_stalls_$label=none logged in ${window}s window" >> "$RUN_DIR/run.meta"
     return 0
   fi
-  local total_ms max_ms
-  total_ms="$(printf '%s\n' "$took" | awk '{s+=$1} END{printf "%.0f", s}')"
-  max_ms="$(printf '%s\n' "$took" | awk 'BEGIN{m=0} {if($1>m)m=$1} END{printf "%.0f", m}')"
-  echo "cache_stalls_$label=n=$n total_ms=$total_ms max_ms=$max_ms" >> "$RUN_DIR/run.meta"
-  warn "$label: $n prompt-cache update(s) inside this arm, worst \
+  local summary="" total_ms=0 max_ms=0
+  if [[ -n "$took" ]]; then
+    total_ms="$(printf '%s\n' "$took" | awk '{s+=$1} END{printf "%.0f", s}')"
+    max_ms="$(printf '%s\n' "$took" | awk 'BEGIN{m=0} {if($1>m)m=$1} END{printf "%.0f", m}')"
+    summary="updates=$n total_ms=$total_ms max_ms=$max_ms"
+  else
+    summary="updates=0"
+  fi
+  if [[ -n "$ev" ]]; then
+    ev_total="$(printf '%s\n' "$ev" | awk '{s+=$1} END{printf "%.0f", s}')"
+    ev_max="$(printf '%s\n' "$ev" | awk 'BEGIN{m=0} {if($1>m)m=$1} END{printf "%.0f", m}')"
+    summary="$summary evictions=$ev_n evicted_mib=$ev_total max_evicted_mib=$ev_max"
+  else
+    summary="$summary evictions=0"
+  fi
+  echo "cache_stalls_$label=$summary" >> "$RUN_DIR/run.meta"
+  if [[ -n "$took" ]]; then
+    warn "$label: $n prompt-cache update(s) inside this arm, worst \
 $(awk "BEGIN{printf \"%.2f\", $max_ms/1000}")s, total \
 $(awk "BEGIN{printf \"%.2f\", $total_ms/1000}")s -- that time is inside TTFT and \
 outside prompt_ms. See $RUN_DIR/$label.cache-stalls"
+  fi
+  if [[ -n "$ev" ]]; then
+    warn "$label: $ev_n prompt-cache eviction(s) inside this arm, ${ev_total} MiB \
+total, worst ${ev_max} MiB -- eviction cost lands inside TTFT and outside \
+prompt_ms. See $RUN_DIR/$label.cache-stalls"
+  fi
 }
 
 start_ninfer() {
   local ctx="$1" kv="$2" name="$3"
   info "starting ninfer  ctx=$ctx  kv=$kv"
-  docker run -d --name "$NINFER_CT" --gpus all \
-    --network "$NETWORK" \
-    -v "$(env_get MODELS_DIR):/workspace/models:ro" \
-    "$NINFER_IMAGE" \
-    ninfer-serve "models/$NINFER_ARTIFACT" \
-    --host 0.0.0.0 --port 8080 \
-    --max-context "$ctx" --kv-capacity "$ctx" \
-    --max-concurrency 1 --max-pending-requests 16 \
-    --pending-timeout-ms 600000 \
-    --prefill-chunk 1024 --kv-dtype "$kv" \
-    --spec mtp --draft-tokens 3 --lm-head-draft \
-    --preserve-thinking > "$RUN_DIR/ninfer.cid" 2>"$RUN_DIR/ninfer-start.err"
-  local rc=$?
+  # RETRY THE CREATE, AND RECORD WHICH ATTEMPT WON.
+  #
+  # Twice on 2026-09-04 this exact call died at container init with
+  #   nvidia-container-cli: ldcache error: process /sbin/ldconfig terminated
+  #   with signal 9
+  # and each failure cost an ENTIRE QUIET WINDOW -- the scarce resource here,
+  # since the gate took about an hour to open both times. A create that fails
+  # transiently must not throw that away.
+  #
+  # WHAT IS RULED OUT, so nobody re-walks it: it is not memory (dropping the
+  # Docker VM page cache took the box 5.0 -> 14 GiB free and the start still
+  # failed), and it is not a slow ldconfig in this image (ldconfig completes
+  # instantly here, and this image has FEWER shared objects than llama's --
+  # 739 against 1173, and llama's image never reproduced it).
+  #
+  # WHAT IS NOT RULED OUT, and is the surviving correlate: both failures came
+  # within seconds of `docker stop instantcoffee-llama` -- the first GPU
+  # container create after a 22 GiB VRAM process was torn down. Every control
+  # that PASSED lacked that precondition, so the control was never like-for-
+  # like. The attempt counter below is the instrument for it: if attempt 2
+  # routinely succeeds ~45 s later with nothing else changed, the fault is a
+  # settling window and the fix is to wait for it explicitly.
+  #
+  # The rm between attempts is load-bearing: a create that fails after the
+  # name is claimed leaves the container in `created` and the retry would die
+  # on a name conflict instead of the real fault.
+  local attempt rc=1 tries="${NINFER_CREATE_TRIES:-4}"
+  for (( attempt=1; attempt<=tries; attempt++ )); do
+    docker rm -f "$NINFER_CT" >/dev/null 2>&1 || true
+    rc=0
+    docker run -d --name "$NINFER_CT" --gpus all \
+      --network "$NETWORK" \
+      -v "$(env_get MODELS_DIR):/workspace/models:ro" \
+      "$NINFER_IMAGE" \
+      ninfer-serve "models/$NINFER_ARTIFACT" \
+      --host 0.0.0.0 --port 8080 \
+      --max-context "$ctx" --kv-capacity "$ctx" \
+      --max-concurrency 1 --max-pending-requests 16 \
+      --pending-timeout-ms 600000 \
+      --prefill-chunk 1024 --kv-dtype "$kv" \
+      --spec mtp --draft-tokens 3 --lm-head-draft \
+      --preserve-thinking > "$RUN_DIR/ninfer.cid" 2>"$RUN_DIR/ninfer-start.err" || rc=$?
+    if [[ $rc -eq 0 ]]; then
+      if [[ $attempt -gt 1 ]]; then
+        ok "ninfer create succeeded on attempt $attempt -- the earlier failure was transient"
+      fi
+      echo "ninfer_create_attempts_$name=$attempt" >> "$RUN_DIR/run.meta"
+      break
+    fi
+    warn "ninfer create attempt $attempt/$tries failed:"
+    sed 's/^/    /' "$RUN_DIR/ninfer-start.err" >&2 || true
+    cp "$RUN_DIR/ninfer-start.err" "$RUN_DIR/ninfer-start-attempt$attempt.err" 2>/dev/null || true
+    if [[ $attempt -lt tries ]]; then sleep "${NINFER_CREATE_RETRY_EVERY:-45}"; fi
+  done
   if [[ $rc -ne 0 ]]; then
-    warn "ninfer failed to start:"; cat "$RUN_DIR/ninfer-start.err" >&2
+    warn "ninfer failed to start after $tries attempts:"; cat "$RUN_DIR/ninfer-start.err" >&2
+    echo "ninfer_create_attempts_$name=FAILED after $tries" >> "$RUN_DIR/run.meta"
     return 1
   fi
 
@@ -452,7 +621,21 @@ start_ninfer() {
   # runbook's timeline and has no way to tell a slow load from a stalled one.
   # The 1800 budget was wrong in the same direction: 1800 SLEEP seconds is
   # closer to 45 minutes of wall clock.
-  local probe_t0 waited prc
+  # THE BUDGET IS WALL CLOCK AND IT IS OVERRIDABLE, because 1800 was too tight.
+  #
+  # On 2026-09-04 a run was thrown away here: ninfer had loaded its weights in
+  # 173 s and was still doing KV/graph work -- silently, the log says nothing
+  # through that phase -- when the 1800 s budget expired at load 25. The very
+  # next run served the IDENTICAL configuration after `model loaded in
+  # 901.395 s`, so what looked like a hang was a slow load, and a whole quiet
+  # window (about an hour of waiting for the gate) was spent proving nothing.
+  #
+  # A SILENT PHASE IS NOT A STALLED ONE. Cold load on this box has been measured
+  # at 200 s (artifact warm in page cache), 317 s (quiet, cold), 810 s (busy),
+  # 901 s (busy and cold) and >1260 s at load 20 -- so the default is now 2700,
+  # which covers the measured range with headroom, and NINFER_HEALTH_BUDGET
+  # shortens it when someone is watching and wants to fail fast.
+  local probe_t0 waited prc budget="${NINFER_HEALTH_BUDGET:-2700}"
   probe_t0="$(date -u +%s)"
   # urllib.error imported EXPLICITLY: it resolves as a side effect of importing
   # urllib.request today, and if that ever stops being true the NameError would
@@ -468,7 +651,7 @@ except Exception:
     sys.exit(1)'
   while :; do
     waited=$(( $(date -u +%s) - probe_t0 ))
-    [[ $waited -lt 1800 ]] || break
+    [[ $waited -lt $budget ]] || break
     compose --profile tools run --rm --entrypoint python bench -c "$probe_py" \
       >/dev/null 2>"$RUN_DIR/ninfer-probe.err"
     prc=$?
@@ -498,7 +681,11 @@ except Exception:
     fi
     sleep 10
   done
-  warn "ninfer did not become healthy within 1800s of wall clock"
+  warn "ninfer did not become healthy within ${budget}s of wall clock"
+  warn "  a SLOW load looks identical to a dead one here -- the engine logs nothing"
+  warn "  between weights and readiness. Check ninfer-$name.log for the last"
+  warn "  progress line before assuming the engine is at fault, and raise"
+  warn "  NINFER_HEALTH_BUDGET if it was still loading."
   docker logs "$NINFER_CT" > "$RUN_DIR/ninfer-$name.log" 2>&1
   return 1
 }
