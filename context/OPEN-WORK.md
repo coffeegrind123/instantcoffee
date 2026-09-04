@@ -1215,7 +1215,18 @@ without new evidence; both tests are recorded above and both were negative.
 
 ---
 
-## 2. What sets the misfire rate — CONTENT 3.96x, DEPTH 1.45x within-model (2026-09-03)
+## 2. What sets the misfire rate — CONTENT 1.79x, DEPTH 1.45x, same instrument (2026-09-03)
+
+> **The "3.96x" that used to be in this heading is a PPL ratio, not a misfire
+> rate, and must not be quoted against depth's 1.45x** — see *BOTH AXES IN
+> MATCHED UNITS* below. `PPL = exp(mean NLL)`, so a PPL ratio is the exponential
+> of a mean-NLL difference and is not commensurable with a rate ratio; the units
+> error made content look ~2.7x more important than depth when the honest
+> comparison is **1.79 against 1.45 — comparable, content somewhat larger**.
+> Corrected in the heading 2026-09-04: the body had said this since 2026-09-03
+> while the section's title went on advertising the retracted number, which is
+> the line most readers take away. Uses of 3.96x further down are labelled as
+> PPL and are correct as such.
 
 §3f of `context/design/kv-cache-fidelity-measured.md` established WHAT a cliff
 is: a per-token misfire rate. The model puts ~0.2 probability on an unrelated
@@ -1326,7 +1337,11 @@ different offsets**. If offset drives the rate, the shared tokens change rate
 with offset; if block identity drives it, they do not. That is the experiment,
 and it is two arms rather than a corpus build.
 
-### ANSWERED 2026-09-03: history CONTENT sets the rate. 3.96x, amount held fixed.
+### ANSWERED 2026-09-03: history CONTENT sets the rate — PPL 3.96x, amount held fixed
+
+*(As a MISFIRE RATE the same contrast is **1.79x** — see* BOTH AXES IN MATCHED
+UNITS *below. The 3.96x in this subsection is a PPL ratio throughout, which is
+what it was measured as and is correct in those units.)*
 
 `scripts/ppl_history_build.py` builds the degree of freedom no offset sweep has:
 the same 4095 scored tokens (corpus `12289..16383`) behind three different
@@ -1784,6 +1799,22 @@ rotation sets depth. Testing it needs the per-token series for whole arms, not
 first chunks: score one rotation's full window with `--kl-divergence-base` and
 compare the rate of the SAME tokens against the other rotation that scores them.
 That is a real GPU cost (7 chunks x 2 rotations) and is the honest next step.
+
+### RETRACTED 2026-09-03 — kept below because it is why the search went where it did
+
+> **DO NOT ACT ON THE PARAGRAPH BELOW.** It is the closing inference the
+> 2026-09-03 subsection above retracts by name, and it sat here unmarked as this
+> section's LAST WORD for a day — so a reader skimming to the end of §3 got the
+> retracted conclusion and not the retraction, which is 24 lines earlier.
+> Flagged 2026-09-04; nothing in it was re-measured, only re-labelled.
+>
+> **What replaces it** is the "so what is left is narrower than before"
+> paragraph above: what survives is an **INTERACTION** — hard content landing
+> deep in one rotation and shallow in another — and the honest next step is to
+> score one rotation's full window with `--kl-divergence-base` and compare the
+> rate of the SAME tokens against the other rotation that scores them. That is a
+> real GPU cost (7 chunks x 2 rotations), and it is NOT the corpus-construction
+> experiment the retracted text below recommends.
 
 **What is left, and why it now points at §2.** The only thing that differs
 between rotations is where each scored token's HISTORY BEGINS: F=0's chunks
