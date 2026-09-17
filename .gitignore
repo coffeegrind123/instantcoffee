@@ -12,8 +12,11 @@
 
 # Models are large binaries fetched by scripts/download-model.sh. They live in
 # MODELS_DIR, outside the repo, but guard against a stray copy landing here.
+# Anchored to the repo root on purpose: an unanchored `models/` also swallowed
+# vendor/pi-subagents-lite/src/models/, so model-precedence.ts was never
+# committed and every fresh clone failed to load the subagents extension.
 *.gguf
-models/
+/models/
 __pycache__/
 
 # Per-iteration log written by /loop (vendor/pi-loop-mode) into the working
