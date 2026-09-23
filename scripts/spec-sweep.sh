@@ -1175,7 +1175,12 @@ main() {
   # the run at the restore step — skipping the server restore and the report,
   # i.e. turning a warning into a second failure. The warning is the product
   # here; the non-zero is for callers who want to test the branch.
-  trap 'restore_env || true' EXIT INT TERM
+  # A signal trap RESUMES the script unless the handler exits. Restoring and
+  # resuming let the next step overwrite the restored .env, after the backup
+  # was gone (2026-09-23; scripts/test_interrupt_exits.py). 130/143 = 128+signo.
+  trap 'restore_env || true' EXIT
+  trap 'restore_env || true; warn "interrupted: llama still runs the last sweep config — docker compose up -d --force-recreate llama"; exit 130' INT
+  trap 'restore_env || true; warn "interrupted: llama still runs the last sweep config — docker compose up -d --force-recreate llama"; exit 143' TERM
 
   info "sweeping ${#selected[@]} config(s) x ${#WORKLOADS[@]} workload(s) into $RESULTS_ROOT"
   dim "current: SPEC_TYPE=$(env_get SPEC_TYPE) n-max=$(env_get SPEC_DRAFT_N_MAX) p-min=$(env_get SPEC_DRAFT_P_MIN)"

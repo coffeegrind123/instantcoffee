@@ -43,7 +43,7 @@ jobs:
                    scripts/download_model.py scripts/browser_cli.py \
                    scripts/test_browser_cli.py scripts/capture_proxy.py \
                    scripts/capture_sessions.py scripts/test_capture_proxy.py \
-                   scripts/test_forge_patches.py \
+                   scripts/test_forge_patches.py scripts/test_interrupt_exits.py \
                    scripts/bench_tools.py \
                    scripts/test_download_verify.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
@@ -177,6 +177,11 @@ jobs:
 
       - name: CJK leak detector unit tests
         run: python scripts/test_cjk_detector.py
+
+      # spec-sweep.sh and capacity-probe.sh own .env for a run. A signal trap
+      # that restores without exiting lets the next step overwrite the restore.
+      - name: Runner interrupt tests
+        run: python scripts/test_interrupt_exits.py
 
       # download_model.py's content check only fires on a BAD download, which is
       # the one case running the real script on a good file cannot reach. These

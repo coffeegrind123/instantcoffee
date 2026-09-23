@@ -526,7 +526,12 @@ main() {
   [[ -f "$REPO_ROOT/.env" ]] || die ".env not found — run ./scripts/setup.sh first"
   check_stale_env_backup
   cp "$REPO_ROOT/.env" "$ENV_BACKUP"
-  trap 'restore_env || true' EXIT INT TERM
+  # A signal trap RESUMES the script unless the handler exits. Restoring and
+  # resuming let the next step overwrite the restored .env, after the backup
+  # was gone (2026-09-23; scripts/test_interrupt_exits.py). 130/143 = 128+signo.
+  trap 'restore_env || true' EXIT
+  trap 'restore_env || true; warn "interrupted: llama still runs the last probe config — docker compose up -d --force-recreate llama"; exit 130' INT
+  trap 'restore_env || true; warn "interrupted: llama still runs the last probe config — docker compose up -d --force-recreate llama"; exit 143' TERM
 
   info "measuring the idle GPU floor — this STOPS llama, which every probe would anyway"
   IDLE_USED=""
