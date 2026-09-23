@@ -254,7 +254,15 @@ ONLY=""
 # discards its first repeat. Results are written per round as <name>.r<k>.json
 # and grouped by config name. A single-round run is unchanged in every respect.
 #
-# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE | NGRAM_MOD n-min:n-max:n-match
+#
+# THE SEVENTH FIELD IS GGML_CUDA_GRAPH_OPT, 0 or 1, empty meaning 0. It is an
+# ENVIRONMENT variable, not a flag, so the argv compare in live_matches cannot
+# see it: without reading the container's Env as well, an off arm following an
+# on arm would bench the on server under the off label. It is a row field rather
+# than an .env edit between runs so an on/off pair can be interleaved with
+# --rounds like every other pair here.
+#
+# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE | NGRAM_MOD n-min:n-max:n-match | GGML_CUDA_GRAPH_OPT
 CONFIGS=(
   "baseline|draft-mtp|2|0.75||"
   "pmin-050|draft-mtp|2|0.50||"
@@ -281,6 +289,21 @@ CONFIGS=(
   "ngrammapk-n4|ngram-map-k,draft-mtp|4|0.40||"
   "ngrammapk4v-n4|ngram-map-k4v,draft-mtp|4|0.40||"
   "ngramcache-n4|ngram-cache,draft-mtp|4|0.40||"
+  # 2026-09-22, from sudoingX/qwen38-mtp: on fast cards an UNGATED draft
+  # (p-min 0) matched or beat every gated one, and the only CUDA data on
+  # chaining an n-gram drafter ahead of MTP had the chain losing (3090, n-max 4,
+  # ngram-map-k 81.3 vs MTP alone 90.9). p-min 0 has never run here. The
+  # production pin (ngrammapk-n4) and MTP alone at the same p-min (pmin-040-n4)
+  # are the two controls these are read against.
+  "mtp-p0-n4|draft-mtp|4|0.0||"
+  "ngrammapk-p0-n4|ngram-map-k,draft-mtp|4|0.0||"
+  "mtp-p0-n5|draft-mtp|5|0.0||"
+  "mtp-p0-n6|draft-mtp|6|0.0||"
+  "ngrammapk-p0-n5|ngram-map-k,draft-mtp|5|0.0||"
+  "ngrammapk-p0-n6|ngram-map-k,draft-mtp|6|0.0||"
+  # The GRAPH_OPT pair for the production pin. Arms for whichever config wins
+  # the rows above are added once there is a winner to pair.
+  "ngrammapk-n4-gopt|ngram-map-k,draft-mtp|4|0.40|||1"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -387,7 +410,7 @@ check_stale_env_backup() {
 # The keys this script writes. Anything ELSE that changed between the backup and
 # the live file is somebody else's edit, and the restore is about to throw it
 # away. Kept next to restore_env so the two cannot drift.
-SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN|DRAFT_GGUF_FILE'
+SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN|DRAFT_GGUF_FILE|SPEC_NGRAM_MOD_N_MIN|SPEC_NGRAM_MOD_N_MAX|SPEC_NGRAM_MOD_N_MATCH|GGML_CUDA_GRAPH_OPT'
 
 restore_env() {
   [[ "$ENV_RESTORED" == 1 ]] && return 0
@@ -517,6 +540,7 @@ _lm_no() { dim "  live server differs ($1) — recreating"; return 1; }
 
 live_matches() {
   local want_type="$1" want_nmax="$2" want_pmin="$3" want_draft="$4" want_mod="$5"
+  local want_gopt="${6:-0}"
   local cid argv health
 
   # WHY EVERY REJECTION SAYS WHICH FIELD IT WAS
@@ -583,6 +607,14 @@ live_matches() {
   [[ "$got_mod" == "$want_mod" ]] \
     || _lm_no "ngram-mod: live='${got_mod:-default}' want='${want_mod:-default}'" || return 1
 
+  # GGML_CUDA_GRAPH_OPT lives in the container's Env, not its argv. A container
+  # created before compose passed it has no entry, which is the engine's off.
+  local got_gopt
+  got_gopt="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$cid" 2>/dev/null \
+              | sed -nE 's/^GGML_CUDA_GRAPH_OPT=(.*)$/\1/p')"
+  [[ "${got_gopt:-0}" == "$want_gopt" ]] \
+    || _lm_no "graph-opt: live='${got_gopt:-unset}' want='$want_gopt'" || return 1
+
   return 0
 }
 
@@ -597,10 +629,15 @@ run_config() {
   # Strict five-field split. The old ${var%%|*} / ${var##*|} chain silently read
   # the LAST field as p-min, so a five-field row would have taken the draft
   # filename as a probability and passed it to llama as --spec-draft-p-min.
-  local name stype nmax pmin draft mod extra
-  IFS='|' read -r name stype nmax pmin draft mod extra <<<"$spec"
+  local name stype nmax pmin draft mod gopt extra
+  IFS='|' read -r name stype nmax pmin draft mod gopt extra <<<"$spec"
   if [[ -z "$name" || -z "$stype" || -z "$nmax" || -z "$pmin" || -n "$extra" ]]; then
-    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft|mod): $spec"
+    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft|mod|graph-opt): $spec"
+    return 1
+  fi
+  : "${gopt:=0}"
+  if [[ "$gopt" != 0 && "$gopt" != 1 ]]; then
+    warn "malformed CONFIGS graph-opt field (want 0, 1 or empty): $spec"
     return 1
   fi
 
@@ -662,10 +699,10 @@ run_config() {
     return 0
   fi
 
-  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none} mod=${mod:-default}"
+  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none} mod=${mod:-default} graph-opt=$gopt"
   dim "  workloads to measure: ${todo[*]}"
 
-  if live_matches "$stype" "$nmax" "$pmin" "$draft" "$mod"; then
+  if live_matches "$stype" "$nmax" "$pmin" "$draft" "$mod" "$gopt"; then
     ok "  the running llama already serves this config — benching it as-is (saved a reload)"
     # .env is still aligned to it for the same reason, so nothing to write.
   else
@@ -678,6 +715,7 @@ run_config() {
     env_set SPEC_NGRAM_MOD_N_MIN   "$mod_min"
     env_set SPEC_NGRAM_MOD_N_MAX   "$mod_max"
     env_set SPEC_NGRAM_MOD_N_MATCH "$mod_match"
+    env_set GGML_CUDA_GRAPH_OPT    "$gopt"
 
     info "  recreating llama (~3 min warm, far longer on a cold page cache) ..."
     if ! compose up -d --force-recreate --wait --wait-timeout "$WAIT_TIMEOUT" llama; then
@@ -691,7 +729,7 @@ run_config() {
   # One recreate, every outstanding workload benched against it.
   local rc=0
   for w in "${todo[@]}"; do
-    bench_one "$name" "$w" "$stype" "$nmax" "$pmin" "$draft" "$mod" || rc=1
+    bench_one "$name" "$w" "$stype" "$nmax" "$pmin" "$draft" "$mod" "$gopt" || rc=1
   done
   return $rc
 }
@@ -701,7 +739,7 @@ run_config() {
 # it assumes nothing about the server beyond it being healthy and correct, which
 # is run_config's job to have established.
 bench_one() {
-  local name="$1" workload="$2" stype="$3" nmax="$4" pmin="$5" draft="$6" mod="$7"
+  local name="$1" workload="$2" stype="$3" nmax="$4" pmin="$5" draft="$6" mod="$7" gopt="$8"
   # Per-round filenames so rounds do not overwrite each other. Round 1 keeps the
   # historical bare name, so a single-round run writes exactly what it always
   # did and every existing result directory stays readable.
@@ -772,11 +810,13 @@ bench_one() {
      --arg lb "$load_before" --arg la "$load_after" --arg lw "$LOAD_WARN" \
      --arg round "${CURRENT_ROUND:-1}" \
      --arg rep "$REPEAT" --arg plen "$PROMPT_LEN" --arg draft "$draft" --arg mod "$mod" \
+     --arg gopt "$gopt" \
      --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      --argjson pins "$(capture_pins)" \
      '. + {config: {name: $n, spec_type: $t, n_max: ($x|tonumber), p_min: ($p|tonumber),
                     draft_gguf: (if $draft == "" then null else $draft end),
                     ngram_mod: (if $mod == "" then null else $mod end),
+                    graph_opt: ($gopt|tonumber),
                     workload: $w, repeat: ($rep|tonumber),
                     round: ($round|tonumber),
                     load_before: ($lb|tonumber), load_after: ($la|tonumber),
@@ -803,9 +843,9 @@ report_one() {
   [[ -e "${files[0]}" ]] || { warn "no results in $RESULTS_ROOT/$workload yet"; return 1; }
 
   printf '\n%s workload: %s\n' "==>" "$workload"
-  printf '%-20s %-22s %5s %6s %-9s %5s %8s %8s %8s %7s %7s %11s %6s\n' \
-    CONFIG SPEC-TYPE N-MAX P-MIN MOD RND PREFILL DEC-MEAN DEC-MAX SPREAD ACCEPT DRAFT/CYCLE ECHO
-  printf '%.0s-' {1..144}; printf '\n'
+  printf '%-20s %-22s %5s %6s %-9s %2s %5s %8s %8s %8s %7s %7s %11s %6s\n' \
+    CONFIG SPEC-TYPE N-MAX P-MIN MOD GO RND PREFILL DEC-MEAN DEC-MAX SPREAD ACCEPT DRAFT/CYCLE ECHO
+  printf '%.0s-' {1..147}; printf '\n'
 
   # DEC-MEAN, DEC-MAX and SPREAD all come out of the same --repeat runs, and
   # printing all three is the fix for a trap this script laid on 2026-08-22.
@@ -864,6 +904,7 @@ report_one() {
         ($doc.config.n_max | tostring),
         ($doc.config.p_min | tostring),
         ($doc.config.ngram_mod // "default"),
+        (($doc.config.graph_opt // 0) | tostring),
         (if ($rounds|length) > 1
          then (($use|length|tostring) + "/" + ($rounds|length|tostring))
          else "-" end),
@@ -880,9 +921,9 @@ report_one() {
   ' "${files[@]}" \
   | sort -t"$(printf '\t')" -k1,1gr \
   | cut -f2- \
-  | while IFS=$'\t' read -r n t x p md rnd pp mean mx sp ac dpc ec; do
-      printf '%-20s %-22s %5s %6s %-9s %5s %8s %8s %8s %7s %7s %11s %6s\n' \
-        "$n" "$t" "$x" "$p" "$md" "$rnd" "$pp" "$mean" "$mx" "$sp" "$ac" "$dpc" "$ec"
+  | while IFS=$'\t' read -r n t x p md go rnd pp mean mx sp ac dpc ec; do
+      printf '%-20s %-22s %5s %6s %-9s %2s %5s %8s %8s %8s %7s %7s %11s %6s\n' \
+        "$n" "$t" "$x" "$p" "$md" "$go" "$rnd" "$pp" "$mean" "$mx" "$sp" "$ac" "$dpc" "$ec"
     done
 
   report_pins "${files[@]}"
@@ -1043,10 +1084,11 @@ main() {
     info "plan — ${#selected[@]} config(s), workload(s) '${WORKLOADS[*]}', each a full llama recreate"
     local c
     for c in "${selected[@]}"; do
-      local d m; d="$(cut -d'|' -f5 <<<"$c")"; m="$(cut -d'|' -f6 <<<"$c")"
-      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s mod=%s\n' \
+      local d m g; d="$(cut -d'|' -f5 <<<"$c")"; m="$(cut -d'|' -f6 <<<"$c")"
+      g="$(cut -s -d'|' -f7 <<<"$c")"
+      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s mod=%s graph-opt=%s\n' \
         "${c%%|*}" "$(cut -d'|' -f2 <<<"$c")" "$(cut -d'|' -f3 <<<"$c")" \
-        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}" "${m:-default}"
+        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}" "${m:-default}" "${g:-0}"
     done
     # MEASURED 2026-08-31, not guessed: a 5-round x 3-config run with both
     # workloads did 15 arm-instances in 110 min = ~7.3 min each, recreate
@@ -1116,8 +1158,10 @@ main() {
   if [[ -n "$(env_get SPEC_NGRAM_MOD_N_MIN)$(env_get SPEC_NGRAM_MOD_N_MAX)$(env_get SPEC_NGRAM_MOD_N_MATCH)" ]]; then
     restore_mod="$(env_get SPEC_NGRAM_MOD_N_MIN):$(env_get SPEC_NGRAM_MOD_N_MAX):$(env_get SPEC_NGRAM_MOD_N_MATCH)"
   fi
+  local restore_gopt; restore_gopt="$(env_get GGML_CUDA_GRAPH_OPT)"
   if live_matches "$(env_get SPEC_TYPE)" "$(env_get SPEC_DRAFT_N_MAX)" \
-                  "$(env_get SPEC_DRAFT_P_MIN)" "$(env_get DRAFT_GGUF_FILE)" "$restore_mod"; then
+                  "$(env_get SPEC_DRAFT_P_MIN)" "$(env_get DRAFT_GGUF_FILE)" "$restore_mod" \
+                  "${restore_gopt:-0}"; then
     ok "llama is already serving the pre-sweep config — no reload needed"
   else
     info "restoring the pre-sweep server so the stack is left as it was found"

@@ -9193,3 +9193,56 @@ string, which the server accepts and nothing renders. 1024 is cinny's own
 recorded. The sidecar compiles outside this repo and cannot import `src/`, so the
 key is declared twice and a test asserts the copies agree and that the value is
 the key the client actually reads.
+
+## 2026-09-22 — p-min 0.40 -> 0.0, from sudoingX/qwen38-mtp; the chain stays; GRAPH_OPT does nothing
+
+Source: [sudoingX/qwen38-mtp](https://github.com/sudoingX/qwen38-mtp), a
+community record of 53 MTP configurations. Its headline flag (`--spec-type
+draft-mtp`) was already production here. It contributed three testable claims
+for a fast single card, each measured here rather than adopted:
+
+1. **Ungated drafting (p-min 0) matches or beats any gate on fast cards.**
+2. **Chaining an n-gram drafter ahead of MTP loses** (3090, n-max 4:
+   ngram-map-k 81.3 vs MTP alone 90.9).
+3. **`GGML_CUDA_GRAPH_OPT=1`** was set on the best 4090 run (84.9 tok/s) and
+   never isolated.
+
+Method: `spec-sweep.sh --rounds N`, both workloads, pinned b10689 /
+Uncensored-Q4_K_M / 98304 / q8_0, judged by `spec_sweep_compare.py` (cold round
+1 dropped, load-split rounds dropped). Two independent sweeps under
+`context/bench/spec-sweep-2026-09-22/` (phase 1: 5 arms x 3 rounds; phase 2:
+4 arms x 5 rounds, round 2 dropped for a 3.2x load split from other sessions).
+
+| vs production (map-k chain, n4, p0.40) | novel (synthetic) | repetitive |
+|---|---|---|
+| chain, p0.0 n4 — phase 1 | **+20.2%, p=0.037** | +2.3%, p=0.62 |
+| chain, p0.0 n4 — phase 2 | **+14.4%, p=0.042** | -3.9%, p=0.27 |
+| chain, p0.0 n5 | +13.2%, p=0.07 | +0.3% |
+| chain, p0.0 n6 | +10.1%, p=0.14 | +0.1% |
+| MTP alone, p0.0 n4 | +13.5%, p=0.08 | **-11.6%, p=0.007** |
+| MTP alone, p0.40 n4 | +0.2% | **-16.1%, p=0.002** |
+| chain + GRAPH_OPT=1 | +3.0%, p=0.69 | +4.7%, p=0.32 |
+
+**Verdicts.** (1) holds: p-min 0 is positive on novel text in every usable
+round of both sweeps and neutral on repetitive; adopted. Depth past 4 buys
+nothing once the gate is gone. (2) does **not** hold for this workload: MTP
+alone is significantly worse on the repetitive shape pi produces, so the chain
+stays. (3) no measurable effect, sign-flipping; `GGML_CUDA_GRAPH_OPT` is plumbed
+(compose + `.env`, default 0, a seventh sweep-row field) and left off.
+
+**Against the community number**, with their own `probe.py` (3 short prompts,
+400 tokens, thinking off), two passes each: spec off **44.4 / 44.6** tok/s mean,
+production **83.3 / 85.5**. The only comparable 4090 row (gilkman, UD-Q4_K_XL,
+n-max 4) is 44.7 -> 87.1. The stack is at parity; the earlier "gap" to their
+82-85 was workload, not engine.
+
+**An instrument that was itself the contaminant.** The repo's Windows spill
+check, `Get-Counter "\GPU Process Memory(*)\Shared Usage"`, stalls GPU<->host
+copies across WSL2 GPU-PV for its ~1 s sampling window. A/B on the same server:
+prompt-cache save (`prompt_save`+`prompt_load`, a 198 MiB state copy)
+0.52-0.64 s unpolled vs 2.5 / 24.5 / 41.5 s polled every 2 s; decode spread
+57-80 tok/s within one arm. The first phase-1 attempt ran under a 60 s poller
+and was discarded (kept under `aborted-getcounter/`). nvidia-smi polled every
+second did not do this. With the box idle, `vmwp` Shared Usage reads ~1000 MiB
+at 2.6 GiB VRAM free, steady across arms, and decode matches the community
+baseline both ways: pinned host buffers, not spilled weights.

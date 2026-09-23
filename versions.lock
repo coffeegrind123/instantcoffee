@@ -233,10 +233,14 @@ reasoning_effort    = medium (upstream default xhigh does not fit a 4096 budget)
                       Re-confirmed on the V3 weights 2026-08-23 — see
                       quality_on_v3 below, and read its first caveat before
                       re-running the bench to re-decide this.
-spec_config         = ngram-map-k,draft-mtp at n-max 4 / p-min 0.40, adopted
-                      2026-09-01. map-k runs at ENGINE DEFAULTS (size-n 12,
-                      size-m 48, min-hits 1); its knob family is deliberately
-                      unplumbed. n-max/p-min are unchanged from 2026-08-17.
+spec_config         = ngram-map-k,draft-mtp at n-max 4 / p-min 0.0. p-min moved
+                      0.40 -> 0.0 on 2026-09-22: +20.2% (p=0.037) then +14.4%
+                      (p=0.042) on novel text in two independent interleaved
+                      sweeps, no detectable effect on repetitive text; n-max 5/6
+                      no better than 4 ungated. context/bench/spec-sweep-2026-09-22.
+                      Chain adopted 2026-09-01. map-k runs at ENGINE DEFAULTS
+                      (size-n 12, size-m 48, min-hits 1); its knob family is
+                      deliberately unplumbed.
                       Lineage, each link measured directly:
                         ngram-simple n4 p0.40   the 2026-08-17 optimum
                         -> ngram-mod 12:64:32   +22.3%, +23.3% (two runs)

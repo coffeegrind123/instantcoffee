@@ -140,6 +140,26 @@ produces) and why the synthetic axis keeps coming back underpowered: on
 If no draft counters appear at all, either `SPEC_TYPE` is empty or the GGUF has
 no MTP head — check `block_count`, which must be **65**, not 64.
 
+### Do not watch for VRAM spill with Get-Counter while a bench runs (2026-09-22)
+
+The spill check that sudoingX/qwen38-mtp recommends for Windows —
+`Get-Counter "\GPU Process Memory(pid_*)\Shared Usage"` — **is itself a
+contaminant on this box.** Each call holds a ~1 s sampling window, and during it
+GPU<->host copies across WSL2's GPU paravirtualisation stall. Measured with the
+same server and the same `bench.sh --repeat 3`, one polled every 2 s and one not:
+
+| | prompt-cache update | prefill tok/s | decode tok/s | wall / request |
+|---|---|---|---|---|
+| no polling | 0.52-0.64 s | 725-1584 | 62.8-69.2 | 5.0-5.6 s |
+| `Get-Counter` every 2 s | **2.5 / 24.5 / 41.5 s** | 487-1234 | **57.4-80.3** | **7.8-47.7 s** |
+
+The prompt-cache update is `prompt_save` + `prompt_load` in
+`server-context.cpp` (b10689): a ~198 MiB device-to-host state copy. MTP's own
+per-step device-to-host traffic sits on the same path, which is why decode
+spread widened too. `nvidia-smi --query-gpu=...` polled every second did **not**
+do this. So: nvidia-smi during runs, and read `Shared Usage` (on the `vmwp`
+process, which hosts the WSL VM's GPU allocations) only with the box idle.
+
 
 ## Every measurement command
 

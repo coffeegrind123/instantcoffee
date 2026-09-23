@@ -27,6 +27,9 @@ services:
       # was up and has stopped answering. Defaulted here rather than required,
       # so a .env predating this key starts the same container it always did.
       - LLAMA_HEALTH_KILL_AFTER=${LLAMA_HEALTH_KILL_AFTER:-8}
+      # ggml-cuda reads this as `env != nullptr && atoi(env) == 1` (ggml-cuda.cu
+      # @ b10689), so the 0 default is off and identical to not setting it.
+      - GGML_CUDA_GRAPH_OPT=${GGML_CUDA_GRAPH_OPT:-0}
     ports:
       - "${BIND_ADDR}:${LLAMA_PORT}:8080"
     volumes:

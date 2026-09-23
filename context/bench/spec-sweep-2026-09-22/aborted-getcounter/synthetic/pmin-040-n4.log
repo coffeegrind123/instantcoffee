@@ -1,0 +1,221 @@
+ Image instantcoffee/proxy:0.9.5 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 590B 0.1s done
+#1 DONE 0.1s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile:
+#2 transferring dockerfile: 17.62kB 0.3s done
+#2 DONE 0.8s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+#6 resolve docker.io/library/python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285 0.0s done
+#6 DONE 0.1s
+
+#5 [internal] load build context
+#5 ...
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+#6 DONE 0.5s
+
+#5 [internal] load build context
+#5 transferring context: 445.69kB 0.4s done
+#5 DONE 0.6s
+
+#7 [2/8] RUN test -n "0.9.5" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#7 DONE 8.6s
+
+#8 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.9.5"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#8 7.675 Collecting forge-guardrails==0.9.5
+#8 7.940   Downloading forge_guardrails-0.9.5-py3-none-any.whl.metadata (22 kB)
+#8 8.084 Collecting huggingface_hub>=0.27 (from huggingface_hub[hf_xet]>=0.27)
+#8 8.105   Downloading huggingface_hub-1.32.0-py3-none-any.whl.metadata (16 kB)
+#8 8.165 Collecting httpx>=0.27 (from forge-guardrails==0.9.5)
+#8 8.186   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#8 8.362 Collecting pydantic>=2.0 (from forge-guardrails==0.9.5)
+#8 8.380   Downloading pydantic-2.13.5-py3-none-any.whl.metadata (110 kB)
+#8 8.447 Collecting tomli-w>=1.0 (from forge-guardrails==0.9.5)
+#8 8.470   Downloading tomli_w-1.2.0-py3-none-any.whl.metadata (5.7 kB)
+#8 8.504 Collecting click<9.0.0,>=8.4.2 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.525   Downloading click-8.5.0-py3-none-any.whl.metadata (2.6 kB)
+#8 8.568 Collecting filelock>=3.10.0 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.588   Downloading filelock-4.0.1-py3-none-any.whl.metadata (2.0 kB)
+#8 8.625 Collecting fsspec>=2023.5.0 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.650   Downloading fsspec-2026.9.0-py3-none-any.whl.metadata (10 kB)
+#8 8.732 Collecting hf-xet<2.0.0,>=1.5.2 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.754   Downloading hf_xet-1.6.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+#8 8.786 Collecting packaging>=20.9 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.808   Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+#8 8.872 Collecting pyyaml>=5.1 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.893   Downloading pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+#8 8.942 Collecting tqdm>=4.42.1 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 8.960   Downloading tqdm-4.70.1-py3-none-any.whl.metadata (57 kB)
+#8 9.016 Collecting typing-extensions>=4.1.0 (from huggingface_hub>=0.27->huggingface_hub[hf_xet]>=0.27)
+#8 9.058   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#8 9.096 Collecting anyio (from httpx>=0.27->forge-guardrails==0.9.5)
+#8 9.116   Downloading anyio-4.15.1-py3-none-any.whl.metadata (4.7 kB)
+#8 9.154 Collecting certifi (from httpx>=0.27->forge-guardrails==0.9.5)
+#8 9.176   Downloading certifi-2026.7.22-py3-none-any.whl.metadata (2.5 kB)
+#8 9.209 Collecting httpcore==1.* (from httpx>=0.27->forge-guardrails==0.9.5)
+#8 9.228   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#8 9.271 Collecting idna (from httpx>=0.27->forge-guardrails==0.9.5)
+#8 9.296   Downloading idna-3.20-py3-none-any.whl.metadata (7.2 kB)
+#8 9.328 Collecting h11>=0.16 (from httpcore==1.*->httpx>=0.27->forge-guardrails==0.9.5)
+#8 9.348   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#8 9.379 Collecting annotated-types>=0.6.0 (from pydantic>=2.0->forge-guardrails==0.9.5)
+#8 9.398   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#8 10.61 Collecting pydantic-core==2.46.5 (from pydantic>=2.0->forge-guardrails==0.9.5)
+#8 10.63   Downloading pydantic_core-2.46.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#8 10.66 Collecting typing-inspection>=0.4.2 (from pydantic>=2.0->forge-guardrails==0.9.5)
+#8 10.68   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#8 13.01 Downloading forge_guardrails-0.9.5-py3-none-any.whl (187 kB)
+#8 13.10 Downloading huggingface_hub-1.32.0-py3-none-any.whl (842 kB)
+#8 13.37    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 842.9/842.9 kB 3.2 MB/s  0:00:00
+#8 13.39 Downloading click-8.5.0-py3-none-any.whl (125 kB)
+#8 13.45 Downloading hf_xet-1.6.0-cp38-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.5 MB)
+#8 14.91    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.5/4.5 MB 3.1 MB/s  0:00:01
+#8 14.94 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#8 14.99 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#8 15.03 Downloading filelock-4.0.1-py3-none-any.whl (106 kB)
+#8 15.09 Downloading fsspec-2026.9.0-py3-none-any.whl (221 kB)
+#8 15.21 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#8 15.24 Downloading packaging-26.3-py3-none-any.whl (129 kB)
+#8 15.30 Downloading pydantic-2.13.5-py3-none-any.whl (472 kB)
+#8 15.49 Downloading pydantic_core-2.46.5-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#8 16.14    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 3.2 MB/s  0:00:00
+#8 16.16 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#8 16.19 Downloading pyyaml-6.0.3-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (801 kB)
+#8 16.47    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 801.6/801.6 kB 2.9 MB/s  0:00:00
+#8 16.49 Downloading tomli_w-1.2.0-py3-none-any.whl (6.7 kB)
+#8 16.51 Downloading tqdm-4.70.1-py3-none-any.whl (80 kB)
+#8 16.56 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#8 16.60 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#8 16.62 Downloading anyio-4.15.1-py3-none-any.whl (132 kB)
+#8 16.69 Downloading idna-3.20-py3-none-any.whl (69 kB)
+#8 16.75 Downloading certifi-2026.7.22-py3-none-any.whl (136 kB)
+#8 17.03 Installing collected packages: typing-extensions, tqdm, tomli-w, pyyaml, packaging, idna, hf-xet, h11, fsspec, filelock, click, certifi, annotated-types, typing-inspection, pydantic-core, httpcore, anyio, pydantic, httpx, huggingface_hub, forge-guardrails
+#8 19.95 
+#8 19.95 Successfully installed annotated-types-0.8.0 anyio-4.15.1 certifi-2026.7.22 click-8.5.0 filelock-4.0.1 forge-guardrails-0.9.5 fsspec-2026.9.0 h11-0.16.0 hf-xet-1.6.0 httpcore-1.0.9 httpx-0.28.1 huggingface_hub-1.32.0 idna-3.20 packaging-26.3 pydantic-2.13.5 pydantic-core-2.46.5 pyyaml-6.0.3 tomli-w-1.2.0 tqdm-4.70.1 typing-extensions-4.16.0 typing-inspection-0.4.4
+#8 19.96 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#8 DONE 20.5s
+
+#9 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py      patches/forge_llamafile_timeout.py patches/forge_sse_error_shape.py      patches/forge_backend_error_detail.py      /tmp/patches/
+#9 DONE 0.3s
+
+#10 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE"     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE"     && python /tmp/patches/forge_empty_turn.py "$SITE"     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE"     && python /tmp/patches/forge_stream_timeout.py "$SITE"     && python /tmp/patches/forge_llamafile_timeout.py "$SITE"     && python /tmp/patches/forge_sse_error_shape.py "$SITE"     && python /tmp/patches/forge_backend_error_detail.py "$SITE"     && rm -rf /tmp/patches
+#10 0.374 patched /usr/local/lib/python3.13/site-packages/forge/clients/llamafile.py
+#10 0.403 forge_cached_tokens: patched forge/clients/llamafile.py
+#10 0.404 forge_cached_tokens: patched forge/proxy/convert.py (4 sites)
+#10 0.428 forge_reasoning_passthrough: patched forge/core/workflow.py (1 site(s))
+#10 0.429 forge_reasoning_passthrough: patched forge/clients/llamafile.py (6 site(s))
+#10 0.429 forge_reasoning_passthrough: patched forge/proxy/convert.py (1 site(s))
+#10 0.430 forge_reasoning_passthrough: patched forge/proxy/handler.py (2 site(s))
+#10 0.454 forge_toolcall_content: patched forge/core/workflow.py (ToolCall.content)
+#10 0.454 forge_toolcall_content: patched forge/clients/llamafile.py (helper + 2 construction sites)
+#10 0.454 forge_toolcall_content: patched forge/proxy/convert.py (2 response builders)
+#10 0.478 forge_merge_across_tools: patched forge/clients/llamafile.py (adjacent-only merge, flag-gated)
+#10 0.503 forge_anthropic_reasoning: patched forge/proxy/convert_anthropic.py (5 site(s))
+#10 0.503 forge_anthropic_reasoning: patched forge/proxy/handler.py (1 site(s))
+#10 0.527 forge_toolcall_passthrough: patched forge/core/inference.py (2 site(s))
+#10 0.527 forge_toolcall_passthrough: patched forge/proxy/handler.py (1 site(s))
+#10 0.551 forge_empty_turn: patched forge/core/inference.py (1 site(s))
+#10 0.551 forge_empty_turn: patched forge/proxy/handler.py (2 site(s))
+#10 0.574 forge_text_sse_passthrough: patched forge/proxy/convert.py (2 site(s))
+#10 0.575 forge_text_sse_passthrough: patched forge/proxy/handler.py (2 site(s))
+#10 0.601 forge_stream_timeout: patched forge/clients/openai_compat.py (send_stream wrapped)
+#10 0.625 forge_llamafile_timeout: patched forge/clients/llamafile.py (send + send_stream wrapped)
+#10 0.648 forge_sse_error_shape: patched forge/proxy/server.py (streaming errors are visible)
+#10 0.671 forge_backend_error_detail: patched forge/proxy/server.py (backend error sentences reach the client)
+#10 DONE 0.7s
+
+#11 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py      scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/template_probe.py      scripts/test_forge_patches.py /work/scripts/
+#11 DONE 0.7s
+
+#12 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#12 DONE 0.1s
+
+#13 [8/8] WORKDIR /work
+#13 DONE 0.1s
+
+#14 exporting to image
+#14 exporting layers
+#14 exporting layers 2.5s done
+#14 exporting manifest sha256:6b5598a6da2e2e46f75e84c999075091d873b93e16358392923a6f370563968d 0.1s done
+#14 exporting config sha256:03f5973ca9c6282d7dec9c3b5a8faf7bc7de8112e04033071474eb5b166428df 0.0s done
+#14 exporting attestation manifest sha256:295987e42223c318a07b24823134dff514de8e3a64a682b997d5b72c94b3b5d0 0.0s done
+#14 exporting manifest list sha256:0a2e3097219f7c944ed4ac9f8156eb3d9a92c392b4d6d8499b254d9975155612 0.0s done
+#14 naming to docker.io/instantcoffee/proxy:0.9.5 done
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5
+#14 unpacking to docker.io/instantcoffee/proxy:0.9.5 3.8s done
+#14 DONE 6.6s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.1s
+ Image instantcoffee/proxy:0.9.5 Built 
+ Container instantcoffee-bench-run-900bb91d8f7e Creating 
+ Container instantcoffee-bench-run-900bb91d8f7e Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=1024   prompt=1053   prefill=   178.9 tok/s  decode=  64.8 tok/s  wall=  9.96s draft=173/304 (57% accepted)
+  pp=1024   prompt=1053   prefill=   909.4 tok/s  decode=  70.8 tok/s  wall=  7.80s draft=175/296 (59% accepted)
+  pp=1024   prompt=1053   prefill=   132.2 tok/s  decode=  59.8 tok/s  wall= 65.27s draft=171/304 (56% accepted)
+
+best prefill: 909.4 tok/s     best decode: 70.8 tok/s
+MTP draft acceptance: 519/904 = 57.4% across 3 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 9.96,
+      "prompt_n": 1053,
+      "prompt_tps": 178.93775209321484,
+      "predicted_n": 256,
+      "predicted_tps": 64.78451147143156,
+      "cache_n": 0,
+      "draft_n": 304,
+      "draft_accepted": 173,
+      "draft_acceptance": 0.569
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.8,
+      "prompt_n": 1053,
+      "prompt_tps": 909.4214507733537,
+      "predicted_n": 256,
+      "predicted_tps": 70.82809992372785,
+      "cache_n": 0,
+      "draft_n": 296,
+      "draft_accepted": 175,
+      "draft_acceptance": 0.591
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 65.27,
+      "prompt_n": 1053,
+      "prompt_tps": 132.21422923938397,
+      "predicted_n": 256,
+      "predicted_tps": 59.84344953601378,
+      "cache_n": 0,
+      "draft_n": 304,
+      "draft_accepted": 171,
+      "draft_acceptance": 0.562
+    }
+  ]
+}

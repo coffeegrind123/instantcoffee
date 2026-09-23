@@ -1,3 +1,45 @@
+# Handoff — 2026-09-22 (part 12: sudoingX/qwen38-mtp investigated and measured — p-min 0.40 -> 0.0 adopted, the chain kept, GRAPH_OPT plumbed and left off)
+
+**Production changed one value: `SPEC_DRAFT_P_MIN` 0.40 -> 0.0.** Everything
+else about the spec config stands. Evidence, verdicts and the probe.py parity
+numbers are in `design/decisions.md` (2026-09-22); raw results in
+`bench/spec-sweep-2026-09-22/` (phase 1 at the root, phase 2 in `phase2/`).
+
+## 1. What changed
+
+- `.env`: `SPEC_DRAFT_P_MIN=0.0`, with the measurement table beside it. New key
+  `GGML_CUDA_GRAPH_OPT=0` (engine reads `atoi(env) == 1`, so 0 is off).
+- `docker-compose.yml`: llama passes `GGML_CUDA_GRAPH_OPT` through.
+- `spec-sweep.sh`: CONFIGS rows take a seventh field, GRAPH_OPT (0/1/empty).
+  It is an env var, so `live_matches` now also reads the container's Env —
+  without that, an off arm after an on arm benches the on server under the off
+  label. Stamped as `config.graph_opt`, shown as the GO column. New rows:
+  `mtp-p0-n4`, `ngrammapk-p0-n{4,5,6}`, `mtp-p0-n{5,6}`, `ngrammapk-n4-gopt`.
+- `spec-sweep.sh`: `SWEEP_KEYS` now includes the three ngram-mod keys and
+  GRAPH_OPT. The script always wrote the mod keys, so its own restore used to
+  report them as "somebody else's edit" being discarded.
+- `versions.lock` `spec_config`; `docs/benchmarking.md` (the Get-Counter note).
+
+## 2. Do not
+
+- **Do not poll `Get-Counter "\GPU Process Memory(*)"` while anything is being
+  measured.** It stalls GPU<->host copies under WSL2 (prompt-cache save 0.5 s
+  -> 41 s). nvidia-smi is safe. Read Shared Usage only with the box idle.
+- **Do not stop a backgrounded sweep by the wrapper's PID.** `$!` of
+  `cmd > log &` inside a `bash -c` is the script; the harness's background
+  task PID is its parent shell. Killing the parent left the sweep running,
+  and SIGKILL to the script skips its restore trap — `.env` then holds an arm's
+  values. `git diff .env` after any interrupted sweep.
+
+## 3. Open
+
+- ngram-map-k's own knobs (size-n/size-m/min-hits) are still unplumbed and
+  untested. p-min 0 changes what MTP drafts on a map-k miss, so re-measure
+  them against this pin, not the old one.
+- forge was found stopped (Exited 137) at session start and was left stopped by
+  request. llama runs the new production config; `./scripts/up.sh` brings
+  forge back.
+
 # Handoff — 2026-09-04 (part 11: part 10's own commands, checked against the scripts instead of the prose — two of the five jobs were mis-specified, and §3's rotation table straddled the model change)
 
 **No GPU was available this session** (box at load ~5 with another session's

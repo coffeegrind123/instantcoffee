@@ -10,6 +10,23 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**`SPEC_DRAFT_P_MIN` 0.40 -> 0.0 (2026-09-22).** Ungated MTP drafting, from
+the sudoingX/qwen38-mtp community record, measured here in two independent
+interleaved sweeps: **+20.2% (p=0.037) and +14.4% (p=0.042) decode on novel
+text**, no detectable effect on repetitive text. n-max 5/6 bought nothing over
+4, so n-max stays; the `ngram-map-k` chain stays too — MTP alone was 12-16%
+slower on repetitive text (p<0.01), contrary to the repo's 3090 finding.
+`GGML_CUDA_GRAPH_OPT` is now plumbed (compose, `.env`, a spec-sweep row field)
+and left off: no measurable effect. With the repo's own `probe.py`, spec off
+44.5 tok/s and production 83.3-85.5, level with the community 4090 row
+(44.7 -> 87.1).
+
+**Windows' GPU memory counters are not a safe spill monitor here.**
+`Get-Counter "\GPU Process Memory(*)"`, the repo's recommended check, stalls
+GPU<->host copies across WSL2 for its sampling window — prompt-cache saves went
+from 0.5 s to 41 s and one arm's decode spread to 57-80 tok/s. Poll nvidia-smi
+during measurements; see `docs/benchmarking.md`.
+
 **`ninfer-compare.sh --restore-only` puts the stack back in one command.** The
 script's EXIT/INT/TERM trap does work — an interrupted run on 2026-09-03
 recovered unaided — but it is not proof against a *second* signal, which one

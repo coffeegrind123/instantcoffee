@@ -1,0 +1,70 @@
+pins: server-cuda-b10689  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b
+==> sweeping 5 config(s) x 2 workload(s) into context/bench/spec-sweep-2026-09-22
+current: SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.40
+==> ===== round 1 of 3 =====
+==> pmin-040-n4 — SPEC_TYPE=draft-mtp n-max=4 p-min=0.40 draft=none mod=default graph-opt=0
+  workloads to measure: synthetic repeat
+  live server differs (no llama container in this compose project) — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   pmin-040-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   pmin-040-n4 [repeat] recorded
+==> ngrammapk-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.40 draft=none mod=default graph-opt=0
+  workloads to measure: synthetic repeat
+  live server differs (spec-type: live='draft-mtp' want='ngram-map-k,draft-mtp') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+container instantcoffee-llama exited (143)
+warn ngrammapk-n4 — llama did not become healthy within 3000s; skipping
+==> mtp-p0-n4 — SPEC_TYPE=draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0
+  workloads to measure: synthetic repeat
+  live server differs (no llama container in this compose project) — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+
+warn ##################################################################
+warn # .env WAS NOT RESTORED — the backup is missing or empty:
+warn #     /home/claudeuser/qwen3.8-forge/.env.spec-sweep-backup
+warn # .env currently holds:
+warn #     SPEC_TYPE=draft-mtp
+warn #     SPEC_DRAFT_N_MAX=4
+warn #     SPEC_DRAFT_P_MIN=0.0
+warn # If those are a sweep config rather than yours, fix them BEFORE the
+warn # next ./scripts/up.sh. spec_config in versions.lock records the
+warn # values this repo considers production.
+warn ##################################################################
+warn mtp-p0-n4 — llama did not become healthy within 3000s; skipping
+instantcoffee-llama  | warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+instantcoffee-llama  | 0.00.185.017 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+instantcoffee-llama  | 0.00.185.531 W srv  llama_server: -----------------
+instantcoffee-llama  | 0.00.185.554 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+instantcoffee-llama  | 0.00.185.554 W srv  llama_server: this can be a security risk (cross-origin attacks)
+instantcoffee-llama  | 0.00.185.554 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+instantcoffee-llama  | 0.00.185.554 W srv  llama_server: -----------------
+instantcoffee-llama  | 0.00.186.942 I srv    load_model: loading model '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+==> ngrammapk-p0-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0
+  workloads to measure: synthetic repeat
+  live server differs (health=starting, not healthy) — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+
