@@ -26,9 +26,8 @@ p~0.04 is a lead. Replication and a mechanism are what make one a result.
 
 ## 3. Open
 
-- **size-m above 96** is untested. The gain came with acceptance falling 80% ->
-  68%, so the curve has a top; if it is ever swept, pair 96 against 128/192 on
-  the repeat workload with `--rounds 5`.
+- **size-m above 96** is untested — OPEN-WORK **0h** has the rows, the
+  commands and the adoption rule.
 - forge still stopped as found; `./scripts/up.sh` brings it back.
 
 # Handoff — 2026-09-22 (part 12: sudoingX/qwen38-mtp investigated and measured — p-min 0.40 -> 0.0 adopted, the chain kept, GRAPH_OPT plumbed and left off)

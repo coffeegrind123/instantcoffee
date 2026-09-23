@@ -562,6 +562,11 @@ Six usable rounds, n=24 a side:
 LIVE pin.** It runs at ENGINE DEFAULTS (`size-n 12, size-m 48, min-hits 1`); its
 knob family is deliberately not plumbed.
 
+> **SUPERSEDED 2026-09-23 on two values:** p-min is now 0.0 and map-k's draft
+> cap `size-m` is 96, both plumbed and measured. See `versions.lock`
+> `spec_config` and `design/decisions.md` 2026-09-22 / 2026-09-23. The
+> paragraph above is kept as the 2026-09-01 record.
+
 ```
 SPEC_TYPE=ngram-map-k,draft-mtp     # n-max 4 / p-min 0.40 unchanged
 ```
@@ -716,6 +721,14 @@ not "no cost".
 ---
 
 ## 0e. Settle the novel-text cost of the pin — 19 rounds, ~4h
+
+> **Still open; partial evidence from 2026-09-22/23, and the arms below need
+> updating.** The pin is now p-min 0.0 with map-k size-m 96, so compare against
+> `mapk-sm96`, not `ngrammapk-n4`. Related data, not the same comparison: MTP
+> alone vs the chain on novel text was +13.5% (p=0.08, sign-flipping by round)
+> at p-min 0 in `bench/spec-sweep-2026-09-22`. Read it against the 2026-09-23
+> A/A calibration: identical servers reached p=0.04-0.07 on this workload, so
+> the 19-round plan below is still the only way to a number.
 
 **The one axis of the live pin that is genuinely unresolved.** map-k measured
 -6.6% against ngram-mod on synthetic (2026-09-01, n=24 a side), but:
@@ -961,6 +974,40 @@ Neither has ever wedged — both are Python servers that would crash and exit,
 which the restart policy already handles — so this is a note, not a task. If one
 ever does, the generalisation is the sidecar, and it should be argued for on its
 own evidence rather than added pre-emptively.
+
+---
+
+## 0h. map-k's draft cap above 96 — the curve has a top, and nobody has found it (2026-09-23)
+
+`SPEC_NGRAM_MAPK_SIZE_M` went 48 -> 96 on 2026-09-23 for a modest, replicated
++3-6% on repetitive text (7 of 7 paired rounds, sign test p=0.016; see
+`design/decisions.md` 2026-09-23). The gain came with acceptance falling from
+80% to 68% (draft/cycle 9.68 -> 12.05), so longer drafts are already missing
+more often; somewhere above 96 the misses cost more than the hits save.
+
+**Deliberately not run** on 2026-09-23 (operator's call, after a long day of GPU
+work). The arms were written and reverted rather than committed unused. To run
+it, add to `CONFIGS` in `scripts/spec-sweep.sh`, next to `mapk-mh3`:
+
+```
+  "mapk-sm128|ngram-map-k,draft-mtp|4|0.0||||:128:"
+  "mapk-sm192|ngram-map-k,draft-mtp|4|0.0||||:192:"
+```
+
+then, `mapk-sm96` being the production control:
+
+```bash
+./scripts/spec-sweep.sh --rounds 5 --workload synthetic,repeat \
+  --results-dir context/bench/spec-sweep-<date>-mapk-sm-high \
+  --only mapk-sm96,mapk-sm128,mapk-sm192
+python3 scripts/spec_sweep_compare.py \
+  --results-dir context/bench/spec-sweep-<date>-mapk-sm-high --baseline mapk-sm96
+```
+
+~50 min (3 arms x 5 rounds, ~3 min per arm with a warm page cache). **Decide on
+the REPEAT workload** — the synthetic one cannot tell identical servers apart at
+p~0.05 (the 2026-09-23 A/A). Adopt only a win that holds in every round subset;
+a flat result keeps 96 and closes this item.
 
 ---
 

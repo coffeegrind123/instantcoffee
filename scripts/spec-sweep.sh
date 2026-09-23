@@ -319,7 +319,8 @@ CONFIGS=(
   "mapk-sm96|ngram-map-k,draft-mtp|4|0.0||||:96:"
   "mapk-mh3|ngram-map-k,draft-mtp|4|0.0||||::3"
   # 2026-09-23: MTP's cost at depth. Run each with --prompt-len into its own
-  # --results-dir; the production pin (ngrammapk-p0-n4) is the other arm.
+  # --results-dir; ngrammapk-p0-n4 was the production pin when this was measured
+  # (production is mapk-sm96 since 2026-09-23).
   "specoff|none|4|0.0||"
 )
 
