@@ -1011,12 +1011,13 @@ a flat result keeps 96 and closes this item.
 
 ---
 
-## 0i. Upgrade llama.cpp (b10689 -> b11118) and the pi-side tools — APPROVED, not started (2026-09-23)
+## 0i. Upgrade llama.cpp (b10689 -> b11118) and the pi-side tools — llama APPLIED, measurement NOT DONE (2026-09-23)
 
-The runbook is HANDOFF **part 14**: inventory, what b11118 changes for this
-config (verified in source), the order, the re-measurement battery, and the
-roll-back. Do it in a fresh session, llama.cpp first, pi-side tools in a second
-commit.
+The runbook is HANDOFF **part 14**; what happened is **part 15**. b11118 runs in
+production and passed every functional check (part 14 §3 steps 1, 2, 6, 7). The
+measurement steps (3, 4, 5, 8, 9) are all still owed: the one sweep started was
+contaminated by host load and abandoned — re-run from scratch on a quiet box.
+The pi-side tools (§4) are untouched.
 
 ---
 

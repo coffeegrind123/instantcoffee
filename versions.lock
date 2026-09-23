@@ -35,11 +35,11 @@
 # time of these numbers; a re-download is in flight and the quant-level
 # numbers will need one more pass. See the 2026-08-22 entry in
 # context/design/decisions.md.
-updated_utc         = 2026-08-30T12:04:41Z
+updated_utc         = 2026-09-23T11:43:57Z
 updated_note        = b10573 -> b10689 and forge 0.9.0 -> 0.9.5, both
                       measured. See tool_grammar and forge_0_9_5_probe.
-llama_image         = ghcr.io/ggml-org/llama.cpp:server-cuda-b10689
-llama_image_digest  = sha256:e52c610406cd18714902d1ca3bffadebca4a2a8370faaba8a5be5cc5d5203921
+llama_image         = ghcr.io/ggml-org/llama.cpp:server-cuda-b11118
+llama_image_digest  = sha256:bfb3264fc2166e01e2b4f9b537e45d7006d87c75021b911f132ef607f5bbced3
 llama_image_note    = Binary self-reports `build 10689, commit 57291f264`.
                       Pinned by hand on 2026-08-30 because update.sh was unsafe
                       at the time — its template was the WHOLE of this file and
@@ -53,7 +53,7 @@ llama_image_note    = Binary self-reports `build 10689, commit 57291f264`.
                       server-cuda image. b10690 and b10678-b10688 all 404;
                       the earlier published tags are b10680, b10666, b10644,
                       b10630, b10615, b10603, b10588.
-llama_image_prev    = server-cuda-b10573 @ sha256:f74f5805191a8030bff26e2a7890d737fc2b5d0931220c953d25e1b7d7613ef5
+llama_image_prev    = server-cuda-b10689 @ sha256:e52c610406cd18714902d1ca3bffadebca4a2a8370faaba8a5be5cc5d5203921
 llama_image_prev_note = PRIOR TO THAT: server-cuda-b10200 @ sha256:48b8053c05319
                       cde97e64463d117b5747d3fb27475b176f85edf27bd503fa7f9
 forge_version       = 0.9.5

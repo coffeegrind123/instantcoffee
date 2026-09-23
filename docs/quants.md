@@ -29,6 +29,12 @@ Upstream confirms it: llama.cpp#20866, where the fix is a rebuild with
 (96 → 2361 tok/s across that flag). Disabling flash attention is still not an
 escape — llama.cpp refuses to start with `V cache quantization requires flash_attn`.
 
+**Since b11118** (llama.cpp#28079) the CPU fall-off is gone: the build option is now
+`GGML_CUDA_FA_QUANTS`, and a pair without a compiled kernel logs `no FlashAttention
+vector kernel compiled for K/V types …, converting K and V to f16 instead (slow)`
+once and runs the f16 kernel on the GPU. Still slower than a matched pair, so the
+matched-pair rule stands; only the failure mode changed.
+
 So a matched `q8_0/q8_0` was available the whole time. Only **16 of 64 layers** hold
 a KV cache on this hybrid architecture (`16 × (3 × GatedDeltaNet → 1 × Gated
 Attention)`), so with the MTP block counted the cache is ~68 KiB/token at `f16` and

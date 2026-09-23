@@ -318,6 +318,10 @@ CONFIGS=(
   "mapk-sm24|ngram-map-k,draft-mtp|4|0.0||||:24:"
   "mapk-sm96|ngram-map-k,draft-mtp|4|0.0||||:96:"
   "mapk-mh3|ngram-map-k,draft-mtp|4|0.0||||::3"
+  # 2026-09-23: the production pin's depth, re-opened by b11118 giving MTP
+  # drafting CUDA graphs (#28549) — n-max 5/6 lost at b10689 on a costlier step.
+  "mapk-sm96-n5|ngram-map-k,draft-mtp|5|0.0||||:96:"
+  "mapk-sm96-n6|ngram-map-k,draft-mtp|6|0.0||||:96:"
   # 2026-09-23: MTP's cost at depth. Run each with --prompt-len into its own
   # --results-dir; ngrammapk-p0-n4 was the production pin when this was measured
   # (production is mapk-sm96 since 2026-09-23).

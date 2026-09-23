@@ -15,7 +15,6 @@ services:
     # by hand. init: true puts a real init in front to forward signals and reap.
     init: true
     environment:
-      - LLAMA_SET_ROWS=1
       # Default 3 = exactly what this stack has always run; nothing changes
       # unless a caller exports LLAMA_LOG_VERBOSITY. capacity-probe.sh exports
       # 5, because common_memory_breakdown_print() — the model/KV/compute table
@@ -58,8 +57,9 @@ services:
     #
     # -ctk and -ctv MUST be the same type. A stock CUDA build compiles only
     # matched flash-attention kernels (f16/f16, q4_0/q4_0, q8_0/q8_0,
-    # bf16/bf16); a mismatched pair returns BEST_FATTN_KERNEL_NONE and prefill
-    # silently moves to the CPU. See CACHE_TYPE_K in .env, and llama.cpp#20866.
+    # bf16/bf16). Since b11118 (#28079) a mismatched pair converts K and V to
+    # f16 on every call and logs one warning; before it, prefill fell to the
+    # CPU. Either way it is slow. See CACHE_TYPE_K in .env.
     # The defaults here are f16/f16 so a .env predating these keys is unchanged.
     #
     # DRAFT_GGUF_FILE is the speculative DRAFT model, and it is empty by default

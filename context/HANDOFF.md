@@ -1,3 +1,51 @@
+# Handoff — 2026-09-23 (part 15: b11118 is in production, functionally checked, NOT measured — plus a forge schema fix and a sweep-interrupt fix the upgrade flushed out)
+
+## 1. State
+
+- **llama.cpp b11118 is live** (`LLAMA_TAG`, `versions.lock`). Smoke 11/11.
+  Part 14 §3 done: step 1 (update), 2 (startup log), 6 (reasoning budget: the
+  message then a clean close, forge still splits reasoning/content), 7 (mixed-
+  type tool args, see §2). **Owed: 3, 4, 5, 8, 9** — every measurement.
+- **The sweep for step 3 was abandoned.** Another session's CPU-rendered
+  Chrome/WebGPU test loop (`~/cs2/cs16-rt`) held host load at 8-13; five of
+  the first ten arm-runs were flagged not comparable. The partial data was
+  deleted (`spec-sweep-2026-09-23-b11118/`); nothing from it survives.
+  Re-run all of §3 on a quiet box; check `uptime` AND other claude sessions.
+- New sweep rows `mapk-sm96-n5` / `mapk-sm96-n6` exist for §3's depth arms.
+
+## 2. Fixed this session
+
+- **forge crashed on JSON Schema type lists** (`"type": ["string","number"]`,
+  what MCP servers emit for unions): 502 `unhashable type: 'list'`. Worse and
+  silent: anyOf/oneOf/allOf/$ref/const/untyped params were rewritten to
+  `"type": "string"`, and on the Anthropic path that rewritten schema is the
+  grammar llama compiles. `patches/forge_tool_schema.py` sends the client's
+  schema verbatim; tests in `test_forge_patches.py` (132/132). Live-checked on
+  both protocols. Upstream forge main has the same code; nothing filed.
+- **Stopping a sweep as part 14 §5 said corrupted `.env`.** spec-sweep.sh and
+  capacity-probe.sh trapped INT/TERM with a handler that restored and RESUMED;
+  the next arm overwrote the restore after the backup was deleted. INT/TERM
+  now exit 130/143 and warn that llama still runs the last config.
+  `scripts/test_interrupt_exits.py`, in CI.
+- Stale mismatched-KV comments (compose, `.env`, docs/quants.md) corrected
+  from fattn.cu at b11118. `LLAMA_SET_ROWS` removed (read by no binary).
+
+## 3. Part 14 was wrong about
+
+- **`#28742` is not a regression.** For a `string|number` param b11118 types
+  `8080` as a number; b10689 kept it a string. Both satisfy the schema, the
+  Qwen3-Coder XML format cannot carry the difference, and vLLM-lineage parsers
+  also try string last. Nothing to fix.
+- **`--kv-tail-tokens` is not dead config**: it is the beellama fork's flag,
+  deliberately plumbed behind `LLAMA_IMAGE` (`.env`, kvarn-measured-and-
+  refused.md). Kept.
+- **`update.sh` leaves no `.env.bak`** (only `.versions.lock.bak`). Roll back
+  by setting `LLAMA_TAG` by hand.
+- **"Using specialized template: Qwen3-Coder" is LOG_DBG** and does not print at
+  verbosity 3; step 2's grep cannot see it. Checked statically instead: no
+  earlier matcher in `common_chat_try_specialized_template` fits our template.
+- `update.sh` without `--yes` exits 1 silently when stdin is not a TTY.
+
 # Handoff — 2026-09-23 (part 14: the upgrade runbook — llama.cpp b10689 -> b11118, forge, pi and every pinned tool, what each change touches and how to prove it did no harm)
 
 **Nothing here has been applied.** This part is the plan, written the day the
