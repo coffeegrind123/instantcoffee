@@ -222,6 +222,19 @@ class LoadResults(unittest.TestCase):
         got = load_results(self.dir)
         self.assertEqual(got[("repeat", 1, "pin")]["tps"], [180.0])
 
+    def test_metric_selects_the_field_and_default_is_unchanged(self):
+        """--metric wall must read wall_s and nothing else; the default must still
+        read predicted_tps, or every earlier verdict silently changes meaning."""
+        self._write("repeat", "pin.json", "pin", 1, [180.0], extra_rows=[
+            {"predicted_tps": 50.0, "prompt_tps": 1500.0, "wall_s": 12.5},
+        ])
+        self.assertEqual(load_results(self.dir)[("repeat", 1, "pin")]["tps"],
+                         [180.0, 50.0])
+        self.assertEqual(load_results(self.dir, "wall")[("repeat", 1, "pin")]["tps"],
+                         [12.5])
+        self.assertEqual(load_results(self.dir, "prefill")[("repeat", 1, "pin")]["tps"],
+                         [1500.0])
+
     def test_unparseable_json_is_skipped_not_fatal(self):
         self._write("repeat", "good.json", "pin", 1, [180.0])
         with open(os.path.join(self.dir, "repeat", "bad.json"), "w") as f:

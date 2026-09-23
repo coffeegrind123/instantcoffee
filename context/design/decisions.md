@@ -9246,3 +9246,70 @@ and was discarded (kept under `aborted-getcounter/`). nvidia-smi polled every
 second did not do this. With the box idle, `vmwp` Shared Usage reads ~1000 MiB
 at 2.6 GiB VRAM free, steady across arms, and decode matches the community
 baseline both ways: pinned host buffers, not spilled weights.
+
+## 2026-09-23 — map-k's knobs stay at defaults; MTP's long-context cost is a measured rule, not a reason to change anything
+
+Closes both items left open by the 2026-09-22 entry.
+
+**ngram-map-k knobs** (`size-n`, `size-m`, `min-hits`), newly plumbed as
+`SPEC_NGRAM_MAPK_*` and as the eighth spec-sweep row field. Swept around the
+ungated pin (`ngrammapk-p0-n4`), 4 interleaved rounds, both workloads, all
+rounds load-even; results in `context/bench/spec-sweep-2026-09-23-mapk/`.
+
+| arm | repetitive decode | draft/cycle | novel decode |
+|---|---|---|---|
+| size-m 24 | **-11.9%, p=0.010** | 7.75 (vs 9.77) | +0.9% |
+| size-m 96 | +6.1%, p=0.19, + in every round | 12.05 | -2.4% |
+| size-n 8 | +2.3%, p=0.58 | 11.14 | +1.0% |
+| size-n 16 | -0.7% | — | +0.5% |
+| min-hits 3 | -0.4%, p=0.90 | 9.68 | -7.6%, p=0.069 |
+
+`min-hits` is **inert for ngram-map-k** at b10689, read at the source:
+`get_common_ngram_map` sets `key_only` for map-k (speculative.cpp:2234), and
+`common_ngram_map_draft` returns from the key-only branch
+(ngram-map.cpp:382-398) before the only read of `min_hits` (line 401). Only
+map-k4v reaches it.
+
+**That makes the min-hits arm an A/A test, and it is the calibration this
+section is most worth keeping for.** Two configs the engine cannot tell apart
+reached p=0.069 on novel-text decode (negative in every round subset) and
+p=0.039 on novel-text draft count, while the greedy repeat workload matched
+(79.0% vs 78.7% acceptance). The novel workload samples at temp 1.0, so every
+request writes different text, and with many comparisons a p near 0.05 on it
+turns up between identical servers. **Read a single novel-text p~0.04 as a
+lead, not a result.** The 2026-09-22 p-min verdict survives this because it
+replicated in two independent sweeps with one sign throughout and has a
+mechanism (more drafting); a lone result like it would not.
+
+Also worth knowing: greedy runs are not bit-reproducible in draft counts. The
+control arm's first request drafted 1486, 1461 and 1447 tokens in different
+rounds. Compare draft distributions, not runs.
+
+**Verdict:** size-n and min-hits stay at engine defaults; lowering the cap is
+a real loss. **size-m 96 is adopted** after a focused two-arm run (5 rounds,
+`context/bench/spec-sweep-2026-09-23-mapk-sm96/`): repetitive +3.3% (p=0.28,
+n=12), positive in all 4 usable rounds; novel +3.4%, sign-mixed. Neither sweep
+is significant on its own. Across both, **7 of 7 interleaved paired rounds**
+favour it on the repeat workload (sign test p=0.016) — against the A/A arm,
+which was sign-mixed on that same workload — with a mechanism (draft/cycle
+12.05 vs 9.68: longer drafts over repeated spans, acceptance 68% vs 80%) and no
+VRAM or novel-text cost. Recorded as what it is: a modest +3-6% on
+agent-shaped text, adopted on replication rather than on one p-value.
+
+**MTP at depth.** Spec off (`--spec-type none`) vs the production pin,
+`bench.py --prompt-len`, nonce-randomised so every request re-prefills the
+whole prompt, 256 tokens out, 4 rounds, all load-even;
+`context/bench/spec-sweep-2026-09-23-longctx/`. Compared with the new
+`spec_sweep_compare.py --metric decode|prefill|wall`.
+
+| prompt | decode | prefill | wall, 256 out | break-even output |
+|---|---|---|---|---|
+| 30,029 | 40.8 -> 67.3 (+64.8%) | 2562 -> 2296 (-10.4%) | 19.0 -> 18.1 s (-4.6%) | ~140 tok |
+| 60,029 | 37.6 -> 56.5 (+50.5%) | 2287 -> 2056 (-10.1%) | 33.3 -> 34.0 s (+2.1%) | ~330 tok |
+| 88,029 | 34.7 -> 53.3 (+53.5%) | 2067 -> 1872 (-9.4%) | 50.3 -> 52.2 s (+3.7%) | ~440 tok |
+
+Every delta p<0.001. The prefill tax is a flat ~10% and the decode gain holds
+above +50% to 88K, so MTP pays once the reply exceeds roughly **5 output
+tokens per 1K of newly prefilled prompt**. On pi's real traffic the prefix
+cache means "newly prefilled" is the turn's tail (a tool result), not the
+window, so the break-even is tens of tokens. No change.

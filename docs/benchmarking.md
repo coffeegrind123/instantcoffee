@@ -140,6 +140,22 @@ produces) and why the synthetic axis keeps coming back underpowered: on
 If no draft counters appear at all, either `SPEC_TYPE` is empty or the GGUF has
 no MTP head — check `block_count`, which must be **65**, not 64.
 
+### What a p-value on the novel workload is worth (2026-09-23)
+
+`min-hits` does nothing for ngram-map-k (read at the source), so an arm that
+sets it is an A/A test. It still reached **p=0.069** on novel-text decode and
+**p=0.039** on novel-text draft count, while the greedy repeat workload matched.
+The synthetic workload samples at temp 1.0 and every request writes different
+text; across many comparisons a p near 0.05 appears between identical servers.
+Treat a single novel-text p~0.04 as a lead: replication across independent
+sweeps, one sign in every round subset, and a mechanism are what make it a
+result. Greedy runs are not bit-reproducible in draft counts either, so compare
+distributions, not individual runs.
+
+`spec_sweep_compare.py --metric prefill|wall` compares prefill rate or whole-
+request time instead of decode (wall: lower is better). Use it for any change
+that could trade prefill for decode — MTP itself costs ~10% of prefill.
+
 ### Do not watch for VRAM spill with Get-Counter while a bench runs (2026-09-22)
 
 The spill check that sudoingX/qwen38-mtp recommends for Windows —

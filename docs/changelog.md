@@ -10,6 +10,23 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**ngram-map-k's draft cap 48 -> 96; its other knobs stay at defaults (2026-09-23).**
+`SPEC_NGRAM_MAPK_SIZE_N/SIZE_M/MIN_HITS` and a matching spec-sweep row field.
+Lowering the draft cap to 24 costs 11.9% on repetitive text (p=0.010); size-n
+8/16 is noise; `min-hits` is inert for map-k at b10689 (the key-only branch
+returns before it is read), and its arm doubled as an A/A test that still
+reached p=0.039-0.069 on the novel-text workload — the calibration for how much
+a single novel-text p-value is worth. `SPEC_NGRAM_MAPK_SIZE_M=96` is adopted:
++6.1% then +3.3% on repetitive text in two sweeps, 7 of 7 paired rounds in its
+favour (sign test p=0.016), no novel-text cost. Modest, and replicated.
+
+**MTP's long-context cost, measured to 88K.** Prefill runs ~10% slower with MTP
+at every depth while decode stays +50% or better, so MTP wins whenever the
+reply exceeds ~5 tokens per 1K of newly prefilled prompt (whole request: -4.6%
+at 30K, +2.1% at 60K, +3.7% at 88K with 256 tokens out and no prompt cache).
+With pi's prefix cache only a turn's tail is newly prefilled, so no change.
+`spec_sweep_compare.py` gained `--metric prefill|wall` for this.
+
 **`SPEC_DRAFT_P_MIN` 0.40 -> 0.0 (2026-09-22).** Ungated MTP drafting, from
 the sudoingX/qwen38-mtp community record, measured here in two independent
 interleaved sweeps: **+20.2% (p=0.037) and +14.4% (p=0.042) decode on novel

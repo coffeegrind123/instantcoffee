@@ -1,0 +1,179 @@
+pins: server-cuda-b10689  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b
+==> sweeping 2 config(s) x 2 workload(s) into context/bench/spec-sweep-2026-09-23-mapk-sm96
+current: SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0
+==> ===== round 1 of 5 =====
+==> ngrammapk-p0-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=default
+  workloads to measure: synthetic repeat
+  live server differs (ngram-mod: live='12:64:32' want='default') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [repeat] recorded
+==> mapk-sm96 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=:96:
+  workloads to measure: synthetic repeat
+  live server differs (ngram-map-k: live='default' want=':96:') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   mapk-sm96 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   mapk-sm96 [repeat] recorded
+==> ===== round 2 of 5 =====
+==> mapk-sm96 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=:96:
+  workloads to measure: synthetic repeat
+  ok   the running llama already serves this config — benching it as-is (saved a reload)
+==>   benching [synthetic] (--repeat 3) ...
+  ok   mapk-sm96 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   mapk-sm96 [repeat] recorded
+==> ngrammapk-p0-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=default
+  workloads to measure: synthetic repeat
+  live server differs (ngram-map-k: live=':96:' want='default') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [repeat] recorded
+==> ===== round 3 of 5 =====
+==> ngrammapk-p0-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=default
+  workloads to measure: synthetic repeat
+  ok   the running llama already serves this config — benching it as-is (saved a reload)
+==>   benching [synthetic] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [repeat] recorded
+==> mapk-sm96 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=:96:
+  workloads to measure: synthetic repeat
+  live server differs (ngram-map-k: live='default' want=':96:') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   mapk-sm96 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   mapk-sm96 [repeat] recorded
+==> ===== round 4 of 5 =====
+==> mapk-sm96 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=:96:
+  workloads to measure: synthetic repeat
+  ok   the running llama already serves this config — benching it as-is (saved a reload)
+==>   benching [synthetic] (--repeat 3) ...
+  ok   mapk-sm96 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   mapk-sm96 [repeat] recorded
+==> ngrammapk-p0-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=default
+  workloads to measure: synthetic repeat
+  live server differs (ngram-map-k: live=':96:' want='default') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [repeat] recorded
+==> ===== round 5 of 5 =====
+==> ngrammapk-p0-n4 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=default
+  workloads to measure: synthetic repeat
+  ok   the running llama already serves this config — benching it as-is (saved a reload)
+==>   benching [synthetic] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   ngrammapk-p0-n4 [repeat] recorded
+==> mapk-sm96 — SPEC_TYPE=ngram-map-k,draft-mtp n-max=4 p-min=0.0 draft=none mod=default graph-opt=0 mapk=:96:
+  workloads to measure: synthetic repeat
+  live server differs (ngram-map-k: live='default' want=':96:') — recreating
+==>   recreating llama (~3 min warm, far longer on a cold page cache) ...
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+  ok   llama healthy
+==>   benching [synthetic] (--repeat 3) ...
+  ok   mapk-sm96 [synthetic] recorded
+==>   benching [repeat] (--repeat 3) ...
+  ok   mapk-sm96 [repeat] recorded
+==> .env restored to its pre-sweep state
+  live server differs (ngram-mod: live='default' want='12:64:32') — recreating
+==> restoring the pre-sweep server so the stack is left as it was found
+
+==> workload: synthetic
+CONFIG               SPEC-TYPE              N-MAX  P-MIN MOD       GO   RND  PREFILL DEC-MEAN  DEC-MAX  SPREAD  ACCEPT DRAFT/CYCLE   ECHO
+---------------------------------------------------------------------------------------------------------------------------------------------------
+mapk-sm96            ngram-map-k,draft-mtp      4      0 k:96:      0   4/5   1581.2     80.1     95.8    32.9   50.1%        4.53      -
+ngrammapk-p0-n4      ngram-map-k,draft-mtp      4      0 default    0   4/5   1573.5     77.5     89.1    17.8   51.8%        4.16      -
+
+==> provenance
+  [current stack] 10 result(s)
+    llama=server-cuda-b10689  digest=e52c610406cd  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b mtime 1787676479  ngram(min_hits/n/m)=def/def/def
+  ok   all results came off the stack this box is configured for
+
+==> workload: repeat
+CONFIG               SPEC-TYPE              N-MAX  P-MIN MOD       GO   RND  PREFILL DEC-MEAN  DEC-MAX  SPREAD  ACCEPT DRAFT/CYCLE   ECHO
+---------------------------------------------------------------------------------------------------------------------------------------------------
+mapk-sm96            ngram-map-k,draft-mtp      4      0 k:96:      0   4/5   1698.6    148.7    169.7    38.5   67.9%       12.05  98.8%
+ngrammapk-p0-n4      ngram-map-k,draft-mtp      4      0 default    0   4/5   1701.6    143.9    159.3    28.5   79.7%        9.68  98.8%
+
+==> provenance
+  [current stack] 10 result(s)
+    llama=server-cuda-b10689  digest=e52c610406cd  ctx=98304  kv=q8_0/q8_0  gguf=Qwen3.8-27B-Uncensored-Q4_K_M.gguf 16810714496b mtime 1787676479  ngram(min_hits/n/m)=def/def/def
+  ok   all results came off the stack this box is configured for
+
+Rows are sorted by DEC-MEAN, best first.
+
+READ SPREAD BEFORE READING THE RANKING. It is max-min across this config's own
+--repeat runs. If SPREAD is wider than the gap between two rows, those two rows
+are not distinguishable and ranking them is false precision. Earlier handoffs
+quote DEC-MAX, which is what this table printed, unlabelled, before the
+2026-08-22 provenance pass.
+
+How to read DRAFT/CYCLE (the column this sweep was built for):
+  ~1.0 with n-max 2  -> p-min is truncating the draft. Lower SPEC_DRAFT_P_MIN.
+  ~n-max             -> n-max is binding. Raise SPEC_DRAFT_N_MAX.
+  Between            -> both bite; take the row with the best DECODE and stop.
+It is a property of the drafting rather than of the clock, so it is the most
+contention-resistant number here and the one to prefer when decode is close.
+
+ACCEPT is a rate, not a goal. It is expected to fall as p-min drops; that is
+the trade being bought. DECODE is the number that decides.
+
+ECHO (--workload repeat only) is the share of generated 12-token windows that
+also occur in the prompt — the ceiling on what ngram-simple could ever draft.
+It is a property of the workload, not of the config, so it should be roughly
+constant down the column. If it is not, the runs are not comparable. A high
+ECHO next to a DRAFT/CYCLE pinned at n-max is repetition the engine is paying
+full price for; that is the case ngram-simple exists to fix. ECHO reads "-" on
+the synthetic workload, whose repetition is incidental rather than measured.
+  ok sweep complete
+exit=0

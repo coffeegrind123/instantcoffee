@@ -63,8 +63,19 @@ MAX_PERM_N = 8
 SAMPLED_PERMS = 200000
 
 
-def load_results(results_dir):
-    """-> {(workload, round, config): {'tps': [...], 'load': (before, after)}}"""
+# Which per-request field is compared. decode is what every spec decision here
+# has been made on; prefill and wall exist for the long-context question, where
+# MTP's prefill tax can outweigh its decode gain on a request that is mostly
+# prompt. wall is a time, so LOWER is better and a negative delta is a win.
+METRICS = {"decode": "predicted_tps", "prefill": "prompt_tps", "wall": "wall_s"}
+
+
+def load_results(results_dir, metric="decode"):
+    """-> {(workload, round, config): {'tps': [...], 'load': (before, after)}}
+
+    'tps' holds whichever METRICS field was asked for; the key keeps its
+    historical name so every caller reads the same shape."""
+    field = METRICS[metric]
     out = {}
     for wl_dir in sorted(glob.glob(os.path.join(results_dir, "*"))):
         if not os.path.isdir(wl_dir):
@@ -80,11 +91,11 @@ def load_results(results_dir):
             name = cfg.get("name")
             if not name:
                 continue
-            tps = [r["predicted_tps"] for r in doc.get("rows", [])
+            tps = [r[field] for r in doc.get("rows", [])
                    if r.get("error") is None
                    and not r.get("cached")
                    and not r.get("unrepeated")
-                   and isinstance(r.get("predicted_tps"), (int, float))]
+                   and isinstance(r.get(field), (int, float))]
             if not tps:
                 continue
             out[(wl, cfg.get("round", 1), name)] = {
@@ -217,9 +228,14 @@ def main():
     ap.add_argument("--keep-first-round", action="store_true",
                     help="do not drop round 1 (it pays cold caches; dropped by default "
                          "whenever a later round exists)")
+    ap.add_argument("--metric", choices=sorted(METRICS), default="decode",
+                    help="per-request field to compare: decode (predicted_tps, the "
+                         "default), prefill (prompt_tps), or wall (wall_s, lower is better)")
     args = ap.parse_args()
 
-    data = load_results(args.results_dir)
+    data = load_results(args.results_dir, args.metric)
+    print("metric: %s (%s)%s" % (args.metric, METRICS[args.metric],
+                                 ", LOWER is better" if args.metric == "wall" else ""))
     if not data:
         sys.exit("no usable results under %s" % args.results_dir)
 

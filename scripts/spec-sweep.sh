@@ -262,7 +262,13 @@ ONLY=""
 # than an .env edit between runs so an on/off pair can be interleaved with
 # --rounds like every other pair here.
 #
-# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE | NGRAM_MOD n-min:n-max:n-match | GGML_CUDA_GRAPH_OPT
+#
+# THE EIGHTH FIELD IS THE ngram-map-k KNOB SET, size-n:size-m:min-hits, each part
+# empty for the engine default (12:48:1 at b10689), the whole field empty for all
+# three. Only valid on rows whose SPEC_TYPE carries ngram-map-k. min-hits is in
+# the set to be PROVEN inert, not tuned — see the SPEC_NGRAM_MAPK_* note in .env.
+#
+# name | SPEC_TYPE | SPEC_DRAFT_N_MAX | SPEC_DRAFT_P_MIN | DRAFT_GGUF_FILE | NGRAM_MOD n-min:n-max:n-match | GGML_CUDA_GRAPH_OPT | NGRAM_MAPK size-n:size-m:min-hits
 CONFIGS=(
   "baseline|draft-mtp|2|0.75||"
   "pmin-050|draft-mtp|2|0.50||"
@@ -304,6 +310,17 @@ CONFIGS=(
   # The GRAPH_OPT pair for the production pin. Arms for whichever config wins
   # the rows above are added once there is a winner to pair.
   "ngrammapk-n4-gopt|ngram-map-k,draft-mtp|4|0.40|||1"
+  # 2026-09-23: map-k's own knobs, around the ungated production pin
+  # (ngrammapk-p0-n4 is the control). mapk-mh3 is the dead-knob control: on the
+  # greedy repeat workload it must reproduce the control's draft counts exactly.
+  "mapk-sn8|ngram-map-k,draft-mtp|4|0.0||||8::"
+  "mapk-sn16|ngram-map-k,draft-mtp|4|0.0||||16::"
+  "mapk-sm24|ngram-map-k,draft-mtp|4|0.0||||:24:"
+  "mapk-sm96|ngram-map-k,draft-mtp|4|0.0||||:96:"
+  "mapk-mh3|ngram-map-k,draft-mtp|4|0.0||||::3"
+  # 2026-09-23: MTP's cost at depth. Run each with --prompt-len into its own
+  # --results-dir; the production pin (ngrammapk-p0-n4) is the other arm.
+  "specoff|none|4|0.0||"
 )
 
 while [[ $# -gt 0 ]]; do
@@ -410,7 +427,7 @@ check_stale_env_backup() {
 # The keys this script writes. Anything ELSE that changed between the backup and
 # the live file is somebody else's edit, and the restore is about to throw it
 # away. Kept next to restore_env so the two cannot drift.
-SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN|DRAFT_GGUF_FILE|SPEC_NGRAM_MOD_N_MIN|SPEC_NGRAM_MOD_N_MAX|SPEC_NGRAM_MOD_N_MATCH|GGML_CUDA_GRAPH_OPT'
+SWEEP_KEYS='SPEC_TYPE|SPEC_DRAFT_N_MAX|SPEC_DRAFT_P_MIN|DRAFT_GGUF_FILE|SPEC_NGRAM_MOD_N_MIN|SPEC_NGRAM_MOD_N_MAX|SPEC_NGRAM_MOD_N_MATCH|GGML_CUDA_GRAPH_OPT|SPEC_NGRAM_MAPK_SIZE_N|SPEC_NGRAM_MAPK_SIZE_M|SPEC_NGRAM_MAPK_MIN_HITS'
 
 restore_env() {
   [[ "$ENV_RESTORED" == 1 ]] && return 0
@@ -540,7 +557,7 @@ _lm_no() { dim "  live server differs ($1) — recreating"; return 1; }
 
 live_matches() {
   local want_type="$1" want_nmax="$2" want_pmin="$3" want_draft="$4" want_mod="$5"
-  local want_gopt="${6:-0}"
+  local want_gopt="${6:-0}" want_mapk="${7:-}"
   local cid argv health
 
   # WHY EVERY REJECTION SAYS WHICH FIELD IT WAS
@@ -615,6 +632,20 @@ live_matches() {
   [[ "${got_gopt:-0}" == "$want_gopt" ]] \
     || _lm_no "graph-opt: live='${got_gopt:-unset}' want='$want_gopt'" || return 1
 
+  # map-k knobs, same absence convention as ngram-mod: each flag is passed only
+  # when set, so an all-default arm wants none of the three on the argv.
+  local got_mk_n got_mk_m got_mk_h got_mapk
+  got_mk_n="$(sed -nE 's/.*--spec-ngram-map-k-size-n[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
+  got_mk_m="$(sed -nE 's/.*--spec-ngram-map-k-size-m[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
+  got_mk_h="$(sed -nE 's/.*--spec-ngram-map-k-min-hits[[:space:]]+([^[:space:]]+).*/\1/p' <<<"$argv")"
+  if [[ -n "$got_mk_n$got_mk_m$got_mk_h" ]]; then
+    got_mapk="${got_mk_n}:${got_mk_m}:${got_mk_h}"
+  else
+    got_mapk=""
+  fi
+  [[ "$got_mapk" == "$want_mapk" ]] \
+    || _lm_no "ngram-map-k: live='${got_mapk:-default}' want='${want_mapk:-default}'" || return 1
+
   return 0
 }
 
@@ -629,10 +660,10 @@ run_config() {
   # Strict five-field split. The old ${var%%|*} / ${var##*|} chain silently read
   # the LAST field as p-min, so a five-field row would have taken the draft
   # filename as a probability and passed it to llama as --spec-draft-p-min.
-  local name stype nmax pmin draft mod gopt extra
-  IFS='|' read -r name stype nmax pmin draft mod gopt extra <<<"$spec"
+  local name stype nmax pmin draft mod gopt mapk extra
+  IFS='|' read -r name stype nmax pmin draft mod gopt mapk extra <<<"$spec"
   if [[ -z "$name" || -z "$stype" || -z "$nmax" || -z "$pmin" || -n "$extra" ]]; then
-    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft|mod|graph-opt): $spec"
+    warn "malformed CONFIGS row (want name|type|n-max|p-min|draft|mod|graph-opt|mapk): $spec"
     return 1
   fi
   : "${gopt:=0}"
@@ -663,6 +694,26 @@ run_config() {
       warn "CONFIGS row sets ngram-mod knobs but SPEC_TYPE has no ngram-mod arm: $spec"
       return 1
     fi
+  fi
+
+  # Eighth field, size-n:size-m:min-hits. Any part may be empty (engine
+  # default); a field of three empties is normalised to empty so that live_matches
+  # compares like with like.
+  local mk_n="" mk_m="" mk_h="" mk_extra=""
+  if [[ -n "$mapk" ]]; then
+    IFS=':' read -r mk_n mk_m mk_h mk_extra <<<"$mapk"
+    if [[ -n "$mk_extra" ]] \
+       || [[ -n "$mk_n" && ! "$mk_n" =~ ^[0-9]+$ ]] \
+       || [[ -n "$mk_m" && ! "$mk_m" =~ ^[0-9]+$ ]] \
+       || [[ -n "$mk_h" && ! "$mk_h" =~ ^[0-9]+$ ]]; then
+      warn "malformed CONFIGS ngram-map-k field (want size-n:size-m:min-hits): $spec"
+      return 1
+    fi
+    if [[ ",$stype," != *",ngram-map-k,"* ]]; then
+      warn "CONFIGS row sets ngram-map-k knobs but SPEC_TYPE has no ngram-map-k arm: $spec"
+      return 1
+    fi
+    [[ -n "$mk_n$mk_m$mk_h" ]] || mapk=""
   fi
 
   # Which workloads still need measuring for THIS arm. Computed before the
@@ -699,10 +750,10 @@ run_config() {
     return 0
   fi
 
-  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none} mod=${mod:-default} graph-opt=$gopt"
+  info "$name — SPEC_TYPE=$stype n-max=$nmax p-min=$pmin draft=${draft:-none} mod=${mod:-default} graph-opt=$gopt mapk=${mapk:-default}"
   dim "  workloads to measure: ${todo[*]}"
 
-  if live_matches "$stype" "$nmax" "$pmin" "$draft" "$mod" "$gopt"; then
+  if live_matches "$stype" "$nmax" "$pmin" "$draft" "$mod" "$gopt" "$mapk"; then
     ok "  the running llama already serves this config — benching it as-is (saved a reload)"
     # .env is still aligned to it for the same reason, so nothing to write.
   else
@@ -716,6 +767,9 @@ run_config() {
     env_set SPEC_NGRAM_MOD_N_MAX   "$mod_max"
     env_set SPEC_NGRAM_MOD_N_MATCH "$mod_match"
     env_set GGML_CUDA_GRAPH_OPT    "$gopt"
+    env_set SPEC_NGRAM_MAPK_SIZE_N   "$mk_n"
+    env_set SPEC_NGRAM_MAPK_SIZE_M   "$mk_m"
+    env_set SPEC_NGRAM_MAPK_MIN_HITS "$mk_h"
 
     info "  recreating llama (~3 min warm, far longer on a cold page cache) ..."
     if ! compose up -d --force-recreate --wait --wait-timeout "$WAIT_TIMEOUT" llama; then
@@ -729,7 +783,7 @@ run_config() {
   # One recreate, every outstanding workload benched against it.
   local rc=0
   for w in "${todo[@]}"; do
-    bench_one "$name" "$w" "$stype" "$nmax" "$pmin" "$draft" "$mod" "$gopt" || rc=1
+    bench_one "$name" "$w" "$stype" "$nmax" "$pmin" "$draft" "$mod" "$gopt" "$mapk" || rc=1
   done
   return $rc
 }
@@ -739,7 +793,7 @@ run_config() {
 # it assumes nothing about the server beyond it being healthy and correct, which
 # is run_config's job to have established.
 bench_one() {
-  local name="$1" workload="$2" stype="$3" nmax="$4" pmin="$5" draft="$6" mod="$7" gopt="$8"
+  local name="$1" workload="$2" stype="$3" nmax="$4" pmin="$5" draft="$6" mod="$7" gopt="$8" mapk="${9:-}"
   # Per-round filenames so rounds do not overwrite each other. Round 1 keeps the
   # historical bare name, so a single-round run writes exactly what it always
   # did and every existing result directory stays readable.
@@ -810,13 +864,14 @@ bench_one() {
      --arg lb "$load_before" --arg la "$load_after" --arg lw "$LOAD_WARN" \
      --arg round "${CURRENT_ROUND:-1}" \
      --arg rep "$REPEAT" --arg plen "$PROMPT_LEN" --arg draft "$draft" --arg mod "$mod" \
-     --arg gopt "$gopt" \
+     --arg gopt "$gopt" --arg mapk "$mapk" \
      --arg when "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      --argjson pins "$(capture_pins)" \
      '. + {config: {name: $n, spec_type: $t, n_max: ($x|tonumber), p_min: ($p|tonumber),
                     draft_gguf: (if $draft == "" then null else $draft end),
                     ngram_mod: (if $mod == "" then null else $mod end),
                     graph_opt: ($gopt|tonumber),
+                    ngram_mapk: (if $mapk == "" then null else $mapk end),
                     workload: $w, repeat: ($rep|tonumber),
                     round: ($round|tonumber),
                     load_before: ($lb|tonumber), load_after: ($la|tonumber),
@@ -903,7 +958,8 @@ report_one() {
         ($doc.config.spec_type // "?"),
         ($doc.config.n_max | tostring),
         ($doc.config.p_min | tostring),
-        ($doc.config.ngram_mod // "default"),
+        (if $doc.config.ngram_mapk != null then ("k" + $doc.config.ngram_mapk)
+         else ($doc.config.ngram_mod // "default") end),
         (($doc.config.graph_opt // 0) | tostring),
         (if ($rounds|length) > 1
          then (($use|length|tostring) + "/" + ($rounds|length|tostring))
@@ -1086,9 +1142,10 @@ main() {
     for c in "${selected[@]}"; do
       local d m g; d="$(cut -d'|' -f5 <<<"$c")"; m="$(cut -d'|' -f6 <<<"$c")"
       g="$(cut -s -d'|' -f7 <<<"$c")"
-      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s mod=%s graph-opt=%s\n' \
+      local k; k="$(cut -s -d'|' -f8 <<<"$c")"
+      printf '  %-20s SPEC_TYPE=%-22s n-max=%s p-min=%s draft=%s mod=%s graph-opt=%s mapk=%s\n' \
         "${c%%|*}" "$(cut -d'|' -f2 <<<"$c")" "$(cut -d'|' -f3 <<<"$c")" \
-        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}" "${m:-default}" "${g:-0}"
+        "$(cut -d'|' -f4 <<<"$c")" "${d:-none}" "${m:-default}" "${g:-0}" "${k:-default}"
     done
     # MEASURED 2026-08-31, not guessed: a 5-round x 3-config run with both
     # workloads did 15 arm-instances in 110 min = ~7.3 min each, recreate
@@ -1159,9 +1216,13 @@ main() {
     restore_mod="$(env_get SPEC_NGRAM_MOD_N_MIN):$(env_get SPEC_NGRAM_MOD_N_MAX):$(env_get SPEC_NGRAM_MOD_N_MATCH)"
   fi
   local restore_gopt; restore_gopt="$(env_get GGML_CUDA_GRAPH_OPT)"
+  local restore_mapk=""
+  if [[ -n "$(env_get SPEC_NGRAM_MAPK_SIZE_N)$(env_get SPEC_NGRAM_MAPK_SIZE_M)$(env_get SPEC_NGRAM_MAPK_MIN_HITS)" ]]; then
+    restore_mapk="$(env_get SPEC_NGRAM_MAPK_SIZE_N):$(env_get SPEC_NGRAM_MAPK_SIZE_M):$(env_get SPEC_NGRAM_MAPK_MIN_HITS)"
+  fi
   if live_matches "$(env_get SPEC_TYPE)" "$(env_get SPEC_DRAFT_N_MAX)" \
                   "$(env_get SPEC_DRAFT_P_MIN)" "$(env_get DRAFT_GGUF_FILE)" "$restore_mod" \
-                  "${restore_gopt:-0}"; then
+                  "${restore_gopt:-0}" "$restore_mapk"; then
     ok "llama is already serving the pre-sweep config — no reload needed"
   else
     info "restoring the pre-sweep server so the stack is left as it was found"
