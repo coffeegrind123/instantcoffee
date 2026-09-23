@@ -1011,6 +1011,15 @@ a flat result keeps 96 and closes this item.
 
 ---
 
+## 0i. Upgrade llama.cpp (b10689 -> b11118) and the pi-side tools — APPROVED, not started (2026-09-23)
+
+The runbook is HANDOFF **part 14**: inventory, what b11118 changes for this
+config (verified in source), the order, the re-measurement battery, and the
+roll-back. Do it in a fresh session, llama.cpp first, pi-side tools in a second
+commit.
+
+---
+
 ## 1. The runner exits 1 and skips its own last two steps — SOLVED 2026-09-03 (lib.sh re-enables errexit)
 
 **Highest value because it will cost you an hour of confusion otherwise.**

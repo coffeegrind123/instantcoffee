@@ -1,3 +1,174 @@
+# Handoff — 2026-09-23 (part 14: the upgrade runbook — llama.cpp b10689 -> b11118, forge, pi and every pinned tool, what each change touches and how to prove it did no harm)
+
+**Nothing here has been applied.** This part is the plan, written the day the
+current spec config was tuned, so the next session starts from checked facts
+rather than `update.sh --check` output alone. The operator has approved doing
+the upgrade; do it as ONE feature in a fresh session.
+
+## 1. Inventory — what is pinned, what is out, how it moves
+
+| component | now | latest (2026-09-23) | moved by | proven by |
+|---|---|---|---|---|
+| llama.cpp image | `server-cuda-b10689` (`57291f264`) | `server-cuda-b11118` (`e6ab7c1a4`), 429 commits | `./scripts/update.sh` | smoke test, then §3 |
+| forge-guardrails | 0.9.5 | 0.9.5 | `update.sh` | nothing to do |
+| pi (in the pi container) | 0.87.1 | 0.87.1 | `PI_AUTO_UPDATE=1`, `PI_VERSION` empty | current |
+| pi (this claude container, `/usr/local/bin/pi`) | 0.85.1 | 0.87.1 | `npm i -g @earendil-works/pi-coding-agent` | `pi --version`; only matters if pi-local.sh runs here |
+| pi-mcp-adapter | 2.26.0 | 2.37.0 | `MCP_ADAPTER_VERSION` + pi image rebuild | see §4.1, tool surface |
+| mcp2cli | 3.3.1 | 3.7.0 | `MCP2CLI_VERSION` + image rebuild | see §4.2, moves WITH the SDK |
+| MCP Python SDK | 1.29.0 | 2.2.0 | `MCP_SDK_VERSION` + image rebuild | CI step at ci.yml:455 hard-fails on `mcp>=2` |
+| rtk binary | 0.45.0 | v0.49.0 | `RTK_VERSION` + `scripts/rtk.sh` + image rebuild | `./scripts/rtk.sh --check` |
+| vendor/rtk-pi | fork of rtk `hooks/pi/rtk.ts` | re-diff against v0.49.0 | by hand | its node tests + `rtk.sh --check` |
+| vendor/pi-subagents-lite | fork of 1.11.0 | upstream 1.14.0 | by hand, read FORK.md first | its tests |
+| vendor/pi-loop-mode | fork of 2.5.4 (`2.5.4-forge.1`) | upstream 2.5.4 | nothing to do | — |
+| vendor/pi-persona, vendor/prinny-channel | submodules | 0 commits behind | nothing to do | — |
+| Chrome (pi image) | 154.0.8037.57 | floats on apt `stable` | any image rebuild | `pi-container.sh --status` |
+| zendriver-mcp fork | `5066ed5` (2026-09-02) | clone at build time | image rebuild | browser skill smoke |
+| pi image | rebuilt 2026-09-23 | — | `docker build -f Dockerfile.pi …` | `--status` says drift no |
+
+## 2. llama.cpp b11118 — read before running update.sh
+
+Researched 2026-09-23 from a blobless clone and `gh`; [V] = read in source at
+b11118, [T] = commit title only. Full report saved nowhere else, so the load-
+bearing findings are here.
+
+**It will start.** [V] Every flag in the compose `llama` command exists at
+b11118. Removed in #28334: `--mlock --mmap --no-mmap -dio -ndio` (and
+`LLAMA_ARG_MLOCK/MMAP/DIO`); renamed #27969: `--tensor-read-lazy` ->
+`-lzm/--lazy-mode`. Nothing here passes them — `grep` for them before the run
+anyway, including `LLAMA_EXTRA_FLAGS` and `.env.local`.
+
+**The spec settings keep their meaning.** [V] `common/ngram-map.cpp/.h`: zero
+commits — min-hits still inert for map-k, size-m still the draft cap. No spec
+flag default changed. p-min 0 / n-max 4 / size-m 96 mean what they meant.
+
+**The NUMBERS behind them will move** — re-measure, do not assume:
+- **MTP drafting gets CUDA graphs** (#28549, `2f3fd0252`) [V]: each draft step
+  is cheaper, which moves the n-max break-even — n-max 5/6 lost at b10689 and
+  may not now.
+- **qwen35 GDN q/k norm changed** (#28068, `5fdfa6282`) [V]: l2_norm ->
+  rms_norm+scale. Logits shift (PR: KLD 0.00175, 98.41% same top-1 on 3.8-27B
+  Q4_K_M), so acceptance rates shift. Also one extra small kernel per recurrent
+  layer — a possible small decode cost.
+- **4090 Q4_K matmul** (#26705) [V]: MMVQ->MMQ crossover moves 7 -> 8 and
+  MMVQ batch>1 got faster — the MTP verify batch is in that range.
+- **FA MMA-f16 swizzle** (#25635) [V]: prefill and wide verify batches (map-k
+  drafts up to 97 wide) change cost.
+
+**Behaviour changes that touch this stack:**
+- **Reasoning-budget forced close** (#28869) [V]: the Qwen3-Coder parser (the
+  startup log says "Using specialized template: Qwen3-Coder" here) now forces
+  `\n</think>` rather than `</think>` when `--reasoning-budget` expires. Check a
+  budget-exhausted turn renders `REASONING_BUDGET_MESSAGE` then a clean close,
+  and that forge and pi still split reasoning from content.
+- **`preserve_reasoning=true` is injected by default** (#28174) [V]: our
+  explicit `preserve_thinking: true` still wins; expect a new startup warning.
+- **Context checkpoints** (#28302) [V]: min-step eviction now applies only when
+  the list is full, and same-position checkpoints replace instead of append. We
+  run `CTX_CHECKPOINTS=4`, `CHECKPOINT_MIN_STEP=256`, so this is live — check
+  re-prefill on rewinds.
+- **Prompt-cache / slot restore** (#27991) [V]: one copy per contiguous block,
+  PR shows a 40k restore 25-63 s -> 0.2-0.4 s. Good news for `--cache-ram`.
+- **Qwen tool-call args** (#28742) [V]: string-or-other params now try typed
+  JSON first. Plus a grammar rewrite on `common_schema` (#28736) [T]. The smoke
+  test's tool call covers the basic case only.
+- **`--load-mode none` loads GPU tensors first, per-tensor staging** (#27483)
+  [V]: lower peak host RAM at load — watch it, WSL memory pressure has bitten.
+
+**Still blocked, unchanged:** DFlash's prefix-reuse hole — `begin()` still only
+warns, and #24669 (`llama_batch_ext`) is still OPEN. `.env`'s DFLASH verdict
+stands.
+
+**Stale comments to fix in the same commit:** docker-compose.yml:61 and
+`.env` ~330-342 say a mismatched `-ctk/-ctv` pair returns
+`BEST_FATTN_KERNEL_NONE` and runs on CPU. At b11118 (#28079)
+`GGML_CUDA_FA_ALL_QUANTS` is replaced by `GGML_CUDA_FA_QUANTS` and a mismatch
+falls back to the f16 kernel with a warning. The matched-pair rule is still
+right; the stated failure mode is not. Also: `--kv-tail-tokens` (compose,
+behind `KV_TAIL_TOKENS`) is NOT an option at either build — harmless while the
+key is empty, a start failure if anyone sets it; delete the line or the key.
+`LLAMA_SET_ROWS=1` is read by nothing at either build; it can go.
+
+## 3. The llama.cpp run, in order
+
+The box must be quiet (`uptime`, no other GPU users; see part 12 §2 on NOT
+polling Get-Counter during measurement). Card cool first.
+
+1. `./scripts/update.sh --check`, then `./scripts/update.sh`. It pulls b11118,
+   recreates llama + forge, runs the smoke test and **rolls back itself** if
+   that fails. A pass means "it works", not "it is as fast".
+2. Startup log: `docker logs instantcoffee-llama 2>&1 | grep -iE
+   'specialized template|preserve|warn|error' | head` — Qwen3-Coder must still
+   be the parser.
+3. **Decode baseline and the pin**, one interleaved sweep, both workloads:
+   ```
+   ./scripts/spec-sweep.sh --rounds 5 --workload synthetic,repeat \
+     --results-dir context/bench/spec-sweep-<date>-b11118 \
+     --only specoff,mapk-sm96,ngrammapk-p0-n4
+   ```
+   then add n-max 5/6 arms at size-m 96 (they are new rows: copy `mapk-sm96`
+   with n-max 5 and 6) because MTP CUDA graphs are the change most likely to
+   move the depth optimum. `spec_sweep_compare.py --baseline mapk-sm96`.
+   Remember the A/A lesson (part 13 §2): decide on the repeat workload.
+4. **Against b10689**: the before numbers are in
+   `bench/spec-sweep-2026-09-23-mapk-sm96/` (pin = `mapk-sm96`). Pins differ,
+   so compare means with their spreads, and say so — do not pool.
+5. **probe.py** row, two passes, for the upstream PR (#86) if it is still open:
+   `~/qwen38-mtp/probe.py http://host.docker.internal:8080` spec-off and pin.
+6. **Reasoning budget**: one request that exhausts a small budget
+   (`REASONING_BUDGET` is server-side, so use a prompt that thinks long and
+   `max_tokens` high) through forge; inspect `reasoning_content` / `content`.
+7. **Tool calls with mixed-type params** (#28742): a schema with a
+   `["string","number"]` parameter, through forge and pi.
+8. **Long context**: one depth, 60K, `specoff,mapk-sm96`, `--prompt-len 60000
+   --rounds 4`, and `--metric prefill` / `wall` — checks the FA swizzle and the
+   GDN change at depth against part 13's 60K row.
+9. **Load RAM**: `free -m` in the Docker VM during the cold load
+   (`docker run --rm --privileged alpine free -m`) vs before.
+
+**Roll back by hand** if anything in 3-9 regresses: `LLAMA_TAG=server-cuda-b10689`
+in `.env`, `docker compose up -d --force-recreate llama`. update.sh leaves its
+own backups of the previous state in `.env.bak` and `.versions.lock.bak`
+(update.sh:120, :208) — diff against them rather than reconstructing by hand.
+
+## 4. The pi-side tools — separate commit, after llama is settled
+
+1. **pi-mcp-adapter 2.26.0 -> 2.37.0.** `.env` says why it is pinned: a surprise
+   change to the tool surface the model was taught, mid-session. Read its
+   changelog for tool renames/schema changes before bumping; after the rebuild,
+   compare the tool list pi advertises (the system prompt dump) before/after.
+2. **mcp2cli 3.3.1 -> 3.7.0 together with MCP SDK 1.29.0 -> 2.x.** The SDK pin
+   exists because 3.3.1 reads `Tool.inputSchema`, renamed in SDK 2.0. 3.7.0
+   declares `mcp>=1.26,<3`, which suggests 2.x works — **verify**, do not
+   trust the metadata: install both, run `scripts/mcp.sh` against a real
+   server, check `docs/context-budget.md`'s broken-session note still holds.
+   Then update the CI guard at `.github/workflows/ci.yml:455-458` in the same
+   commit, or CI goes red.
+3. **rtk 0.45.0 -> v0.49.0.** `RTK_VERSION`, then `./scripts/rtk.sh` and
+   `./scripts/rtk.sh --check` (tests the allow-list claims against the binary).
+   Re-diff `vendor/rtk-pi` against upstream `hooks/pi/rtk.ts` at v0.49.0 —
+   FORK.md lists what the fork changes and why.
+4. **vendor/pi-subagents-lite 1.11.0 -> upstream 1.14.0** is a fork, not a
+   bump: read FORK.md (it deliberately trims the tool surface), diff upstream
+   1.11.0..1.14.0, port what does not conflict, run its tests.
+5. **pi on this claude container** (0.85.1): only if `pi-local.sh` is used from
+   here rather than from the pi container.
+6. **Rebuild the pi image** (build args from `.env`, docs/container.md) and
+   `./scripts/pi-container.sh --recreate` — check no pi session is running in
+   the container first (`docker exec instantcoffee-pi ps -eo args | grep pi`).
+   Then one real prompt: `./scripts/pi-container.sh -p "Reply with exactly:
+   STACK OK"`.
+
+## 5. Gotchas this session paid for
+
+- The pi container runs its OWN checkout (`…/as/data2/qwen3.8-forge`), not this
+  one. `git pull --ff-only` inside it after pushing, or it runs old scripts.
+- `smoke-test.sh` builds with `--build`, and on Docker Desktop's containerd
+  store every rebuild gets a new image ID with identical layers — forge then
+  shows a raw ID in `docker ps`. Cosmetic; `compose up -d --no-build forge`
+  re-points it.
+- Stop a backgrounded sweep by the script's own PID (`$!` inside the
+  `bash -c`), and `git diff .env` afterwards (part 12 §2).
+
 # Handoff — 2026-09-23 (part 13: part 12's two open items closed — map-k size-m 96 adopted, the other map-k knobs left at defaults, MTP's long-context cost measured and needs no change)
 
 **One production change: `SPEC_NGRAM_MAPK_SIZE_M=96`** (+3.3%/+6.1% on
