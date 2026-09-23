@@ -194,7 +194,7 @@ COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py \
      patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py \
      patches/forge_llamafile_timeout.py patches/forge_sse_error_shape.py \
-     patches/forge_backend_error_detail.py \
+     patches/forge_backend_error_detail.py patches/forge_tool_schema.py \
      /tmp/patches/
 RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_merge_consecutive.py "$SITE" \
@@ -210,6 +210,7 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_llamafile_timeout.py "$SITE" \
     && python /tmp/patches/forge_sse_error_shape.py "$SITE" \
     && python /tmp/patches/forge_backend_error_detail.py "$SITE" \
+    && python /tmp/patches/forge_tool_schema.py "$SITE" \
     && rm -rf /tmp/patches
 
 # Recorded in the image so `docker inspect` can answer "what is actually running"

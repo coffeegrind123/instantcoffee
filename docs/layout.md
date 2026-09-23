@@ -202,6 +202,13 @@ patches/
                         plain text and non-object bodies are left exactly where
                         upstream put them. Status codes untouched.
                         FORGE_BACKEND_ERROR_DETAIL=0 restores upstream
+  forge_tool_schema.py  a JSON Schema type LIST (`["string","number"]`, what
+                        MCP servers emit for a union) crashed the request with
+                        "unhashable type: 'list'", and anyOf/oneOf/allOf/$ref/
+                        const/untyped properties were silently rewritten to
+                        `"type": "string"` — the grammar llama compiles on the
+                        Anthropic path. The client's schema now reaches the
+                        backend verbatim; the model forge builds no longer lies
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
   browser-guard.ts      turns a browser-tool timeout into an instruction

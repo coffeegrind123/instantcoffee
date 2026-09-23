@@ -55,6 +55,10 @@ WHAT IT PINS
                         error envelope only, with an HTML body, a non-object
                         body and a message-less envelope all left exactly where
                         upstream put them, and the status code unchanged
+  tool_schema           a tool whose schema uses a type list, anyOf, oneOf,
+                        allOf, $ref, const or no type at all builds, and the
+                        backend is sent the client's schema, not forge's lossy
+                        rebuild of it
 
 text_sse_passthrough is checked in both directions on purpose. A test that only
 proves the new behaviour cannot tell a working flag from a flag that is never
@@ -716,6 +720,87 @@ def main() -> int:
     check("...and clearing it restores the patched behaviour",
           "Unexpected reasoning effort high."
           in _srv._forge_backend_detail(_BE(500, raw_body=MINJA)))
+
+    # Two defects in one converter. A JSON Schema `type` LIST crashed the whole
+    # request with "unhashable type: 'list'" (a 502 before llama saw it), and
+    # anyOf/oneOf/allOf/$ref/const/untyped properties all came back as
+    # `"type": "string"` — which on the Anthropic path, where no raw schema is
+    # forwarded, is the schema llama builds its grammar from. So the checks are
+    # on what the backend is SENT, not merely on "it no longer raises".
+    print("\npatches/forge_tool_schema.py")
+    import copy
+    import json as _json
+    from forge.core.workflow import ToolSpec
+
+    def props(p: dict) -> dict:
+        return {"type": "object", "properties": {"v": p}, "required": ["v"]}
+
+    SHAPES = {
+        "a type list": {"type": ["string", "number"]},
+        "a nullable type list": {"type": ["string", "null"]},
+        "anyOf": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+        "oneOf": {"oneOf": [{"type": "string"}, {"type": "boolean"}]},
+        "allOf": {"allOf": [{"type": "string"}, {"minLength": 1}]},
+        "a $ref": {"$ref": "#/$defs/Port"},
+        "const": {"const": "fixed"},
+        "an untyped property": {"description": "anything"},
+        "tuple-form items": {"type": "array", "items": [{"type": "string"}]},
+        "array items with a type list": {"type": "array", "items": {"type": ["string", "number"]}},
+    }
+    for label, shape in SHAPES.items():
+        schema = props(shape)
+        if label == "a $ref":
+            schema["$defs"] = {"Port": {"type": "integer"}}
+        sent = copy.deepcopy(schema)
+        try:
+            spec = ToolSpec.from_json_schema("t", "d", schema)
+            got = spec.get_json_schema()
+        except Exception as exc:  # the defect being pinned is exactly a raise
+            check(f"{label} builds a ToolSpec", False, f"{type(exc).__name__}: {exc}")
+            continue
+        eq(f"{label}: the backend is sent the client's schema", got, sent)
+
+    spec = ToolSpec.from_json_schema("t", "d", props({"type": ["string", "number"]}))
+    got = spec.get_json_schema()
+    got["properties"]["v"]["type"].append("boolean")
+    eq("a caller mutating the returned schema does not change the spec",
+       spec.get_json_schema()["properties"]["v"]["type"], ["string", "number"])
+
+    # The model is still built, and still means what the schema says, for any
+    # forge code that reads it rather than the schema.
+    P = ToolSpec.from_json_schema("t", "d", props({"type": ["string", "number"]})).parameters
+    eq("a string|number field accepts a number", P(v=8080).v, 8080)
+    eq("...and a string", P(v="8080").v, "8080")
+    P = ToolSpec.from_json_schema(
+        "t", "d", props({"anyOf": [{"type": "string"}, {"type": "integer"}]})).parameters
+    eq("an anyOf string|integer field accepts an integer", P(v=4).v, 4)
+    P = ToolSpec.from_json_schema("t", "d", props({"type": ["string", "null"]})).parameters
+    eq("a nullable field accepts null", P(v=None).v, None)
+
+    # Specs forge authors itself (the respond tool) have no client schema; they
+    # must keep upstream's model-derived one, or the flag-less path regresses.
+    from pydantic import BaseModel as _BM
+
+    class _Own(_BM):
+        answer: str
+
+    own = ToolSpec(name="respond", description="d", parameters=_Own)
+    eq("a forge-authored spec still gets its model's schema",
+       own.get_json_schema(), _Own.model_json_schema())
+
+    # And end to end on the OpenAI wire, which is where the 502 came from.
+    from forge.proxy.handler import _extract_tool_specs
+    tools = [{"type": "function", "function": {
+        "name": "set_limit", "description": "d",
+        "parameters": props({"type": ["string", "number"]})}}]
+    try:
+        specs = _extract_tool_specs(tools)
+        eq("a request carrying a type-list tool is accepted",
+           _json.dumps(specs[0].get_json_schema(), sort_keys=True),
+           _json.dumps(props({"type": ["string", "number"]}), sort_keys=True))
+    except Exception as exc:
+        check("a request carrying a type-list tool is accepted", False,
+              f"{type(exc).__name__}: {exc}")
 
     total = PASSED + FAILED
     print(f"\n{PASSED}/{total} passed", end="")
