@@ -60,7 +60,7 @@ export interface ConcurrencyConfig {
 
 /** The slice of an AgentRecord the table needs. Duck-typed so this imports nothing. */
 export interface SlotHolder {
-  execution: { modelKey?: string; holdsSlot?: boolean };
+  execution: { modelKey?: string; holdsSlot?: boolean; depth?: number };
 }
 
 export class SlotTable {
@@ -211,4 +211,63 @@ export class SlotTable {
 function safeLimit(limit: number | undefined, fallback: number): number {
   if (typeof limit !== "number" || !Number.isFinite(limit)) return Math.max(1, fallback);
   return Math.max(1, Math.floor(limit));
+}
+
+/**
+ * Forge fork: one `SlotTable` per nesting depth, same limits in each.
+ *
+ * With SUBAGENT_MAX_DEPTH above 1 a child spawns grandchildren and WAITS for
+ * them, holding its own slot the whole time. In one shared pool, a pool full of
+ * waiting children queues every grandchild behind slots that only free when
+ * those grandchildren finish — a deadlock. Per depth, the deepest pool never
+ * waits on anything and always drains (tests/depth-slots.test.ts).
+ *
+ * A holder with no `depth` is depth 1, which is every record at default depth.
+ */
+export class DepthSlotTables {
+  private tables = new Map<number, SlotTable>();
+  private config: ConcurrencyConfig | undefined;
+  private fallbackDefault: number;
+
+  constructor(config: ConcurrencyConfig | undefined, fallbackDefault: number) {
+    this.config = config;
+    this.fallbackDefault = fallbackDefault;
+  }
+
+  private table(depth: number): SlotTable {
+    let table = this.tables.get(depth);
+    if (!table) {
+      table = new SlotTable(this.config, this.fallbackDefault);
+      this.tables.set(depth, table);
+    }
+    return table;
+  }
+
+  slotFor(modelKey: string, depth = 1): ConcurrencySlot {
+    return this.table(depth).slotFor(modelKey);
+  }
+
+  isFull(modelKey: string, depth = 1): boolean {
+    return this.table(depth).isFull(modelKey);
+  }
+
+  reserve(holder: SlotHolder): void {
+    this.table(depthOf(holder)).reserve(holder);
+  }
+
+  release(holder: SlotHolder): void {
+    this.table(depthOf(holder)).release(holder);
+  }
+
+  setLimits(config: ConcurrencyConfig, holders: Iterable<SlotHolder>): void {
+    this.config = config;
+    const all = [...holders];
+    for (const [depth, table] of this.tables) {
+      table.setLimits(config, all.filter((h) => depthOf(h) === depth));
+    }
+  }
+}
+
+function depthOf(holder: SlotHolder): number {
+  return holder.execution.depth ?? 1;
 }

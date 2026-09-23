@@ -7,7 +7,7 @@
 import { Type, type TSchema } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { getAvailableTypes } from "./agents/agent-types.js";
-import { executeAgentTool, executeStopAgentTool } from "./agents/tool-execution.js";
+import { executeAgentTool, executeNestedAgentTool, executeStopAgentTool } from "./agents/tool-execution.js";
 import { executeAgentStatusTool } from "./agents/agent-status.js";
 import { renderAgentToolCall, renderAgentToolResult, renderSubagentResult } from "./ui/renderer.js";
 import { showAgentsMainMenu } from "./ui/menu/menus.js";
@@ -73,6 +73,43 @@ export function registerAgentTool(pi: ExtensionAPI): void {
   };
   // @ts-expect-error — description removed to save prompt tokens
   pi.registerTool(tool);
+}
+
+/**
+ * Forge fork: `SubAgent`, the one tool a delegating child gets.
+ *
+ * Registered in a CHILD's session by index.ts when build-context.ts says its
+ * depth is below SUBAGENT_MAX_DEPTH, and nothing else of this extension is:
+ * the operator's session owns the manager, the widget and the listeners. Its
+ * own name, not `Agent`, because `Agent` is filtered out of every child
+ * (EXCLUDED_TOOL_NAMES) precisely so the operator's tool never leaks down.
+ * No `run_in_background` and no `worktree_path`: see executeNestedAgentTool.
+ */
+export function registerNestedAgentTool(
+  pi: ExtensionAPI,
+  depth: number,
+  callerType: string,
+  callerId: string | undefined,
+): void {
+  const types = getAvailableTypes();
+  const agentType = types.length > 0 ? Type.String({ description: types.join(",") }) : Type.String();
+  pi.registerTool({
+    name: "SubAgent",
+    label: "SubAgent",
+    description:
+      "Delegate one self-contained piece of your task to a helper agent and wait for its answer. " +
+      "Call it several times in one turn to run pieces in parallel. The helper cannot delegate further.",
+    parameters: Type.Object(
+      {
+        prompt: Type.String(),
+        description: Type.Optional(Type.String()),
+        agent: Type.Optional(agentType),
+      },
+      { additionalProperties: false },
+    ),
+    execute: (_toolCallId: string, params: Record<string, unknown>, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) =>
+      executeNestedAgentTool(depth, callerType, callerId, params, signal, ctx),
+  } as any);
 }
 
 // --- Tool/Command/Message registration ---

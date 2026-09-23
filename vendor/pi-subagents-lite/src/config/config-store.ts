@@ -38,6 +38,7 @@ import {
   type RawConcurrency,
 } from "./config-io.js";
 import type { LayerStatus } from "./json-store.ts";
+import { readModeSeed, withoutOverride } from "./mode-seed.ts";
 
 export type { ConfigIO, ConfigTarget, ProjectLayerStatus, RawConfig, RawConcurrency } from "./config-io.js";
 
@@ -123,8 +124,10 @@ export class ConfigStore {
   private globalLayerError?: string;
   private config: SubagentsConfig;
   private io: ConfigIO;
-  private sessionOverrides: SessionModelOverrides = { default: null };
-  private sessionConcurrencyLayer: RawConcurrency = {};
+  // Forge fork: the session layer starts from, and every reset returns to, the
+  // launcher's mode seed (mode-seed.ts). Empty unless SUBAGENT_MODE_CONFIG is set.
+  private sessionOverrides: SessionModelOverrides = readModeSeed().overrides;
+  private sessionConcurrencyLayer: RawConcurrency = readModeSeed().concurrency;
   private sessionShowCost: boolean | undefined;
   private widget?: AgentWidget;
   private manager?: AgentManager;
@@ -296,7 +299,7 @@ export class ConfigStore {
         this.clearAtTarget(
           target,
           () => {
-            delete this.sessionOverrides[type];
+            this.sessionOverrides = withoutOverride(this.sessionOverrides, type, readModeSeed().overrides);
           },
           (layer) => {
             if (layer.agent) delete layer.agent[type];
@@ -308,7 +311,7 @@ export class ConfigStore {
         this.clearAtTarget(
           target,
           () => {
-            this.sessionOverrides = { default: null };
+            this.sessionOverrides = readModeSeed().overrides;
           },
           (layer) => this.clearAgentModelKeys(layer),
         );
@@ -444,7 +447,7 @@ export class ConfigStore {
         this.clearAtTarget(
           target,
           () => {
-            this.sessionConcurrencyLayer = {};
+            this.sessionConcurrencyLayer = readModeSeed().concurrency;
           },
           (layer) => {
             delete layer.concurrency;
@@ -459,10 +462,10 @@ export class ConfigStore {
         this.sessionOverrides[type] = model;
       },
       clearOverride: (type: string): void => {
-        delete this.sessionOverrides[type];
+        this.sessionOverrides = withoutOverride(this.sessionOverrides, type, readModeSeed().overrides);
       },
       clearAll: (): void => {
-        this.sessionOverrides = { default: null };
+        this.sessionOverrides = readModeSeed().overrides;
       },
       /** Not persisted. */
       setShowCost: (enabled: boolean): void => {
@@ -512,8 +515,13 @@ export class ConfigStore {
     this.globalLayerStatus = loaded.globalStatus;
     this.globalLayerError = loaded.globalError;
     this.rebuildEffective();
-    this.sessionOverrides = { default: null };
-    this.sessionConcurrencyLayer = {};
+    const seed = readModeSeed();
+    if (seed.error) {
+      // Loud, because the fallback is children on the parent's model.
+      console.warn(`[subagents] mode config refused, running without it: ${seed.error}`);
+    }
+    this.sessionOverrides = seed.overrides;
+    this.sessionConcurrencyLayer = seed.concurrency;
     this.sessionShowCost = undefined;
     this.lastToolsExpanded = undefined;
     this.syncAllDeps();

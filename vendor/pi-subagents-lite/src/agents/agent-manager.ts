@@ -30,7 +30,7 @@ import { resolveAgentId, type AgentIdResolution } from "./agent-id.ts";
 import { addUsage, emptyUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.js";
 import { errorMessage, toSingleLine } from "../utils.js";
 import { DEFAULT_CONCURRENCY, DEFAULT_GRACE_TURNS } from "../config/config-io.js";
-import { SlotTable, type ConcurrencyConfig, type ConcurrencySlot } from "./concurrency-slots.ts";
+import { DepthSlotTables, type ConcurrencyConfig, type ConcurrencySlot } from "./concurrency-slots.ts";
 import { anchorReachesATurn } from "./compaction-anchor.ts";
 import { isVerifyingRecord } from "./record-activity.ts";
 import { teardownRecord } from "./record-teardown.ts";
@@ -262,14 +262,15 @@ export class AgentManager {
    * so the arithmetic can be tested — this file imports pi and the suite cannot
    * load it. See that module's header for the defect that prompted the move.
    */
-  private slots: SlotTable;
+  // Forge fork: one pool per nesting depth — see DepthSlotTables.
+  private slots: DepthSlotTables;
 
-  private queue: { id: string; modelKey: string; args: SpawnArgs }[] = [];
+  private queue: { id: string; modelKey: string; depth: number; args: SpawnArgs }[] = [];
 
   constructor(onComplete?: OnAgentComplete, concurrency?: ConcurrencyConfig, onStart?: OnAgentStart) {
     this.onComplete = onComplete;
     this.onStart = onStart;
-    this.slots = new SlotTable(concurrency, DEFAULT_CONCURRENCY_LIMIT);
+    this.slots = new DepthSlotTables(concurrency, DEFAULT_CONCURRENCY_LIMIT);
 
     this.watchdogInterval = setInterval(() => this.checkWatchdogs(), WATCHDOG_TICK_MS);
     this.watchdogInterval.unref();
@@ -289,8 +290,8 @@ export class AgentManager {
   }
 
   /** The slot serving a model key. Kept as a method because the probes drive it. */
-  private getSlot(modelKey: string): ConcurrencySlot {
-    return this.slots.slotFor(modelKey);
+  private getSlot(modelKey: string, depth = 1): ConcurrencySlot {
+    return this.slots.slotFor(modelKey, depth);
   }
 
   /** Spawn an agent, returning its ID immediately; queued when the concurrency limit is reached. */
@@ -299,13 +300,15 @@ export class AgentManager {
     const abortController = new AbortController();
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
+    // Forge fork: 1 = spawned by the operator's session, 2 = by a subagent.
+    const depth = options.depth ?? 1;
     let queued = false;
     let concurrencySlot: ConcurrencySlot | undefined;
     if (options.modelKey) {
-      const slot = this.getSlot(options.modelKey);
+      const slot = this.getSlot(options.modelKey, depth);
       if (slot.running >= slot.limit) {
         queued = true;
-        this.queue.push({ id, modelKey: options.modelKey, args });
+        this.queue.push({ id, modelKey: options.modelKey, depth, args });
       } else {
         concurrencySlot = slot;
       }
@@ -329,6 +332,7 @@ export class AgentManager {
       execution: {
         abortController,
         modelKey: options.modelKey,
+        depth,
         settled: false,
         settlementCount: 0,
         // Forge fork: kept for the verifier and the compaction anchor.
@@ -464,6 +468,10 @@ export class AgentManager {
         try {
           const result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, {
             pi,
+            // Forge fork: the CHILD's model. Without it the judge fell to the
+            // parent's, which in orchestrator mode is the one local slot the
+            // parent needs (tests/judge-model.test.ts).
+            model: record.execution.session?.model,
             maxTurns: 1,
             signal: deadline.signal,
             onSessionCreated: (session) => {
@@ -689,6 +697,7 @@ export class AgentManager {
       cwd: options.worktreePath,
       graceTurns: options.graceTurns,
       projectTrusted: options.projectTrusted,
+      depth: record.execution.depth ?? 1,
       signal: record.execution.abortController!.signal,
       ...this.runTrackingCallbacks(record, options, (turnCount) => {
         record.stats.turnCount = turnCount;
@@ -1011,7 +1020,7 @@ export class AgentManager {
       const record = this.agents.get(entry.id);
       if (!record || record.lifecycle.status !== "queued") continue;
 
-      const slot = this.getSlot(entry.modelKey);
+      const slot = this.getSlot(entry.modelKey, entry.depth);
       if (slot.running >= slot.limit) continue;
 
       try {
@@ -1112,7 +1121,7 @@ export class AgentManager {
     let concurrencySlot: ConcurrencySlot | undefined;
     const modelKey = record.execution.modelKey;
     if (modelKey) {
-      const slot = this.getSlot(modelKey);
+      const slot = this.getSlot(modelKey, record.execution.depth ?? 1);
       if (slot.running >= slot.limit) return false;
       concurrencySlot = slot;
     }

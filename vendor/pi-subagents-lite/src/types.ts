@@ -128,6 +128,12 @@ export interface SpawnConfig extends RunTunables {
    */
   projectTrusted?: boolean;
   invocation?: AgentInvocation;
+  /**
+   * Forge fork: nesting depth. 1 = spawned by the operator's session (every
+   * spawn when SUBAGENT_MAX_DEPTH is 1), 2 = spawned by a subagent's SubAgent
+   * tool. Picks the concurrency pool and gates the child's own tool.
+   */
+  depth?: number;
 }
 
 /** How many characters of agent ID to show in display. */
@@ -211,6 +217,8 @@ export interface AgentDisplayInfo {
  */
 export interface AgentExecutionState {
   session?: AgentSession;
+  /** Forge fork: nesting depth, see SpawnConfig.depth. Absent = 1. */
+  depth?: number;
   /**
    * Forge fork: the prompt this agent was given, kept verbatim.
    *

@@ -12,7 +12,7 @@ import { getAgentDir, type ExtensionContext, type ToolCallEvent } from "@earendi
 import type { AgentRecord } from "../types.js";
 import { SHORT_ID_LENGTH } from "../types.js";
 import { ambiguousAgentIdMessage } from "./agent-id.ts";
-import { resolveType, getAgentConfig, discoverNewAgents, type TypeResolution } from "./agent-types.js";
+import { resolveType, getAgentConfig, getToolNamesForType, discoverNewAgents, type TypeResolution } from "./agent-types.js";
 import { getSessionContextPercent } from "./usage.js";
 import { validateWorktreePath } from "../spawn/worktree-validator.js";
 import { resolveSubagentTrust, createSubagentTrustDeps, untrustedProjectWarning } from "../spawn/project-trust.js";
@@ -20,6 +20,7 @@ import { resolveSubagentTrust, createSubagentTrustDeps, untrustedProjectWarning 
 import { isBusyRecord, isVerifyingRecord } from "./record-activity.ts";
 import { parseModelKey, findModelInRegistry, parseThinkingLevel } from "../utils.js";
 import { getPiInstance, getSessionCtx, getStore, getCoordinator, getManager } from "../shell.js";
+import { effectiveTools, mayNest } from "../spawn/build-context.ts";
 
 // --- Tool result helpers ---
 
@@ -402,6 +403,93 @@ export async function executeAgentTool(
     return errorResult(`Agent failed: ${record.error || "unknown error"}`, details);
   }
 
+  return successResult(formatResultContent(record), details);
+}
+
+// --- SubAgent: a subagent's own delegation (Forge fork) ---
+
+/**
+ * Execute a child's `SubAgent` call: one level down, in the foreground.
+ *
+ * Registered only in a child whose depth is below SUBAGENT_MAX_DEPTH (index.ts,
+ * build-context.ts). Foreground because a background result is delivered to
+ * the process-wide pi instance — the operator's session, not this child — and
+ * because pi already runs one turn's tool calls in parallel, so a child that
+ * delegates several items at once still gets them concurrently. The caller's
+ * `signal` binds the grandchild to the child's run: stopping the child stops
+ * it. The grandchild runs in the child's cwd (a worktree child's worktree), on
+ * the model and thinking the store resolves for its type, in the depth+1 pool.
+ */
+export async function executeNestedAgentTool(
+  callerDepth: number,
+  callerType: string,
+  callerId: string | undefined,
+  params: Record<string, unknown>,
+  signal: AbortSignal | undefined,
+  ctx: ExtensionContext,
+): Promise<any> {
+  const coordinator = getCoordinator();
+  if (!coordinator) {
+    return errorResult("SubAgent is unavailable: the operator's session has no subagent coordinator.");
+  }
+
+  const prompt = params.prompt as string;
+  if (!prompt) {
+    return errorResult("SubAgent needs a prompt.");
+  }
+
+  const type = (params.agent as string) || "general-purpose";
+  const resolution = await resolveTypeWithDiscovery(type, undefined);
+  if (resolution.kind === "ambiguous") {
+    return errorResult(
+      `Ambiguous agent type: ${type}. Candidates: ${resolution.candidates.join(", ")}. Use the exact registered name.`,
+    );
+  }
+  if (resolution.kind === "not-found" || getAgentConfig(resolution.key)?.hidden === true) {
+    return errorResult(`Unknown agent type: ${type}`);
+  }
+  const resolvedType = resolution.key;
+
+  if (
+    !mayNest(
+      effectiveTools(getAgentConfig(callerType)?.tools, getToolNamesForType(callerType)),
+      effectiveTools(getAgentConfig(resolvedType)?.tools, getToolNamesForType(resolvedType)),
+    )
+  ) {
+    return errorResult(
+      `A read-only ${callerType} may only spawn read-only agent types; ${resolvedType} can edit files.`,
+    );
+  }
+
+  // Marked as a helper of its caller in every listing (widget, AgentStatus,
+  // completion cards) — all of them read the description.
+  const own =
+    (params.description as string | undefined) || prompt.split("\n")[0].slice(0, 80) || prompt.slice(0, 80);
+  const description = `\u21b3 ${callerId ? `[${callerId.slice(0, SHORT_ID_LENGTH)}] ` : ""}${own}`;
+  const maxTurns = getAgentConfig(resolvedType)?.maxTurns ?? getStore().agent.defaultMaxTurns;
+  const model = findModelInRegistry(resolveSpawnModel(resolvedType, ctx), ctx.modelRegistry, ctx.model);
+  const modelKey = model ? `${model.provider}/${model.id}` : undefined;
+  const thinkingLevel = resolveSpawnThinking(resolvedType);
+
+  const { record } = await coordinator.spawn(getPiInstance(), ctx, {
+    type: resolvedType,
+    prompt,
+    description,
+    model,
+    modelKey,
+    maxTurns,
+    thinkingLevel,
+    graceTurns: getStore().agent.graceTurns,
+    invocation: { modelName: model?.id, thinkingLevel, maxTurns },
+    runInBackground: false,
+    signal,
+    depth: callerDepth + 1,
+  });
+
+  const details = buildAgentDetails(record, { includeStats: true });
+  if (record.lifecycle.status === "error") {
+    return errorResult(`Agent failed: ${record.error || "unknown error"}`, details);
+  }
   return successResult(formatResultContent(record), details);
 }
 

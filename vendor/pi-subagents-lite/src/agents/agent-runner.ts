@@ -6,7 +6,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, InlineExtension } from "@earendil-works/pi-coding-agent";
 import {
   type AgentSession,
   type AgentSessionEvent,
@@ -33,6 +33,8 @@ import { preloadSkills, loadSkillMeta } from "../prompt/skill-loader.js";
 import { type EnvInfo, type RunCallbacks, type RunTunables, SHORT_ID_LENGTH } from "../types.js";
 import type { SubagentType, SystemPromptMode } from "./types.js";
 import { getStore, enterSubagentSpawn, exitSubagentSpawn } from "../shell.js";
+import { maxDepth, nestedDepthFor } from "../spawn/build-context.ts";
+import { registerNestedAgentTool } from "../registration.js";
 import { DEFAULT_GRACE_TURNS, CUSTOM_PROMPT_PATH } from "../config/config-io.js";
 import { patchRetryClassifier } from "./stream-retry.js";
 import { subagentExtraExtensionPaths, withExtensionDenial, withSkillDenial } from "./subagent-denylist.js";
@@ -111,6 +113,8 @@ export { DEFAULT_MAX_TURNS } from "./turn-tracking.ts";
 interface RunOptions extends RunTunables, RunCallbacks {
   /** ExtensionAPI instance — used for pi.exec() for git detection. */
   pi: ExtensionAPI;
+  /** Forge fork: nesting depth of this spawn (SpawnConfig.depth). */
+  depth?: number;
   /** Manager-assigned id; suffixes session name to disambiguate parallel spawns (e.g. `Explore#a1b2c3d4`). */
   agentId?: string;
   cwd?: string;
@@ -535,6 +539,7 @@ function createResourceLoader(
   systemPrompt: string,
   settingsManager: SettingsManager,
   notify?: (msg: string) => void,
+  nested?: InlineExtension,
 ) {
   // Forge fork: the agent's OWN declaration, not getConfig()'s — see
   // declared-resources.ts. getConfig routes a `hidden` type through
@@ -582,6 +587,10 @@ function createResourceLoader(
     // reason; reading it from `getConfig()` made this branch unreachable for
     // every hidden agent, which is all of them that set it.
     additionalExtensionPaths: extensions === false ? [] : subagentExtraExtensionPaths(),
+    // Forge fork: SubAgent for a child below SUBAGENT_MAX_DEPTH, and nothing
+    // for anyone else. Inline because a child never loads this extension from
+    // its path — see build-context.ts.
+    extensionFactories: nested && extensions !== false ? [nested] : [],
   };
   const loader = new DefaultResourceLoader(loaderOpts);
   return {
@@ -874,6 +883,17 @@ async function runAgentImpl(
     const env = includeEnvironment ? await detectEnv(options.pi, effectiveCwd) : undefined;
 
     const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
+    // Forge fork: may this child delegate? Decided from the spawn's own depth
+    // (none = not a spawn, i.e. the judge: never). See build-context.ts.
+    const nestedDepth = nestedDepthFor({ depth: options.depth ?? Infinity, type }, maxDepth());
+    const nested: InlineExtension | undefined =
+      nestedDepth === null
+        ? undefined
+        : {
+            name: "subagent-nested",
+            hidden: true,
+            factory: (pi: ExtensionAPI) => registerNestedAgentTool(pi, nestedDepth, type, options.agentId),
+          };
     const { loader, reloadAndMap } = createResourceLoader(
       config,
       agentConfig,
@@ -881,6 +901,7 @@ async function runAgentImpl(
       systemPrompt,
       settingsManager,
       bufferNotify,
+      nested,
     );
     const session = await buildSubagentSession(reloadAndMap, (extToolMap) =>
       createAndConfigureSession(

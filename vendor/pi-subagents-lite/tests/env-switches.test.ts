@@ -71,6 +71,22 @@ function switchesRead(): Set<string> {
  */
 const INLINE_ONLY = new Map<string, string>();
 
+/**
+ * Exported by the launcher but never read out of .env, with the reason: the
+ * value is a path to a file THIS launch wrote, so there is no .env value to
+ * read. The export check still applies to these.
+ */
+const LAUNCHER_GENERATED = new Map<string, string>([
+  [
+    "SUBAGENT_MODE_CONFIG",
+    "written per launch by pi-local.sh from ORCHESTRATOR, SUBAGENT_MODEL and SUBAGENT_MAX_CONCURRENT",
+  ],
+  [
+    "SUBAGENT_MODE_AGENTS_DIR",
+    "the repo's own prompts/orchestrator/agents, set by pi-local.sh when ORCHESTRATOR=1",
+  ],
+]);
+
 describe("AN4 — every switch this package reads reaches the process", () => {
   const launcher = existsSync(LAUNCHER) ? readFileSync(LAUNCHER, "utf8") : undefined;
 
@@ -95,7 +111,7 @@ describe("AN4 — every switch this package reads reaches the process", () => {
 
   it("…and reads each of them out of .env first", { skip: launcher ? false : "scripts/pi-local.sh not found" }, () => {
     const missing = [...switchesRead()]
-      .filter((name) => !INLINE_ONLY.has(name))
+      .filter((name) => !INLINE_ONLY.has(name) && !LAUNCHER_GENERATED.has(name))
       .filter((name) => !new RegExp(`env_get ${name}\\)`).test(launcher!));
     assert.deepEqual(missing, [], "exported from what? `env_get` is what reads the .env file");
   });

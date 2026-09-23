@@ -67,13 +67,18 @@ export function setAgentScanDirs(userDir: string, projectDir: string, sharedDir?
 }
 
 export async function scanAndMerge(options?: { disableDefaultAgents?: boolean }): Promise<Map<string, AgentConfig>> {
-  const [userAgents, sharedAgents, projectAgents] = await Promise.all([
+  // Forge fork: a launcher mode's own agent types (tests/mode-agents.test.ts).
+  // Merged after the user's so they outrank them, before shared/project so a
+  // repo's own definition still wins. Unset in every mode that does not name one.
+  const modeAgentDir = process.env.SUBAGENT_MODE_AGENTS_DIR ?? "";
+  const [userAgents, modeAgents, sharedAgents, projectAgents] = await Promise.all([
     scanAgentFilesInDir(userAgentDir, "user"),
+    scanAgentFilesInDir(modeAgentDir, "user"),
     scanAgentFilesInDir(sharedAgentDir, "project"),
     scanAgentFilesInDir(projectAgentDir, "project"),
   ]);
   const defaults = options?.disableDefaultAgents ? new Map<string, AgentConfig>() : DEFAULT_AGENTS;
-  return mergeAgents(defaults, userAgents, sharedAgents, projectAgents);
+  return mergeAgents(defaults, [...userAgents, ...modeAgents], sharedAgents, projectAgents);
 }
 /**
  * Register newly discovered agents not already in the registry.

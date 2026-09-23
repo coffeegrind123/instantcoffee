@@ -3212,3 +3212,89 @@ reports a control run, ask what the control was over.**
 **510, up from 477. Lint 115/115 files.** (493 for AO1–AO7, 503 with AO8, then
 510 with AO9's wiring block — a source pin adds no file to `src/`, so lint is
 unchanged.)
+
+## Orchestrator mode — three hooks for a launcher mode (2026-09-23)
+
+`ORCHESTRATOR=1` (see `docs/orchestrator.md`) runs the parent on the local model
+and every child on a remote one, up to fifteen at once. The fork needed three
+things for that, each inert unless the launcher sets it.
+
+**The mode seed** (`src/config/mode-seed.ts`, `SUBAGENT_MODE_CONFIG`). The
+model and the per-provider cap belong to the launch, not to the operator's
+global file (shared by every mode) nor to a project's (pi's cwd is whatever repo
+is being worked on). So the launcher writes a file, and the store uses it as its
+SESSION layer — precedence rung 2, above every file and frontmatter. The store
+reset that layer to empty in five places (`reload()` and four "clear" actions);
+an empty layer here means the next child silently runs on the parent's model on
+the one llama slot. Every reset now returns to the seed, and clearing one
+override restores the seed's value for that key (`withoutOverride`). A file that
+cannot be used is refused whole, with a warning: half a seed looks configured.
+
+**Mode agent types** (`SUBAGENT_MODE_AGENTS_DIR`, `agent-types.ts`). A fourth
+discovery root for the mode's `worker`/`explorer`: merged after the user's
+global agents so it outranks them, before shared and project so a repo's own
+definition still wins.
+
+**The judge runs on the child's model** (`agent-manager.ts`, `buildVerifyDeps`).
+It called `runAgent` with no `model`, so `initSession` fell through to the
+PARENT's. With one model everywhere nobody could tell; here it would queue
+fifteen judges on the slot the orchestrator needs. The repair already continued
+the child's own session.
+
+**And two stale controls**, found by the baseline run before any of the above:
+`background-delivery.test.ts` pinned pi's `isIdle` as exactly `!isStreaming`
+(pi 0.85 added `&& !this.isCompacting`) and `sendCustomMessage`'s triggerTurn
+branch without the `_isEmittingAgentSettled` deferral pi 0.87 added. Neither
+change revives AA4's dead arm — idle still implies not streaming, and the
+triggerTurn branch still never reads `deliverAs` — so the controls now assert
+that, on both versions.
+
+**Tests: 541, up from 516.** `mode-seed.test.ts` (18, including a wiring pin
+that fails 3 of 3 against the pre-change store), `mode-agents.test.ts` (4),
+`judge-model.test.ts` (3, fails 1 of 3 before the change); `env-switches.test.ts`
+gained `LAUNCHER_GENERATED` for the two switches whose value is a path the
+launch created rather than a `.env` value. Lint 119/119.
+
+## Two levels of delegation — SUBAGENT_MAX_DEPTH (2026-09-23)
+
+Orchestrator mode wants its workers to split their own items. `SUBAGENT_MAX_DEPTH`
+(default 1, the old contract; 1 or 2 only) gives a child below the limit one
+tool, `SubAgent`, and a child at the limit nothing.
+
+**Where it is decided, and a premise that turned out false.** index.ts returns
+early "inside a subagent spawn", and the comment said children re-load this
+extension. They do not: a child discovers its own extensions and never sees the
+parent's `-e`, so the factory runs once per session, in the parent — measured
+with a probe log, one line per session and none per child. The first version of
+this feature registered `SubAgent` from that branch and a live run showed the
+child without it. The runner now decides (`nestedDepthFor`, build-context.ts)
+from the spawn's own depth and hands that child's resource loader an inline
+factory (`extensionFactories`, pi >= 0.85) that registers `SubAgent` only.
+index.ts is unchanged. No process-wide state is involved, so concurrent builds
+cannot read each other's depth.
+
+**Foreground only** (`executeNestedAgentTool`). Background results go to the
+process-wide pi instance — the operator's session — not to the child that
+asked. pi runs one turn's tool calls in parallel, so a child still fans out.
+The child's abort signal binds its helpers. Its own name, because `Agent` is
+filtered from every child by EXCLUDED_TOOL_NAMES.
+
+**A pool per depth** (`DepthSlotTables`, concurrency-slots.ts). A child waits
+on its helpers holding its slot; in one shared pool a full level of waiting
+children queues every helper behind itself. The control test shows the
+deadlock with one pool.
+
+**Read-only stays read-only** (`mayNest`, `effectiveTools`). A caller whose
+effective tool list has neither edit nor write may only spawn types that have
+neither. Effective, because the built-in Explore restricts itself through
+`registeredTools` and leaves `tools` unset.
+
+**Listings** — a helper's description is `↳ [<caller short id>] …`, so the
+widget, AgentStatus and completion cards all show whose helper it is.
+
+**Verified live** on the local model (SUBAGENT_MAX_DEPTH=2): a general-purpose
+child listed `SubAgent` among its tools, spawned an Explore helper that settled
+before it (`↳ [201f5309] …` in the operator's transcript), and in a second run
+a depth-2 helper listed its tools with neither `SubAgent` nor `Agent`.
+
+**Tests: 571** (depth-slots 6, nesting 21). Lint 122/122.

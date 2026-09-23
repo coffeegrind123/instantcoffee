@@ -67,16 +67,19 @@ describe("AA4 — the background nudge's deliverAs", () => {
     assert.match(code, /const deliverAs = "followUp"/, "the mode pi can actually honour, stated");
   });
 
-  it("control — pi still treats isIdle and isStreaming as the same bit", () => {
-    // The whole argument above rests on this. If a future pi separates them, the
-    // dead arm becomes live and this assertion is where that surfaces.
+  it("control — an idle pi is never a streaming pi", () => {
+    // The whole argument above rests on this: idle must fall to the branch that
+    // ignores deliverAs. Up to pi 0.84 isIdle was exactly !isStreaming. From
+    // 0.85 it is `!this._isAgentRunActive && !this.isCompacting` — narrower, so
+    // idle still implies not streaming and the argument holds. What would break
+    // it is an isIdle that no longer starts from the run flag.
     const pi = readFileSync(PI_AGENT_SESSION, "utf8");
     const streaming = pi.match(/get isStreaming\(\)\s*\{\s*return ([^;]+);/);
     const idle = pi.match(/get isIdle\(\)\s*\{\s*return ([^;]+);/);
     assert.ok(streaming, "AgentSession.isStreaming not found — re-read the routing before trusting AA4");
     assert.ok(idle, "AgentSession.isIdle not found — re-read the routing before trusting AA4");
     assert.equal(streaming![1].trim(), "this._isAgentRunActive");
-    assert.equal(idle![1].trim(), "!this._isAgentRunActive");
+    assert.match(idle![1].trim(), /^!this\._isAgentRunActive(\s*&&\s*!this\.isCompacting)?$/);
   });
 
   it("control — sendCustomMessage still reads deliverAs only while streaming", () => {
@@ -87,7 +90,12 @@ describe("AA4 — the background nudge's deliverAs", () => {
     // The streaming branch is the only one that mentions deliverAs alongside a
     // queue call; the triggerTurn branch goes straight to _runAgentPrompt.
     assert.match(branch, /this\.isStreaming && options\?\.triggerTurn !== false/);
-    assert.match(branch, /else if \(options\?\.triggerTurn\)\s*\{?\s*await this\._runAgentPrompt\(appMessage\)/);
+    // pi 0.87 defers the prompt while agent_settled is being emitted; either
+    // way the triggerTurn branch runs a prompt and never reads deliverAs.
+    assert.match(
+      branch,
+      /else if \(options\?\.triggerTurn\)\s*\{?\s*(if \(this\._isEmittingAgentSettled\)\s*\{[^}]*\}\s*)?await this\._runAgentPrompt\(appMessage\)/,
+    );
   });
 });
 
