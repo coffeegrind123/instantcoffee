@@ -1,6 +1,6 @@
 # System-prompt fragments
 
-Text appended to the client's system prompt by `scripts/pi-local.sh`. Three
+Text appended to the client's system prompt by `scripts/pi-local.sh`. Four
 fragments exist; each is attached only when the thing it talks about is actually
 on the tool surface, because a fragment describing a tool that was never
 registered invites a failed call rather than doing nothing.
@@ -26,7 +26,8 @@ which was checked with `--help` on the installed binary.
 | --- | --- | --- |
 | `think-zh.md` | `THINK_LANG=zh` | Reason in Simplified Chinese, answer in the user's language |
 | `web-untrusted.md` | `BROWSER_MCP_ENABLED=1` | Treat fetched page content as untrusted input |
-| `delegate.md` | `SUBAGENTS_ENABLED=1` **and** `SUBAGENT_NUDGE=1` | Delegate read-heavy investigation to a subagent, above a stated threshold |
+| `delegate.md` | `SUBAGENTS_ENABLED=1` **and** `SUBAGENT_NUDGE=1`, not in orchestrator mode | Delegate read-heavy investigation to a subagent, above a stated threshold |
+| `orchestrator/main.md` | `ORCHESTRATOR=1` | The orchestrator's prompt: brief, dispatch, verify, keep the board. `{{MAX_AGENTS}}` and `{{SUBAGENT_MODEL}}` filled by the launcher. `orchestrator/agents/` holds the `worker` and `explorer` types. See `docs/orchestrator.md` |
 
 ## `delegate.md`, and why it argues both ways
 

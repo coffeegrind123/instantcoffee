@@ -438,6 +438,12 @@ the context and trigger a turn, which is precisely the 17,790-character failure
 the guard exists to prevent. The fork bounds it at the source, reusing the
 guard's measured constants rather than restating them.
 
+### Orchestrator mode
+
+`ORCHESTRATOR=1` turns the same extension into an orchestrator-worker loop: this
+model plans, briefs and verifies, and up to 15 children run in parallel on
+DeepSeek Flash. See [orchestrator.md](orchestrator.md).
+
 ## Talking to it from Matrix: `/prinny`
 
 `vendor/prinny-channel` puts a pi session on Matrix. A message from an

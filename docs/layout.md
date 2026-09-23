@@ -22,10 +22,12 @@ docs/                   public documentation, split out of the README 2026-08-25
   benchmarking.md       verifying it works; every measurement command; capture
   troubleshooting.md    symptoms, in the order you are likely to hit them
   container.md          running pi in a container; mount rules; moving a home
+  orchestrator.md       ORCHESTRATOR=1: local orchestrator, remote subagents
   layout.md             this file
   changelog.md          what changed, and when
 prompts/
   think-zh.md           reason in Mandarin, answer in the user's language
+  orchestrator/         orchestrator-mode prompt (main.md) and its worker/explorer types
   README.md             why this is applied client-side and not in the engine
 scripts/
   lib.sh                shared helpers, sourced by every script here

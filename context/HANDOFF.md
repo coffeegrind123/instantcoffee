@@ -1,3 +1,64 @@
+# Handoff — 2026-09-23 (part 16: orchestrator mode — local 27B orchestrates, up to 15 DeepSeek Flash subagents execute, two levels deep; built, tested, and run live on DeepSeek)
+
+## 1. What exists
+
+`ORCHESTRATOR=1` (docs/orchestrator.md). Launcher block in `scripts/pi-local.sh`;
+prompts in `prompts/orchestrator/` (main.md = the operator's standing agent
+prompt plus an Orchestration section after the orchestrator-worker / "chief of
+staff" pattern; agents/worker.md, agents/explorer.md); three fork hooks
+(`vendor/pi-subagents-lite/FORK.md`, last section): mode seed as the session
+layer, a mode agent-types root, the judge on the child's model; then two-level
+delegation (`SUBAGENT_MAX_DEPTH`, a `SubAgent` tool injected by the runner, a
+concurrency pool per depth). The judge is OFF in this mode. Fork suite 571/571,
+lint 122/122. Nesting verified live on the local model (FORK.md, last section).
+
+Verified: the four launcher refusals (no key, model pi does not list, cap out of
+range, malformed model); on pi 0.87.1 with a placeholder key, `--print-only`
+writes the seed, appends the filled prompt, drops the delegation nudge; with the
+mode off the nudge is back and nothing orchestrator-related is appended.
+
+## 2. Verified live on DeepSeek (2026-09-23)
+
+The key is in both checkouts' `.env.local` (copied from `~/codex/.codex/secrets.env`).
+
+1. `deepseek-flash` is "DeepSeek-V4.1-Flash" in DeepSeek's `/models`, 1M
+   context, efforts low/high/max; it answers.
+2. Cap and queue: cap 3, five background explorers -> AgentStatus "3 running,
+   2 queued". (With the local model's pool, forge:1, it would be 1 and 4.)
+3. Depth 2: a worker (`modelId: deepseek-flash`) spawned two explorer helpers
+   with `SubAgent` in one turn — started 40 ms apart, labelled
+   `↳ [8019cc37]`, both counts right (30 .sh, 53 .py). llama saw 2 requests
+   for the whole run: the orchestrator's two turns and nothing else.
+4. Context cost: 15 foreground explorers ("explain scripts/<file> with
+   file:line evidence") in one turn, all on deepseek-flash, started within
+   0.53 s, done in 17-58 s. Results 84,517 chars, median 5,880 (2,328-8,463);
+   they reached llama as 26,354 prompt tokens (13.4 s prefill), taking the
+   orchestrator from 12,513 to 37,698 of 98,304. **One full 15-wide wave is
+   about a quarter of the window** — roughly three before compaction.
+5. The judge is off in this mode, so there is nothing of it to observe.
+
+Found and fixed during the runs: every explorer spawn printed "extension
+pi-mcp-adapter is loaded but none of its tools are in tools: [...]";
+explorer.md now has `exclude_extensions: [pi-mcp-adapter]` (checked live).
+
+## 3. Deliberately left out of the operator's prompt
+
+The pasted prompt's `<cyber-use-case>` token block and its "License Usage
+Policy" section are not in main.md. The token does nothing for either model,
+and the license section's legal claims are wrong; neither belongs in a prompt
+sent to a third-party API. Everything else is the operator's text, with the
+lines that contradict orchestration adjusted (multi-agent "scaffolding", the
+no-summary rule vs checkpoint reports, commits).
+
+## 4. Also found
+
+index.ts's "a child re-loads this extension" premise is false: children never
+load it (they do not see the parent's `-e`). Harmless before; it is why
+`SubAgent` is injected by the runner. `tests/background-delivery.test.ts` had
+been red since pi 0.85 (two stale
+controls on pi internals); fixed in place, reasoning in FORK.md. The fork suite
+is not in CI.
+
 # Handoff — 2026-09-23 (part 15: b11118 is in production, functionally checked, NOT measured — plus a forge schema fix and a sweep-interrupt fix the upgrade flushed out)
 
 ## 1. State

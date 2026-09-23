@@ -451,6 +451,13 @@ if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
 
     SUBAGENT_VERIFY_LOG_FILE_VALUE="$(env_get SUBAGENT_VERIFY_LOG_FILE)"
     [[ -n "$SUBAGENT_VERIFY_LOG_FILE_VALUE" ]] && export SUBAGENT_VERIFY_LOG_FILE="$SUBAGENT_VERIFY_LOG_FILE_VALUE"
+
+    # How deep delegation goes: 1 (unset) = only this session spawns; 2 = its
+    # children may spawn one level further, through their own SubAgent tool
+    # (vendor/pi-subagents-lite/src/spawn/build-context.ts). Orchestrator mode
+    # below defaults it to 2.
+    SUBAGENT_MAX_DEPTH_VALUE="$(env_get SUBAGENT_MAX_DEPTH)"
+    [[ -n "$SUBAGENT_MAX_DEPTH_VALUE" ]] && export SUBAGENT_MAX_DEPTH="$SUBAGENT_MAX_DEPTH_VALUE"
   fi
 fi
 
@@ -818,7 +825,104 @@ if [[ -n "$THINK_FILE" ]]; then
   THINK_NOTE=", thinking in $(env_get THINK_LANG)"
 fi
 
+# Orchestrator mode: the local model coordinates and verifies, and every
+# subagent runs on a remote model — up to SUBAGENT_MAX_CONCURRENT at once. See
+# ORCHESTRATOR in .env and docs/orchestrator.md.
+#
+# Nothing here touches the operator's own subagent settings. The model and the
+# per-provider cap go into a file this launch writes and the fork reads as its
+# SESSION layer (vendor/pi-subagents-lite/src/config/mode-seed.ts), which every
+# reset in /agents returns to — so a "clear" cannot quietly drop the children
+# onto the one llama slot. The worker/explorer agent types come from
+# prompts/orchestrator/agents through SUBAGENT_MODE_AGENTS_DIR, above the
+# operator's global agents and below a project's own.
+ORCH_NOTE=""
+ORCH_MAX_AGENTS_CEILING=15
+if [[ "$(env_get ORCHESTRATOR)" == "1" ]]; then
+  [[ -n "$SUBAGENTS_NOTE" ]] \
+    || die "ORCHESTRATOR=1 needs the subagent extension loaded (SUBAGENTS_ENABLED=1, and see the warning above if it is set)."
+
+  ORCH_MODEL="$(env_get SUBAGENT_MODEL)"
+  ORCH_MODEL="${ORCH_MODEL:-deepseek/deepseek-flash}"
+  [[ "$ORCH_MODEL" =~ ^[^/[:space:]]+/[^[:space:]]+$ ]] \
+    || die "SUBAGENT_MODEL must be provider/model-id, got '$ORCH_MODEL'."
+  ORCH_PROVIDER="${ORCH_MODEL%%/*}"
+  ORCH_MODEL_ID="${ORCH_MODEL#*/}"
+
+  ORCH_CAP="$(env_get SUBAGENT_MAX_CONCURRENT)"
+  ORCH_CAP="${ORCH_CAP:-$ORCH_MAX_AGENTS_CEILING}"
+  [[ "$ORCH_CAP" =~ ^[0-9]+$ ]] && (( ORCH_CAP >= 1 && ORCH_CAP <= ORCH_MAX_AGENTS_CEILING )) \
+    || die "SUBAGENT_MAX_CONCURRENT must be 1-${ORCH_MAX_AGENTS_CEILING}, got '$ORCH_CAP'."
+
+  # The key comes from .env.local (gitignored) through env_get, and reaches pi
+  # only as an environment variable: pi's built-in deepseek provider reads
+  # DEEPSEEK_API_KEY itself, so it is never written into models.json.
+  if [[ "$ORCH_PROVIDER" == "deepseek" ]]; then
+    DEEPSEEK_API_KEY_VALUE="$(env_get DEEPSEEK_API_KEY)"
+    [[ -n "$DEEPSEEK_API_KEY_VALUE" ]] \
+      || die "ORCHESTRATOR=1 with a deepseek model needs DEEPSEEK_API_KEY in .env.local."
+    export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY_VALUE"
+  fi
+
+  # Positive check, not an assumption: pi lists a model only when its provider
+  # is known AND has credentials, so an unknown id and a missing key both fail
+  # here instead of as a spawn error inside the session. It does not prove the
+  # key is VALID — the first spawn does.
+  if ! pi --list-models "$ORCH_MODEL_ID" 2>/dev/null \
+       | awk -v p="$ORCH_PROVIDER" -v m="$ORCH_MODEL_ID" '$1 == p && $2 == m { found = 1 } END { exit !found }'; then
+    die "pi does not list $ORCH_MODEL (unknown to this pi $(pi --version 2>/dev/null), or no credentials for '$ORCH_PROVIDER')."
+  fi
+
+  ORCH_SEED="$PI_DIR/orchestrator-mode.json"
+  ORCH_MODEL="$ORCH_MODEL" ORCH_PROVIDER="$ORCH_PROVIDER" ORCH_CAP="$ORCH_CAP" ORCH_SEED="$ORCH_SEED" \
+  python3 - <<'PY'
+import json, os
+seed = {
+    "model": os.environ["ORCH_MODEL"],
+    # forge stays at 1: a child a project pins to the local model still queues
+    # on the one llama slot instead of racing the orchestrator for it.
+    "concurrency": {"providers": {os.environ["ORCH_PROVIDER"]: int(os.environ["ORCH_CAP"]), "forge": 1}},
+}
+with open(os.environ["ORCH_SEED"], "w") as fh:
+    json.dump(seed, fh, indent=2)
+PY
+  export SUBAGENT_MODE_CONFIG="$ORCH_SEED"
+
+  # No answer judge in this mode, whatever SUBAGENT_VERIFY says: the
+  # orchestrator re-runs every claimed check itself, which is a stronger check
+  # than a one-turn judge reading the answer, and the judge would add a model
+  # call per child.
+  export SUBAGENT_VERIFY=0
+  SUBAGENTS_NOTE="${SUBAGENTS_NOTE/, subagents (unverified)/, subagents}"
+
+  # Two levels unless .env says otherwise: workers may split their item among
+  # helpers, which may not split further. Each level has its own concurrency
+  # pool of SUBAGENT_MAX_CONCURRENT, so a full level of waiting workers cannot
+  # starve their own helpers.
+  export SUBAGENT_MAX_DEPTH="${SUBAGENT_MAX_DEPTH_VALUE:-2}"
+  [[ "$SUBAGENT_MAX_DEPTH" == "1" || "$SUBAGENT_MAX_DEPTH" == "2" ]] \
+    || die "SUBAGENT_MAX_DEPTH must be 1 or 2, got '$SUBAGENT_MAX_DEPTH'."
+
+  ORCH_AGENTS="$REPO_ROOT/prompts/orchestrator/agents"
+  [[ -r "$ORCH_AGENTS/worker.md" && -r "$ORCH_AGENTS/explorer.md" ]] \
+    || die "$ORCH_AGENTS is missing its worker/explorer agent types."
+  export SUBAGENT_MODE_AGENTS_DIR="$ORCH_AGENTS"
+
+  ORCH_PROMPT="$REPO_ROOT/prompts/orchestrator/main.md"
+  [[ -r "$ORCH_PROMPT" ]] || die "$ORCH_PROMPT is missing."
+  ORCH_TEXT="$(cat "$ORCH_PROMPT")"
+  ORCH_TEXT="${ORCH_TEXT//\{\{MAX_AGENTS\}\}/$ORCH_CAP}"
+  ORCH_TEXT="${ORCH_TEXT//\{\{SUBAGENT_MODEL\}\}/$ORCH_MODEL}"
+  ORCH_TEXT="${ORCH_TEXT//\{\{MAX_DEPTH\}\}/$SUBAGENT_MAX_DEPTH}"
+  [[ "$ORCH_TEXT" != *"{{"* ]] || die "$ORCH_PROMPT has a placeholder this launcher does not fill."
+  pi_flags+=(--append-system-prompt "$ORCH_TEXT")
+  ORCH_NOTE=", orchestrator (${ORCH_CAP}x ${ORCH_MODEL}, depth ${SUBAGENT_MAX_DEPTH})"
+fi
+
 # The delegation nudge, whenever subagents are actually registered.
+#
+# NOT in orchestrator mode: it tells the model that agents share one slot and
+# to prefer one well-scoped agent, which is the opposite of that mode's premise.
 #
 # Same lever and same reasoning as the web rules above: --append-system-prompt is
 # the highest-authority place available, and this belongs there rather than in a
@@ -837,7 +941,7 @@ fi
 # would trade cheap reads for expensive ones. See SUBAGENT_NUDGE in .env.
 DELEGATE_RULES="$REPO_ROOT/prompts/delegate.md"
 DELEGATE_NOTE=""
-if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" && "$(env_get SUBAGENT_NUDGE)" == "1" ]]; then
+if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" && "$(env_get SUBAGENT_NUDGE)" == "1" && -z "$ORCH_NOTE" ]]; then
   if [[ -r "$DELEGATE_RULES" ]]; then
     pi_flags+=(--append-system-prompt "$(cat "$DELEGATE_RULES")")
     DELEGATE_NOTE=", delegation nudge"
@@ -906,5 +1010,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${PRINNY_NOTE}${PERSONA_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

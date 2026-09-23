@@ -1011,6 +1011,14 @@ a flat result keeps 96 and closes this item.
 
 ---
 
+## 0j. Orchestrator mode — built and verified live (2026-09-23)
+
+HANDOFF part 16 §2 has the measurements. Open: nothing required. A real task
+run end to end (board, briefs, verification loop) has not been done yet; that
+is the test of the prompt, not of the plumbing.
+
+---
+
 ## 0i. Upgrade llama.cpp (b10689 -> b11118) and the pi-side tools — llama APPLIED, measurement NOT DONE (2026-09-23)
 
 The runbook is HANDOFF **part 14**; what happened is **part 15**. b11118 runs in
