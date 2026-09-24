@@ -219,6 +219,11 @@ patches/
                         every session, not just /loop
     src/                pure modules — the cap, the notice (no pi import)
     tests/              node --test suite, 37 tests
+  observe/              streams sessions to instantcoffee-observe (OBSERVE_*);
+                        no tools, zero tokens
+    src/                mapper (pi event → observe event), linker (subagent →
+                        spawning call), sender (ordered, bounded, never blocks)
+    tests/              node --test suite incl. a replay of a real session
 vendor/pi-toolresult-guard/  keeps a malformed tool result from EXITING pi.
                         Loaded FIRST, so every other tool_result handler reads a
                         content array that is already safe. No tool, no command,

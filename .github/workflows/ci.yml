@@ -80,7 +80,7 @@ jobs:
 
       - name: Extension syntax checks
         run: |
-          for f in .pi/extensions/*.ts vendor/rtk-pi/extensions/*.ts vendor/pi-persona/extensions/*.ts; do
+          for f in .pi/extensions/*.ts .pi/extensions/observe/index.ts vendor/rtk-pi/extensions/*.ts vendor/pi-persona/extensions/*.ts; do
             node --experimental-strip-types --no-warnings \
                  -e "import('./$f').catch(e => {
                        if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0);
@@ -107,7 +107,8 @@ jobs:
         run: |
           node --experimental-strip-types --no-warnings --test \
             .pi/extensions/tests/*.test.ts \
-            .pi/extensions/compaction-guard/tests/*.test.ts
+            .pi/extensions/compaction-guard/tests/*.test.ts \
+            .pi/extensions/observe/tests/*.test.ts
 
       # pi is installed HERE rather than at the Matrix step further down,
       # because the rtk suite drives pi's real `execCommand` to establish what a

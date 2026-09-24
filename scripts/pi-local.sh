@@ -461,6 +461,52 @@ if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
   fi
 fi
 
+# Streams the session to instantcoffee-observe, the dashboard for this stack
+# (https://github.com/coffeegrind123/instantcoffee-observe): prompts, tool calls,
+# LLM generations with token counts and timing, compactions, and every
+# subagent linked to the Agent call that spawned it. The extension registers no
+# tools, so it costs the window nothing; a dashboard that is not running costs
+# one failed request per ten seconds, never a stalled turn.
+#
+# It has to be handed to children explicitly: a child does not inherit -e, and
+# SUBAGENT_EXTRA_EXTENSIONS REPLACES the fork's default list (rtk-pi) rather
+# than adding to it, so this appends to whatever list is in effect. The
+# extension is inert without OBSERVE_URL, which is what makes it safe for a
+# child to also discover it under .pi/extensions/ when pi runs in this repo.
+OBSERVE_EXT="$REPO_ROOT/.pi/extensions/observe/index.ts"
+OBSERVE_NOTE=""
+if [[ "$(env_get OBSERVE_ENABLED)" == "1" ]]; then
+  if [[ ! -r "$OBSERVE_EXT" ]]; then
+    warn "$OBSERVE_EXT is missing — this session will not reach observe."
+  else
+    # 127.0.0.1, not localhost: the dashboard binds IPv4 loopback, and
+    # "localhost" may resolve to ::1 first — curl then falls back to IPv4 and
+    # reports it reachable while Node's fetch in the extension is refused.
+    OBSERVE_HOST="$HOST"; [[ "$OBSERVE_HOST" == "localhost" ]] && OBSERVE_HOST="127.0.0.1"
+    OBSERVE_URL_VALUE="$(env_get OBSERVE_URL)"
+    : "${OBSERVE_URL_VALUE:=http://${OBSERVE_HOST}:4981}"
+    export OBSERVE_URL="${OBSERVE_URL_VALUE%/}"
+    OBSERVE_SLUG_VALUE="$(env_get OBSERVE_PROJECT_SLUG)"
+    [[ -n "$OBSERVE_SLUG_VALUE" ]] && export OBSERVE_PROJECT_SLUG="$OBSERVE_SLUG_VALUE"
+    pi_flags+=(-e "$OBSERVE_EXT")
+
+    if [[ -n "$SUBAGENTS_NOTE" ]]; then
+      OBSERVE_EXTRAS="${SUBAGENT_EXTRA_EXTENSIONS-$REPO_ROOT/vendor/rtk-pi/extensions/index.ts}"
+      export SUBAGENT_EXTRA_EXTENSIONS="${OBSERVE_EXTRAS:+$OBSERVE_EXTRAS,}$OBSERVE_EXT"
+    fi
+
+    # Said at launch rather than discovered later: a dashboard that is down is
+    # not an error, but an operator expecting to watch the session should know.
+    # Probed with the same client pi uses (Node's fetch), not curl: curl
+    # retries other address families that the extension never will.
+    if node -e 'fetch(process.argv[1] + "/api/health", { signal: AbortSignal.timeout(2000) }).then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' "$OBSERVE_URL" >/dev/null 2>&1; then
+      OBSERVE_NOTE=", observe"
+    else
+      OBSERVE_NOTE=", observe (not reachable at $OBSERVE_URL)"
+    fi
+  fi
+fi
+
 # /prinny comes from vendor/prinny-channel — the Matrix channel, converted from
 # the Claude Code plugin of the same name (see vendor/prinny-channel/FORK.md).
 # Loaded by absolute path for the same reasons as /stack and /loop above.
@@ -1010,5 +1056,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

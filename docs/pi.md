@@ -850,6 +850,29 @@ channel loaded — and it says so with a qualifier when it will not work yet:
 is already active — `/persona (Nadia)` — because a persona is global to the agent
 home and survives restarts, so a session can otherwise inherit one adopted days
 ago and spend 11% of its window on it with nothing in the transcript saying so.
+`observe` means the session streams to the dashboard; `observe (not reachable at
+<url>)` means the extension loaded but the dashboard was not answering at launch.
+
+## Watching a session: instantcoffee-observe
+
+[instantcoffee-observe](https://github.com/coffeegrind123/instantcoffee-observe)
+is the dashboard for this stack. `.pi/extensions/observe/` streams each session
+to it: prompts, tool calls and their results, every LLM generation with its
+tokens, time to first token and duration, compactions, and each subagent nested
+under the `Agent` call that spawned it — including a `SubAgent` grandchild under
+its parent. The dashboard itself polls llama-server `/metrics` and forge
+`/forge/usage`, which is the only place decode speed and draft acceptance are
+visible: forge drops llama's per-request `timings`, so pi never sees them.
+
+`OBSERVE_ENABLED=1` (the default) loads it; `OBSERVE_URL` overrides where it
+posts (default `http://127.0.0.1:4981`, or `host.docker.internal` from the pi
+container). It registers no tools, so it costs the window nothing. When the
+dashboard is down it drops events after one failed request per ten seconds
+instead of stalling a turn, and `/observe` shows what was sent, dropped and why.
+
+Subagents run inside pi's process with no link to their parent, so the extension
+links them itself: see `.pi/extensions/observe/src/linker.ts`. The event
+contract is `docs/pi-protocol.md` in the observe repo.
 
 ## Keeping pi current
 
