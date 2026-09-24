@@ -514,8 +514,8 @@ if (( PRINT_ONLY )); then
   # session-to-directory inference is checked without starting a session.
   if [[ "$(state)" == running ]]; then
     apply_session_workdir
-    printf '%q ' docker exec -it -w "$(resolve_workdir "$WORKDIR_ARG")" "$NAME" \
-                 "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"; echo
+    mapfile -t FORWARD_ENV < <(env_forward_args)
+    printf '%q ' docker exec -it "${FORWARD_ENV[@]}" -w "$(resolve_workdir "$WORKDIR_ARG")" "$NAME" "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"; echo
   fi
   exit 0
 fi
@@ -530,6 +530,12 @@ in_container_dir "$CREPO" \
 apply_session_workdir
 WORKDIR="$(resolve_workdir "$WORKDIR_ARG")"
 
+# `ORCHESTRATOR=1 ./scripts/pi-container.sh` has to mean what it means for
+# pi-local.sh: docker exec starts with the CONTAINER's environment, so every
+# exported stack key is forwarded by name (env_forward_args in lib.sh).
+mapfile -t FORWARD_ENV < <(env_forward_args)
+(( ${#FORWARD_ENV[@]} )) && dim "forwarding: $(printf '%s\n' "${FORWARD_ENV[@]}" | grep -v '^-e$' | paste -sd' ' -)"
+
 # -t only when there is a terminal on BOTH ends. `docker exec -it` against a
 # pipe fails with "the input device is not a TTY", which would break every
 # non-interactive use (-p, CI, a subagent) for no reason.
@@ -537,8 +543,7 @@ tty_flags=(-i)
 [[ -t 0 && -t 1 ]] && tty_flags=(-it)
 
 if [[ "$MODE" == shell ]]; then
-  exec docker exec "${tty_flags[@]}" -w "$WORKDIR" "$NAME" bash -l
+  exec docker exec "${tty_flags[@]}" "${FORWARD_ENV[@]}" -w "$WORKDIR" "$NAME" bash -l
 fi
 
-exec docker exec "${tty_flags[@]}" -w "$WORKDIR" "$NAME" \
-     "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"
+exec docker exec "${tty_flags[@]}" "${FORWARD_ENV[@]}" -w "$WORKDIR" "$NAME" "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"

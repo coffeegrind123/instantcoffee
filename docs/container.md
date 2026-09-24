@@ -83,6 +83,20 @@ Then:
 ./scripts/pi-container.sh --print-only    # the two docker commands, and stop
 ```
 
+A one-off override works exactly as it does for `pi-local.sh`:
+
+```bash
+ORCHESTRATOR=1 ./scripts/pi-container.sh
+SUBAGENT_MAX_CONCURRENT=4 ORCHESTRATOR=1 ./scripts/pi-container.sh -p "..."
+```
+
+Every exported variable that is a key in `.env`, `.env.local` or
+`.env.local.example` is forwarded into the container as `-e NAME` — by name, so
+docker copies the value and it never appears on a command line or in
+`--print-only`. The launch prints `forwarding: ...` when it forwards anything.
+Before 2026-09-24 these were dropped in silence: `docker exec` starts with the
+container's environment, not yours.
+
 ## Resuming a session
 
 `--session <id>` is enough. You do not have to be standing anywhere in

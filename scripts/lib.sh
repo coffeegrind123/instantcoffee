@@ -58,6 +58,25 @@ env_get() {
   printf '%s' "$val"
 }
 
+# `docker exec -e NAME` arguments, one per line, for every stack key exported in
+# the caller — so env_get's per-invocation override survives a hop into the pi
+# container (scripts/test_container_env.py). Keys are whatever .env, .env.local
+# and .env.local.example name, commented or not. `-e NAME` with no value makes
+# docker copy it from its own environment: a secret is never on a command line.
+env_forward_args() {
+  local f key
+  local -A seen=()
+  for f in "$REPO_ROOT/.env" "$REPO_ROOT/.env.local" "$REPO_ROOT/.env.local.example"; do
+    [[ -f "$f" ]] || continue
+    while IFS= read -r key; do
+      [[ -n "${seen[$key]:-}" ]] && continue
+      seen[$key]=1
+      printenv "$key" >/dev/null || continue
+      printf -- '-e\n%s\n' "$key"
+    done < <(sed -nE 's/^[[:space:]]*#?[[:space:]]*([A-Z][A-Z0-9_]*)=.*/\1/p' "$f")
+  done
+}
+
 # Rewrite a key in .env in place, preserving comments and ordering.
 env_set() {
   local key="$1" value="$2" file="$REPO_ROOT/.env"
