@@ -856,7 +856,10 @@ ago and spend 11% of its window on it with nothing in the transcript saying so.
 ## Watching a session: instantcoffee-observe
 
 [instantcoffee-observe](https://github.com/coffeegrind123/instantcoffee-observe)
-is the dashboard for this stack. `.pi/extensions/observe/` streams each session
+is the dashboard for this stack, and part of it: the `observe` service in
+`docker-compose.yml`, built from the `vendor/instantcoffee-observe` submodule and
+started by `up.sh` and `setup.sh` with llama and forge, at
+http://127.0.0.1:4981. `.pi/extensions/observe/` streams each session
 to it: prompts, tool calls and their results, every LLM generation with its
 tokens, time to first token and duration, compactions, and each subagent nested
 under the `Agent` call that spawned it — including a `SubAgent` grandchild under
@@ -869,6 +872,15 @@ posts (default `http://127.0.0.1:4981`, or `host.docker.internal` from the pi
 container). It registers no tools, so it costs the window nothing. When the
 dashboard is down it drops events after one failed request per ten seconds
 instead of stalling a turn, and `/observe` shows what was sent, dropped and why.
+
+The service's keys are in the `# --- observe` block of `.env`: `OBSERVE_PORT`,
+`OBSERVE_DATA_DIR` (the SQLite DB; a named volume when empty), and
+`OBSERVE_PI_HOME_HOST` / `OBSERVE_PI_HOME`, the host pi's home as Docker sees it
+and as pi records it, which differ on Docker Desktop over WSL. The containerised
+pi's home comes from `PI_CONTAINER_HOME_HOST`. `smoke-test.sh` checks the
+dashboard answers and that its llama poller connects; `update.sh --observe`
+moves the submodule to observe's latest `main`, and rolls back if the new build
+fails its healthcheck.
 
 Subagents run inside pi's process with no link to their parent, so the extension
 links them itself: see `.pi/extensions/observe/src/linker.ts`. The event

@@ -33,6 +33,11 @@ window before the model has read a single line of your code.
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
+
+       ┌─────────────────────┐   observe dashboard :4981
+       │  instantcoffee-     │   every pi session event (from the observe
+       │  observe            │   extension), plus llama /metrics and forge
+       └─────────────────────┘   /forge/usage polled over the compose network
 ```
 
 pi talks to **8081** (forge). Nothing should talk to 8080 directly except forge —
@@ -66,8 +71,8 @@ git clone --recurse-submodules <this repo> && cd instantcoffee
 ./scripts/setup.sh
 ```
 
-`setup.sh` checks prerequisites, builds the forge image, downloads the GGUF, starts
-both services, and then runs the end-to-end smoke test. It is idempotent — re-run it
+`setup.sh` checks prerequisites, builds the forge and dashboard images, downloads the
+GGUF, starts all three services, and then runs the end-to-end smoke test. It is idempotent — re-run it
 any time.
 
 Then start a session. pi works on your **current directory**, so `cd` to the
@@ -89,7 +94,7 @@ cd ~/my-project && qpi
 
 | Command | What it does |
 | --- | --- |
-| `./scripts/up.sh` | Start the stack |
+| `./scripts/up.sh` | Start the stack: llama, forge and the observe dashboard (http://127.0.0.1:4981) |
 | `./scripts/down.sh` | Stop the stack |
 | `./scripts/logs.sh llama` | Tail llama-server (watch the model load here) |
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
@@ -97,6 +102,7 @@ cd ~/my-project && qpi
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
+| `./scripts/update.sh --observe` | Update only the dashboard to its latest `main`, rolled back if it fails its healthcheck |
 | `cd <project> && ~/instantcoffee/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
 | `./scripts/pi-container.sh` | The same, in a container with its own home and the browser stack ([docs/container.md](docs/container.md)) |
 

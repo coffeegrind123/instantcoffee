@@ -484,7 +484,9 @@ if [[ "$(env_get OBSERVE_ENABLED)" == "1" ]]; then
     # reports it reachable while Node's fetch in the extension is refused.
     OBSERVE_HOST="$HOST"; [[ "$OBSERVE_HOST" == "localhost" ]] && OBSERVE_HOST="127.0.0.1"
     OBSERVE_URL_VALUE="$(env_get OBSERVE_URL)"
-    : "${OBSERVE_URL_VALUE:=http://${OBSERVE_HOST}:4981}"
+    # The port the stack's observe service publishes (docker-compose.yml).
+    OBSERVE_PORT_VALUE="$(env_get OBSERVE_PORT)"
+    : "${OBSERVE_URL_VALUE:=http://${OBSERVE_HOST}:${OBSERVE_PORT_VALUE:-4981}}"
     export OBSERVE_URL="${OBSERVE_URL_VALUE%/}"
     OBSERVE_SLUG_VALUE="$(env_get OBSERVE_PROJECT_SLUG)"
     [[ -n "$OBSERVE_SLUG_VALUE" ]] && export OBSERVE_PROJECT_SLUG="$OBSERVE_SLUG_VALUE"

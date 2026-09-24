@@ -9313,3 +9313,27 @@ above +50% to 88K, so MTP pays once the reply exceeds roughly **5 output
 tokens per 1K of newly prefilled prompt**. On pi's real traffic the prefix
 cache means "newly prefilled" is the turn's tail (a tool result), not the
 window, so the break-even is tens of tokens. No change.
+
+## 2026-09-24 — the observe dashboard is a service in this stack
+
+instantcoffee-observe ran as a separate `docker compose` project from its own
+checkout, so seeing a session meant remembering to start a second thing. It is
+now the `observe` service here, started by `up.sh`/`setup.sh` with llama and
+forge.
+
+- **Source: a submodule, built locally** (`vendor/instantcoffee-observe`), not
+  the ghcr image. The pi extension lives in this repo and the server it posts to
+  lives there; one commit pinning both is what keeps docs/pi-protocol.md honest.
+  ghcr only publishes on release tags, which lag main.
+- **The image tag is the submodule's short hash**, exported by `compose()` in
+  lib.sh and also baked in as GIT_HASH. Moving the submodule changes the tag, so
+  the next `up` builds instead of reusing a stale image.
+- **No depends_on llama.** The dashboard is most useful during the ~25-minute
+  cold load, and its poller already reports a backend that is not there.
+- **Its own update path** (`update.sh --observe`), never folded into a llama or
+  forge update: it cannot break inference, and a dashboard change riding along
+  would muddy what a failed smoke test is blaming.
+- **Metrics over the compose network** (`http://llama:8080`,
+  `http://forge:8081`) rather than host.docker.internal, which it needed as a
+  separate project.
+

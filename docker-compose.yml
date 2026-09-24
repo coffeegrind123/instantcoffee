@@ -293,6 +293,74 @@ services:
       retries: 3
 
   # ---------------------------------------------------------------------------
+  # instantcoffee-observe — the dashboard. pi's observe extension
+  # (.pi/extensions/observe) posts every session event here, and the server
+  # polls llama /metrics and forge /forge/usage over this network for decode
+  # speed, draft acceptance and context fill. Built from the vendor/ submodule,
+  # whose commit is the pin: extension and server move together.
+  #
+  # No depends_on: the dashboard is useful while llama spends ~25 minutes
+  # loading, and it reports a backend that is down rather than waiting for it.
+  # ---------------------------------------------------------------------------
+  observe:
+    build:
+      context: vendor/instantcoffee-observe
+      args:
+        # scripts/lib.sh exports the submodule's short hash, so bumping the
+        # submodule changes the tag and the next `up` builds the new image.
+        GIT_HASH: ${OBSERVE_GIT_HASH:-unknown}
+    image: instantcoffee/observe:${OBSERVE_GIT_HASH:-local}
+    container_name: instantcoffee-observe
+    restart: unless-stopped
+    # Loopback like llama and forge: the dashboard, API and WebSocket are
+    # unauthenticated.
+    ports:
+      - "${BIND_ADDR}:${OBSERVE_PORT:-4981}:4981"
+    environment:
+      INSTANTCOFFEE_OBSERVE_RUNTIME: docker
+      INSTANTCOFFEE_OBSERVE_SERVER_HOST: 0.0.0.0
+      INSTANTCOFFEE_OBSERVE_SERVER_PORT: "4981"
+      INSTANTCOFFEE_OBSERVE_CLIENT_DIST_PATH: /app/client/dist
+      INSTANTCOFFEE_OBSERVE_DB_PATH: /data/observe.db
+      # Shown in the dashboard instead of /data/observe.db.
+      INSTANTCOFFEE_OBSERVE_HOST_DB_PATH: "${OBSERVE_DATA_DIR:-docker volume instantcoffee-observe-data}/observe.db"
+      INSTANTCOFFEE_OBSERVE_LOG_LEVEL: ${OBSERVE_LOG_LEVEL:-warn}
+      INSTANTCOFFEE_OBSERVE_CORS_ORIGINS: ${OBSERVE_CORS_ORIGINS:-}
+      INSTANTCOFFEE_OBSERVE_NOTIFICATION_ON_EVENTS: ${OBSERVE_NOTIFICATION_ON_EVENTS:-Notification}
+      INSTANTCOFFEE_OBSERVE_TRANSCRIPT_STATS: ${OBSERVE_TRANSCRIPT_STATS:-1}
+      INSTANTCOFFEE_OBSERVE_INSTRUCTIONS: ${OBSERVE_INSTRUCTIONS:-1}
+      # Container ports on the compose network, not the published ones.
+      INSTANTCOFFEE_OBSERVE_LLAMA_URL: http://llama:8080
+      INSTANTCOFFEE_OBSERVE_FORGE_URL: http://forge:8081
+      INSTANTCOFFEE_OBSERVE_STACK_POLL_MS: ${OBSERVE_STACK_POLL_MS:-5000}
+      # Both pi homes, each mounted below at the SAME absolute path pi uses, so
+      # the transcript_path and cwd pi reports resolve here unchanged.
+      INSTANTCOFFEE_OBSERVE_PI_HOMES: "${OBSERVE_PI_HOME:-${HOME}},${PI_CONTAINER_HOME:-/home/piuser}"
+    volumes:
+      # Unset = a named volume, which works everywhere. On Docker Desktop over
+      # WSL a host path must be the Windows form (//c/...): a WSL path mounts
+      # a divergent, empty view.
+      - "${OBSERVE_DATA_DIR:-observe-data}:/data"
+      # The host pi's home: sessions, AGENTS.md, agents/, and the projects pi
+      # works in. Read-write for the Instructions editor, whose writes the
+      # server confines to instruction-file paths; OBSERVE_INSTRUCTIONS=0
+      # turns the editor off.
+      - "${OBSERVE_PI_HOME_HOST:-${HOME}}:${OBSERVE_PI_HOME:-${HOME}}"
+      # pi-container.sh's home. Unset = an empty named volume, which the server
+      # treats as "no sessions".
+      - "${PI_CONTAINER_HOME_HOST:-observe-no-pi-container}:${PI_CONTAINER_HOME:-/home/piuser}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4981/api/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 15s
+      timeout: 6s
+      start_period: 20s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
   # One-shot: fetch a single-file unsloth GGUF.
   #   docker compose --profile tools run --rm --user 0:0 downloader
   # ---------------------------------------------------------------------------
@@ -343,6 +411,7 @@ services:
     environment:
       LLAMA_URL: http://llama:8080
       FORGE_URL: http://forge:8081
+      OBSERVE_URL: http://observe:4981
       MODEL_ALIAS: ${MODEL_ALIAS}
       CTX_SIZE: ${CTX_SIZE}
 
@@ -535,3 +604,7 @@ services:
 volumes:
   slot-cache:
     name: instantcoffee-slot-cache
+  observe-data:
+    name: instantcoffee-observe-data
+  observe-no-pi-container:
+    name: instantcoffee-observe-no-pi-container

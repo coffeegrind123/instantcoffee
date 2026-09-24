@@ -7,6 +7,9 @@
 #   ./scripts/update.sh --yes      skip the confirmation prompt
 #   ./scripts/update.sh --force    rebuild/restart even when already current
 #   ./scripts/update.sh --no-verify  skip the post-update smoke test
+#   ./scripts/update.sh --observe    update ONLY the observe dashboard (the
+#                                    vendor/instantcoffee-observe submodule) to
+#                                    its latest main; --check reports it
 #
 # If the smoke test fails after an update, the previous pins are restored and
 # the stack is brought back up on them. An update that breaks inference does not
@@ -14,19 +17,80 @@
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-CHECK_ONLY=0; ASSUME_YES=0; FORCE=0; VERIFY=1
+CHECK_ONLY=0; ASSUME_YES=0; FORCE=0; VERIFY=1; OBSERVE_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --check)     CHECK_ONLY=1 ;;
+    --observe)   OBSERVE_ONLY=1 ;;
     --yes|-y)    ASSUME_YES=1 ;;
     --force)     FORCE=1 ;;
     --no-verify) VERIFY=0 ;;
-    -h|--help)   sed -n '2,16p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help)   sed -n '2,19p' "$0" | sed 's/^# \?//'; exit 0 ;;
     *)           die "unknown option: $arg" ;;
   esac
 done
 
 require_cmd docker curl
+
+# --- observe -----------------------------------------------------------------
+# The dashboard is its own update, never part of a llama/forge one: it cannot
+# break inference, and a dashboard change riding along would muddy what a
+# failed smoke test is blaming. The submodule commit is the pin; the extension
+# in .pi/extensions/observe speaks docs/pi-protocol.md of that commit, so read
+# the dashboard's changes before taking them.
+OBSERVE_SUB="vendor/instantcoffee-observe"
+
+observe_remote_head() {
+  git -C "$OBSERVE_DIR" fetch --quiet origin main 2>/dev/null || return 1
+  git -C "$OBSERVE_DIR" rev-parse --short origin/main
+}
+
+update_observe() {
+  ensure_observe_checkout
+  local cur new
+  cur="$(observe_git_hash)"
+  new="$(observe_remote_head)" || die "could not fetch $OBSERVE_SUB from origin"
+
+  printf '\n  %-22s %-22s %s\n' "observe dashboard" "$cur" "$new"
+  if [[ "$cur" == "$new" && $FORCE -eq 0 ]]; then
+    ok "observe is current."
+    return 0
+  fi
+  git -C "$OBSERVE_DIR" log --oneline "$cur..$new" | sed 's/^/    /'
+  if (( CHECK_ONLY )); then
+    info "Run ./scripts/update.sh --observe to apply."
+    return 0
+  fi
+  if (( ! ASSUME_YES )); then
+    read -r -p "Update the dashboard to $new and restart it? [y/N] " reply
+    [[ "$reply" =~ ^[Yy] ]] || { info "Aborted."; return 0; }
+  fi
+
+  observe_rollback() {
+    warn "Rolling the dashboard back to $cur"
+    git -C "$OBSERVE_DIR" checkout --quiet "$cur" \
+      || die "could not check out $cur in $OBSERVE_SUB — the dashboard is on $(observe_git_hash)"
+    compose up -d --build --wait --wait-timeout 180 observe 2>&1 | tail -5 \
+      || warn "rollback restart also failed — inspect with ./scripts/logs.sh observe"
+    die "Dashboard update rolled back to $cur."
+  }
+
+  git -C "$OBSERVE_DIR" checkout --quiet "$new" || die "could not check out $new"
+  info "Building and restarting the dashboard ($new)"
+  # --wait holds until the healthcheck passes, which is the verification: a
+  # dashboard that does not answer /api/health is rolled back.
+  compose up -d --build --wait --wait-timeout 180 observe || observe_rollback
+
+  lock_set observe_commit "$new"
+  ok "Dashboard updated to $new"
+  dim "Commit the new pin (the submodule) and versions.lock:"
+  dim "  git -C $REPO_ROOT commit -m 'Update observe to $new' $OBSERVE_SUB versions.lock"
+}
+
+if (( OBSERVE_ONLY )); then
+  update_observe
+  exit 0
+fi
 
 CUR_LLAMA="$(env_get LLAMA_TAG)"
 CUR_FORGE="$(env_get FORGE_VERSION)"
@@ -94,7 +158,10 @@ fi
 printf '\n  %-22s %-22s %s\n' "component" "current" "latest"
 printf '  %-22s %-22s %s\n' "----------------------" "----------------------" "----------------------"
 printf '  %-22s %-22s %s\n' "llama.cpp (image)" "$CUR_LLAMA" "$NEW_LLAMA"
-printf '  %-22s %-22s %s\n\n' "forge-guardrails" "$CUR_FORGE" "$NEW_FORGE"
+printf '  %-22s %-22s %s\n' "forge-guardrails" "$CUR_FORGE" "$NEW_FORGE"
+# Reported, never applied here: see update_observe above.
+OBSERVE_NEW="$(observe_remote_head 2>/dev/null || echo "?")"
+printf '  %-22s %-22s %s\n\n' "observe (--observe)" "$(observe_git_hash)" "$OBSERVE_NEW"
 
 CHANGED=0
 [[ "$NEW_LLAMA" != "$CUR_LLAMA" ]] && CHANGED=1

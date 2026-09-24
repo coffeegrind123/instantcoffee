@@ -23,6 +23,8 @@ import urllib.request
 
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://llama:8080").rstrip("/")
 FORGE_URL = os.environ.get("FORGE_URL", "http://forge:8081").rstrip("/")
+# The dashboard. Empty skips its checks, for a stack run without it.
+OBSERVE_URL = os.environ.get("OBSERVE_URL", "http://observe:4981").rstrip("/")
 MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "qwen3.8-27b")
 # NO DEFAULT, deliberately. This is not a tunable, it is the FACT the
 # "context matches CTX_SIZE" check exists to verify — and a default turns that
@@ -319,8 +321,54 @@ def _check_content_repeats(content: str, label: str) -> None:
         record(f"no repeat loop ({label})", True, "")
 
 
+# How long the dashboard's llama poller gets to report in. It polls every 5s by
+# default; three rounds covers a first poll that lands mid-restart.
+OBSERVE_STACK_TIMEOUT = float(os.environ.get("SMOKE_OBSERVE_STACK_TIMEOUT", "20"))
+
+
+def check_observe_health() -> bool:
+    """The dashboard answers, and it is the dashboard rather than a stray server."""
+    if not wait_for(f"{OBSERVE_URL}/api/health", "observe dashboard", timeout=120):
+        return False
+    status, body = http(f"{OBSERVE_URL}/api/health")
+    try:
+        health = json.loads(body)
+    except ValueError:
+        return record("observe identifies itself", False, f"status={status} body={body[:200]}")
+    if health.get("id") != "instantcoffee-observe":
+        return record("observe identifies itself", False, f"id={health.get('id')!r} body={body[:200]}")
+    return record("observe identifies itself", True, f"build {health.get('gitHash')}")
+
+
+def check_observe_sees_llama() -> None:
+    """The dashboard's own llama poller reaches llama over the compose network.
+
+    This is what the decode-speed and draft-acceptance panels run on, and the
+    one thing a wrong LLAMA_URL breaks without the dashboard looking broken.
+    'stalled' counts: llama accepted the connection but its queue was busy.
+    """
+    deadline = time.monotonic() + OBSERVE_STACK_TIMEOUT
+    last = ""
+    while True:
+        status, body = http(f"{OBSERVE_URL}/api/stack")
+        try:
+            st = json.loads(body).get("status", {})
+        except (ValueError, AttributeError):
+            st = {}
+        state = st.get("state")
+        if state in ("ok", "stalled"):
+            record("observe polls llama", True, f"{state} via {st.get('llamaUrl')}")
+            return
+        last = f"state={state!r} url={st.get('llamaUrl')!r} error={st.get('lastError')!r}"
+        if time.monotonic() >= deadline:
+            record("observe polls llama", False, last or f"status={status} {body[:200]}")
+            return
+        time.sleep(2)
+
+
 def main() -> int:
-    print(f"\ninstantcoffee smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n")
+    print(f"\ninstantcoffee smoke test\n  llama: {LLAMA_URL}\n  forge: {FORGE_URL}\n"
+          f"  observe: {OBSERVE_URL or '(skipped)'}\n")
 
     print("Reachability")
     llama_up = wait_for(f"{LLAMA_URL}/health", "llama-server")
@@ -339,6 +387,11 @@ def main() -> int:
         print("\nInference through forge")
         check_plain_completion()
         check_openai_tool_call()
+
+    if OBSERVE_URL:
+        print("\nDashboard")
+        if check_observe_health() and llama_up:
+            check_observe_sees_llama()
 
     failed = [n for n, ok, _ in _results if not ok]
     print(f"\n{len(_results) - len(failed)}/{len(_results)} checks passed")

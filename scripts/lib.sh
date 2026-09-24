@@ -32,7 +32,36 @@ require_cmd() {
 compose() {
   local env_files=".env"
   [[ -f "$REPO_ROOT/.env.local" ]] && env_files=".env,.env.local"
-  ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" docker compose "$@" )
+  ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" OBSERVE_GIT_HASH="$(observe_git_hash)" \
+      docker compose "$@" )
+}
+
+# --- observe -------------------------------------------------------------------
+# The dashboard is built from the vendor/instantcoffee-observe submodule. Its
+# short hash tags the image (instantcoffee/observe:<hash>) and is baked in as
+# the build's GIT_HASH, so moving the submodule is what triggers a rebuild.
+OBSERVE_DIR="$REPO_ROOT/vendor/instantcoffee-observe"
+
+observe_git_hash() {
+  git -C "$OBSERVE_DIR" rev-parse --short HEAD 2>/dev/null || echo local
+}
+
+# Where the dashboard answers from this machine. 0.0.0.0 is a bind address,
+# not one to browse to.
+observe_url() {
+  local host port
+  host="$(env_get BIND_ADDR)"; [[ -z "$host" || "$host" == 0.0.0.0 ]] && host=127.0.0.1
+  port="$(env_get OBSERVE_PORT)"
+  printf 'http://%s:%s' "$host" "${port:-4981}"
+}
+
+# A clone made without --recurse-submodules has an empty directory here, and
+# compose would fail on a build context with no Dockerfile.
+ensure_observe_checkout() {
+  [[ -f "$OBSERVE_DIR/Dockerfile" ]] && return 0
+  info "Fetching the observe dashboard (vendor/instantcoffee-observe)"
+  git -C "$REPO_ROOT" submodule update --init vendor/instantcoffee-observe \
+    || die "could not check out vendor/instantcoffee-observe"
 }
 
 # Read one key out of the merged env, honouring .env.local overrides.

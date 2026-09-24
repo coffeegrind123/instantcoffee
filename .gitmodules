@@ -6,3 +6,7 @@
 	path = vendor/prinny-channel
 	url = https://github.com/coffeegrind123/pi-prinny-channel.git
 	branch = main
+[submodule "vendor/instantcoffee-observe"]
+	path = vendor/instantcoffee-observe
+	url = https://github.com/coffeegrind123/openclaude-observe.git
+	branch = main

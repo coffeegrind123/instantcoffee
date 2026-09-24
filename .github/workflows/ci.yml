@@ -45,7 +45,7 @@ jobs:
                    scripts/capture_sessions.py scripts/test_capture_proxy.py \
                    scripts/test_forge_patches.py scripts/test_interrupt_exits.py \
                    scripts/bench_tools.py \
-                   scripts/test_download_verify.py; do
+                   scripts/test_download_verify.py scripts/test_smoke_observe.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
@@ -70,13 +70,14 @@ jobs:
       # nothing. A negative result needs a control; this is it.
       - name: The submodules are checked out
         run: |
-          for m in pi-persona prinny-channel; do
+          for m in pi-persona prinny-channel instantcoffee-observe; do
             test -f "vendor/$m/package.json" \
               || { echo "vendor/$m is empty — checkout needs submodules: recursive"; exit 1; }
             echo "  vendor/$m: present at $(git -C "vendor/$m" rev-parse --short HEAD)"
           done
           test -f vendor/pi-persona/extensions/index.ts || { echo "no persona extension"; exit 1; }
           test -f vendor/prinny-channel/extensions/index.ts || { echo "no prinny extension"; exit 1; }
+          test -f vendor/instantcoffee-observe/Dockerfile || { echo "no observe Dockerfile"; exit 1; }
 
       - name: Extension syntax checks
         run: |
@@ -178,6 +179,11 @@ jobs:
 
       - name: CJK leak detector unit tests
         run: python scripts/test_cjk_detector.py
+
+      # The dashboard checks in the smoke test: a server on the port that is not
+      # observe, and a dashboard whose llama poller never connects, must fail.
+      - name: Smoke test dashboard checks
+        run: python scripts/test_smoke_observe.py
 
       # spec-sweep.sh and capacity-probe.sh own .env for a run. A signal trap
       # that restores without exiting lets the next step overwrite the restore.

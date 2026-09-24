@@ -243,6 +243,11 @@ vendor/pi-subagents-lite/  Agent — fork of pi-subagents-lite@1.11.0, in-proces
   src/spawn/result-cap.ts  bounds a BACKGROUND result — the one path the guard
                         cannot see, because pi injects it without a tool_result
   tests/                node --test suite for the cap, plus a lint that works
+vendor/instantcoffee-observe/  the dashboard, run as the `observe` service.
+                        A GIT SUBMODULE: github.com/coffeegrind123/openclaude-observe
+                        (to be renamed instantcoffee-observe). Its commit is the
+                        pin, so the observe extension and the server it posts to
+                        move together; `update.sh --observe` moves it
 vendor/prinny-channel/  /prinny — Matrix channel, converted from a Claude plugin.
                         A GIT SUBMODULE: github.com/coffeegrind123/pi-prinny-channel
   FORK.md               what the conversion changed, and why forwarding exists

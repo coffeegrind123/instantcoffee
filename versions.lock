@@ -4,7 +4,8 @@
 # HAND-EDITING THIS FILE IS EXPECTED. scripts/update.sh writes only the fields
 # it owns — updated_utc, llama_image, llama_image_digest, llama_image_prev,
 # forge_version, model_repo, model_file, model_file_sha256, model_repo_modified,
-# context_size, kv_cache, rtk_version, rtk_filters, verified — and it now writes
+# context_size, kv_cache, rtk_version, rtk_filters, verified, and (with
+# --observe) observe_commit — and it now writes
 # them IN PLACE (lock_set in scripts/lib.sh). Everything else here, including
 # the indented prose under an owned key, is left alone.
 #
@@ -57,6 +58,11 @@ llama_image_prev    = server-cuda-b10689 @ sha256:e52c610406cd18714902d1ca3bffad
 llama_image_prev_note = PRIOR TO THAT: server-cuda-b10200 @ sha256:48b8053c05319
                       cde97e64463d117b5747d3fb27475b176f85edf27bd503fa7f9
 forge_version       = 0.9.5
+observe_commit      = abfe6aa
+observe_commit_note = The vendor/instantcoffee-observe submodule commit the
+                      dashboard image is built from (instantcoffee/observe:
+                      <commit>). The submodule itself is the pin; this line
+                      records it where the rest of the stack is recorded.
 model_repo          = unsloth/Qwen3.8-27B-GGUF
 model_file          = Qwen3.8-27B-UD-Q4_K_XL.gguf
 model_file_sha256   = 3f227079003add2511437e5b1e94812e363385225bf6a9b47b0054a72bc8b01e

@@ -48,6 +48,10 @@ ok "models dir $MODELS_DIR"
 info "Building the forge image (forge $(env_get FORGE_VERSION))"
 compose build forge
 
+ensure_observe_checkout
+info "Building the observe dashboard ($(observe_git_hash))"
+compose build observe
+
 # --- model -------------------------------------------------------------------
 if (( SKIP_MODEL )); then
   warn "Skipping the model download (--skip-model)"
@@ -69,6 +73,7 @@ if compose --profile tools run --rm smoketest; then
   ok "Ready."
   dim "  llama-server  http://$(env_get BIND_ADDR):$(env_get LLAMA_PORT)"
   dim "  forge proxy   http://$(env_get BIND_ADDR):$(env_get FORGE_PORT)"
+  dim "  dashboard     $(observe_url)"
   echo
   dim "Start a session with:  ./scripts/pi-local.sh"
 else
