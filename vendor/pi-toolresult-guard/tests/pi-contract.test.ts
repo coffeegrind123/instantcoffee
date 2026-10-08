@@ -12,7 +12,7 @@
 
 import assert from "node:assert/strict"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { describe, test } from "node:test"
 
 import { findPiIndex } from "./harness.ts"
@@ -20,42 +20,78 @@ import { findPiIndex } from "./harness.ts"
 const PI_INDEX = findPiIndex()
 
 /**
- * The bundle chunk holding the tool-result path, found BY CONTENT.
+ * EVERY js file under pi's dist, concatenated — found BY CONTENT, not by name.
  *
  * Not by name: the chunk is `chunk-OMWWHBTG.js` on 0.84.4 and that hash changes
  * with every build. Not by a fixed path either — the `pi` binary resolves to
  * `dist/bundle/cli.js` on this stack's image and to `dist/cli.js` elsewhere, so
- * `chunks/` sits one directory up or down depending on the install. Both
- * candidates are tried, plus the bundle roots themselves for a build that is
- * not split into chunks at all.
+ * `chunks/` sits one directory up or down depending on the install.
  *
- * This search was wrong on its first outing — it looked only under
- * `<dir>/bundle/chunks`, found nothing on the real container, and the whole
- * describe below skipped SILENTLY while reporting a green suite. A contract
- * test that cannot find the thing it pins is worse than no contract test, so
- * `SKIP` distinguishes "pi is absent" from "pi is here and the search failed".
+ * ALL of them, not the first one that matches. That distinction is the whole
+ * reason this function has a history:
+ *
+ *   - First outing: it looked only under `<dir>/bundle/chunks`, found nothing on
+ *     the real container, and the describe below skipped SILENTLY while
+ *     reporting a green suite. Hence `SKIP` distinguishing "pi is absent" from
+ *     "pi is here and the search failed".
+ *   - Second outing: it returned the first file containing
+ *     `function getTextOutput(`, which was right while pi shipped one bundle
+ *     chunk. pi 1.1.0 SPLIT the path — `getTextOutput` into
+ *     `core/tools/render-utils.js`, `normalizeToolResultImages` into
+ *     `utils/tool-result-images.js` and `core/agent-session.js` — so five of the
+ *     six shapes below were searched for in a file that never held them, and the
+ *     suite went red on CI with "this package is obsolete" against logic that
+ *     had not changed at all. A layout change must not read as a logic change;
+ *     that is exactly what the whitespace-insensitive match above is for.
+ *
+ * So the haystack is the union. The cost is that a shape could in principle be
+ * satisfied by an unrelated file; the alternative is a canary that cries wolf.
  */
-function findChunk(): string | null {
+function findBundleSource(): string | null {
   if (!PI_INDEX) return null
   const dir = dirname(PI_INDEX)
   const roots = [join(dir, "chunks"), join(dir, "bundle", "chunks"), dir]
-  for (const root of roots) {
-    if (!existsSync(root)) continue
-    for (const name of readdirSync(root)) {
-      if (!name.endsWith(".js")) continue
-      let src: string
-      try {
-        src = readFileSync(join(root, name), "utf8")
-      } catch {
-        continue
+  // `dist/bundle/cli.js` is the image's layout, and it would otherwise hide the
+  // unbundled `dist/core` and `dist/utils` trees — which is exactly where 1.1.0
+  // moved two of the six shapes. The chunks carry the same code, so this is
+  // belt and braces, but the alternative is another search that cannot see.
+  if (basename(dir) === "bundle") roots.push(dirname(dir))
+
+  const parts: string[] = []
+  const seen = new Set<string>()
+  const walk = (entry: string): void => {
+    let entries: string[]
+    try {
+      entries = readdirSync(entry)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === "node_modules") continue
+      const full = join(entry, name)
+      if (seen.has(full)) continue
+      seen.add(full)
+      if (name.endsWith(".js")) {
+        try {
+          parts.push(readFileSync(full, "utf8"))
+        } catch {
+          // An unreadable file is not a contract change.
+        }
+      } else if (!name.includes(".")) {
+        walk(full)
       }
-      if (src.includes("function getTextOutput(")) return src
     }
   }
-  return null
+
+  for (const root of roots) {
+    if (existsSync(root)) walk(root)
+  }
+
+  const all = parts.join("\n")
+  return all.includes("function getTextOutput(") ? all : null
 }
 
-const SRC = findChunk()
+const SRC = findBundleSource()
 const SKIP = PI_INDEX
   ? SRC
     ? false
@@ -66,6 +102,25 @@ const SKIP = PI_INDEX
 function has(needle: string): boolean {
   const flat = (s: string) => s.replace(/\s+/g, "")
   return flat(SRC ?? "").includes(flat(needle))
+}
+
+/**
+ * The same match, but blind to what the minifier called a local variable.
+ *
+ * `has()` compares flattened text, which stops whitespace and line-wrapping from
+ * reading as a change — but not a renamed identifier. pi 1.1.0 renamed
+ * `prepared.toolCall` to `toolCall` in the `tool_execution_update` emit, and the
+ * literal needle below went red against a byte-identical emit. That is the
+ * failure this file's header explicitly swears off ("a re-minify with different
+ * variable names must not fail this, only a change to the LOGIC should"), so
+ * the assertions that pin a *receiver expression* use this instead.
+ *
+ * Deliberately still narrow: field names, their order, and the shape of the
+ * surrounding expression all stay pinned, so dropping a field, reordering them,
+ * or removing the emit still fails.
+ */
+function hasRe(pattern: RegExp): boolean {
+  return pattern.test((SRC ?? "").replace(/\s+/g, ""))
 }
 
 describe("the pi contract this guard depends on", { skip: SKIP }, () => {
@@ -82,8 +137,14 @@ describe("the pi contract this guard depends on", { skip: SKIP }, () => {
   // 2. THE LEVER. One handler returning a field is what makes hookResult
   //    truthy. Without this, returning `{content}` changes nothing.
   test("emitToolResult still returns a value only when a handler modified one", () => {
+    // Tolerant of identifier names and of ADDED fields: 1.1.0 inserted
+    // `structuredContent` between `details` and `isError`. That is additive and,
+    // if anything, an improvement — the hook's structuredContent now
+    // round-trips through the merge in shape 5 instead of being dropped.
     assert.ok(
-      has("if(modified)return{content:currentEvent.content,details:currentEvent.details,isError:currentEvent.isError,usage:currentEvent.usage}"),
+      hasRe(
+        /if\(modified\)return\{content:[A-Za-z_$][\w$]*\.content,details:[A-Za-z_$][\w$]*\.details,[^}]*isError:[A-Za-z_$][\w$]*\.isError,usage:[A-Za-z_$][\w$]*\.usage\}/,
+      ),
       "ExtensionRunner.emitToolResult changed. The guard works by setting `modified`; " +
         "re-read extensions/index.ts's header against the new code.",
     )
@@ -127,7 +188,9 @@ describe("the pi contract this guard depends on", { skip: SKIP }, () => {
   //    partial never passes through afterToolCall, so nothing here can reach it.
   test("tool_execution_update still bypasses the hook (the one case not covered)", () => {
     assert.ok(
-      has('emit({type:"tool_execution_update",toolCallId:prepared.toolCall.id,toolName:prepared.toolCall.name,args:prepared.toolCall.arguments,partialResult})'),
+      hasRe(
+        /emit\(\{type:"tool_execution_update",toolCallId:[A-Za-z_$][\w$.]*\.id,toolName:[A-Za-z_$][\w$.]*\.name,args:[A-Za-z_$][\w$.]*\.arguments,partialResult/,
+      ),
       "the partial-result path changed; re-check whether it now passes through afterToolCall.",
     )
   })
