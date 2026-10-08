@@ -212,6 +212,15 @@ jobs:
       - name: Untrusted-content envelope unit tests
         run: python scripts/test_untrusted_content.py
 
+      # Order inside the launcher, not behaviour, and that is the point: the
+      # catalog refresh has to happen before the orchestrator's `--list-models`
+      # probe, or the first launch after a clone dies on a pi whose bundled
+      # catalog lacks the -5-5 models and only the second one works. CI cannot
+      # catch that by running the script — it needs a cold pi catalog and it
+      # repairs itself on retry — so the assertion is made against the source.
+      - name: Launcher ordering unit tests
+        run: python scripts/test_launcher_order.py
+
       # The Matrix channel is a conversion carried in this repo
       # (vendor/prinny-channel/FORK.md), so its regressions are ours too. Its
       # failure mode is the one worth catching in CI: a broken channel does not

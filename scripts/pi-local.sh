@@ -51,6 +51,11 @@ CACHE_LONG="$(env_get PI_CACHE_LONG_SECONDS)";   : "${CACHE_LONG:=3600}"
 CACHE_WARMING="$(env_get PI_CACHE_WARMING)";     : "${CACHE_WARMING:=idle}"
 SHOW_CACHE_MISSES="$(env_get PI_SHOW_CACHE_MISS_NOTICES)"; : "${SHOW_CACHE_MISSES:=1}"
 
+# pi's compaction, as fractions of PI_CONTEXT_WINDOW. See the block that writes
+# them for why they are per-model and why 5/15 rather than pi's own 16384/20000.
+RESERVE_PCT="$(env_get PI_COMPACTION_RESERVE_PCT)"; : "${RESERVE_PCT:=0.05}"
+KEEP_PCT="$(env_get PI_COMPACTION_KEEP_PCT)";       : "${KEEP_PCT:=0.15}"
+
 # The credential. env_get reads an already-exported variable first and then
 # .env.local (gitignored) — never .env, which is tracked, so a key in .env would
 # be a key in a public repository. .env.local.example carries the placeholder.
@@ -136,15 +141,41 @@ PY
 # you point it at, and a .pi/settings.json in this repo would only apply to
 # sessions started here (and only when the project is trusted).
 #
-# Compaction. The arithmetic is inherited from the local-model branch, where
-# pi's defaults (reserveTokens 16384, keepRecentTokens 20000) were sized for a
-# 200k window and were actively harmful on 32k: measured against pi 0.84.2 and
-# eight real sessions, the trigger fired at 50% while the actual compaction could
-# not run until the context passed keepRecentTokens, so pi compacted every turn
-# and freed nothing, and above ~87% full half the assistant turns came back
-# empty. The formula below only ever TIGHTENS pi's defaults — at the 1M window
-# the Claude 5 family reports it evaluates back to exactly 16384/20000, so it is
-# a no-op there and live protection if PI_CONTEXT_WINDOW is set low.
+# Compaction. pi's rule is, verbatim:
+#
+#     shouldCompact(tokens, window, settings) = tokens > window - reserveTokens
+#
+# so reserveTokens is HEADROOM, not a fraction of the window. The previous
+# version of this block computed it as though it were a fraction ("turns true at
+# 50% of the window") and that comment was simply wrong: with the 1M window this
+# branch reports, reserveTokens 16384 puts the trigger at 983,616 tokens.
+#
+# 16384 and 20000 are pi's own defaults (DEFAULT_COMPACTION_TOKEN_SETTINGS), and
+# they were sized for a 200k window — 8% headroom, 10% keep-window. Carried onto
+# 1M unchanged they mean 1.6% headroom and a 2% keep-window: compaction that
+# fires a hair under the ceiling and then discards ~98% of the transcript. The
+# entire reason to buy a 1M window is the working set; collapsing it to 20k
+# throws that away, and the following turns pay to re-read files to rebuild it.
+#
+# So the sizes are derived from the window and written PER MODEL, through
+# `compaction.modelOverrides["provider/modelId"]`. pi resolves
+# override -> flat setting -> built-in default, so the per-model form leaves a
+# model this branch has never heard of on pi's own numbers instead of silently
+# inheriting 1M arithmetic.
+#
+# The two numbers pull against each other, and the honest statement is:
+#   * headroom absorbs error in pi's token ESTIMATE, which is built from
+#     character counts (estimateTextAndImageContentChars). Running out is not a
+#     clean error either: on 4.5+ models the API accepts a request whose input
+#     plus max_tokens exceeds the window and then stops generation with
+#     stop_reason "model_context_window_exceeded", mid-turn.
+#   * a bigger keep-window means a bigger prefix, and the expensive failure is a
+#     cache MISS on that prefix — 900k tokens re-prefilled on Opus 5.5 is $3.60
+#     against $0.18 for the same tokens read from cache.
+# 5% and 15% are a defensible starting point, not a measurement. They are .env
+# knobs (PI_COMPACTION_RESERVE_PCT / PI_COMPACTION_KEEP_PCT) precisely because
+# the right values depend on session length, and a long orchestrator run and a
+# one-shot differ.
 #
 # Cache warming. pi keeps an eligible provider prompt cache alive by re-sending
 # the prefix before it expires, and it will only do so for a model that declares
@@ -155,7 +186,9 @@ PY
 # its own floor. showCacheMissNotices is on because the whole point of paying for
 # cache writes is knowing when they are being thrown away.
 CTX="$CTX" PI_DIR="$PI_DIR" CACHE_WARMING="$CACHE_WARMING" \
-SHOW_CACHE_MISSES="$SHOW_CACHE_MISSES" python3 - <<'PY'
+SHOW_CACHE_MISSES="$SHOW_CACHE_MISSES" RESERVE_PCT="$RESERVE_PCT" KEEP_PCT="$KEEP_PCT" \
+MAIN_MODEL="$MAIN_MODEL" SUBAGENT_ID="$SUBAGENT_ID" ADVISOR_ID="$ADVISOR_ID" \
+python3 - <<'PY'
 import json, os, pathlib
 
 path = pathlib.Path(os.environ["PI_DIR"]) / "settings.json"
@@ -168,17 +201,29 @@ if path.exists():
         raise SystemExit(f"{path} exists but is not valid JSON — refusing to overwrite it")
 
 compaction = data.setdefault("compaction", {})
-# Trigger at 50% of the window; never later than pi's own default headroom.
-compaction["reserveTokens"] = min(16384, ctx // 2)
-# Keep ~20% of the window after a compaction, floored so a tiny window still
-# keeps a usable turn and capped at pi's default so a large one is unchanged.
-compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
+
+# Drop the flat keys an earlier version of this script wrote. Leaving them would
+# apply one window's arithmetic to every model pi can reach, and they are exactly
+# the 200k-era numbers this block exists to stop asserting.
+for stale in ("reserveTokens", "keepRecentTokens"):
+    compaction.pop(stale, None)
+
+# Floors, not rounded-to-nothing: a small PI_CONTEXT_WINDOW must still leave a
+# usable turn after a compaction.
+reserve = max(2000, round(ctx * float(os.environ["RESERVE_PCT"])))
+keep = max(4000, round(ctx * float(os.environ["KEEP_PCT"])))
+per_model = {"reserveTokens": reserve, "keepRecentTokens": keep}
+
+overrides = compaction.setdefault("modelOverrides", {})
+for model_id in (os.environ["MAIN_MODEL"], os.environ["SUBAGENT_ID"], os.environ["ADVISOR_ID"]):
+    overrides[f"anthropic/{model_id}"] = dict(per_model)
 
 data["cacheWarming"] = os.environ["CACHE_WARMING"]
 data["showCacheMissNotices"] = os.environ["SHOW_CACHE_MISSES"] == "1"
 
 path.write_text(json.dumps(data, indent=2) + "\n")
-print(f"wrote {path} (compaction: {compaction}, cacheWarming: {data['cacheWarming']})")
+print(f"wrote {path} (compaction at ~{ctx - reserve:,} of {ctx:,} tokens, "
+      f"keeping {keep:,}; cacheWarming: {data['cacheWarming']})")
 PY
 
 if (( INSTALL_ONLY )); then
@@ -814,6 +859,32 @@ if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
   fi
 fi
 
+# --- model catalog, BEFORE anything asks pi what it knows --------------------
+# The catalog bundled with the installed pi lags the published one, and the lag
+# is not cosmetic: pi 0.85.1 ships no `claude-opus-5-5` and no `claude-haiku-5-5`.
+# Before a refresh the anthropic provider lists 14 models; after one, 17.
+#
+# This has to run BEFORE the orchestrator's `pi --list-models` probe, and that
+# ordering is the whole reason this block is here rather than folded in with the
+# other pi housekeeping near the end. It was written the other way round first,
+# and the failure is worth recording because it is invisible on any machine
+# that has already refreshed once: the probe runs, does not find the model,
+# and `die`s — on the FIRST launch after a clone, and only the first. Run the
+# launcher again and it works, which reads as a flake rather than a bug.
+# CI will not catch it either; CI does not run this script.
+#
+# Fails SOFT: a registry round trip is not worth blocking a session for, and a
+# refresh is additive. The probe below is what actually refuses a model that is
+# still missing after this.
+CATALOG_NOTE=""
+if (( ! PRINT_ONLY )) \
+   && [[ "$(env_get PI_UPDATE_MODELS_ON_LAUNCH)" != "0" ]] \
+   && command -v pi >/dev/null 2>&1; then
+  timeout 60 pi update --models >/dev/null 2>&1 \
+    && CATALOG_NOTE=", catalog refreshed" \
+    || CATALOG_NOTE=", catalog refresh failed"
+fi
+
 # THINK_LANG is gone on this branch, along with prompts/think-zh.md.
 #
 # It made the local model reason in Mandarin while answering in English, which
@@ -973,25 +1044,6 @@ fi
 
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
-
-# --- model catalog -----------------------------------------------------------
-# The catalog bundled with the installed pi lags the published one, and the lag
-# is not cosmetic: pi 0.85.1 ships no `claude-opus-5-5`, no `claude-haiku-5-5`
-# and no `claude-sonnet-5-5`. Before a refresh the anthropic provider lists 14
-# models; after one it lists 17. So a launch on a model the bundle does not know
-# would fail its own `--list-models` probe — or worse, a role silently falls back
-# to the parent's model.
-#
-# Fails SOFT: a registry round trip is not worth blocking a session for, and a
-# catalog refresh is additive. The probe in orchestrator mode above is what
-# actually refuses a model that is still missing.
-if [[ "$(env_get PI_UPDATE_MODELS_ON_LAUNCH)" != "0" ]]; then
-  timeout 60 pi update --models >/dev/null 2>&1 \
-    && CATALOG_NOTE=", catalog refreshed" \
-    || CATALOG_NOTE=", catalog refresh failed"
-else
-  CATALOG_NOTE=""
-fi
 
 # --- keep pi current ---------------------------------------------------------
 # pi ships often and the stack is only ever tested against the current release.
