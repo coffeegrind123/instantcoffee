@@ -53,8 +53,13 @@ SHOW_CACHE_MISSES="$(env_get PI_SHOW_CACHE_MISS_NOTICES)"; : "${SHOW_CACHE_MISSE
 
 # pi's compaction, as fractions of PI_CONTEXT_WINDOW. See the block that writes
 # them for why they are per-model and why 5/15 rather than pi's own 16384/20000.
-RESERVE_PCT="$(env_get PI_COMPACTION_RESERVE_PCT)"; : "${RESERVE_PCT:=0.05}"
-KEEP_PCT="$(env_get PI_COMPACTION_KEEP_PCT)";       : "${KEEP_PCT:=0.15}"
+# Expressed as the POINT compaction fires, not as pi's headroom, because the
+# point is the number anyone actually reasons about — and the conversion is
+# the confusing part (`reserveTokens = window - trigger`). 0.28 of a 1M window
+# is the ~280,000 this branch targets; the launcher prints the token figure it
+# resolved so the arithmetic is never left implicit.
+AT_PCT="$(env_get PI_COMPACTION_AT_PCT)";     : "${AT_PCT:=0.28}"
+KEEP_PCT="$(env_get PI_COMPACTION_KEEP_PCT)"; : "${KEEP_PCT:=0.15}"
 
 # The credential. env_get reads an already-exported variable first and then
 # .env.local (gitignored) — never .env, which is tracked, so a key in .env would
@@ -157,6 +162,13 @@ PY
 # entire reason to buy a 1M window is the working set; collapsing it to 20k
 # throws that away, and the following turns pay to re-read files to rebuild it.
 #
+# WHAT THIS BRANCH TARGETS. Compaction fires at ~28% of the window — 280,000 of
+# 1,000,000. A 1M window is a ceiling, not a working size: what the prefix costs
+# and what the model attends to both grow with it. It is also the number that
+# bounds the worst turn — the one where the conversation has grown past the
+# cache lookback and the whole prefix is re-prefilled at full input price
+# ($2.80 for 700k on Opus 5.5) instead of read at cache price ($0.14).
+#
 # So the sizes are derived from the window and written PER MODEL, through
 # `compaction.modelOverrides["provider/modelId"]`. pi resolves
 # override -> flat setting -> built-in default, so the per-model form leaves a
@@ -172,10 +184,17 @@ PY
 #   * a bigger keep-window means a bigger prefix, and the expensive failure is a
 #     cache MISS on that prefix — 900k tokens re-prefilled on Opus 5.5 is $3.60
 #     against $0.18 for the same tokens read from cache.
-# 5% and 15% are a defensible starting point, not a measurement. They are .env
-# knobs (PI_COMPACTION_RESERVE_PCT / PI_COMPACTION_KEEP_PCT) precisely because
-# the right values depend on session length, and a long orchestrator run and a
-# one-shot differ.
+#
+# The keep-window is the other half and is NOT settled by the trigger: at 15%
+# (150,000) it is 54% of the 280,000 trigger, so each compaction only frees
+# ~130,000 and the context sits at half the budget the moment it finishes. That
+# is a real choice, not an oversight — a large verbatim tail is exactly what a
+# long agentic session wants and exactly what it pays for — but it is worth
+# watching against /session's reported usage before trusting it.
+#
+# Both are .env knobs (PI_COMPACTION_AT_PCT / PI_COMPACTION_KEEP_PCT), fractions
+# of PI_CONTEXT_WINDOW, because the right values depend on session shape: a long
+# orchestrator run and a one-shot differ, and only the operator knows which.
 #
 # Cache warming. pi keeps an eligible provider prompt cache alive by re-sending
 # the prefix before it expires, and it will only do so for a model that declares
@@ -186,7 +205,7 @@ PY
 # its own floor. showCacheMissNotices is on because the whole point of paying for
 # cache writes is knowing when they are being thrown away.
 CTX="$CTX" PI_DIR="$PI_DIR" CACHE_WARMING="$CACHE_WARMING" \
-SHOW_CACHE_MISSES="$SHOW_CACHE_MISSES" RESERVE_PCT="$RESERVE_PCT" KEEP_PCT="$KEEP_PCT" \
+SHOW_CACHE_MISSES="$SHOW_CACHE_MISSES" AT_PCT="$AT_PCT" KEEP_PCT="$KEEP_PCT" \
 MAIN_MODEL="$MAIN_MODEL" SUBAGENT_ID="$SUBAGENT_ID" ADVISOR_ID="$ADVISOR_ID" \
 python3 - <<'PY'
 import json, os, pathlib
@@ -208,9 +227,11 @@ compaction = data.setdefault("compaction", {})
 for stale in ("reserveTokens", "keepRecentTokens"):
     compaction.pop(stale, None)
 
-# Floors, not rounded-to-nothing: a small PI_CONTEXT_WINDOW must still leave a
-# usable turn after a compaction.
-reserve = max(2000, round(ctx * float(os.environ["RESERVE_PCT"])))
+# pi triggers at `tokens > window - reserveTokens`, so the headroom IS the
+# difference between the window and the point we want to compact at.
+trigger = max(1000, round(ctx * float(os.environ["AT_PCT"])))
+reserve = max(2000, ctx - trigger)
+# Floored so a small PI_CONTEXT_WINDOW still leaves a usable turn afterwards.
 keep = max(4000, round(ctx * float(os.environ["KEEP_PCT"])))
 per_model = {"reserveTokens": reserve, "keepRecentTokens": keep}
 
@@ -222,7 +243,7 @@ data["cacheWarming"] = os.environ["CACHE_WARMING"]
 data["showCacheMissNotices"] = os.environ["SHOW_CACHE_MISSES"] == "1"
 
 path.write_text(json.dumps(data, indent=2) + "\n")
-print(f"wrote {path} (compaction at ~{ctx - reserve:,} of {ctx:,} tokens, "
+print(f"wrote {path} (compaction fires at ~{ctx - reserve:,} of {ctx:,} tokens, "
       f"keeping {keep:,}; cacheWarming: {data['cacheWarming']})")
 PY
 
