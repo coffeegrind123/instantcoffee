@@ -1007,14 +1007,27 @@ if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
   [[ -f "$STAMP" ]] && AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$STAMP" 2>/dev/null || echo 0) ) / 3600 ))
   if (( AGE_H >= INTERVAL_H )); then
     if command -v npm >/dev/null 2>&1; then
-      CUR="$(pi --version 2>/dev/null | tr -d ' ')"
-      LATEST="$(timeout 20 npm view @earendil-works/pi-coding-agent version 2>/dev/null | tr -d ' ')"
-      mkdir -p "$(dirname "$STAMP")" && touch "$STAMP"
+      # Both substitutions are guarded with `|| true`, and that is not
+      # decoration. lib.sh runs `set -euo pipefail`, and under `set -e` an
+      # unguarded `X="$(failing-command)"` is FATAL — so this block, whose whole
+      # written purpose two paragraphs up is "fails SOFT, always: no npm, no
+      # network, a registry hiccup", used to kill the launch outright and print
+      # nothing at all when the registry could not be reached. The failure mode
+      # was the one the comment promised could not happen.
+      CUR="$(pi --version 2>/dev/null | tr -d ' ' || true)"
+      LATEST="$(timeout 20 npm view @earendil-works/pi-coding-agent version 2>/dev/null | tr -d ' ' || true)"
+      mkdir -p "$(dirname "$STAMP")" 2>/dev/null && touch "$STAMP" 2>/dev/null \
+        || warn "could not write the update stamp ${STAMP} — the check will just run again next launch"
       if [[ -n "$LATEST" && "$LATEST" != "$CUR" ]]; then
         info "Updating pi ${CUR:-?} -> ${LATEST}"
         if timeout 300 npm install -g --ignore-scripts @earendil-works/pi-coding-agent >/dev/null 2>&1; then
           ok "pi $(pi --version 2>/dev/null)"
-          pi update --models >/dev/null 2>&1 && CATALOG_NOTE=", catalog refreshed"
+          # Same rule as above: a failing command on the LAST line of a `then`
+          # block is fatal under `set -e`, and `a && b` counts as one failing
+          # command when `a` fails.
+          pi update --models >/dev/null 2>&1 \
+            && CATALOG_NOTE=", catalog refreshed" \
+            || warn "the model catalog did not refresh — a new Claude id may be missing from pi --list-models"
         else
           warn "pi update failed — continuing on ${CUR:-the installed version}"
         fi
