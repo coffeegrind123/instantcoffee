@@ -46,3 +46,19 @@ results/
 # (it used to, and destroyed the hand-recorded measurements in it twice), but a
 # copy of the previous state is cheap and the file is irreplaceable.
 .versions.lock.bak
+
+# ---------------------------------------------------------------------------
+# re-work/ — the Prime 4+ reverse-engineering workspace, staged for the image
+# build only.
+#
+# This branch's pi-agent image carries the Prime 4+ / PrimeBox analysis so a
+# session inside the container can read it (see re-work/README.md and
+# scripts/stage-re-work.sh). That material is NOT part of this repository and is
+# never committed: it embeds vendor firmware, filesystems carved out of it, and
+# a working root exploit against a shipping device, and this repository is
+# public. Only the two placeholders below are tracked, so the directory always
+# exists and `docker build` cannot fail on a missing COPY source.
+# ---------------------------------------------------------------------------
+/re-work/*
+!/re-work/README.md
+!/re-work/.gitkeep

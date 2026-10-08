@@ -50,23 +50,23 @@ Two things that were measured rather than assumed, on 2026-08-12:
   (~5s for an `npx` one). The skill tells the model to batch questions rather
   than reach for sessions.
 
-### What does not survive the trip
+### What the trip does differently now
 
-- **Streaming is not incremental.** forge accepts `stream=true` and returns SSE, but
-  inference completes before the events are emitted, because rescue parsing and
-  retries need the whole response. Expect the reply to land at once after a pause,
-  not to type itself out.
-- **The model name is ignored** end to end. It is a label; llama.cpp serves
-  whatever GGUF it was started with.
-- **`reasoning_effort` does not survive as an API field** on the pinned build,
-  which is why the provider entry declares it unsupported. Thinking depth is set
-  server-side by `REASONING_EFFORT` in `.env` and capped by `REASONING_BUDGET`.
-- **Prompt caching is not an API-level feature here.** There is no
-  `cache_control` on the OpenAI wire; the stack gets the same effect from
-  `--cache-prompt` + `--slot-save-path` (KV cache persisted to disk, so warm
-  restarts skip re-prefill), `preserve_thinking` (no KV re-prefill across
-  agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
-  `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
+- **Streaming is incremental.** The local stack buffered, because forge's rescue
+  parsing and retries needed the whole response before it could be emitted — the
+  reply landed at once after a pause rather than typing itself out. On the
+  Messages API the events arrive as they are generated.
+- **The model name is the model.** It used to be a label llama.cpp ignored — it
+  served whatever GGUF it was started with. Here the id selects the seat, which
+  is why the launcher probes `pi --list-models` for all three before it starts.
+- **Thinking is a per-request feature.** The local stack set effort server-side,
+  as a launch flag, because the engine dropped the API field. There is no server
+  to relaunch here; see [reasoning.md](reasoning.md).
+- **Prompt caching is an API-level feature now.** `cache_control` with the
+  `ephemeral` type and a `ttl` is the mechanism, not `--cache-prompt` and a disk
+  slot, and `PI_CACHE_RETENTION=long` selects the 1-hour tier. The session
+  reports `cacheRead` / `cacheWrite` / `cacheWrite1h` directly instead of a KV
+  cache's byte count.
 
 ## Shorter bash output
 
@@ -106,7 +106,7 @@ because of what running the binary turned up rather than reading its docs:
   `rtk lint` — the indirection is discarded, so whatever the package's lint
   script actually is gets replaced by a bare eslint. `uv run pytest` becomes
   `uv run rtk pytest`, resolving a pytest outside the venv. Both are silent, and
-  a 27B model at `REASONING_EFFORT=medium` has no way to smell either.
+  a model that never sees the original command has no way to smell either.
 - **Two commands in rtk's coverage table have no filter behind them** on 0.45.0:
   `npm test` and `cargo nextest` (bare or `run`) both come back "no rewrite".
   Bare `ruff` likewise — only `ruff check`/`ruff format` match.
@@ -153,23 +153,17 @@ what will catch `rtk read` the day it starts summarising. `RTK_VERSION` is pinne
 for the same reason: rtk shipped 45 minor versions in seven months, and the
 filters are what the allow-list is trusting.
 
-One check earns its place over all the others — and on 2026-08-31 it caught a
-real one: `scripts/test_repeat_detector.py` called `sys.exit()` at module level,
-which aborted collection for the WHOLE suite. `pytest scripts/ -q` reported "no
-tests ran" while 124 tests sat there passing. Fixed by guarding the script body
-with `__main__`; the file still runs standalone.
+One lesson earns its place over any single finding: a test module that calls
+`sys.exit()` at import time aborts collection for the WHOLE suite, so `pytest`
+reports "no tests ran" while every test in the file passed. It happened here on
+2026-08-31 and was fixed by guarding the script body with `__main__`. The scripts
+in this repo still run standalone; keep that guard on any new one.
 
-(Also note: pytest is not in the container image, it is installed at runtime and
-vanishes on a container restart — it did once on 2026-09-01. Reinstall with
-`pip install --break-system-packages pytest`, or use
-`python3 -m unittest discover -s scripts -p "test_*.py"`, which needs nothing.)
-
-A `pytest` collection error must
-still exit non-zero and still name what failed. Upstream #2317 reports filters
-masking hard failures behind benign summaries; it does not reproduce on 0.45.0,
-and pytest is only on the allow-list because of that. A masked failure here means
-the model reports a green run and moves on, which is worse than no filtering at
-all.
+A collection error must still exit non-zero and still name what failed. Upstream
+#2317 reports filters masking hard failures behind benign summaries; it does not
+reproduce on 0.45.0, and pytest is only on the allow-list because of that. A
+masked failure here means the model reports a green run and moves on, which is
+worse than no filtering at all.
 
 Verified end to end on 2026-08-16: a pi session against the local model ran
 `git status` through the bash tool and it arrived as `rtk git status` — 42 tokens
@@ -306,10 +300,12 @@ nothing pinned.
 
 Wiring these 98 tools into a client that loads schemas costs **76,893 bytes —
 about 19k tokens** — before the first message. That was **60% of the 32K window**
-this was measured on; at today's `CTX_SIZE=98304` it is **about 20%**. Still a
-fifth of the window spent before the model has read anything. Neither mode
-pays that. Adapter mode buys back 5 tools and a search hop for 2,178 tokens; CLI
-mode pays almost nothing standing and charges for discovery instead:
+it was measured on, and **about 20%** of the 96K the local branch later served;
+against the 1M window this branch uses it is a rounding error. The arithmetic
+still matters, because the cost is charged on *every* turn and against whatever
+window you have rather than a fixed one, and neither mode pays it. Adapter mode
+buys back 5 tools and a search hop for 2,178 tokens; CLI mode pays almost nothing
+standing and charges for discovery instead:
 
 | What | Cost |
 | --- | --- |

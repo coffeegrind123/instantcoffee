@@ -1,7 +1,7 @@
 # Using it with pi
 
-Starting sessions, the `/stack` `/loop` `/prinny` commands, subagents, how
-the provider config is generated, and why this stack targets pi at all.
+Starting sessions, the `/loop` `/prinny` commands, subagents, how the provider
+config is generated, and why this stack targets pi at all.
 
 ## Starting a session in a project
 
@@ -43,8 +43,8 @@ the command — the same way `docker compose` treats the shell environment:
 
 ```bash
 PI_CONTEXT_FILES=0 qpi     # skip this project's AGENTS.md / CLAUDE.md
-THINK_LANG=off qpi         # no Chinese-reasoning fragment this session
 MCP2CLI_ENABLED=0 qpi      # drop the MCP skill for this session
+PI_CACHE_WARMING=streaming qpi  # warm the prompt cache only during a run
 ```
 
 Your project's `AGENTS.md`/`CLAUDE.md` **is** loaded by default — pi walks
@@ -55,60 +55,16 @@ or a project whose conventions file is enormous.
 For a permanent change, edit `.env`; for a permanent *machine-local* change that
 should not be committed, put it in `.env.local`.
 
-## Controlling the stack from inside pi: `/stack`
+## There is no `/stack` on this branch
 
-`.pi/extensions/stack.ts` ships with the repo, and `pi-local.sh` loads it by
-absolute path — so `/stack` is there in **every** session the launcher starts,
-including sessions in a completely unrelated directory. The launch banner ends
-with `, /stack` when it is active.
-
-> Do not rely on pi's own `.pi/extensions/` auto-discovery for this. That is
-> scoped to the project pi was *started in* and needs that project trusted, so
-> starting anywhere else means no `/stack` — and because an unregistered
-> `/stack` is forwarded to the model as plain text, you get a confident,
-> invented answer instead of an error. If you launch `pi` directly rather than
-> through `pi-local.sh`, pass
-> `-e ~/instantcoffee/.pi/extensions/stack.ts` yourself.
-
-```
-/stack                     model, context, slots, throughput, GPU, forge, settings
-/stack mode                which preset .env matches, and what differs
-/stack mode coding|prose   switch regime, then offer the restart it needs
-/stack env [FILTER]        every effective setting (.env + .env.local + exported)
-/stack set KEY=VALUE       edit .env, and say exactly what must restart
-/stack up | down           start / stop via scripts/
-/stack restart [llama|forge]
-/stack smoke | bench
-/stack logs [llama|forge]
-/stack slots save|restore|erase [id]
-```
-
-**Observation is model-callable; mutation is not.** The `stack_status` tool lets
-the model check throughput or KV usage before blaming itself for slow output.
-Every command that changes something is user-only, so a model cannot restart
-llama in the middle of your task.
-
-**Nothing here reconfigures a running server, because nothing can.**
-llama-server answers **501 to `POST /props`** on this build — context size,
-sampling, reasoning budget and MTP are startup flags, full stop — and forge has
-no admin API either. 0.9.0 added `/forge/health` and `/forge/usage` and started
-forwarding `/health`, `/v1/models`, `/v1/health`, `/models` and `/props` to the
-backend, but every management mutation stays closed. So `/stack set` edits
-`.env` and then tells you precisely what to recreate, reading the key→service
-mapping out of `docker-compose.yml` so it cannot drift. It distinguishes keys
-that only `pi-local.sh` reads — those just need pi restarted — from keys that
-need a container recreate and, for llama, a ~20 minute cold load.
-
-`/stack` also detects one failure mode that ordinary health checks miss: if
-`/props` answers while `/slots` and `/metrics` time out, llama's **task queue is
-wedged** and inference is down even though the container looks healthy and
-`/health` passes. The status output says so, and names the recovery.
-
-> **`/stack slots` is sharp.** Measured on this box: saving one 32k slot wrote
-> 315 MB in 180 s without finishing, and **aborting a save wedged the server** as
-> above, costing a container recreate and a cold load. The command therefore has
-> no client-side timeout — interrupting is the thing that breaks it — and it
-> re-probes the queue afterwards. Read the confirmation before saying yes.
+The `/stack` extension and its `stack_status` tool are gone. `/stack` was a
+control surface for a *local* stack — modes, the llama and forge ports, the KV
+cache, slot save/restore, a cold load measured in minutes — and this branch has
+none of that to control. Two things replace it: pi's own `/session`, which
+reports the model in use and the cache accounting (`cacheRead` / `cacheWrite` /
+`cacheWrite1h`), and the observe dashboard at http://127.0.0.1:4981. The launcher
+banner still prints the effective seat ids, the cache policy and which
+extensions loaded, so nothing is on silently.
 
 ## Unattended loops: `/loop`
 
@@ -137,17 +93,19 @@ Then, in the project you want worked on:
 **Why this one.** Three properties matter on a stack like this, and they were
 checked rather than taken from the README:
 
-- **It survives compaction, which is the whole point on a local window.**
-  Loop state is persisted as pi session entries and restored with
-  `restoreLoopState(ctx.sessionManager.getBranch())`, so a compaction does not
-  end the run. On context pressure it builds a *local* summary from loop state
-  and touched files instead of making another model call — which matters here,
-  because a summarization request against an already-saturated context is
-  exactly what fails under `--no-context-shift`.
-- **It is built for weak models.** Repetition and near-duplicate detection,
+- **It survives compaction.** Loop state is persisted as pi session entries and
+  restored with `restoreLoopState(ctx.sessionManager.getBranch())`, so a
+  compaction does not end the run. On context pressure it builds a *local*
+  summary from loop state and touched files instead of making another model
+  call — right on any window, because a summarization request against an
+  already-saturated context is exactly what fails under `--no-context-shift`.
+  This was the load-bearing property on the local branch; here the window is
+  large enough that compaction is rare, and the guards below are insurance.
+- **It is built for runs that degrade.** Repetition and near-duplicate detection,
   a degenerate-output kill switch, and an escalation ladder that injects
-  recovery strategies. A 27B local model does get stuck in ways a frontier
-  model does not.
+  recovery strategies. A frontier model stalls far less often than the 27B the
+  fork was written against, but an unattended run has nobody watching it, which
+  is the property the ladder is for.
 - **Done-ness can be objective.** `--check "CMD"` runs a shell command after
   every iteration and believes the exit code, not the model's claim.
 
@@ -182,9 +140,9 @@ exactly right, and unchanged. Two other routes to the same field are narrower:
 marker, which is what that mode does whenever no check is configured — so
 declining costs the run its objective done-ness, not the run.
 
-Verified end to end on Qwen3.6-27B: given a `PLAN.md`, a two-iteration run
-produced a working module and a passing test, and `python3 test_calc.py` exited
-0 — the plan's own acceptance criterion.
+Verified end to end on the local branch (Qwen3.6-27B): given a `PLAN.md`, a
+two-iteration run produced a working module and a passing test, and
+`python3 test_calc.py` exited 0 — the plan's own acceptance criterion.
 
 **Why it is forked.** A longer unattended run died on the one thing it is
 supposed to survive:
@@ -208,6 +166,11 @@ pi's recovery when pi wins, treats `Already compacted` as "no work to do" rather
 than a failure, and replaces the terminal pause with a cooldown ladder that
 retries with a progressively tighter summary.
 
+*(The two paragraphs below were measured on the local branch's 32k window. On
+this branch the ≤64k handoff engages only if `PI_CONTEXT_WINDOW` is set at or
+below 64k, so read them as the fork's history — and as what it still does on a
+small window.)*
+
 **Then it stopped overflowing and still went nowhere.** Eight real sessions under
 `~/.pi/agent/sessions` show the sequel: 24 compactions, not one error, and from
 the fourth compaction onward the session pinned at **94–96% of the 32k window**,
@@ -229,8 +192,10 @@ classified as context pressure rather than stuck-ness, the stuck ladder skips
 straight to compaction when the context is full instead of scolding the model,
 and the model is shown its own remaining budget once past 60% so it can finish
 and write state to `PROGRESS.md` before the handoff. `pi-local.sh` also sizes
-pi's own `reserveTokens`/`keepRecentTokens` from `CTX_SIZE`, which alone drops
-the post-compaction floor from 20,000 tokens to 7,000.
+pi's own `reserveTokens`/`keepRecentTokens` from `PI_CONTEXT_WINDOW`: on the
+local branch's 32k window that dropped the post-compaction floor from 20,000
+tokens to 7,000, and on the 1M window this branch serves it evaluates back to
+pi's own defaults, which is the intended no-op.
 
 `vendor/pi-loop-mode/FORK.md` has the full list and the measurements;
 `cd vendor/pi-loop-mode && npm test` runs the 39 tests that drive the real
@@ -254,34 +219,32 @@ package out of the 341 the catalog matches on "subagent".
 
 **On by default** (`SUBAGENTS_ENABLED=1`). It is not free — a registered tool is
 charged on every turn whether or not it is called — but the bill was measured:
-710 chars, ~178 tokens, 0.54% of a 32k window for all three tools. Set
-`SUBAGENTS_ENABLED=0` to get those back.
+710 chars, ~178 tokens for all three tools. Set `SUBAGENTS_ENABLED=0` to get
+those back.
 
-Be clear about what it buys here, because most of what is written about
-subagents does not apply to one llama slot. It is **not** parallelism:
-`PARALLEL_SLOTS=1` means concurrent children queue no matter where the queue
-forms, and the fork therefore defaults concurrency to 1 so at most one foreign
-prefix competes with the parent's at a time. (That default lived in the wrong
-file for a release and every session actually ran at 4 — the manager's constant
-was unreachable behind a config store that always supplies one. It is one number
-now, in `config/config-io.ts`, and a probe through the real wiring reports
-`{ limit: 1 }`.) What it buys is **context isolation** — the noisy search happens
+Be clear about what it buys here. On the local branch it was **not** parallelism
+— one llama slot meant concurrent children queued no matter where the queue
+formed, and the fork defaulted concurrency to 1 so at most one foreign prefix
+competed with the parent's at a time. On this branch the provider serves
+requests concurrently, so a fan-out is genuinely parallel, and the fork's cap —
+`SUBAGENT_MAX_CONCURRENT`, seeded by the launcher — is what bounds it. What it
+always bought, and still does, is **context isolation**: the noisy search happens
 in a window that is not this one.
 
-**The real cost is the prefix cache, not the schema.** Measured against
-`cached_tokens` on both ports, with a repeat of the same prefix as the control:
-a subagent's own system prompt does *not* evict the parent — six small child
-turns left the parent at a 99.2% cache hit. A child that grows to ~18k tokens
-does: the parent's next call dropped from 2,117 cached tokens to zero and from
-**442 ms to 2,949 ms**, a full re-prefill. A real session carries far more than
-the 2,133 tokens that was measured on, so treat that as a floor. Delegate work
-that is worth a re-prefill; do not delegate a lookup.
+**The cost that was measured, not assumed.** On the local branch the real cost
+was the KV prefix cache, measured against `cached_tokens` on both ports with a
+repeat of the same prefix as the control: a subagent's own system prompt did
+*not* evict the parent — six small child turns left the parent at a 99.2% cache
+hit — but a child that grew to ~18k tokens did, taking the parent's next call
+from 2,117 cached tokens to zero and from **442 ms to 2,949 ms**. On the
+Anthropic wire the cache is explicit and per-model, so a child's prefix is its
+own entry rather than a competitor for the parent's; the shape of the advice is
+unchanged. Delegate work that is worth its own window; do not delegate a lookup.
 
 The popular packages (`pi-subagents` at 244,797/mo, `subagent-isolation`) all run
 each subagent as a child `pi --mode json -p` process, which on this stack costs a
-second system prompt that evicts the parent's cached prefix and buys no
-concurrency in exchange. This one runs in process, through pi's own
-`createAgentSession`.
+second system prompt and a second process for no advantage. This one runs in
+process, through pi's own `createAgentSession`.
 
 **What it costs, measured on the wire** rather than estimated — the same stub
 model `vendor/prinny-channel/tests/tool-budget.test.ts` uses:
@@ -292,18 +255,19 @@ with vendor/pi-subagents-lite    3,610 chars   + Agent 357 · StopAgent 193 · A
 delta                              710 chars   ~178 tokens, every turn
 ```
 
-That is 0.54% of a 32k window, and it is that small because upstream ships the
-tools with **no description at all** — `Agent`, `run_in_background` and
-`worktree_path` are the documentation. Whether a 27B local model drives a schema
+That is a rounding error against any window this branch serves, and it is that
+small because upstream ships the tools with **no description at all** — `Agent`,
+`run_in_background` and `worktree_path` are the documentation. Whether a model drives a schema
 that bare is the open question about this package, not its cost.
 
 **What a subagent inherits, measured rather than assumed.** A child does not get
 the parent's `-e` flags — it discovers its own extensions. So everything under
 `.pi/extensions/` reaches it (the compaction guard included: a live run shows it
 capping the *child's own* `read` result at 9,778 → 8,176 chars inside the child
-session) and everything under `vendor/` does not. forge is in the path either
-way, because the child resolves the same provider, so the reasoning passthrough
-and the real `finish_reason` apply to subagent turns too.
+session) and everything under `vendor/` does not. The child resolves the same
+provider either way, so a subagent turn is an ordinary model call with the same
+wire and the same cache lifetime as its seat's; the guardrail-proxy rows below
+went with forge.
 
 That default is wrong in one direction and right in the other, so the fork does
 both:
@@ -311,7 +275,7 @@ both:
 | | in a subagent | why |
 | --- | --- | --- |
 | compaction guard | yes, by discovery | a child that blows its own window returns nothing |
-| forge patches | yes, server-side | same provider, same proxy |
+| prompt caching | yes, per model | the child resolves the same provider, so its seat's `promptCache` lifetime applies |
 | `rtk` | **put back** | a child running `bash` uncompressed is the session that can least afford it |
 | `/loop` | **not given** | it keeps its loop in module scope, and a child binds the same module — see below |
 | `prinny` + its skills | **denied outright** | the model spawns subagents on its own initiative; they do not get to post to Matrix |
@@ -423,11 +387,12 @@ verdict instead shows as a marker on the result line and in the agent list: dim
 kind of skip. **No marker means it was never checked**, which is the distinction
 the whole layer exists to draw and which was previously impossible to see. While
 the judge is working the agent keeps its row in the widget and says so, because
-that call holds the one llama slot the session is waiting on.
+that call is a model call the session is waiting on.
 
 It costs nothing in schema — the verifier agent is hidden from the `Agent` tool's
 type list, and that was measured, not assumed. It does not catch subtly wrong
-work: the judge is the same 27B. It is a drift check, not a correctness proof.
+work: the judge is the child's own model. It is a drift check, not a correctness
+proof.
 
 One thing was fixed rather than inherited. A **foreground** subagent returns as a
 tool result, so the compaction guard bounds it like everything else. A
@@ -440,9 +405,10 @@ guard's measured constants rather than restating them.
 
 ### Orchestrator mode
 
-`ORCHESTRATOR=1` turns the same extension into an orchestrator-worker loop: this
-model plans, briefs and verifies, and up to 15 children run in parallel on
-DeepSeek Flash. See [orchestrator.md](orchestrator.md).
+`ORCHESTRATOR=1` turns the same extension into an orchestrator-worker loop: opus
+plans, briefs and verifies, up to 15 children run in parallel on haiku, and a
+third seat — fable, the advisor — plans before the briefs are written. See
+[orchestrator.md](orchestrator.md).
 
 ## Talking to it from Matrix: `/prinny`
 
@@ -699,7 +665,8 @@ this be followed". Read plainly the markers say *think in first person as the
 character* and *do not roleplay in your reasoning*, which any instruction-following
 model can act on.
 
-Then the failure they fix turned up here, on Qwen, with a persona active:
+Then the failure they fix turned up here, on the local model, with a persona
+active:
 
 ```
 thinking: "Well, the user said 'feel free to use your judgment' ... So
@@ -716,55 +683,40 @@ where the bracketed monologue is noise. `off` is one command
 `immersion` so an existing config keeps working, and is not offered.
 
 It costs ~120 tokens, once, on the first message of a session, and it is **still
-unmeasured on Qwen** — on because the failure was observed here and the fix is
-cheap, not because a benchmark said so.
+unmeasured on the Claude seats** — on because the failure was observed on the
+local model and the fix is cheap, not because a benchmark said so.
 
-One thing that made the gate look reasonable and was worth writing down: on a
-stack that proxies everything, every model reports the *proxy's* provider id
-(`forge`). openclaude decides with `isDeepSeekProvider()`, which would have
-answered "not DeepSeek" for a DeepSeek model served through forge — the one case
-the gate existed for.
+One thing that made the gate look reasonable and was worth writing down: on the
+old stack, which proxied everything, every model reported the *proxy's* provider
+id, so openclaude's `isDeepSeekProvider()` check would have answered "not
+DeepSeek" for a DeepSeek model served through the proxy — the one case the gate
+existed for. This branch has no proxy, so a provider id is the provider's, and
+the conclusion is the same either way: the gate was checking the wrong thing.
 
-## The proxy was destroying the model's reasoning
+## The proxy is gone
 
-`patches/forge_reasoning_passthrough.py`. Empty assistant turns on this stack —
-`content: []`, `stopReason: "stop"`, a clean successful turn with no answer in it
-— were forge's doing, not llama.cpp's. The control, same request to both ports:
+Forge and the fourteen build-time patches under `patches/` are deleted on this
+branch. Forge existed to hold a local llama.cpp server to the wire shape pi
+expected — the model's own sentence surviving a tool-call turn, a truncated turn
+reported as `length` rather than `stop`, reasoning kept out of `content` — and
+none of that applies when the provider is Anthropic and the wire is the one pi
+was written against.
 
-```
-llama-server :8080  ->  finish_reason "length",  reasoning_content 490 chars
-forge        :8081  ->  finish_reason "stop",    no reasoning_content key at all
-```
-
-forge's `TextResponse` carried `content` and nothing else. `ToolCall` has always
-carried `reasoning`, and the llama client said so outright — "reasoning is only
-useful on ToolCall, TextResponse just gets clean content" — which holds right up
-until the model produces reasoning and *nothing else*. Then `accumulated_content`
-is empty, the reasoning has nowhere to live, and everything generated is gone
-before the response is assembled.
-
-`finish_reason` was hardcoded `"stop"` in the same place, so a **truncated
-answer** was indistinguishable from a finished one: the model writes past
-`PI_MAX_TOKENS`, gets cut mid-sentence, and the half-finished sentence is
-recorded as the answer.
-
-Reasoning is emitted as `reasoning_content` and **never merged into `content`**,
-which is the whole safety argument: pi maps it to a *thinking* block, and
-`vendor/prinny-channel` allowlists *text* blocks, so the harness sees the
-reasoning and a Matrix sender does not. Setting `--reasoning-format none` on
-llama-server would recover the same tokens by putting them in `content`, and
-would leak them.
-
-Verified against pristine PyPI source before the build, not against the running
-container — which is already patched and reports the pre-patch blocks as missing,
-loudly, which is what the source-text verification is for.
+Two of the lessons are worth keeping, because they are properties of *any*
+proxy rather than of forge. A `finish_reason` hardcoded `"stop"` makes a
+truncated answer indistinguishable from a finished one. And a response object
+with no field for the reasoning silently discards the whole turn when the model
+produces reasoning and *nothing else*. The boundary the patches protected is
+still drawn here: reasoning reaches pi as a *thinking* block, and
+`vendor/prinny-channel` allowlists *text* blocks, so the harness sees it and a
+Matrix sender does not — the same line the untrusted-content envelope draws, and
+for the same reason.
 
 **A Matrix sender can run a named few pi commands.** `sendUserMessage` passes
 `expandPromptTemplates: false`, so a `/` message had never executed anything — it
 reached the model as literal text. Allowed now: `/compact` (which this extension
-performs itself, because pi's `prompt()` dispatches extension commands only), the
-whole `/loop` lifecycle, and **`/stack status` and `/stack help` — not the rest of
-`/stack`**. Refused, each on its own grounds: `/prinny` (it edits the allowlist
+performs itself, because pi's `prompt()` dispatches extension commands only) and
+the whole `/loop` lifecycle. Refused, each on its own grounds: `/prinny` (it edits the allowlist
 itself), `/trust` (loads a project's extensions — arbitrary code), `/login`,
 `/logout`, `/settings`, `/share`, `/export`, `/copy`, `/new`, `/fork`, `/resume`,
 `/session`, `/tree`, `/quit`, `/model`, `/name`, plus `--model`, `--rescue-model`
@@ -774,18 +726,11 @@ model, so it cannot be talked into running it another way. Anything unrecognised
 stays prose — `/usr/bin/foo is broken` is a sentence. See
 `src/command-routing.ts`.
 
-`/stack` was allowed in full until 2026-08-19, and it should not have been: every
-one of its twelve subcommands ends in `pi.exec`, which emits no `tool_call`, so
-none of them passes the permission relay — and `/stack up`, `/stack smoke`,
-`/stack bench <args>`, `/stack logs` and `/stack slots erase` had no confirmation
-of any kind. The five that did have one used `ctx.ui.confirm`, which is a modal
-in **your** terminal that said nothing about a Matrix sender having asked for it.
-The two forms that remain are exactly what the sidecar advertises the command as.
-If the sender's real question is "is the model up?", ask in ordinary words: the
-model calls the read-only `stack_status` tool and answers on Matrix, which is a
-route that actually reaches them — a `/stack status` writes a terminal entry
-they never see. See AJ1 in
-`context/design/subagents-loop-verifier-authority.md`.
+(`/stack` used to be on that allow-list, which is why the refusal list still
+carries the shape of the argument: every one of its subcommands ended in
+`pi.exec`, which emits no `tool_call` and therefore passes no permission relay.
+The command is gone on this branch, so the question is moot. See AJ1 in
+`context/design/subagents-loop-verifier-authority.md`.)
 
 **The typing indicator follows "Working…".** Up between `agent_start` and
 `agent_settled`, refreshed every 8s against Matrix's 20s expiry. Two subtleties
@@ -830,10 +775,13 @@ room used to be told about a command that never ran.
 Every session prints what it is actually doing, so nothing is on silently:
 
 ```
-pi -> http://localhost:8081  (model: qwen3.8-27b, context files off, thinking in zh, mcp via cli, browser (native tools), /stack)
+pi -> https://api.anthropic.com  (model: claude-opus-5-5, subagents: claude-haiku-5-5, advisor: claude-fable-5-1, cache: idle/long, catalog refreshed, context files off, mcp via cli, browser (native tools), /loop, /prinny (runtime not built), /persona, observe)
 ```
 
-Read it. `thinking in zh` means the Chinese-reasoning fragment is active;
+Read it. The three model ids and the `cache: <warming>/<retention>` pair are the
+seats and the caching policy the launcher actually wrote; `catalog refreshed`
+(or `catalog refresh failed`) is the `pi update --models` result, and its
+absence means the check was turned off with `PI_UPDATE_MODELS_ON_LAUNCH=0`.
 `mcp via cli` means the MCP skill is loaded; `browser (native tools)` means the
 adapter registered the `browser_*` tools, against `browser (cli)` for the shell
 path, `browser (server down)` when the server would not start, and
@@ -841,9 +789,7 @@ path, `browser (server down)` when the server would not start, and
 `context files off` means `-nc`;
 `/loop` means the vendored loop-mode fork loaded (and that no upstream npm copy
 is shadowing it);
-`/stack` means the stack extension loaded. If `/stack` is absent from the
-banner, the command will not exist in that session. `/prinny` means the Matrix
-channel loaded — and it says so with a qualifier when it will not work yet:
+`/prinny` means the Matrix channel loaded — and it says so with a qualifier when it will not work yet:
 `/prinny (runtime not built)`, `/prinny (runtime stale)` or
 `/prinny (not configured)`.
 `/persona` means the persona extension loaded, and it names the persona when one
@@ -858,14 +804,16 @@ ago and spend 11% of its window on it with nothing in the transcript saying so.
 [instantcoffee-observe](https://github.com/coffeegrind123/instantcoffee-observe)
 is the dashboard for this stack, and part of it: the `observe` service in
 `docker-compose.yml`, built from the `vendor/instantcoffee-observe` submodule and
-started by `up.sh` and `setup.sh` with llama and forge, at
-http://127.0.0.1:4981. `.pi/extensions/observe/` streams each session
+started with `docker compose up -d`, at http://127.0.0.1:4981.
+`.pi/extensions/observe/` streams each session
 to it: prompts, tool calls and their results, every LLM generation with its
 tokens, time to first token and duration, compactions, and each subagent nested
 under the `Agent` call that spawned it — including a `SubAgent` grandchild under
-its parent. The dashboard itself polls llama-server `/metrics` and forge
-`/forge/usage`, which is the only place decode speed and draft acceptance are
-visible: forge drops llama's per-request `timings`, so pi never sees them.
+its parent. Its llama `/metrics` and forge `/forge/usage` pollers are gone with
+the local model (`INSTANTCOFFEE_OBSERVE_STACK_POLL_MS` is pinned to `0`), so the
+dashboard is session events only. Decode speed and draft acceptance were the
+reason those pollers existed; the cache accounting this branch cares about —
+`cacheRead` / `cacheWrite` / `cacheWrite1h` — arrives with the events themselves.
 
 `OBSERVE_ENABLED=1` (the default) loads it; `OBSERVE_URL` overrides where it
 posts (default `http://127.0.0.1:4981`, or `host.docker.internal` from the pi
@@ -877,14 +825,14 @@ The service's keys are in the `# --- observe` block of `.env`: `OBSERVE_PORT`,
 `OBSERVE_DATA_DIR` (the SQLite DB; a named volume when empty), and
 `OBSERVE_PI_HOME_HOST` / `OBSERVE_PI_HOME`, the host pi's home as Docker sees it
 and as pi records it, which differ on Docker Desktop over WSL. The containerised
-pi's home comes from `PI_CONTAINER_HOME_HOST`. `smoke-test.sh` checks the
-dashboard answers and that its llama poller connects; `update.sh --observe`
-moves the submodule to observe's latest `main`, and rolls back if the new build
-fails its healthcheck.
+pi's home comes from `PI_CONTAINER_HOME_HOST`. The dashboard has its own
+healthcheck in `docker-compose.yml`; moving the submodule forward means bumping
+its commit and rebuilding, which changes the image tag and the next `up` builds
+it.
 
 Subagents run inside pi's process with no link to their parent, so the extension
 links them itself: see `.pi/extensions/observe/src/linker.ts`. The event
-contract is `docs/pi-protocol.md` in the observe repo.
+contract is the `pi-protocol.md` document in the observe repo.
 
 ## Keeping pi current
 
@@ -900,116 +848,84 @@ all warn and launch on the version already there. `PI_AUTO_UPDATE=0` pins it.
 cannot reach the model:
 
 ```
-err  forge is not answering at http://localhost:8081 — start it with ./scripts/up.sh
+err  ANTHROPIC_API_KEY is not set. Put it in .env.local (gitignored) …
 ```
 
-`./scripts/up.sh` starts the stack. The **first** start after a cold boot takes
-~20 minutes: the model is 17.9 GB read over a Docker Desktop bind mount that
-measures 10–38 MB/s. `./scripts/logs.sh llama` shows real progress; the health
-status will say `starting` the whole time.
+There is no cold load on this branch: the model is a URL, and the first turn is
+as fast as the network. The other refusal worth knowing is the seat probe — a
+child model or the advisor the catalog does not list stops the launch with
+`Refresh the catalog with: pi update --models`.
 
 ## How the provider config is generated
 
-pi has no "point at a proxy" flag — custom providers live in
-`~/.pi/agent/models.json`. The script generates that entry from `.env`, so the
-model id, context window and port cannot drift from what the stack serves. It
-*merges* into the file rather than overwriting, since pi keeps other providers
-there too.
-
-What it writes, and why each field:
+pi has a built-in `anthropic` provider — the endpoint, the wire, `x-api-key`, the
+`anthropic-version` header and the Claude catalog all come with pi — so the
+launcher does not redefine it. What it writes is the two things only this stack
+can supply: the credential indirection and the prompt-cache tiers. It *merges*
+into the file rather than overwriting, since pi keeps other providers there too.
 
 ```json
 {
   "providers": {
-    "forge": {
-      "baseUrl": "http://localhost:8081/v1",
-      "api": "openai-completions",
-      "apiKey": "local",
-      "compat": {
-        "supportsDeveloperRole": false,
-        "supportsReasoningEffort": false
-      },
-      "models": [
-        { "id": "qwen3.8-27b", "contextWindow": 98304, "maxTokens": 8192 }
-      ]
+    "anthropic": {
+      "apiKey": "$ANTHROPIC_API_KEY",
+      "modelOverrides": {
+        "claude-opus-5-5":  { "promptCache": { "short": 300, "long": 3600 } },
+        "claude-haiku-5-5": { "promptCache": { "short": 300, "long": 3600 } },
+        "claude-fable-5-1": { "promptCache": { "short": 300, "long": 3600 } }
+      }
     }
   }
 }
 ```
 
-`contextWindow` above is illustrative. The real one is GENERATED from
-`CTX_SIZE` by `scripts/pi-local.sh:100`, so it tracks `.env` automatically and
-this block cannot drift the running system — only a reader who hand-copies it.
+- **`apiKey: "$ANTHROPIC_API_KEY"`** — pi's own interpolation syntax, so this
+  committed file names the variable and never the secret. The key reaches the
+  process from `.env.local` (or the environment) and is never written to
+  `auth.json`, which is the other place pi would happily store one.
+- **`modelOverrides.<id>.promptCache`** — the model's best-effort cache lifetime
+  in seconds per retention tier. pi only *warms* an idle prompt cache for a
+  model that declares a lifetime, so this block is the switch the whole caching
+  story hangs off. The tiers are Anthropic's own: 300 is the 5-minute default,
+  3600 the 1-hour one, and `PI_CACHE_RETENTION=long` is what makes pi *use* the
+  long tier on the wire.
+- **The models themselves are pi's.** `modelOverrides` annotates ids pi already
+  lists; it cannot invent one. A new Claude id arrives by refreshing the catalog
+  — `pi update --models`, which the launcher runs on every start
+  (`PI_UPDATE_MODELS_ON_LAUNCH`, fails soft) and which the seat probe insists on
+  when a seat is still unknown. pi 0.85.1 ships 14 anthropic models and none of
+  this branch's three; after a refresh it ships 17.
 
-- **`openai-completions`, not `anthropic-messages`.** forge speaks both, but the
-  OpenAI endpoint is the short path (pi → forge → llama.cpp). Routing via
-  Anthropic would add a translation hop that drops `cache_control` and
-  `thinking` for no gain. It is also the only path anything here is measured on.
-- **`apiKey: "local"`** — pi hides models it considers unauthenticated, so even a
-  keyless local server needs a placeholder.
-- **`compat` both false — and on 3.8 the reason is the engine, not the model.**
-  Qwen3.8's template supports the `developer` role and takes a real
-  `reasoning_effort` variable. llama.cpp only started forwarding an API-level
-  `reasoning_effort` to the template in commit `7e4c0a9` (2026-08-14), and the
-  newest published CUDA image at migration time was `server-cuda-b10423`, cut a
-  day earlier — so a client that sends the field has it silently dropped. Effort
-  is set server-side instead; see below.
+**Not using pi's `/llama` integration.** It is still there, and it is still the
+wrong shape: it makes pi manage its own local llama.cpp router, which is not what
+this branch talks to. The provider is the built-in `anthropic` one.
 
-  **Corrected 2026-09-02. Both stay false; both reasons above are now wrong.**
-
-  The engine objection **expired** — the pin is `server-cuda-b10689`, well past
-  `7e4c0a9`. Measured rather than assumed: a request carrying a top-level
-  `{"reasoning_effort": "high"}` reaches the template and raises out of it,
-  which it could not do if the field were being dropped.
-
-  "Qwen3.8's template supports the `developer` role" was true of the **unsloth**
-  template, and this stack stopped serving unsloth on 2026-08-25. The chat
-  template ships inside the GGUF, so `uc-coding` and `prose` carry Qwen's
-  published 8952-char original, which has no developer-role handling and raises
-  `Unexpected message role.` Setting `supportsDeveloperRole: true` there is a
-  500 on every turn.
-
-  `supportsReasoningEffort` stays false for a different reason than before: pi
-  would send a level NAME, and the levels are not portable — the strict template
-  accepts only `xhigh`/`medium`/`low` and raises on `high`, which pi's
-  `thinkingLevelMap` emits.
-
-  The useful consequence: with both false, **pi cannot produce either shape the
-  strict template refuses**, which is why nothing is broken today. See
-  `context/design/the-template-is-part-of-the-model.md` for the adapter reading
-  behind that claim and `scripts/template_probe.py` to reproduce the refusals.
-- **`maxTokens` well under `contextWindow`** — with `--no-context-shift` an
-  overflowing request fails loudly, and an agent loop's prompt grows every turn.
-  It comes from `PI_MAX_TOKENS`, and `LLAMA_EXTRA_FLAGS` carries the same number
-  as `-n` so the server enforces it even if a client forgets to ask.
-- **`baseUrl` host** — the script uses `host.docker.internal` when it detects it
-  is running inside a container, `localhost` otherwise.
-
-**Not using pi's `/llama` integration.** pi can manage its own llama.cpp router
-and models. That would bypass forge completely and lose every guardrail this
-repo exists to provide, so the model is registered as a plain custom provider
-instead.
-
-**It sizes compaction from `CTX_SIZE` too**, into `~/.pi/agent/settings.json`
-(merged, not overwritten — pi keeps its theme and packages there):
+**It writes pi's `settings.json` too**, merged rather than overwritten — pi
+keeps its theme and packages there — with compaction sizing and the cache
+policy:
 
 ```json
-{ "compaction": { "reserveTokens": 16384, "keepRecentTokens": 6554 } }
+{ "compaction": { "reserveTokens": 16384, "keepRecentTokens": 20000 },
+  "cacheWarming": "idle", "showCacheMissNotices": true }
 ```
 
-pi's defaults are `16384` / `20000`, sized for a 200k window. On 32k the second
-one is 61% of the whole window, so a compaction cannot free more than the
-remainder, and `prepareCompaction()` silently returns nothing at all until the
-context exceeds it — which is why compaction in the measured sessions first fired
-at 88% full rather than at the 50% the setting implies. `reserveTokens =
-min(16384, CTX_SIZE // 2)` keeps the trigger at 50% of whatever window is
-actually served; `keepRecentTokens = max(2000, min(20000, CTX_SIZE * 0.2))` cuts
-back to ~20% of it. Measured against pi's own `prepareCompaction()`, that drops
-the post-compaction floor from 20,000 tokens to 7,000. Global rather than a
-`.pi/settings.json` here, because `/loop` runs in whatever project you point it
-at — and project settings only load for a *trusted* project.
+The compaction formula is inherited from the local branch, where pi's defaults
+(`16384` / `20000`) were sized for a 200k window and behaved badly on 32k: the
+trigger fired at 50% while the actual compaction could not run until the context
+passed `keepRecentTokens`, so pi compacted every turn and freed nothing, and
+above ~87% full half the assistant turns came back empty. `reserveTokens =
+min(16384, PI_CONTEXT_WINDOW // 2)` keeps the trigger at 50% of whatever window
+is served; `keepRecentTokens = max(2000, min(20000, PI_CONTEXT_WINDOW * 0.2))`
+cuts back to ~20% of it. At the 1M window this branch serves, both evaluate back
+to pi's own defaults — the intended no-op — and the formula is live protection
+if `PI_CONTEXT_WINDOW` is ever set low. Global rather than a project-level
+settings file, because `/loop` runs in whatever project you point it at — and
+project settings only load for a *trusted* project.
 
 **What that sizing cannot fix, and `.pi/extensions/compaction-guard/` does.**
+(The measurements in this section come from the local branch's 32k sessions. The
+guard is unchanged and this branch keeps it as insurance — the caps below are
+shares of whatever window applies.)
 Two knobs are not enough, because `reserveTokens` is also the summarizer's own
 `maxTokens` and nothing bounds the summary pi carries from one compaction into
 the next. pi's `UPDATE_SUMMARIZATION_PROMPT` tells the model to *"PRESERVE all
@@ -1041,9 +957,10 @@ nothing is lost. On the failing run that lands the context at 86.8% instead of
 99%, below the empty-turn cliff, with room to write a conclusion.
 
 It also shows the model its own remaining budget above 60% of the window, which
-is the generic half of the `/loop` context work: above 87% of the window 52% of
-assistant turns came back empty (33 of 63) against 1.5% below it (3 of 196), and
-that cliff is a property of the model and the window, not of `/loop`.
+is the generic half of the `/loop` context work. On the local branch's 32k
+window, above 87% full 52% of assistant turns came back empty (33 of 63) against
+1.5% below it (3 of 196) — a cliff measured there, kept here as the reason the
+notice exists rather than as a claim about the Claude seats.
 
 Both hooks only ever *add* a bounded line or *shrink* a string pi was about to
 send to the summarizer — `session_before_compact` returns `undefined`, so pi
@@ -1061,35 +978,30 @@ wedges the browser — not the page. On a fresh browser the exact URL that "hung
 loads in 7.6s. At 25s the server answers first, with a sentence naming the tool
 and the number.
 
-**And `httpIdleTimeoutMs`, for the same reason.** pi's default is 300,000 ms —
-how long a request may go without producing a single byte. Prefill produces no
-bytes while it runs. Measured 2026-08-16 in a real session: the first two
-requests both died with `Error: terminated` at **exactly 301 s**, ten minutes
-before the first token, because this box had collapsed to 20–37 tok/s of prefill
-under memory pressure (the healthy figure is 1,175 — see `changelog.md`).
-6.5k tokens of prompt at 35 tok/s is 187 s of silence, and a prompt-cache
-eviction pushed it past 300. The value is sized so a *full* window still prefills
-inside the budget at 36 tok/s — the degraded floor, not the healthy rate — then
-clamped to `[300 s, 15 min]`: 900,000 ms on a 32k window.
-
-That is a seatbelt, not a fix. If you are seeing it engage, the box is swapping;
-see the note on `CACHE_RAM` above and run `/free`.
+**`httpIdleTimeoutMs` is not tuned on this branch.** On the local stack pi's
+300 s idle timeout had to be raised, because llama.cpp emits nothing while it
+prefills and a memory-starved box could spend ten minutes in silence before the
+first token — measured 2026-08-16, two requests dying at exactly 301 s. A hosted
+API streams from the first token, so the launcher leaves the default alone. The
+budget above, on the browser server's own tools, is the only per-request timeout
+this branch sizes.
 
 ## Why pi, and what that costs
 
 pi is minimal by design: **no MCP** (its README says so outright — "build CLI
 tools with READMEs, or build an extension that adds MCP support"), no
-sub-agents. On a local window that is the feature, not the limitation. A
+sub-agents. That is the feature, not the limitation, and this repo keeps it
+minimal: MCP is reached as a CLI (`scripts/mcp.sh`), and subagents are a vendored
+fork (`vendor/pi-subagents-lite`) rather than a feature loaded for everyone. A
 single MCP server can publish hundreds of tool schemas that load before your
-first message, and that budget is gone before the model has read anything.
-(This section was written against a 32K window. `CTX_SIZE` has been **98304**
-since 2026-08-23, so the pressure is a third of what it was — the argument is
-weaker than it reads, but it points the same way: standing cost you never chose
-is the expensive kind.)
+first message, and that budget is gone before the model has read anything — on
+*any* window, though the 1M context this branch serves makes the arithmetic far
+less brutal than the 32k this section was first written against. Standing cost
+you never chose is the expensive kind.
 
-What you give up is real and worth stating: no MCP servers, no sub-agent
-fan-out, and no ecosystem of Claude Code plugins. What you get back is nearly
-the whole window for the actual session.
+What you give up is real and worth stating: no MCP servers loaded natively, no
+built-in sub-agent fan-out, and no ecosystem of Claude Code plugins. What you
+get back is nearly the whole window for the actual session.
 
 Your project's conventions still load: pi walks parent directories for
 `AGENTS.md`/`CLAUDE.md` and `PI_CONTEXT_FILES` is `1` by default. That is a

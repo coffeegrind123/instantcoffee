@@ -9,26 +9,30 @@ works exactly the same on the host.
 
 ## What it does and does not run
 
-It runs **pi**. It does **not** run llama-server or forge: those stay in the
-compose stack on the host GPU, driven through a mounted docker socket.
+It runs **pi**, and everything pi reaches for locally — Chrome and the browser
+server, `rtk`, `mcp2cli`. It does **not** run the model: on this branch the model
+is `api.anthropic.com`, and the container reaches it over the network the same
+way the host does. The one thing that still lives on the host is the observe
+dashboard, and the container reaches it by name.
 
 ```
    container                                     host
    ┌──────────────────────────────┐
    │ pi          (pi-local.sh)    │
    │ Chrome + Zendriver MCP       │
-   │ rtk, mcp2cli, uv, docker CLI │
+   │ rtk, mcp2cli, uv            │
    └──────┬───────────────┬───────┘
-          │               │  /var/run/docker.sock
-          │               └──────────────►  docker compose  →  forge + llama
-          │                                                     (GPU)
-          └── http://host.docker.internal:8081 ──────────────►  forge  :8081
+          │               └── http://host.docker.internal:4981 ►  observe
+          │  https (apt to leave the container)                     :4981
+          ▼
+      api.anthropic.com  (/v1/messages)
 ```
 
 `pi-local.sh` already detects `/.dockerenv` and swaps `localhost` for
-`host.docker.internal`, so nothing in the repo changes to run from inside. Docker
-Desktop proxies that name to the host, and forge's published port is reachable
-through it even bound to `127.0.0.1`.
+`host.docker.internal` — the one place it still needs to know which side of the
+socket it is on, because the dashboard binds loopback on the host. The model path
+does not: `api.anthropic.com` is a name either way. Docker Desktop proxies the
+host name; on plain Linux the run flags add `--add-host host.docker.internal:host-gateway`.
 
 ## Build
 
@@ -103,7 +107,7 @@ container's environment, not yours.
 particular, and you do not need `-C`:
 
 ```bash
-~/qwen3.8-forge/scripts/pi-container.sh --session 01a042c0
+~/instantcoffee/scripts/pi-container.sh --session 01a042c0
 ```
 
 **Why that needs saying.** pi keys sessions on the directory they were started
@@ -123,7 +127,7 @@ header pi wrote when the session began —
 there is nothing to infer.
 
 The directory *name* under `sessions/` is deliberately not decoded. The key is
-the path with every `/` turned into `-`, which is lossy — `--home-piuser-qwen3.8-forge--`
+the path with every `/` turned into `-`, which is lossy — `--home-piuser-instantcoffee--`
 could be read two ways, and one of them is wrong. The header cannot be.
 
 Four things it will say rather than guess:
@@ -146,7 +150,7 @@ and all.
 One alias and the container stops existing as far as you are concerned:
 
 ```bash
-echo "alias qpi='~/qwen3.8-forge/scripts/pi-container.sh'" >> ~/.bashrc
+echo "alias qpi='~/instantcoffee/scripts/pi-container.sh'" >> ~/.bashrc
 ```
 
 That alias is safe to use everywhere, including from a shell **inside** the
@@ -222,7 +226,7 @@ commits and both paths. To update:
 
 ```bash
 ./scripts/pi-container.sh --shell
-cd /home/piuser/qwen3.8-forge && git pull
+cd /home/piuser/instantcoffee && git pull
 ```
 
 **Keep that clone's host-specific values in `.env.local`, never as edits to the
@@ -248,24 +252,24 @@ docker run -it --name pi \
 On **Docker Desktop for Windows the bind source must be the Windows path** in
 docker's form — `//c/path/to/pi-home`, not a WSL path and not a relative `./`
 one. Docker Desktop resolves bind sources on the Windows side, and a WSL-style
-source silently mounts an **empty directory** instead of failing. This is the
-same rule `MODELS_DIR` follows in `.env`, and the same class of bug that made
-`Dockerfile.forge` bake its scripts in rather than mount them.
+source silently mounts an **empty directory** instead of failing — the same rule
+`PI_CONTAINER_HOME_HOST` follows, and the same class of bug that makes an image
+bake its scripts in rather than mount them.
 
 Each flag earns its place:
 
 | Flag | Why |
 | --- | --- |
 | `-v …:/home/piuser` | the agent's home. Without it every session starts empty and loses `~/.pi` on exit |
-| `-v /var/run/docker.sock` | `up.sh`, `down.sh`, `logs.sh`, `mode.sh` and `smoke-test.sh` all shell out to `docker compose`. Without it they fail with a permission error that reads like a broken script |
-| `--add-host host.docker.internal:host-gateway` | how pi reaches forge. Docker Desktop provides the name already; this makes it work on plain Linux too |
+| `-v /var/run/docker.sock` | `docker compose` — the observe dashboard — is the one thing left to drive from inside. Without the socket it fails with a permission error that reads like a broken script |
+| `--add-host host.docker.internal:host-gateway` | how pi reaches the host, and the observe dashboard on it. Docker Desktop provides the name already; this makes it work on plain Linux too |
 | `--shm-size=2g` | Chrome. The default 64 MB `/dev/shm` kills renderer processes under pressure, which surfaces as pages that half-load and `navigate` calls that time out — i.e. as "the browser is broken" |
 
 Then, inside:
 
 ```bash
 cd ~/your-project
-qpi                       # alias for ~/qwen3.8-forge/scripts/pi-local.sh
+qpi                       # alias for ~/instantcoffee/scripts/pi-local.sh
 ```
 
 ## What is in the image, and where
@@ -303,59 +307,62 @@ verify:
 
 ```
 Display: :99 (Xvfb, listening)
-Stack checkout: /home/piuser/qwen3.8-forge
+Stack checkout: /home/piuser/instantcoffee
 Docker: 29.3.1 (socket reachable)
-forge: up, model loaded (host.docker.internal:8081)
+observe: up (host.docker.internal:4981)
+anthropic: api.anthropic.com (key present)
 pi:      0.84.3
 rtk:     rtk 0.45.0
 ...
 ```
 
-The forge line uses **two** probes, never one. `/forge/health` is forge's own
-liveness; `/health` is the backend's readiness, forwarded. Conflating them
-reports "forge is down" for the whole cold load of a model that is loading
-perfectly normally — see `pi-local.sh`, which learned the same lesson.
+The dashboard line is one probe and it is allowed to fail — the dashboard is
+optional, and a session works without it. The Anthropic line is a presence
+check only; it proves the key reached the container, not that it is valid,
+because the first real request is what proves that.
 
 `tini` is PID 1 so Xvfb, Chrome and the browser server get reaped. Without a
 real init they accumulate as zombies across a long session, and Chrome's hold
 their profile locks so the next launch fails.
 
-## The knobs that do not follow the container's home
+## The host paths that do not follow the container's home
 
-`PI_SESSIONS_DIR`, `MODELS_DIR` and `CAPTURES_DIR` are handed to **docker
-compose**, which resolves them on the host. They are host paths and they do not
-move with the container's `HOME`. A stale one fails as a `FileNotFoundError` on
-a path that plainly exists — the container simply has no view of it.
+The observe dashboard mounts pi's home from the **host** side — that is what
+`OBSERVE_PI_HOME_HOST` and `OBSERVE_PI_HOME` are — and it mounts the container's
+home from `PI_CONTAINER_HOME_HOST`. All three are host paths, resolved by the
+docker daemon, and none of them moves with the container's `HOME`. A stale one
+does not error: the dashboard simply shows no sessions, because it is watching a
+directory nothing writes to.
 
-So when the container's home is not the same directory the compose stack was
-configured against, point `PI_SESSIONS_DIR` at the new home's
-`.pi/agent/sessions` **as the host sees it**.
-
-The start script prints the value at every start. It cannot derive a host path
-from its own `HOME`, so it does not guess — give it the answer and it will check
-instead:
+So when the container's home is not the directory the dashboard was configured
+against, point `OBSERVE_PI_HOME_HOST` at it **as the host sees it**. The start
+script prints the value at every start. It cannot derive a host path from its own
+`HOME`, so it does not guess — give it the answer and it will check instead:
 
 ```bash
 docker run -e PI_HOME_HOSTPATH=/path/to/pi-home ...
 ```
 
-Then a `PI_SESSIONS_DIR` pointing somewhere else is named at startup, rather
-than being discovered later as `capture.sh import-pi` reading another home's
-transcripts.
-
-`MODELS_DIR` and `CAPTURES_DIR` are usually worth sharing — the GGUF is ~18 GB
-and there is no reason for two copies.
+There is no model directory to share any more: the weights live at Anthropic, so
+the only thing worth pointing at a shared path is the agent home itself.
 
 ## No credentials, on purpose
 
 The image seeds no SSH config, no `gh` auth, no `.gitconfig`, no git credential
-store. It reads and writes the checkout under its own home and talks to forge;
-it does not push anywhere. The start script says so once, rather than letting it
-be discovered at the first commit:
+store. It reads and writes the checkout under its own home, talks to Anthropic,
+and does not push anywhere. The start script says so once, rather than letting
+it be discovered at the first commit:
 
 ```
 git:     no identity or credentials in this container (local commits will be refused)
 ```
+
+**The one credential it needs is the API key, and it arrives by name.**
+`pi-container.sh` forwards every exported variable that is a key the stack reads
+as `-e NAME`, so docker copies the value from the caller's environment and it
+never appears on a command line or in `--print-only`. Put the key in the
+container checkout's `.env.local`, or export it in the shell you launch from —
+either way it reaches pi without ever being baked into an image.
 
 Adding any of it is a decision to make on purpose. Drop the files into the mount
 and they are simply there — nothing in the image removes them.

@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { MODE_CONFIG_ENV, readModeSeed, withoutOverride } from "../src/config/mode-seed.ts";
+import { resolveModel } from "../src/models/model-precedence.ts";
 
 function seedFile(body: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "mode-seed-"));
@@ -55,6 +56,52 @@ describe("readModeSeed", () => {
     assert.deepEqual(seed.concurrency, { providers: { deepseek: 15, forge: 1 } });
   });
 
+  it("puts per-type entries in the session layer beside the default", () => {
+    const seed = readModeSeed({
+      [MODE_CONFIG_ENV]: seedFile({
+        model: "deepseek/deepseek-flash",
+        overrides: { advisor: "anthropic/claude-fable-5-1", worker: "anthropic/claude-haiku-5-5" },
+        concurrency: { providers: { anthropic: 15 } },
+      }),
+    });
+    assert.equal(seed.error, undefined);
+    assert.deepEqual(seed.overrides, {
+      default: "deepseek/deepseek-flash",
+      advisor: "anthropic/claude-fable-5-1",
+      worker: "anthropic/claude-haiku-5-5",
+    });
+    assert.deepEqual(seed.concurrency, { providers: { anthropic: 15 } });
+  });
+
+  it("pins a type to its override and leaves every other type on the seeded default", () => {
+    const seed = readModeSeed({
+      [MODE_CONFIG_ENV]: seedFile({
+        model: "deepseek/deepseek-flash",
+        overrides: { advisor: "anthropic/claude-fable-5-1" },
+      }),
+    });
+    assert.equal(seed.error, undefined);
+    const config = {
+      agent: { default: null, forceBackground: false },
+      concurrency: { default: 1 },
+    };
+    const forType = (type: string): string =>
+      resolveModel({ subagentType: type, config, parentModelId: "forge/qwen", sessionOverrides: seed.overrides });
+    // Rung 1 beats the seeded session default at rung 2 — the reason the entry
+    // has to land in overrides[type] rather than in the config layer.
+    assert.equal(forType("advisor"), "anthropic/claude-fable-5-1");
+    assert.equal(forType("worker"), "deepseek/deepseek-flash");
+    assert.equal(forType("Explore"), "deepseek/deepseek-flash");
+  });
+
+  it("carries a per-type entry with no session default, without inventing one", () => {
+    const seed = readModeSeed({
+      [MODE_CONFIG_ENV]: seedFile({ overrides: { advisor: "anthropic/claude-fable-5-1" } }),
+    });
+    assert.equal(seed.error, undefined);
+    assert.deepEqual(seed.overrides, { default: null, advisor: "anthropic/claude-fable-5-1" });
+  });
+
   it("returns fresh objects, so a store mutating one cannot edit the next reset", () => {
     const path = seedFile(VALID);
     const first = readModeSeed({ [MODE_CONFIG_ENV]: path });
@@ -76,6 +123,9 @@ describe("readModeSeed", () => {
     ["a cap below one", { concurrency: { providers: { deepseek: 0 } } }],
     ["a cap map that is not an object", { concurrency: { providers: 15 } }],
     ["an unknown top-level key", { model: "deepseek/deepseek-flash", modle: "x" }],
+    ["an overrides value with no provider", { model: "deepseek/deepseek-flash", overrides: { advisor: "claude-fable-5-1" } }],
+    ["an overrides value that is not a string", { model: "deepseek/deepseek-flash", overrides: { advisor: 7 } }],
+    ["overrides that is not an object", { model: "deepseek/deepseek-flash", overrides: "anthropic/claude-fable-5-1" }],
   ];
   for (const [label, body] of REFUSED) {
     it(`refuses ${label}, whole`, () => {
@@ -85,6 +135,20 @@ describe("readModeSeed", () => {
       assert.deepEqual(seed.concurrency, {});
     });
   }
+
+  it("names the offending override in the refusal, for the whole seed", () => {
+    const seed = readModeSeed({
+      [MODE_CONFIG_ENV]: seedFile({
+        model: "deepseek/deepseek-flash",
+        overrides: { advisor: "anthropic/claude-fable-5-1", worker: "claude-haiku-5-5" },
+        concurrency: { providers: { anthropic: 15 } },
+      }),
+    });
+    assert.match(seed.error ?? "", /overrides\.worker must be "provider\/model-id", got "claude-haiku-5-5"/);
+    // The valid advisor entry is dropped with it: half a seed is never accepted.
+    assert.deepEqual(seed.overrides, { default: null });
+    assert.deepEqual(seed.concurrency, {});
+  });
 
   it("says which file it could not read, rather than failing silently", () => {
     const seed = readModeSeed({ [MODE_CONFIG_ENV]: "/nonexistent/mode.json" });
@@ -104,6 +168,24 @@ describe("withoutOverride", () => {
     const next = withoutOverride({ default: "deepseek/deepseek-flash", Explore: "forge/x" }, "Explore", seed);
     assert.equal(next.Explore, undefined);
     assert.equal(next.default, "deepseek/deepseek-flash");
+  });
+
+  it("clearing a type the mode pins goes back to the mode's model for it, not to the default", () => {
+    const pinned = { default: "deepseek/deepseek-flash", advisor: "anthropic/claude-fable-5-1" };
+    const next = withoutOverride(
+      { ...pinned, advisor: "anthropic/claude-opus-9" },
+      "advisor",
+      pinned,
+    );
+    assert.equal(next.advisor, "anthropic/claude-fable-5-1");
+    assert.equal(next.default, "deepseek/deepseek-flash");
+  });
+
+  it("clearing a type the mode does not pin still drops it", () => {
+    const pinned = { default: "deepseek/deepseek-flash", advisor: "anthropic/claude-fable-5-1" };
+    const next = withoutOverride({ ...pinned, worker: "forge/x" }, "worker", pinned);
+    assert.equal(next.worker, undefined);
+    assert.equal(next.advisor, "anthropic/claude-fable-5-1");
   });
 
   it("does not mutate what it was given", () => {

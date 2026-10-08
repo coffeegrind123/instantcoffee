@@ -54,7 +54,7 @@ IMAGE="$(env_get PI_CONTAINER_IMAGE)";      : "${IMAGE:=pi-agent:latest}"
 NAME="$(env_get PI_CONTAINER_NAME)";        : "${NAME:=instantcoffee-pi}"
 CHOME="$(env_get PI_CONTAINER_HOME)";       : "${CHOME:=/home/piuser}"
 HHOME="$(env_get PI_CONTAINER_HOME_HOST)"
-CREPO="$(env_get PI_CONTAINER_REPO)";       : "${CREPO:=${CHOME}/qwen3.8-forge}"
+CREPO="$(env_get PI_CONTAINER_REPO)";       : "${CREPO:=${CHOME}/instantcoffee}"
 SHM="$(env_get PI_CONTAINER_SHM)";          : "${SHM:=2g}"
 EXTRA="$(env_get PI_CONTAINER_EXTRA_ARGS)"
 READY_TIMEOUT="$(env_get PI_CONTAINER_READY_TIMEOUT)"; : "${READY_TIMEOUT:=300}"
@@ -255,7 +255,7 @@ ensure_up() {
 
   # The banner start.sh printed inside is the operator's, not the container's —
   # surface it, or the container has swallowed the one report that says whether
-  # forge is up and the model is loaded.
+  # the API key is present and the re-work workspace made it into the image.
   docker logs --tail 40 "$NAME" 2>&1 | sed -n '/^Display:/,$p'
 
   # After the container is up, not before: the check has to exec into it.
@@ -492,12 +492,19 @@ case "$MODE" in
       printf 'mounts       '
       docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$NAME" 2>/dev/null \
         | grep -v '^/var/run/docker.sock$' | grep -v '^$' | paste -sd' ' -
-      if docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/forge/health 2>/dev/null; then
-        docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/health 2>/dev/null \
-          && printf 'forge        up, model loaded\n' \
-          || printf 'forge        up, model still loading\n'
+      # Two things that are actually container-local now. The model path is not
+      # one of them: api.anthropic.com is reached from inside exactly as it is
+      # from outside, so there is nothing host-side left to probe. See the
+      # re-work/ COPY in Dockerfile.pi for the second line.
+      docker exec "$NAME" bash -lc '[ -n "${ANTHROPIC_API_KEY:-}" ]' 2>/dev/null \
+        && printf 'api key      ANTHROPIC_API_KEY present\n' \
+        || printf 'api key      MISSING — pass -e ANTHROPIC_API_KEY, or put it in .env.local\n'
+      rw="$(docker exec "$NAME" bash -lc 'printf "%s" "${RE_WORK_DIR:-/opt/re-work}"' 2>/dev/null)"
+      rw_n="$(docker exec "$NAME" bash -lc "find '${rw:-/opt/re-work}' -type f 2>/dev/null | wc -l" 2>/dev/null | tr -d '[:space:]')"
+      if [[ -n "$rw_n" && "$rw_n" -gt 2 ]]; then
+        printf 're-work      %s (%s files)\n' "${rw:-/opt/re-work}" "$rw_n"
       else
-        printf 'forge        not answering — ./scripts/up.sh\n'
+        printf 're-work      staged empty — run ./scripts/stage-re-work.sh and rebuild\n'
       fi
     fi
     exit 0 ;;

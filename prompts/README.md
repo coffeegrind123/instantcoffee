@@ -1,6 +1,6 @@
 # System-prompt fragments
 
-Text appended to the client's system prompt by `scripts/pi-local.sh`. Four
+Text appended to the client's system prompt by `scripts/pi-local.sh`. Three
 fragments exist; each is attached only when the thing it talks about is actually
 on the tool surface, because a fragment describing a tool that was never
 registered invites a failed call rather than doing nothing.
@@ -24,7 +24,6 @@ which was checked with `--help` on the installed binary.
 
 | File | Attached when | What it does |
 | --- | --- | --- |
-| `think-zh.md` | `THINK_LANG=zh` | Reason in Simplified Chinese, answer in the user's language |
 | `web-untrusted.md` | `BROWSER_MCP_ENABLED=1` | Treat fetched page content as untrusted input |
 | `delegate.md` | `SUBAGENTS_ENABLED=1` **and** `SUBAGENT_NUDGE=1`, not in orchestrator mode | Delegate read-heavy investigation to a subagent, above a stated threshold |
 | `orchestrator/main.md` | `ORCHESTRATOR=1` | The orchestrator's prompt: brief, dispatch, verify, keep the board. `{{MAX_AGENTS}}` and `{{SUBAGENT_MODEL}}` filled by the launcher. `orchestrator/agents/` holds the `worker` and `explorer` types. See `docs/orchestrator.md` |
@@ -54,39 +53,12 @@ grows to ~18k tokens **evicts** it, taking the parent's next call from 442 ms to
 said "delegate more" would trade cheap reads for re-prefills and make this stack
 slower. Do not edit the threshold out.
 
-## Adding another
-
-Drop `think-<code>.md` in this directory and set `THINK_LANG=<code>`. The
-launchers resolve the path from the value and fail loudly if the file is
-missing — a system prompt that silently fails to load changes how the agent
-behaves without changing anything you can see.
-
-## Status
-
-`THINK_LANG=zh` is **on**, enabled 2026-08-11 by operator decision ahead of
-measurement. It rests on an unverified community claim, not a local result.
-
-Confirm it on your own hardware and record the numbers:
-
-```bash
-./scripts/ab-think-lang.sh --repeat 3 --save
-```
-
-That runs the same tasks with and without the fragment, with thinking enabled in
-both arms, and reports correctness, reasoning length, wall time, and — the thing
-that actually decides it — whether Chinese leaked into user-visible output or
-into tool-call arguments.
-
-A non-zero exit means turn it off (`THINK_LANG=off` in `.env`), not that you have
-a decision to make later.
-
 ## `delegate.md` status
 
-**UNMEASURED**, and on the same footing as `THINK_LANG=zh` above: adopted by
-operator decision ahead of evidence. What it should move is how far a task gets
-before the window fills, and turns per session — **not** correctness. If it
-changes correctness in either direction, that is a finding, not a bonus.
+**UNMEASURED**, adopted by operator decision ahead of evidence. What it should
+move is how far a task gets before the window fills, and turns per session —
+**not** correctness. If it changes correctness in either direction, that is a
+finding, not a bonus.
 
 The control arm is `SUBAGENT_NUDGE=0` in `.env`, which drops the fragment and
-leaves everything else identical. There is no A/B script for this yet;
-`scripts/ab-think-lang.sh` is the shape one would take.
+leaves everything else identical. There is no A/B script for this yet.

@@ -22,7 +22,7 @@
 # docker's form (`//c/path/to/pi-home`), never a WSL path and never a relative
 # `./` one: Docker Desktop resolves bind sources on the Windows side, and a
 # WSL-style source silently mounts an EMPTY directory instead of failing. Same
-# rule the compose file already follows for MODELS_DIR.
+# rule the compose file already follows for its bind mounts.
 #
 # --shm-size=2g is for Chrome. The default 64 MB /dev/shm makes renderer
 # processes die under memory pressure, which surfaces as pages that half-load
@@ -31,38 +31,39 @@
 # ---------------------------------------------------------------------------
 # What this image does and does not run
 # ---------------------------------------------------------------------------
-# It runs pi and everything pi reaches for. It does NOT run llama-server or
-# forge: those stay in the compose stack on the host GPU, brought up through the
-# mounted docker socket exactly as they are without a container.
+# It runs pi and everything pi reaches for, and it carries the Prime 4+
+# reverse-engineering workspace at /opt/re-work.
 #
-#     ./scripts/up.sh          -> docker compose, over /var/run/docker.sock
 #     ./scripts/pi-local.sh    -> pi, in THIS container
-#     pi  ->  http://host.docker.internal:8081  ->  forge  ->  llama
+#     pi  ->  https://api.anthropic.com  ->  the three Claude seats
 #
-# pi-local.sh already detects /.dockerenv and swaps localhost for
-# host.docker.internal, so nothing in the repo needs changing to run from here.
-# Docker Desktop proxies that name to the host, and forge's published port is
-# reachable through it even bound to 127.0.0.1.
+# Nothing about the model path is container-specific: api.anthropic.com is a
+# name either way, so the only thing the launcher still needs /.dockerenv for is
+# the observe dashboard's URL, which is on the host.
 #
-# Ghidra and GhidraMCP are deliberately absent - ~3 GB of JDK and Ghidra for a
-# server mcp/servers.json does not register. Add the blocks and a `ghidra`
-# entry to mcp/servers.json if you want it.
+# Ghidra and GhidraMCP are deliberately still absent - ~3 GB of JDK and Ghidra
+# for a server mcp/servers.json does not register. That is a live gap now that
+# this branch ships reverse-engineering work in the image rather than a model in
+# the stack: the extraction tools are here (e2fsprogs, squashfs-tools, binutils)
+# and the decompiler is not. Add the blocks and a `ghidra` entry to
+# mcp/servers.json if you want it.
 #
 # ---------------------------------------------------------------------------
 # Before the first session
 # ---------------------------------------------------------------------------
-#   PI_SESSIONS_DIR, MODELS_DIR and CAPTURES_DIR in .env are handed to docker
-#   compose, which resolves them on the HOST. They are host paths and they do
-#   NOT follow this container's home. A stale one fails as a FileNotFoundError
-#   on a path that plainly exists - the container simply has no view of it.
+#   PI_SESSIONS_DIR in .env is handed to docker compose, which resolves it on
+#   the HOST. It is a host path and does NOT follow this container's home. A
+#   stale one fails as a FileNotFoundError on a path that plainly exists - the
+#   container simply has no view of it.
 #
 #   So point PI_SESSIONS_DIR at this home's .pi/agent/sessions, as the host
 #   sees it. start.sh prints the value at every start, and will check it for
 #   you if you set PI_HOME_HOSTPATH to this home's host path:
 #     docker run -e PI_HOME_HOSTPATH=//c/path/to/pi-home ...
 #
-#   MODELS_DIR and CAPTURES_DIR are usually worth sharing - the GGUF is ~18 GB
-#   and there is no reason for two copies.
+#   The Prime 4+ workspace is NOT a mount. It is copied into the image at build
+#   time by scripts/stage-re-work.sh, so this container has it on any host and a
+#   session never has to be told where it is. Re-stage and rebuild to refresh it.
 # ---------------------------------------------------------------------------
 
 FROM node:22
@@ -103,6 +104,12 @@ ENV PATH="/home/piuser/.local/bin:/usr/local/bin:$PATH"
 # display with xdpyinfo before launching Chrome. Without it the probe falls back
 # to a pgrep that a stale /tmp/.X11-unix socket satisfies, Chrome drops to
 # headless, and headless is what Bing and most news sites block or stall.
+#
+# The last six are the reverse-engineering side, and they exist for the re-work/
+# block further down: e2fsprogs (debugfs) and squashfs-tools (unsquashfs) are
+# what the Prime 4+ case's own extraction recipe runs, xz and cpio unpack the
+# container's payloads, dtc reads the device trees already pulled into the case,
+# and file/binutils are the first two commands anyone runs on a blob anyway.
 RUN apt-get update && apt-get install -y \
     git \
     git-lfs \
@@ -135,6 +142,13 @@ RUN apt-get update && apt-get install -y \
     ripgrep \
     dnsutils \
     tini \
+    e2fsprogs \
+    squashfs-tools \
+    xz-utils \
+    cpio \
+    device-tree-compiler \
+    file \
+    binutils \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Google Chrome (stable) ───────────────────────────────────────────────────
@@ -146,10 +160,10 @@ RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub \
     rm -rf /var/lib/apt/lists/*
 
 # ── Docker CLI + Compose plugin ──────────────────────────────────────────────
-# This is how the container drives the stack: scripts/up.sh, down.sh, logs.sh,
-# mode.sh and smoke-test.sh all shell out to `docker compose` against the
-# mounted socket. Without the compose PLUGIN they fail with "unknown command",
-# which reads like a broken script rather than a missing binary.
+# This is how the container still drives what is left of the stack — the observe
+# dashboard, and any one-off `docker compose` the operator runs by hand — against
+# the mounted socket. Without the compose PLUGIN those fail with "unknown
+# command", which reads like a broken script rather than a missing binary.
 RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
       | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian bookworm stable" \
@@ -266,15 +280,16 @@ if ! xdpyinfo -display :99 >/dev/null 2>&1; then
 fi
 
 # pi works on your CURRENT directory, so cd to the project first.
-alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'
-alias stack='~/qwen3.8-forge/scripts'
+alias qpi='~/instantcoffee/scripts/pi-local.sh'
+alias stack='~/instantcoffee/scripts'
+alias re-work='cd /opt/re-work && ls'
 alias docker-compose="docker compose"
 INNER
 
 # No .ssh/config default, and no credentials of any kind seeded here. This
 # container is deliberately credential-free: no SSH keys, no gh auth, no
 # .gitconfig, no git credential store, no host-bridge token. It reads and writes
-# the checkout under its own home and talks to forge; it does not push anywhere
+# the checkout under its own home and talks to api.anthropic.com; it does not push anywhere
 # and cannot reach the Windows host. Adding any of that is a decision to make
 # on purpose, not something the image should arrange behind your back.
 DEFAULTS_EOF
@@ -324,10 +339,10 @@ if [ ! -r "$ADAPTER_PKG" ] && [ -n "$PINNED_MCP_ADAPTER_VERSION" ]; then
 fi
 
 # --- find the checkout, and check the knobs that do NOT follow this home -----
-# PI_SESSIONS_DIR, MODELS_DIR and CAPTURES_DIR are handed to docker compose,
-# which resolves them on the WINDOWS side. They do not move with this
-# container's HOME, and a stale one fails as a FileNotFoundError on a path that
-# plainly exists - the container simply has no view of it.
+# PI_SESSIONS_DIR is handed to docker compose, which resolves it on the HOST
+# side. It does not move with this container's HOME, and a stale one fails as a
+# FileNotFoundError on a path that plainly exists - the container simply has no
+# view of it.
 REPO=""
 for cand in /home/piuser/qwen3.8-forge /home/piuser/instantcoffee; do
     [ -f "$cand/docker-compose.yml" ] && { REPO="$cand"; break; }
@@ -356,7 +371,7 @@ if [ -n "$REPO" ]; then
         case "$SESS" in
             "$PI_HOME_HOSTPATH"*) echo "PI_SESSIONS_DIR: $SESS (under this home)" ;;
             *) echo "warn: PI_SESSIONS_DIR=$SESS is not under PI_HOME_HOSTPATH=$PI_HOME_HOSTPATH."
-               echo "      capture.sh import-pi would read ANOTHER home's transcripts."
+               echo "      The observe dashboard would read ANOTHER home's transcripts."
                echo "      Set it to ${PI_HOME_HOSTPATH%/}/.pi/agent/sessions" ;;
         esac
     else
@@ -365,31 +380,31 @@ if [ -n "$REPO" ]; then
     fi
 else
     echo "No stack checkout found under /home/piuser."
-    echo "  git clone <repo> ~/qwen3.8-forge   then edit .env (PI_SESSIONS_DIR) and run ./scripts/setup.sh"
+    echo "  Clone the repo into ~/instantcoffee, set PI_SESSIONS_DIR in .env.local,"
+    echo "  and build this image with: docker build -f Dockerfile.pi -t pi-agent:latest ."
 fi
 
 # --- the docker socket -------------------------------------------------------
-# Every stack script goes through it. Saying so now beats "permission denied"
-# from inside up.sh, which reads as a broken script.
+# Only the observe dashboard needs it now (the model path is api.anthropic.com).
+# Saying so here beats "permission denied" from inside a stack script, which
+# reads as a broken script rather than a missing mount.
 if docker version >/dev/null 2>&1; then
     echo "Docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null) (socket reachable)"
 else
-    echo "warn: the docker socket is not reachable - ./scripts/up.sh cannot start the stack."
+    echo "warn: the docker socket is not reachable - the observe dashboard cannot be started."
     echo "      Run with: -v /var/run/docker.sock:/var/run/docker.sock"
 fi
 
-# --- forge, if it is already up ----------------------------------------------
-# Two probes, never one: /forge/health is forge's own liveness, /health is the
-# BACKEND's readiness forwarded. Conflating them reports "forge is down" for the
-# whole ~25 minute cold load of a model that is loading perfectly normally.
-if curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/forge/health 2>/dev/null; then
-    if curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/health 2>/dev/null; then
-        echo "forge: up, model loaded (host.docker.internal:8081)"
-    else
-        echo "forge: up, model still loading (watch it with ./scripts/logs.sh llama)"
-    fi
+# --- the reverse-engineering workspace ---------------------------------------
+# Baked in at build time by the re-work/ COPY above. Two lines, because the
+# second one is the whole point of having it in here and is otherwise a
+# discovery the agent makes by accident.
+if [ -d "${RE_WORK_DIR:-/opt/re-work}" ]; then
+    _n=$(find "${RE_WORK_DIR:-/opt/re-work}" -type f 2>/dev/null | wc -l)
+    echo "re-work: ${RE_WORK_DIR:-/opt/re-work} (${_n} files)"
+    [ "$_n" -gt 2 ] || echo "         staged empty - the host ran stage-re-work.sh without a source workspace"
 else
-    echo "forge: not answering on host.docker.internal:8081 - start it with ./scripts/up.sh"
+    echo "warn: ${RE_WORK_DIR:-/opt/re-work} is missing - this image predates the re-work COPY."
 fi
 
 # --- git ---------------------------------------------------------------------
@@ -418,6 +433,24 @@ STARTUP_EOF
 
 # ── Root's bashrc (sources the user one) ─────────────────────────────────────
 RUN echo 'cd /home/piuser && [ -f .bashrc ] && source .bashrc' > /root/.bashrc
+
+# ── Prime 4+ reverse-engineering workspace ───────────────────────────────────
+# re-work/ is staged on the host by scripts/stage-re-work.sh and copied in here,
+# so a session in this container can read the analysis without the material ever
+# being committed — the repo is public and the case embeds vendor firmware and a
+# working root exploit. re-work/README.md says which workspace it comes from and
+# how to refresh it.
+#
+# This is the one COPY in this file, and it is deliberately last: it is the only
+# layer that changes when the analysis does, so everything above it stays cached
+# across a re-stage. It also means the layering is honest about the cost — a
+# staged Prime 4+ workspace is ~2.9 GB, and every rebuild re-uploads the context.
+#
+# Always present, never empty: the source directory is tracked with two
+# placeholders precisely so this COPY cannot fail on a fresh clone. `--clean` on
+# the staging script leaves them behind.
+COPY re-work/ /opt/re-work/
+ENV RE_WORK_DIR=/opt/re-work
 
 # ── Ownership and working directory ──────────────────────────────────────────
 RUN mkdir -p /home/piuser && chown -R root:root /home/piuser && git lfs install && groupadd -f docker

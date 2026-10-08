@@ -14,38 +14,41 @@ concurrency:
 permissions:
   contents: write
 
+# This branch serves pi from the hosted Anthropic API. There is no llama.cpp
+# image to build and no forge to patch, so what is left is lint plus the suites
+# that need no model: the extensions pi loads, the vendored forks, the surviving
+# scripts, and the config files a session reads. Nothing here needs a GPU,
+# because nothing here runs one.
 jobs:
-  # ── lint + syntax ──────────────────────────────────────────────────────
+  # ── lint + syntax + the no-model suites ────────────────────────────────
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # vendor/pi-persona is a submodule. Without this it is an empty
-          # directory, the syntax check silently finds no file to check, and the
-          # persona test step fails on a missing package.json — which reads as a
-          # broken package rather than a missing checkout flag.
+          # vendor/pi-persona and vendor/prinny-channel are submodules. Without
+          # this they are empty directories, the syntax checks silently find no
+          # file to check, and the persona/prinny steps fail on a missing
+          # package.json — which reads as a broken package rather than a
+          # missing checkout flag.
           submodules: recursive
 
       - uses: actions/setup-python@v5
         with: { python-version: "3.13" }
 
-      # Pinned because both TypeScript steps below rely on type stripping, which
-      # landed in Node 22.6 — on an older runner image they would fail as a
-      # missing flag rather than as the problem they are meant to catch.
+      # Pinned because the TypeScript steps rely on type stripping, which landed
+      # in Node 22.6 — on an older runner image they would fail as a missing
+      # flag rather than as the problem they are meant to catch.
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
 
+      # The glob is deliberate rather than a hand-kept list, so a new script is
+      # covered the moment it lands. A glob that matches nothing expands to the
+      # literal pattern and py_compile fails on a file that is not there — an
+      # empty suite is loud, not green.
       - name: Python syntax checks
         run: |
-          for f in scripts/smoke_test.py scripts/test_repeat_detector.py \
-                   scripts/ab_think_lang.py scripts/test_cjk_detector.py \
-                   scripts/download_model.py scripts/browser_cli.py \
-                   scripts/test_browser_cli.py scripts/capture_proxy.py \
-                   scripts/capture_sessions.py scripts/test_capture_proxy.py \
-                   scripts/test_forge_patches.py scripts/test_interrupt_exits.py \
-                   scripts/bench_tools.py \
-                   scripts/test_download_verify.py scripts/test_smoke_observe.py; do
+          for f in scripts/*.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
@@ -57,12 +60,13 @@ jobs:
           done
 
       # pi loads .pi/extensions/*.ts at startup. A parse error there does not
-      # fail loudly — the session simply comes up without /stack — so it is
-      # checked here instead. Node's type stripping is a parser, not a type
+      # fail loudly — the session simply comes up without the extension — so it
+      # is checked here instead. Node's type stripping is a parser, not a type
       # checker, which is the right depth: it catches syntax and any construct a
-      # strip-only transpiler cannot handle (parameter properties, enums), while
-      # needing no toolchain and no node_modules.
-      # The submodule, asserted rather than assumed. An absent vendor/pi-persona
+      # strip-only transpiler cannot handle, while needing no toolchain and no
+      # node_modules.
+      #
+      # The submodules, asserted rather than assumed. An absent vendor/pi-persona
       # does not fail the checks below — it fails them UPWARDS: the glob does not
       # expand, `$f` stays the literal pattern, the import throws
       # ERR_MODULE_NOT_FOUND, and that branch deliberately exits 0. So a missing
@@ -81,7 +85,7 @@ jobs:
 
       - name: Extension syntax checks
         run: |
-          for f in .pi/extensions/*.ts .pi/extensions/observe/index.ts vendor/rtk-pi/extensions/*.ts vendor/pi-persona/extensions/*.ts; do
+          for f in .pi/extensions/*.ts vendor/rtk-pi/extensions/*.ts vendor/pi-persona/extensions/*.ts; do
             node --experimental-strip-types --no-warnings \
                  -e "import('./$f').catch(e => {
                        if (e.code === 'ERR_MODULE_NOT_FOUND') process.exit(0);
@@ -90,20 +94,10 @@ jobs:
             echo "  $f: OK"
           done
 
-      # The rtk fork's gate decides which bash commands get their output
-      # rewritten before pi sees it. Its failure mode is silent in both
-      # directions: too permissive and a command is quietly replaced by a
-      # different one (`npm run lint` -> a bare eslint), too strict and the
-      # savings evaporate with nothing to show for it. Neither shows up in a
-      # session. src/gate.ts imports nothing from pi precisely so this can run
-      # with no node_modules.
-      # The extension SUITES, which nothing ran until 2026-08-24: the syntax
-      # check above proves they parse, and seven compaction-guard test files
-      # (75 assertions) plus the browser guard's own had never been executed by
-      # CI at all. The browser guard's is the one that matters most — it pins
-      # that a browser tool FAILURE is recognised from its text rather than from
-      # `isError`, which pi sets only when a tool throws, and which the browser
-      # MCP server therefore never sets.
+      # The extension SUITES. The browser guard's is the one that matters most —
+      # it pins that a browser tool FAILURE is recognised from its text rather
+      # than from `isError`, which pi sets only when a tool throws, and which the
+      # browser MCP server therefore never sets.
       - name: Extension unit tests
         run: |
           node --experimental-strip-types --no-warnings --test \
@@ -116,38 +110,19 @@ jobs:
       # killed child actually resolves to — a stub of it would assert the shape
       # the code already assumes and prove nothing. Without pi on PATH that one
       # test skips, and the premise behind the whole AB3 finding goes unchecked
-      # in CI. (It used to HARD FAIL on an absolute path that only existed on
-      # the author's box, which took every step after it down with it.)
+      # in CI.
       - name: Install pi
         run: npm install -g @earendil-works/pi-coding-agent
 
+      # The rtk fork's gate decides which bash commands get their output
+      # rewritten before pi sees it. Its failure mode is silent in both
+      # directions: too permissive and a command is quietly replaced by a
+      # different one (`npm run lint` -> a bare eslint), too strict and the
+      # savings evaporate with nothing to show for it. src/gate.ts imports
+      # nothing from pi precisely so this can run with no node_modules.
       - name: rtk gate unit tests
         working-directory: vendor/rtk-pi
         run: node --experimental-strip-types --no-warnings --test tests/*.test.ts
-
-      # /persona is a port carried in this repo (vendor/pi-persona/FORK.md), so
-      # its regressions are ours. Two failure modes make it worth a CI step of
-      # its own, and neither is visible from inside a session:
-      #
-      #   - The block is PREPENDED to pi's system prompt and is ~3,683 tokens of
-      #     every request. An edit that changes that number changes how much of a
-      #     32k window is left for the user's code, silently. The suite pins both
-      #     mode's sizes inside a band.
-      #   - The block builds its tool references from what pi says is selected
-      #     THIS turn. Hardcoding a tool pi does not have is how a model ends up
-      #     inventing a URL rather than fetching one, and it fails as a
-      #     plausible-looking answer rather than as an error.
-      #
-      # Runs after `Install pi`: the extension suite redirects pi's bare
-      # specifier onto the installed package so the factory runs against the same
-      # import a session would. Without pi those tests skip and the source
-      # assertions still run, so this step is green either way — but the point of
-      # putting it here is that they do not skip.
-      - name: Persona port unit tests
-        working-directory: vendor/pi-persona
-        run: |
-          npm run lint
-          npm test
 
       # The other half of the same contract: that the rtk BINARY still behaves
       # the way the allow-list assumes. Filters are upstream's to change and a
@@ -159,70 +134,53 @@ jobs:
           ./scripts/rtk.sh --install
           ./scripts/rtk.sh --check
 
-      # The stack targets pi only, and no longer carries a scored eval harness.
-      # A reintroduced Claude Code launcher, env key or wire-format check would
-      # go unnoticed otherwise until someone tried to run it against a 64K
-      # window; a reintroduced eval.py would quietly bring back a scorecard,
-      # badges and a results/ directory that were deliberately deleted.
-      - name: No Claude Code support or eval harness has crept back in
+      # /persona is a port carried in this repo (vendor/pi-persona/FORK.md), so
+      # its regressions are ours. Two failure modes make it worth a CI step of
+      # its own, and neither is visible from inside a session:
+      #
+      #   - The block is PREPENDED to pi's system prompt and is ~3,683 tokens of
+      #     every request. An edit that changes that number changes how much of
+      #     the window is left for the user's code, silently. The suite pins both
+      #     modes' sizes inside a band.
+      #   - The block builds its tool references from what pi says is selected
+      #     THIS turn. Hardcoding a tool pi does not have is how a model ends up
+      #     inventing a URL rather than fetching one, and it fails as a
+      #     plausible-looking answer rather than as an error.
+      #
+      # Runs after `Install pi`: the extension suite redirects pi's bare
+      # specifier onto the installed package so the factory runs against the same
+      # import a session would.
+      - name: Persona port unit tests
+        working-directory: vendor/pi-persona
         run: |
-          for f in scripts/claude-local.sh scripts/claude-code-env.sh \
-                   harbor-adapter/forge_claude.py scripts/eval.py \
-                   scripts/eval_harness.py scripts/run-eval.sh; do
-            test ! -e "$f" || { echo "REMOVED FILE IS BACK: $f"; exit 1; }
-          done
-          ! grep -qE '^CLAUDE_' .env || { echo ".env has CLAUDE_* keys again"; exit 1; }
-          echo "  pi-only: OK"
+          npm run lint
+          npm test
 
-      - name: Repeat detector unit tests
-        run: python scripts/test_repeat_detector.py
+      # pi-toolresult-guard is loaded FIRST in the launcher, so every other
+      # tool_result handler reads a content array that is already safe. Its
+      # failure mode is the session EXITING on a malformed result, which is not
+      # something a green session would ever show you.
+      - name: Tool-result guard unit tests
+        working-directory: vendor/pi-toolresult-guard
+        run: |
+          npm run lint
+          npm test
 
-      - name: CJK leak detector unit tests
-        run: python scripts/test_cjk_detector.py
+      # The three seats are the design, and the advisor's separate model holds
+      # only because a per-agent-type entry sits ABOVE the session default in
+      # this fork's model-precedence ladder. That ordering is what these two
+      # files pin. The rest of this fork's suite is deliberately not run here:
+      # its standing pi.exec-verdict scan is order-sensitive under the node test
+      # runner's parallelism and passes alone but flakes in the full run — a
+      # flaky gate is worse than no gate.
+      - name: Subagent model precedence unit tests
+        working-directory: vendor/pi-subagents-lite
+        run: |
+          node --experimental-strip-types --no-warnings --test \
+            tests/mode-seed.test.ts tests/mode-agents.test.ts
 
-      # The dashboard checks in the smoke test: a server on the port that is not
-      # observe, and a dashboard whose llama poller never connects, must fail.
-      - name: Smoke test dashboard checks
-        run: python scripts/test_smoke_observe.py
-
-      # spec-sweep.sh and capacity-probe.sh own .env for a run. A signal trap
-      # that restores without exiting lets the next step overwrite the restore.
-      - name: Runner interrupt tests
-        run: python scripts/test_interrupt_exits.py
-
-      # download_model.py's content check only fires on a BAD download, which is
-      # the one case running the real script on a good file cannot reach. These
-      # fixtures are a few bytes each so the failure paths are actually
-      # exercised — including size-matches-but-content-does-not, which the
-      # size-only comparison this replaced could never catch.
-      - name: Model download verification unit tests
-        run: python scripts/test_download_verify.py
-
-      # The capture proxy sits in the production path between forge and llama, so
-      # two of its promises are the kind that fail silently and both have a
-      # control that can FAIL: an upstream that sleeps mid-stream (catching any
-      # future edit that buffers the body), and a recorder that raises on every
-      # write, checked down a KEEP-ALIVE connection because the damage only
-      # shows on the second request. No server, no GPU, no compose.
-      - name: Capture proxy unit tests
-        run: python scripts/test_capture_proxy.py
-
-      # The session rebuilder decides what a workstream IS out of a flat tape,
-      # and the corpus exporter decides what the KLD run will measure. A silent
-      # regression there produces a plausible corpus that is not the token
-      # stream the model saw.
-      - name: Capture session rebuilder unit tests
-        run: python scripts/capture_sessions.py --self-test
-
-      # The browser CLI turns shell words into JSON arguments for a tool it has
-      # never seen, from that tool's own schema. A regression there is silent:
-      # a dropped or mistyped parameter produces a call that succeeds and does
-      # the wrong thing. No server or browser is needed for these.
-      - name: Browser CLI unit tests
-        run: python scripts/test_browser_cli.py
-
-      # /loop is a fork carried in this repo (vendor/pi-loop-mode/FORK.md), so its
-      # regressions are ours. The suite drives the extension's real handlers
+      # /loop is a fork carried in this repo (vendor/pi-loop-mode/FORK.md), so
+      # its regressions are ours. The suite drives the extension's real handlers
       # through the context-overflow race the fork exists to fix — a break there
       # would otherwise only show up hours into an unattended run.
       - name: Loop-mode fork unit tests
@@ -230,6 +188,29 @@ jobs:
         run: |
           npm run lint
           npm test
+
+      # The browser CLI turns shell words into JSON arguments for a tool it has
+      # never seen, from that tool's own schema. A regression there is silent: a
+      # dropped or mistyped parameter produces a call that succeeds and does the
+      # wrong thing. No server or browser is needed for these.
+      - name: Browser CLI unit tests
+        run: python scripts/test_browser_cli.py
+
+      # pi-container.sh forwards an exported override into the container as
+      # `-e NAME`, because docker exec starts with the container's environment,
+      # not the caller's. Dropped in silence before 2026-09-24, which meant
+      # `ORCHESTRATOR=1 ./scripts/pi-container.sh` came up without orchestrator
+      # mode and said nothing about it.
+      - name: Container env forwarding unit tests
+        run: python scripts/test_container_env.py
+
+      # Web-derived text is wrapped in an untrusted-content envelope, and the
+      # envelope exists twice — Python for the CLI path, TypeScript for the
+      # native-tool path. The load-bearing test is that the two copies still
+      # agree, control included: a wrapper whose halves disagree teaches the
+      # model that the boundary is approximate.
+      - name: Untrusted-content envelope unit tests
+        run: python scripts/test_untrusted_content.py
 
       # The Matrix channel is a conversion carried in this repo
       # (vendor/prinny-channel/FORK.md), so its regressions are ours too. Its
@@ -272,31 +253,42 @@ jobs:
       - name: Matrix channel — the extension inside a real pi
         run: cd vendor/prinny-channel && npm run test:e2e
 
-      # A fragment that is empty, or that forgets to pin the output language,
-      # would quietly turn THINK_LANG into "answer in Chinese".
-      - name: System-prompt fragments are well formed
+      # The prompt fragments the launcher appends to pi's system prompt. An
+      # empty one, or one still carrying a placeholder the launcher does not
+      # fill, fails the launch — and the launch failure is the loud half. What
+      # this catches is the quiet half: a fragment that parses but says nothing.
+      #
+      # THINK_LANG and its Chinese-reasoning fragment are gone on this branch;
+      # what remains is the orchestrator prompt, its three agent types, and the
+      # two appends the launcher makes in every session.
+      - name: Prompt fragments are well formed
         run: |
-          for f in prompts/think-*.md; do
-            test -s "$f" || { echo "EMPTY: $f"; exit 1; }
-            grep -qi "user's language\|English" "$f" \
-              || { echo "$f does not pin the output language"; exit 1; }
+          for f in prompts/delegate.md prompts/web-untrusted.md \
+                   prompts/orchestrator/main.md \
+                   prompts/orchestrator/agents/worker.md \
+                   prompts/orchestrator/agents/explorer.md \
+                   prompts/orchestrator/agents/advisor.md; do
+            test -s "$f" || { echo "EMPTY or MISSING: $f"; exit 1; }
             echo "  $f: OK"
           done
+          # pi-local.sh refuses to launch if the orchestrator prompt has a
+          # placeholder it does not fill, and it fills exactly these four.
+          used="$(grep -oE '\{\{[A-Z0-9_]+\}\}' prompts/orchestrator/main.md | sort -u)"
+          bad="$(printf '%s\n' "$used" \
+                   | grep -vE '\{\{(MAX_AGENTS|SUBAGENT_MODEL|ADVISOR_MODEL|MAX_DEPTH)\}\}' || true)"
+          test -z "$bad" \
+            || { echo "prompts/orchestrator/main.md has placeholders the launcher does not fill:"; \
+                 echo "$bad"; exit 1; }
+          echo "  orchestrator placeholders: OK"
 
+      # Every key a session reads through the launcher's env_get, so a rename in
+      # .env that leaves the launcher falling back to a default is caught here
+      # rather than as a session that ran on the wrong model. .env is committed
+      # and secret-free; the Anthropic key lives in the gitignored .env.local and
+      # is deliberately not in this list.
       - name: .env key validation
         run: |
-          required=( CTX_SIZE NGL FLASH_ATTN
-                     LLAMA_EXTRA_FLAGS TEMPERATURE TOP_P TOP_K MIN_P
-                     REASONING_BUDGET FORGE_CAPABILITY FORGE_REASONING_REPLAY
-                     CACHE_PROMPT CACHE_RAM MODEL_ALIAS MODEL_REPO GGUF_FILE
-                     LLAMA_PORT FORGE_PORT THINK_LANG REASONING_EFFORT
-                     PI_MAX_TOKENS PI_CONTEXT_FILES
-                     MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION
-                     BROWSER_MCP_ENABLED ZENDRIVER_MCP_DIR BROWSER_MCP_HOST
-                     BROWSER_MCP_PORT BROWSER_MCP_DISPLAY BROWSER_MCP_AUTOSTART
-                     BROWSER_MCP_TIMEOUT
-                     MCP_ADAPTER_ENABLED MCP_ADAPTER_VERSION BROWSER_MCP_AUTOUP
-                     RTK_ENABLED RTK_VERSION )
+          required=( ANTHROPIC_MODEL PI_CONTEXT_WINDOW PI_CONTEXT_FILES PI_CACHE_SHORT_SECONDS PI_CACHE_LONG_SECONDS PI_CACHE_WARMING PI_CACHE_RETENTION PI_SHOW_CACHE_MISS_NOTICES PI_UPDATE_MODELS_ON_LAUNCH PI_AUTO_UPDATE PI_UPDATE_INTERVAL_H SUBAGENTS_ENABLED SUBAGENT_MODEL SUBAGENT_NUDGE SUBAGENT_VERIFY SUBAGENT_MAX_CONCURRENT SUBAGENT_MAX_DEPTH ORCHESTRATOR ADVISOR_MODEL LOOP_TOOL_CHECK MCP2CLI_ENABLED MCP2CLI_VERSION MCP_SDK_VERSION BROWSER_MCP_ENABLED ZENDRIVER_MCP_DIR BROWSER_MCP_HOST BROWSER_MCP_PORT BROWSER_MCP_DISPLAY BROWSER_MCP_AUTOSTART BROWSER_MCP_TIMEOUT BROWSER_MCP_TOOL_TIMEOUT BROWSER_MCP_AUTOUP MCP_ADAPTER_ENABLED MCP_ADAPTER_VERSION RTK_ENABLED RTK_VERSION OBSERVE_ENABLED OBSERVE_PORT PRINNY_ENABLED BIND_ADDR )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then
@@ -305,35 +297,6 @@ jobs:
             fi
           done
           exit $missing
-
-      # A mode is applied with env_set(), which refuses to append a key that is
-      # not already in .env — so a typo in modes/*.env fails at switch time, in
-      # front of whoever is trying to change regime, having already written some
-      # of the keys. Catch it here instead. Also guards the reverse drift: a key
-      # renamed in .env leaves every mode file silently pointing at nothing.
-      - name: Mode presets reference real .env keys
-        run: |
-          bad=0
-          for f in modes/*.env; do
-            [ -e "$f" ] || continue
-            while IFS= read -r key; do
-              grep -qE "^[[:space:]]*${key}=" .env || { echo "$f: '$key' is not in .env"; bad=1; }
-            done < <(grep -E '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$f" | sed 's/=.*//' | tr -d ' \t')
-            echo "  $f: $(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=' "$f") keys"
-          done
-          exit $bad
-
-      # .env is rewritten by scripts/mode.sh, so a comment that asserts which
-      # regime is active goes stale the moment anyone switches. This repo shipped
-      # a block reading "CURRENTLY SET FOR PROSE" above the coding temperature.
-      # Describe the knob, not the current value.
-      - name: .env comments do not assert the active mode
-        run: |
-          if grep -nEi '^#.*(currently set|is currently (on|off))' .env; then
-            echo "The lines above claim a live state in a file that mode.sh rewrites."
-            exit 1
-          fi
-          echo "  no mode-state assertions in .env comments: OK"
 
       # The skill is the only thing that tells the model ./scripts/mcp.sh
       # exists, and pi is lenient about malformed skills — it does not fail, it
@@ -454,7 +417,7 @@ jobs:
               print("start_browser is 2.3KB of schema; the server auto-starts instead"); bad = 1
           guard = (cfg.get("settings") or {}).get("outputGuard") or {}
           if guard.get("maxBytes", 51200) > 16384:
-              print("outputGuard.maxBytes is sized for a 200K window, not 32K"); bad = 1
+              print("outputGuard.maxBytes is sized for a 200K window, not a local one"); bad = 1
           print(f"  adapter config: OK ({len(direct)} direct tools, url {url})")
           sys.exit(bad)
           EOF
@@ -470,105 +433,34 @@ jobs:
             *)   echo "MCP_SDK_VERSION=$v — mcp2cli 3.3.1 needs mcp<2 (Tool.inputSchema)"; exit 1 ;;
           esac
 
+      # One service (observe) survives the move off the local model, so the
+      # tools profile that used to validate the llama/forge/capture one-shots is
+      # gone with it.
       - name: Docker Compose config validation
         run: |
           docker compose config > /dev/null && echo "compose: OK"
-          docker compose --profile tools config > /dev/null && echo "tools: OK"
 
-      # -n is the server-side generation cap: a client that sends
-      # max_completion_tokens instead of max_tokens gets no limit at all, since
-      # llama.cpp reads only the latter. It has to match the cap pi is told
-      # about, or the two disagree silently.
-      - name: Generation cap agrees between llama-server and pi
+      # This branch still carries no scored eval harness, and a reintroduced
+      # eval.py would quietly bring back a scorecard, badges and a results/
+      # directory that were deliberately deleted. The other half of the old
+      # assertion — `! grep -qE '^CLAUDE_' .env` — is dropped on purpose: it
+      # guarded a Claude Code launcher and its CLAUDE_* keys that this branch
+      # removes entirely, and .env now carries ANTHROPIC_* keys as a matter of
+      # course, so CLAUDE_* is no longer a meaningful proxy for anything.
+      - name: No scored eval harness has crept back in
         run: |
-          # Piped, not <(...): grep -P against a process-substitution fd was
-          # observed returning no match for a pattern that matches on a pipe.
-          n_flag=$(grep '^LLAMA_EXTRA_FLAGS=' .env | grep -oP '(?<=-n )[0-9]+' || true)
-          pi_max=$(grep -oP '(?<=^PI_MAX_TOKENS=)[0-9]+' .env || true)
-          test -n "$n_flag" || { echo "LLAMA_EXTRA_FLAGS has no -n cap"; exit 1; }
-          test "$n_flag" = "$pi_max" \
-            || { echo "-n $n_flag != PI_MAX_TOKENS $pi_max"; exit 1; }
-          echo "  generation cap: $n_flag on both sides: OK"
+          for f in scripts/eval.py scripts/eval_harness.py scripts/run-eval.sh; do
+            test ! -e "$f" || { echo "REMOVED FILE IS BACK: $f"; exit 1; }
+          done
+          echo "  no eval harness: OK"
 
-  # ── build + dry-run + badge (single job so docker load works) ──────────
-  build:
+  # ── badge (main push only) ─────────────────────────────────────────────
+  badge:
     runs-on: ubuntu-latest
     needs: lint
     steps:
       - uses: actions/checkout@v4
-        with:
-          # vendor/pi-persona is a submodule. Without this it is an empty
-          # directory, the syntax check silently finds no file to check, and the
-          # persona test step fails on a missing package.json — which reads as a
-          # broken package rather than a missing checkout flag.
-          submodules: recursive
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # .env IS the source of truth for this, as it is for everything else the
-      # scripts read through `env_get`. It used to be
-      # `${{ vars.FORGE_VERSION || '0.8.2' }}` — a repository variable that is
-      # not set, so every CI build used the literal fallback. That fallback went
-      # stale: .env moved to 0.9.0 and CI kept building 0.8.2, so the image CI
-      # tested was never the image this repo targets.
-      #
-      # It surfaced as a patch refusing, which is the patches working exactly as
-      # designed — `forge_cached_tokens` looks for a TokenUsage construction that
-      # 0.8.2 does not contain and stops the build rather than shipping
-      # unpatched. Reading the version from .env means CI cannot build a
-      # different forge from the one the operator runs.
-      - name: FORGE_VERSION from .env
-        id: forge
-        run: |
-          v="$(grep -E '^FORGE_VERSION=' .env | tail -n1 | cut -d= -f2)"
-          test -n "$v" || { echo ".env has no FORGE_VERSION"; exit 1; }
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-          echo "  building forge $v"
-
-      - name: Build forge image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.forge
-          build-args: FORGE_VERSION=${{ steps.forge.outputs.version }}
-          load: true
-          tags: instantcoffee/proxy:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # The ten build-time patches already fail the BUILD when forge's source
-      # text moves. That is a check on the input: a patch can apply cleanly to
-      # text that has shifted underneath it and produce a package that imports,
-      # starts, serves, and returns the wrong field — which is the shape of
-      # every defect they exist to fix. This drives the patched functions.
-      - name: Forge patch behaviour
-        run: |
-          docker run --rm --entrypoint python instantcoffee/proxy:ci \
-            /work/scripts/test_forge_patches.py
-
-      - name: Verify scripts in image
-        run: |
-          docker run --rm --entrypoint ls instantcoffee/proxy:ci /work/scripts/ \
-            | tee /dev/stderr \
-            | grep -q smoke_test.py
-
-      # The A/B harness reads the fragment from inside the image, so a missing
-      # COPY would only surface as a run-time crash on a machine with a GPU.
-      - name: Verify prompt fragments in image
-        run: |
-          docker run --rm --entrypoint ls instantcoffee/proxy:ci /work/prompts/ \
-            | tee /dev/stderr \
-            | grep -q think-zh.md
-          docker run --rm --entrypoint python instantcoffee/proxy:ci \
-            /work/scripts/ab_think_lang.py --help > /dev/null && echo "ab harness: OK"
-
-      - name: Verify smoke_test.py imports and has check_for_repeats
-        run: >
-          docker run --rm --entrypoint python instantcoffee/proxy:ci
-          -c "import ast; tree=ast.parse(open('/work/scripts/smoke_test.py').read()); fns=[n.name for n in ast.walk(tree) if isinstance(n,ast.FunctionDef)]; print('smoke_test fns:',fns); assert 'check_for_repeats' in fns"
-
-      # ── badge (main push only) ────────────────────────────────────────
       - name: Generate CI badge
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |

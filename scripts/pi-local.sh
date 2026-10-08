@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
 #
-# Run the pi coding agent (pi.dev) against the local model.
+# Run the pi coding agent (pi.dev) against the hosted Anthropic API.
 #
 #   ./scripts/pi-local.sh                 start a session
 #   ./scripts/pi-local.sh -p "summarize"  any pi flag passes through
 #   ./scripts/pi-local.sh --install-only  write ~/.pi/agent/models.json and stop
 #   ./scripts/pi-local.sh --print-only    show the command without running it
 #
-# pi has no built-in notion of "an OpenAI-compatible proxy" as a flag — custom
-# providers are declared in ~/.pi/agent/models.json. This script generates that
-# file from .env so the model id, context window and port cannot drift apart
-# from what the stack is actually serving.
+# The name is historical: this launcher used to point pi at a local llama.cpp
+# server behind the forge proxy. On the `anthropic` branch there is no local
+# model, no proxy and no GPU — pi talks straight to api.anthropic.com over the
+# Messages API, and the whole of the provider configuration is pi's own
+# built-in `anthropic` provider plus the overrides written below.
 #
-# Deliberately NOT using pi's own /llama integration: that makes pi manage its
-# own llama.cpp router and models, which would bypass forge entirely and lose
-# every guardrail this repo exists to provide.
+# What this script still owns is everything that has to be true at launch and
+# would otherwise be a knob nobody set: the API key, the prompt-cache tiers and
+# warming policy, the three role models, and pi's compaction sizing. It reads
+# them from .env and writes them into pi's agent directory, so the running
+# session and the committed configuration cannot drift apart.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -28,17 +31,44 @@ for a in "$@"; do
   esac
 done
 
-MODEL="$(env_get MODEL_ALIAS)"
-CTX="$(env_get CTX_SIZE)"
-MAX_TOKENS="$(env_get PI_MAX_TOKENS)"
-: "${MAX_TOKENS:=8192}"
+# The three roles this stack runs. One model per seat, and the seats are the
+# whole design: the session that plans and verifies, the workers that read and
+# implement, and one advisor that is only asked to think.
+MAIN_MODEL="$(env_get ANTHROPIC_MODEL)";        : "${MAIN_MODEL:=claude-opus-5-5}"
+SUBAGENT_ID="$(env_get ANTHROPIC_SUBAGENT_MODEL)"; : "${SUBAGENT_ID:=claude-haiku-5-5}"
+ADVISOR_ID="$(env_get ANTHROPIC_ADVISOR_MODEL)";   : "${ADVISOR_ID:=claude-fable-5-1}"
 
-PORT="$(env_get FORGE_PORT)"
+# The window pi sizes its compaction against. Anthropic's Claude 5 family all
+# report 1M; it is a floor for the arithmetic below, not a model id lookup, so
+# a wrong value costs compaction timing rather than correctness.
+CTX="$(env_get PI_CONTEXT_WINDOW)"; : "${CTX:=1000000}"
 
-# Published ports bind to the host's loopback; inside a container the host is
-# reachable as host.docker.internal instead.
-[[ -f /.dockerenv ]] && HOST="host.docker.internal" || HOST="localhost"
-BASE="http://${HOST}:${PORT}"
+# Prompt-cache retention, in seconds, per tier — Anthropic's two ephemeral
+# tiers, not ours to invent. A model that declares no lifetime for the active
+# tier is simply never warmed (pi's own rule), so these are the switch.
+CACHE_SHORT="$(env_get PI_CACHE_SHORT_SECONDS)"; : "${CACHE_SHORT:=300}"
+CACHE_LONG="$(env_get PI_CACHE_LONG_SECONDS)";   : "${CACHE_LONG:=3600}"
+CACHE_WARMING="$(env_get PI_CACHE_WARMING)";     : "${CACHE_WARMING:=idle}"
+SHOW_CACHE_MISSES="$(env_get PI_SHOW_CACHE_MISS_NOTICES)"; : "${SHOW_CACHE_MISSES:=1}"
+
+# The credential. env_get reads an already-exported variable first and then
+# .env.local (gitignored) — never .env, which is tracked, so a key in .env would
+# be a key in a public repository. .env.local.example carries the placeholder.
+ANTHROPIC_KEY="$(env_get ANTHROPIC_API_KEY)"
+[[ -n "$ANTHROPIC_KEY" ]] \
+  || die "ANTHROPIC_API_KEY is not set. Put it in .env.local (gitignored):
+  ANTHROPIC_API_KEY=sk-ant-...
+or export it in the shell you launch from."
+export ANTHROPIC_API_KEY="$ANTHROPIC_KEY"
+
+# pi reads this itself and switches the Anthropic serializer's cache_control
+# breakpoints from the 5-minute default to 1 hour. Exported rather than written
+# into models.json because it is pi's variable, not a provider field.
+CACHE_RETENTION="$(env_get PI_CACHE_RETENTION)"
+[[ -n "$CACHE_RETENTION" ]] && export PI_CACHE_RETENTION="$CACHE_RETENTION"
+
+# The endpoint, for the status line and for the model-listing probe below.
+BASE="https://api.anthropic.com"
 
 # AO10: `agent_dir` in lib.sh, not `${HOME}/.pi/agent`. This is where pi reads
 # models.json and settings.json from, and it moves with PI_CODING_AGENT_DIR —
@@ -50,11 +80,11 @@ MODELS_JSON="${PI_DIR}/models.json"
 
 # --- generate models.json ----------------------------------------------------
 # Merges into any existing file rather than overwriting it — pi keeps other
-# providers here too, and clobbering someone's whole model config to add one
-# local entry would be rude.
+# providers here too, and clobbering the operator's whole model config to add one
+# entry would be rude.
 mkdir -p "$PI_DIR"
-MODEL="$MODEL" BASE_URL="${BASE}/v1" CTX="$CTX" MAX_TOKENS="$MAX_TOKENS" \
-MODELS_JSON="$MODELS_JSON" \
+MODELS_JSON="$MODELS_JSON" MAIN_MODEL_ID="$MAIN_MODEL" SUBAGENT_MODEL_ID="$SUBAGENT_ID" \
+ADVISOR_MODEL_ID="$ADVISOR_ID" CACHE_SHORT="$CACHE_SHORT" CACHE_LONG="$CACHE_LONG" \
 python3 - <<'PY'
 import json, os, pathlib
 
@@ -67,119 +97,65 @@ if path.exists():
         raise SystemExit(f"{path} exists but is not valid JSON — refusing to overwrite it")
 
 providers = data.setdefault("providers", {})
-providers["forge"] = {
-    "baseUrl": os.environ["BASE_URL"],
-    # forge's OpenAI endpoint is the short path: pi -> forge -> llama.cpp.
-    # Going via anthropic-messages would add a translation hop that drops
-    # cache_control and thinking for no benefit here.
-    "api": "openai-completions",
-    # pi hides models it considers unauthenticated, so a keyless local server
-    # still needs a placeholder. forge relocates exactly one credential and
-    # llama.cpp ignores it.
-    "apiKey": "local",
-    "compat": {
-        # Both still False on 3.8, but the reason changed and is worth writing
-        # down, because the obvious reading of the 3.8 release notes says
-        # otherwise.
-        #
-        # The MODEL supports both: the unsloth 3.8 template adds developer-role
-        # handling, and `reasoning_effort` is a real template variable with four
-        # levels. The ENGINE is what does not. llama.cpp only began forwarding an
-        # API-level `reasoning_effort` field to the template in commit 7e4c0a9
-        # (2026-08-14, "chat: pass reasoning_effort to template"), and the newest
-        # published CUDA server image at migration time was server-cuda-b10423,
-        # cut 2026-08-13 — a day earlier. So a client that sends the field gets
-        # it silently dropped.
-        #
-        # Until an image ships with that commit, effort is set server-side via
-        # --chat-template-kwargs from REASONING_EFFORT in .env, which applies to
-        # the whole server rather than per request. Flip these to True only after
-        # checking that the running build actually honours them.
-        #
-        # CHECKED 2026-09-02, and BOTH stay False — but neither for the reason
-        # above, so do not re-derive it from that paragraph.
-        #
-        # supportsReasoningEffort: THE ENGINE OBJECTION HAS EXPIRED. The pin is
-        #   server-cuda-b10689, long past 7e4c0a9 (b10423 was the image at
-        #   migration time). Measured rather than assumed: a request carrying a
-        #   TOP-LEVEL {"reasoning_effort": "high"} reaches the template and
-        #   raises out of it, which it could not do if the field were being
-        #   dropped. So the field is forwarded now. It stays False because what
-        #   pi would send is a LEVEL NAME, and the levels are not portable: the
-        #   template two of the three modes ship accepts only xhigh/medium/low
-        #   and raises on `high`, which pi's thinkingLevelMap emits. Turning this
-        #   on without pinning that map is a 500 per turn, not a feature.
-        #
-        # supportsDeveloperRole: "The MODEL supports both" was true of the
-        #   UNSLOTH template, which is what that sentence names — and this stack
-        #   stopped serving unsloth on 2026-08-25. orcarouter's GGUF carries
-        #   Qwen's published template, which has no developer-role handling at
-        #   all and raises 'Unexpected message role.' Flipping this to True is
-        #   now a hard failure on uc-coding and prose regardless of the engine.
-        #
-        # The happy consequence, and the reason this is not urgent: with both
-        # False, pi CANNOT produce either shape that the strict template
-        # refuses. It never sends a developer role, and the one place its
-        # openai-completions adapter pushes a MID-CONVERSATION system message
-        # (the `kimiToolMessage` deferred-tools path, read out of
-        # dist/bundle/chunks/openai-completions-*.js) is gated on
-        # compat.deferredToolsMode === "kimi", which this provider does not set.
-        # The main system prompt is unshift()ed to position 0, which is legal.
-        # So the template refusals measured in
-        # context/design/the-template-is-part-of-the-model.md are real and are
-        # NOT reachable from pi as configured here — they are reachable from any
-        # other client, and from this one the moment either flag flips.
-        "supportsDeveloperRole": False,
-        "supportsReasoningEffort": False,
-    },
-    "models": [
-        {
-            "id": os.environ["MODEL"],
-            "name": "Qwen3.8-27B local (forge)",
-            "contextWindow": int(os.environ["CTX"]),
-            # Well under contextWindow on purpose: with --no-context-shift a
-            # request that would overflow fails loudly, and an agentic loop's
-            # prompt grows every turn. Comes from PI_MAX_TOKENS so it cannot
-            # drift from the -n backstop in LLAMA_EXTRA_FLAGS.
-            "maxTokens": int(os.environ["MAX_TOKENS"]),
-            "input": ["text"],
-            # Left false deliberately. Qwen reasons server-side under
-            # --reasoning-budget and forge keeps it out of history, so there is
-            # nothing for pi to drive. Set true only if you want pi's thinking
-            # UI and have checked it round-trips.
-            "reasoning": False,
-        }
-    ],
-}
+anthropic = providers.setdefault("anthropic", {})
+
+# pi's own `anthropic` provider already knows the endpoint, the wire and every
+# Claude model: api `anthropic-messages` against https://api.anthropic.com,
+# `x-api-key` + `anthropic-version: 2023-06-01`, and the full catalog. So nothing
+# below redefines it. Two things are worth writing down rather than inheriting,
+# because .env decides both and a value that lives only in someone's head is a
+# value nobody can find later:
+#
+#   * the key. `$ANTHROPIC_API_KEY` is pi's own interpolation syntax, so this
+#     file names the variable and never the secret — and never auth.json, which
+#     is the other place pi would happily store one.
+#   * promptCache, the model's best-effort cache lifetime in seconds per
+#     retention tier. pi warms an idle prompt cache ONLY for a model that
+#     declares a lifetime, so this is the switch the whole caching story hangs
+#     off (see cacheWarming below, and PI_CACHE_RETENTION in .env). The tiers are
+#     Anthropic's own — 5 minutes by default, 1 hour on the long tier.
+#
+# The models themselves are pi's, so a catalog refresh is what brings a new
+# Claude id in: run `pi update --models`. modelOverrides only annotates ids pi
+# already lists; it cannot invent one.
+anthropic["apiKey"] = "$ANTHROPIC_API_KEY"
+
+overrides = anthropic.setdefault("modelOverrides", {})
+tiers = {"short": int(os.environ["CACHE_SHORT"]), "long": int(os.environ["CACHE_LONG"])}
+for role in ("MAIN_MODEL_ID", "SUBAGENT_MODEL_ID", "ADVISOR_MODEL_ID"):
+    overrides.setdefault(os.environ[role], {})["promptCache"] = dict(tiers)
+
 path.write_text(json.dumps(data, indent=2) + "\n")
 path.chmod(0o600)
 print(f"wrote {path}")
 PY
 
-# --- size pi's compaction for THIS window ------------------------------------
-# pi's defaults (reserveTokens 16384, keepRecentTokens 20000) are sized for a
-# 200k window and are actively harmful on 32k. Measured against pi 0.84.2's own
-# dist and 8 real sessions under ~/.pi/agent/sessions:
+# --- pi settings: compaction, cache warming --------------------------------
 #
-#   * shouldCompact() turns true at 50% of the window, but prepareCompaction()
-#     returns undefined until the context exceeds keepRecentTokens — so from 50%
-#     to ~66% pi decides to compact on every turn and silently does nothing.
-#   * The first compaction that actually fires lands at 28.8k of 32.7k (88%),
-#     and always keeps keepRecentTokens = 61% of the window, plus a summary that
-#     is merged into the previous one and grows every time (observed: 1,666 ->
-#     11,054 chars). From compaction #4 the session sat at 94-96% full and
-#     compaction freed nothing at all.
-#   * Above ~87% full, 33 of 63 assistant turns came back completely empty
-#     (content: [], stopReason "stop"). Below it, 3 of 196.
+# Written to pi's GLOBAL settings on purpose: the loop runs in whatever project
+# you point it at, and a .pi/settings.json in this repo would only apply to
+# sessions started here (and only when the project is trusted).
 #
-# Sizing both knobs off CTX_SIZE keeps the trigger at 50% of whatever window the
-# stack is actually serving and cuts back to ~20% of it, which is the difference
-# between compacting every turn and compacting every ~50.
+# Compaction. The arithmetic is inherited from the local-model branch, where
+# pi's defaults (reserveTokens 16384, keepRecentTokens 20000) were sized for a
+# 200k window and were actively harmful on 32k: measured against pi 0.84.2 and
+# eight real sessions, the trigger fired at 50% while the actual compaction could
+# not run until the context passed keepRecentTokens, so pi compacted every turn
+# and freed nothing, and above ~87% full half the assistant turns came back
+# empty. The formula below only ever TIGHTENS pi's defaults — at the 1M window
+# the Claude 5 family reports it evaluates back to exactly 16384/20000, so it is
+# a no-op there and live protection if PI_CONTEXT_WINDOW is set low.
 #
-# This is written to pi's GLOBAL settings on purpose: the loop runs in whatever
-# project you point it at, and a .pi/settings.json in this repo would only apply
-# to sessions started here (and only when the project is trusted).
-CTX="$CTX" PI_DIR="$PI_DIR" python3 - <<'PY'
+# Cache warming. pi keeps an eligible provider prompt cache alive by re-sending
+# the prefix before it expires, and it will only do so for a model that declares
+# a cache lifetime — which is what promptCache in models.json is for. The
+# default is "streaming" (warm during a run); "idle" also warms between runs,
+# which is what a session with long gaps between turns actually needs, and pi
+# refuses to warm at all unless it estimates the avoided cache-miss cost beats
+# its own floor. showCacheMissNotices is on because the whole point of paying for
+# cache writes is knowing when they are being thrown away.
+CTX="$CTX" PI_DIR="$PI_DIR" CACHE_WARMING="$CACHE_WARMING" \
+SHOW_CACHE_MISSES="$SHOW_CACHE_MISSES" python3 - <<'PY'
 import json, os, pathlib
 
 path = pathlib.Path(os.environ["PI_DIR"]) / "settings.json"
@@ -198,31 +174,20 @@ compaction["reserveTokens"] = min(16384, ctx // 2)
 # keeps a usable turn and capped at pi's default so a large one is unchanged.
 compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
 
-# pi's HTTP IDLE timeout, i.e. how long a request may go without producing a
-# byte. Default 300_000 ms. Measured 2026-08-16 in ~/testing: a session's first
-# two requests both died with `Error: terminated` at exactly 301 s, ten minutes
-# before the first token, because prefill emits nothing while it runs and this
-# box had collapsed to 20-37 tok/s of prefill under memory pressure (the README
-# records 1,175 tok/s healthy). 6.5k tokens of prompt at 35 tok/s is 187 s of
-# silence; queueing and a prompt-cache eviction pushed it past 300.
-#
-# Sized so a FULL window still prefills inside the budget at 36 tok/s - the
-# degraded floor, not the healthy rate - then clamped: never below pi's own
-# default, never above 15 min, because past that a genuinely dead connection is
-# just a hang.
-data["httpIdleTimeoutMs"] = min(900, max(300, -(-ctx // 36))) * 1000
+data["cacheWarming"] = os.environ["CACHE_WARMING"]
+data["showCacheMissNotices"] = os.environ["SHOW_CACHE_MISSES"] == "1"
 
 path.write_text(json.dumps(data, indent=2) + "\n")
-print(f"wrote {path} (compaction: {compaction}, httpIdleTimeoutMs: {data['httpIdleTimeoutMs']})")
+print(f"wrote {path} (compaction: {compaction}, cacheWarming: {data['cacheWarming']})")
 PY
 
 if (( INSTALL_ONLY )); then
-  dim "Provider 'forge' installed. Check with: pi --list-models"
+  dim "Provider 'anthropic' configured. Check with: pi --list-models"
   exit 0
 fi
 
 # --- launch ------------------------------------------------------------------
-pi_flags=(--provider forge --model "$MODEL")
+pi_flags=(--provider anthropic --model "$MAIN_MODEL")
 
 # pi discovers AGENTS.md / CLAUDE.md by walking parent directories. Loaded by
 # default: an agent that ignores the conventions file in the repo it is editing
@@ -263,31 +228,11 @@ else
   warn "$TRGUARD_DIR is missing — a tool that returns a malformed result will exit pi this session."
 fi
 
-# /stack, loaded by absolute path for the same reason --skill is below.
-#
-# Auto-discovery of .pi/extensions/ is scoped to the project pi was STARTED in,
-# and it also requires that project to be trusted. Both bite: started in another
-# project the extension is simply absent, and started here without -a it is
-# silently skipped — in which case `/stack` is not a command, so pi forwards the
-# text to the model and you get an invented answer about stack files rather than
-# an error. Verified both ways, 2026-08-13.
-#
-# -e is not additive to discovery in the harmful sense: loading the same path
-# twice (once discovered here, once explicit) registers ONE `/stack`, not
-# `/stack:1` and `/stack:2` — pi dedupes by path. Checked before relying on it.
-STACK_EXT="$REPO_ROOT/.pi/extensions/stack.ts"
-STACK_NOTE=""
-if [[ -r "$STACK_EXT" ]]; then
-  pi_flags+=(-e "$STACK_EXT")
-  STACK_NOTE=", /stack"
-else
-  warn "$STACK_EXT is missing — /stack will not be available this session."
-fi
-
 # Rewrites a browser-tool timeout into an instruction instead of a parameter
 # dump. Loaded whenever the browser is, by absolute path for the same reasons as
-# /stack. It registers no tools and no commands, so it costs nothing in the
-# window; it only ever edits the text of a browser call that already failed.
+# the extensions above. It registers no tools and no commands, so it costs
+# nothing in the window; it only ever edits the text of a browser call that
+# already failed.
 GUARD_EXT="$REPO_ROOT/.pi/extensions/browser-guard.ts"
 if [[ -r "$GUARD_EXT" ]]; then
   pi_flags+=(-e "$GUARD_EXT")
@@ -482,7 +427,13 @@ if [[ "$(env_get OBSERVE_ENABLED)" == "1" ]]; then
     # 127.0.0.1, not localhost: the dashboard binds IPv4 loopback, and
     # "localhost" may resolve to ::1 first — curl then falls back to IPv4 and
     # reports it reachable while Node's fetch in the extension is refused.
-    OBSERVE_HOST="$HOST"; [[ "$OBSERVE_HOST" == "localhost" ]] && OBSERVE_HOST="127.0.0.1"
+    #
+    # Inside a container the dashboard is on the host instead. This is the one
+    # place the launcher still needs to know which side of the socket it is on;
+    # the model path no longer does, because api.anthropic.com is a name either
+    # way.
+    OBSERVE_HOST="127.0.0.1"
+    [[ -f /.dockerenv ]] && OBSERVE_HOST="host.docker.internal"
     OBSERVE_URL_VALUE="$(env_get OBSERVE_URL)"
     # The port the stack's observe service publishes (docker-compose.yml).
     OBSERVE_PORT_VALUE="$(env_get OBSERVE_PORT)"
@@ -863,27 +814,34 @@ if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
   fi
 fi
 
-# THINK_LANG fragment, if one is selected. pi's --help documents
-# --append-system-prompt as taking "text or file contents" and as repeatable,
-# but the file is read here anyway so the same bytes reach both clients.
-THINK_FILE="$(think_prompt_path)"
-THINK_NOTE=""
-if [[ -n "$THINK_FILE" ]]; then
-  pi_flags+=(--append-system-prompt "$(cat "$THINK_FILE")")
-  THINK_NOTE=", thinking in $(env_get THINK_LANG)"
-fi
-
-# Orchestrator mode: the local model coordinates and verifies, and every
-# subagent runs on a remote model — up to SUBAGENT_MAX_CONCURRENT at once. See
-# ORCHESTRATOR in .env and docs/orchestrator.md.
+# THINK_LANG is gone on this branch, along with prompts/think-zh.md.
 #
-# Nothing here touches the operator's own subagent settings. The model and the
+# It made the local model reason in Mandarin while answering in English, which
+# was worth trying on a 27B whose reasoning was the weakest part of it. On a
+# frontier model it is a workaround with nothing left to work around, and it
+# costs a page of system prompt on every request — the opposite of what this
+# branch is for. It also breaks prompt-cache reuse across sessions with a
+# different THINK_LANG, which is now a first-class concern rather than a
+# footnote.
+
+# Orchestrator mode: opus coordinates and verifies, every subagent runs on
+# haiku, and the advisor — the one seat that is only ever asked to think — runs
+# on fable. Up to SUBAGENT_MAX_CONCURRENT children at once. See ORCHESTRATOR in
+# .env and docs/orchestrator.md.
+#
+# Nothing here touches the operator's own subagent settings. The models and the
 # per-provider cap go into a file this launch writes and the fork reads as its
 # SESSION layer (vendor/pi-subagents-lite/src/config/mode-seed.ts), which every
-# reset in /agents returns to — so a "clear" cannot quietly drop the children
-# onto the one llama slot. The worker/explorer agent types come from
-# prompts/orchestrator/agents through SUBAGENT_MODE_AGENTS_DIR, above the
-# operator's global agents and below a project's own.
+# reset in /agents returns to — so a "clear" cannot quietly move the children
+# onto the orchestrator's model and its price. The worker/explorer/advisor agent
+# types come from prompts/orchestrator/agents through SUBAGENT_MODE_AGENTS_DIR,
+# above the operator's global agents and below a project's own.
+#
+# `model` in that seed is the session DEFAULT every child inherits; `overrides`
+# is keyed by agent type and sits ABOVE it in the fork's precedence (session
+# type > session default > config type > config default > frontmatter > parent).
+# That ordering is the only reason one role can hold a different model from its
+# siblings, so it is worth naming rather than rediscovering.
 ORCH_NOTE=""
 ORCH_MAX_AGENTS_CEILING=15
 if [[ "$(env_get ORCHESTRATOR)" == "1" ]]; then
@@ -891,45 +849,54 @@ if [[ "$(env_get ORCHESTRATOR)" == "1" ]]; then
     || die "ORCHESTRATOR=1 needs the subagent extension loaded (SUBAGENTS_ENABLED=1, and see the warning above if it is set)."
 
   ORCH_MODEL="$(env_get SUBAGENT_MODEL)"
-  ORCH_MODEL="${ORCH_MODEL:-deepseek/deepseek-flash}"
+  ORCH_MODEL="${ORCH_MODEL:-anthropic/${SUBAGENT_ID}}"
   [[ "$ORCH_MODEL" =~ ^[^/[:space:]]+/[^[:space:]]+$ ]] \
     || die "SUBAGENT_MODEL must be provider/model-id, got '$ORCH_MODEL'."
   ORCH_PROVIDER="${ORCH_MODEL%%/*}"
   ORCH_MODEL_ID="${ORCH_MODEL#*/}"
+
+  ORCH_ADVISOR="$(env_get ADVISOR_MODEL)"
+  ORCH_ADVISOR="${ORCH_ADVISOR:-anthropic/${ADVISOR_ID}}"
+  [[ "$ORCH_ADVISOR" =~ ^[^/[:space:]]+/[^[:space:]]+$ ]] \
+    || die "ADVISOR_MODEL must be provider/model-id, got '$ORCH_ADVISOR'."
+  ORCH_ADVISOR_ID="${ORCH_ADVISOR#*/}"
 
   ORCH_CAP="$(env_get SUBAGENT_MAX_CONCURRENT)"
   ORCH_CAP="${ORCH_CAP:-$ORCH_MAX_AGENTS_CEILING}"
   [[ "$ORCH_CAP" =~ ^[0-9]+$ ]] && (( ORCH_CAP >= 1 && ORCH_CAP <= ORCH_MAX_AGENTS_CEILING )) \
     || die "SUBAGENT_MAX_CONCURRENT must be 1-${ORCH_MAX_AGENTS_CEILING}, got '$ORCH_CAP'."
 
-  # The key comes from .env.local (gitignored) through env_get, and reaches pi
-  # only as an environment variable: pi's built-in deepseek provider reads
-  # DEEPSEEK_API_KEY itself, so it is never written into models.json.
-  if [[ "$ORCH_PROVIDER" == "deepseek" ]]; then
-    DEEPSEEK_API_KEY_VALUE="$(env_get DEEPSEEK_API_KEY)"
-    [[ -n "$DEEPSEEK_API_KEY_VALUE" ]] \
-      || die "ORCHESTRATOR=1 with a deepseek model needs DEEPSEEK_API_KEY in .env.local."
-    export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY_VALUE"
-  fi
-
   # Positive check, not an assumption: pi lists a model only when its provider
   # is known AND has credentials, so an unknown id and a missing key both fail
   # here instead of as a spawn error inside the session. It does not prove the
   # key is VALID — the first spawn does.
-  if ! pi --list-models "$ORCH_MODEL_ID" 2>/dev/null \
-       | awk -v p="$ORCH_PROVIDER" -v m="$ORCH_MODEL_ID" '$1 == p && $2 == m { found = 1 } END { exit !found }'; then
-    die "pi does not list $ORCH_MODEL (unknown to this pi $(pi --version 2>/dev/null), or no credentials for '$ORCH_PROVIDER')."
-  fi
+  #
+  # Both the child model and the advisor are checked, and the advisor especially:
+  # a model id the catalog does not know is how a seat silently ends up on
+  # whatever the parent is running, which is the one failure this branch exists
+  # to prevent. `pi update --models` is the fix, because the published catalog
+  # moves ahead of the one bundled with the installed pi.
+  for pair in "${ORCH_PROVIDER}:${ORCH_MODEL_ID}" "${ORCH_PROVIDER}:${ORCH_ADVISOR_ID}"; do
+    if ! pi --list-models "${pair#*:}" 2>/dev/null \
+         | awk -v p="${pair%%:*}" -v m="${pair#*:}" '$1 == p && $2 == m { found = 1 } END { exit !found }'; then
+      die "pi does not list ${pair%%:*}/${pair#*:} (unknown to this pi $(pi --version 2>/dev/null), or no credentials for '${pair%%:*}'). Refresh the catalog with: pi update --models"
+    fi
+  done
 
   ORCH_SEED="$PI_DIR/orchestrator-mode.json"
-  ORCH_MODEL="$ORCH_MODEL" ORCH_PROVIDER="$ORCH_PROVIDER" ORCH_CAP="$ORCH_CAP" ORCH_SEED="$ORCH_SEED" \
+  ORCH_MODEL="$ORCH_MODEL" ORCH_PROVIDER="$ORCH_PROVIDER" ORCH_ADVISOR="$ORCH_ADVISOR" \
+  ORCH_CAP="$ORCH_CAP" ORCH_SEED="$ORCH_SEED" \
   python3 - <<'PY'
 import json, os
 seed = {
+    # The session default: every child inherits this unless an override below
+    # names its agent type. One child running on the orchestrator's model is a
+    # bill nobody chose, so the default is the cheap seat.
     "model": os.environ["ORCH_MODEL"],
-    # forge stays at 1: a child a project pins to the local model still queues
-    # on the one llama slot instead of racing the orchestrator for it.
-    "concurrency": {"providers": {os.environ["ORCH_PROVIDER"]: int(os.environ["ORCH_CAP"]), "forge": 1}},
+    # The advisor is the only seat on the planning model. A per-agent-type entry
+    # sits above the session default, not under it.
+    "overrides": {"advisor": os.environ["ORCH_ADVISOR"]},
+    "concurrency": {"providers": {os.environ["ORCH_PROVIDER"]: int(os.environ["ORCH_CAP"])}},
 }
 with open(os.environ["ORCH_SEED"], "w") as fh:
     json.dump(seed, fh, indent=2)
@@ -952,8 +919,8 @@ PY
     || die "SUBAGENT_MAX_DEPTH must be 1 or 2, got '$SUBAGENT_MAX_DEPTH'."
 
   ORCH_AGENTS="$REPO_ROOT/prompts/orchestrator/agents"
-  [[ -r "$ORCH_AGENTS/worker.md" && -r "$ORCH_AGENTS/explorer.md" ]] \
-    || die "$ORCH_AGENTS is missing its worker/explorer agent types."
+  [[ -r "$ORCH_AGENTS/worker.md" && -r "$ORCH_AGENTS/explorer.md" && -r "$ORCH_AGENTS/advisor.md" ]] \
+    || die "$ORCH_AGENTS is missing its worker/explorer/advisor agent types."
   export SUBAGENT_MODE_AGENTS_DIR="$ORCH_AGENTS"
 
   ORCH_PROMPT="$REPO_ROOT/prompts/orchestrator/main.md"
@@ -961,10 +928,11 @@ PY
   ORCH_TEXT="$(cat "$ORCH_PROMPT")"
   ORCH_TEXT="${ORCH_TEXT//\{\{MAX_AGENTS\}\}/$ORCH_CAP}"
   ORCH_TEXT="${ORCH_TEXT//\{\{SUBAGENT_MODEL\}\}/$ORCH_MODEL}"
+  ORCH_TEXT="${ORCH_TEXT//\{\{ADVISOR_MODEL\}\}/$ORCH_ADVISOR}"
   ORCH_TEXT="${ORCH_TEXT//\{\{MAX_DEPTH\}\}/$SUBAGENT_MAX_DEPTH}"
   [[ "$ORCH_TEXT" != *"{{"* ]] || die "$ORCH_PROMPT has a placeholder this launcher does not fill."
   pi_flags+=(--append-system-prompt "$ORCH_TEXT")
-  ORCH_NOTE=", orchestrator (${ORCH_CAP}x ${ORCH_MODEL}, depth ${SUBAGENT_MAX_DEPTH})"
+  ORCH_NOTE=", orchestrator (${ORCH_CAP}x ${ORCH_MODEL}, advisor ${ORCH_ADVISOR}, depth ${SUBAGENT_MAX_DEPTH})"
 fi
 
 # The delegation nudge, whenever subagents are actually registered.
@@ -1006,16 +974,34 @@ fi
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 
+# --- model catalog -----------------------------------------------------------
+# The catalog bundled with the installed pi lags the published one, and the lag
+# is not cosmetic: pi 0.85.1 ships no `claude-opus-5-5`, no `claude-haiku-5-5`
+# and no `claude-sonnet-5-5`. Before a refresh the anthropic provider lists 14
+# models; after one it lists 17. So a launch on a model the bundle does not know
+# would fail its own `--list-models` probe — or worse, a role silently falls back
+# to the parent's model.
+#
+# Fails SOFT: a registry round trip is not worth blocking a session for, and a
+# catalog refresh is additive. The probe in orchestrator mode above is what
+# actually refuses a model that is still missing.
+if [[ "$(env_get PI_UPDATE_MODELS_ON_LAUNCH)" != "0" ]]; then
+  timeout 60 pi update --models >/dev/null 2>&1 \
+    && CATALOG_NOTE=", catalog refreshed" \
+    || CATALOG_NOTE=", catalog refresh failed"
+else
+  CATALOG_NOTE=""
+fi
+
 # --- keep pi current ---------------------------------------------------------
 # pi ships often and the stack is only ever tested against the current release.
 # Checked at most once per PI_UPDATE_INTERVAL_H hours (a stamp file), because a
-# registry round trip on every launch is latency you would feel and a network
-# dependency a local-model stack should not have.
+# registry round trip on every launch is latency you would feel.
 #
 # Fails SOFT, always: no npm, no network, a registry hiccup — warn and launch on
 # what is installed. An agent session must never be blocked by an update check.
 if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
-  STAMP="${HOME}/.pi/.last-update-check"
+  STAMP="${PI_DIR}/.last-update-check"
   INTERVAL_H="$(env_get PI_UPDATE_INTERVAL_H)"; : "${INTERVAL_H:=24}"
   AGE_H=$(( INTERVAL_H + 1 ))
   [[ -f "$STAMP" ]] && AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$STAMP" 2>/dev/null || echo 0) ) / 3600 ))
@@ -1028,6 +1014,7 @@ if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
         info "Updating pi ${CUR:-?} -> ${LATEST}"
         if timeout 300 npm install -g --ignore-scripts @earendil-works/pi-coding-agent >/dev/null 2>&1; then
           ok "pi $(pi --version 2>/dev/null)"
+          pi update --models >/dev/null 2>&1 && CATALOG_NOTE=", catalog refreshed"
         else
           warn "pi update failed — continuing on ${CUR:-the installed version}"
         fi
@@ -1038,25 +1025,5 @@ if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
   fi
 fi
 
-# forge has to answer before pi starts, or the first request fails inside pi's
-# UI where the cause is much harder to see.
-#
-# TWO probes, not one, because forge 0.9 split them and conflating them produces
-# a lie. /forge/health is forge's own liveness. /health is the BACKEND's
-# readiness, forwarded — it returns 502 for the whole ~25 minute cold load of a
-# model that is loading perfectly normally. Probing only /health (which is what
-# this did until 2026-08-15) reports "forge is not answering" when forge is up
-# and healthy and the only thing happening is that the weights are still being
-# read off disk.
-curl -fsS -m 5 -o /dev/null "${BASE}/forge/health" 2>/dev/null \
-  || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
-
-curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
-  || die "forge is up but the model is not loaded yet at ${BASE} — llama-server is
-still reading the GGUF. Watch it with ./scripts/logs.sh llama, or measure real
-progress with:
-  docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
-A cold load of a 17.9 GB quant takes ~25 minutes on this box."
-
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE})"
+echo "pi -> ${BASE}  (model: ${MAIN_MODEL}, subagents: ${SUBAGENT_ID}, advisor: ${ADVISOR_ID}, cache: ${CACHE_WARMING}/$(env_get PI_CACHE_RETENTION || echo short)${CATALOG_NOTE}, ${CTX_FILES_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

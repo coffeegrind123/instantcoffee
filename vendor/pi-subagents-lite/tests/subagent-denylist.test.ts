@@ -221,6 +221,21 @@ describe("subagentExtraExtensionPaths", () => {
  */
 describe("what a subagent discovers — .pi/extensions must guard its tools", () => {
   const extensionsDir = fileURLToPath(new URL("../../../.pi/extensions/", import.meta.url));
+  /**
+   * A probe this test owns: a synthetic extension that registers a model-visible
+   * tool with no `__PI_SUBAGENT_SPAWN_DEPTH__` guard. It lives under
+   * `.pi/extensions/tests/`, which has no entry point, so `entryPoints()` never
+   * returns it and the real guard sweep never sees it — it exists only so the
+   * control below can prove the detector still fires.
+   */
+  const probeExtension = fileURLToPath(
+    new URL("../../../.pi/extensions/tests/un-guarded-tool-extension.fixture.ts", import.meta.url),
+  );
+
+  /** Does this extension register a model-visible tool? */
+  function registersTool(file: string): boolean {
+    return /pi\.registerTool\s*\(/.test(readFileSync(file, "utf8"));
+  }
 
   /** Every entry point pi's discovery would load from `.pi/extensions/`. */
   function entryPoints(): { name: string; file: string }[] {
@@ -247,8 +262,8 @@ describe("what a subagent discovers — .pi/extensions must guard its tools", ()
     if (entries.length === 0) return; // not this repo; nothing to check
     const offenders: string[] = [];
     for (const entry of entries) {
+      if (!registersTool(entry.file)) continue; // hooks only: costs a child nothing
       const source = readFileSync(entry.file, "utf8");
-      if (!/pi\.registerTool\s*\(/.test(source)) continue; // hooks only: costs a child nothing
       if (source.includes("__PI_SUBAGENT_SPAWN_DEPTH__")) continue;
       offenders.push(entry.name);
     }
@@ -260,13 +275,20 @@ describe("what a subagent discovers — .pi/extensions must guard its tools", ()
     );
   });
 
-  it("control — the check can see the directory and finds a tool-registering extension in it", () => {
-    const entries = entryPoints();
-    if (entries.length === 0) return;
-    const withTools = entries.filter((entry) => /pi\.registerTool\s*\(/.test(readFileSync(entry.file, "utf8")));
+  it("control — an unguarded tool registration is what the detector catches", () => {
+    // This control used to assert that the real `.pi/extensions/` still held
+    // some extension registering a tool, so the sweep above could not pass
+    // vacuously. Deleting `.pi/extensions/stack.ts` (which registered
+    // `stack_status`) took that count legitimately to zero and rotted the
+    // control. It is now a positive assertion against a fixture this test owns:
+    // the detector fires on an unguarded registration, so "no offenders" above
+    // means the tree is clean, not that nothing was scanned.
+    assert.ok(existsSync(probeExtension), "the detector probe is missing — add it back or re-decide this control");
+    assert.ok(existsSync(extensionsDir), "the directory under test is missing");
     assert.ok(
-      withTools.length > 0,
-      "if nothing here registers a tool any more, the assertion above has stopped testing anything",
+      entryPoints().length > 0,
+      "the guard sweep found no entry points at all — it is no longer looking at the directory",
     );
+    assert.ok(registersTool(probeExtension), "the detector stopped recognising a tool registration");
   });
 });

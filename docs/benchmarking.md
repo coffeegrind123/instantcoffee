@@ -1,241 +1,124 @@
-# Verifying it works, and benchmarking
+# Verifying it works
 
-The smoke test, what CI checks without a GPU, and using `bench.sh` to tune
-speculative decoding.
+There is no scored eval suite in this repo any more — removed 2026-08-15, with
+the 3.8 migration; the harness, its committed scorecard, its badges and its
+Harbor adapter all went together. On this branch there is also no local model to
+benchmark: decode speed, draft acceptance, prefill rate and VRAM are not
+quantities this stack has. What is left to verify is the machinery *around* the
+model, and every check below runs with no GPU and no API key.
 
-There is no scored eval suite in this repo any more (removed 2026-08-15, with
-the 3.8 migration — the 9-suite harness, its committed scorecard, its badges and
-the Harbor adapter all went together). Four things verify the stack now, and
-each answers a different question:
+## The suites
+
+These are the same commands CI runs, and they are the whole verification surface
+for this branch:
 
 ```bash
-./scripts/up.sh                  # start it
+# pi's extensions
+node --experimental-strip-types --no-warnings --test \
+  .pi/extensions/tests/*.test.ts \
+  .pi/extensions/compaction-guard/tests/*.test.ts \
+  .pi/extensions/observe/tests/*.test.ts
 
-./scripts/smoke-test.sh          # does it work end to end, at all
-./scripts/bench.sh --full        # how fast, and is MTP paying for itself
-./scripts/ab-think-lang.sh       # is THINK_LANG earning its place
+# the surviving scripts, by hand
+python scripts/test_browser_cli.py
+python scripts/test_container_env.py
+python scripts/test_untrusted_content.py
 
-./scripts/rtk.sh --check         # do rtk's filters still match the allow-list
-
-# No GPU needed — the same checks CI runs:
-python3 scripts/test_repeat_detector.py   # 14 unit tests
-python3 scripts/test_cjk_detector.py      # CJK leak detector, both directions
-(cd vendor/pi-loop-mode && npm test)      # 39 tests for the /loop fork
-(cd vendor/prinny-channel && npm test)    # 296 tests for the Matrix channel
+# the vendored forks
 (cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts)
-docker compose --profile tools config     # validate compose
+(cd vendor/pi-persona && npm run lint && npm test)
+(cd vendor/pi-toolresult-guard && npm run lint && npm test)
+(cd vendor/pi-loop-mode && npm run lint && npm test)
+(cd vendor/pi-subagents-lite && \
+  node --experimental-strip-types --test tests/mode-seed.test.ts tests/mode-agents.test.ts)
+
+# a binary this repo does not own, whose behaviour the rtk allow-list assumes
+./scripts/rtk.sh --install
+./scripts/rtk.sh --check
+
+# the Matrix channel (build the sidecar runtime first, then unit + e2e)
+(cd vendor/prinny-channel && node server/bin/prinny-channel.mjs --prepare)
+(cd vendor/prinny-channel && npm run test:unit)
+(cd vendor/prinny-channel && npm run test:e2e)
+
+# config that only fails mid-session if it is wrong
+docker compose config
 ```
 
-`rtk.sh --check` is the odd one out: it tests a binary this repo does not own,
-because `vendor/rtk-pi`'s allow-list is a set of claims about that binary's
-behaviour. It needs no GPU and no stack — only the pinned rtk.
+The syntax checks CI adds on top — `py_compile` over `scripts/*.py`, `bash -n`
+over `scripts/*.sh`, and a type-strip parse of every extension — are worth
+running before a commit for the same reason CI has them: pi is lenient about a
+malformed extension and a malformed skill, so a parse error presents as a
+feature that is quietly absent rather than as an error.
 
-## bench.sh measures the engine, not the proxy
+Two of these suites are the ones worth understanding, because their failure mode
+is silent:
 
-Two ways to get a throughput number that looks fine and means nothing, both of
-which this repo has actually shipped:
+- **`vendor/rtk-pi`'s gate** decides which bash commands get their output
+  rewritten before pi sees it. Too permissive and a command is quietly replaced
+  by a different one; too strict and the savings evaporate. `./scripts/rtk.sh
+  --check` re-runs every measurement the allow-list rests on against the
+  installed binary.
+- **`vendor/pi-toolresult-guard`** keeps a malformed tool result from *exiting*
+  pi. It is loaded first, so every other handler reads a content array that is
+  already safe. A regression there ends the session, which is not something a
+  green session would show you.
 
-**Dividing token counts by wall clock.** That measures forge's overhead as if it
-were engine throughput. `bench.sh` talks to llama-server directly and reports
-`timings.prompt_per_second` / `timings.predicted_per_second`, which llama
-measures around the compute itself and forge strips out of the response. The
-version this replaced scored the same before and after a fix that made prefill
-**~65x faster** — a benchmark that cannot see a 65x regression is worse than
-none.
+`vendor/pi-subagents-lite`'s full suite is not run here: its standing
+`pi.exec`-verdict scan is order-sensitive under the node test runner's
+parallelism and passes alone but flakes in the full run. The two files named
+above pin the model-precedence ladder — the thing the three seats depend on —
+and are deterministic.
 
-**Reusing a prompt.** `--cache-prompt` is on, so the second run of a fixed
-prompt is served from the prefix cache and reports a prefill rate for work it
-never did. Every prompt `bench.sh` sends carries a unique nonce **at the front**
-(a prefix cache matches from the start, so a trailing nonce would not help), and
-any run whose `timings.cache_n` is non-zero is printed as `CACHED (excluded)`
-rather than counted.
+## What CI runs that you do not run by hand
 
-## Tuning MTP with it
+The workflow at `.github/workflows/ci.yml` also checks the things a session
+would only discover live:
 
-When `SPEC_TYPE=draft-mtp` is on, llama reports `draft_n` and
-`draft_n_accepted`, and `bench.sh` prints acceptance per run and in aggregate.
-**Do not hand-tune `SPEC_DRAFT_N_MAX` with `bench.sh` — that is the trap this
-repo fell into.** Use `./scripts/spec-sweep.sh`, which sweeps the knobs together
-and reports the number that tells them apart.
+- every prompt fragment is non-empty, and the orchestrator prompt's
+  `{{PLACEHOLDER}}`s are exactly the four the launcher fills;
+- every key the launcher reads is present in `.env`;
+- `skills/*/SKILL.md` frontmatter parses as real YAML with a valid name and a
+  non-trivial body;
+- `mcp/servers.json` entries have exactly one transport and never a literal
+  secret, and `mcp/adapter.json` interpolates the browser host and port rather
+  than hardcoding them;
+- the browser is not registered as an mcp2cli server, and the MCP SDK stays
+  pinned below 2.0;
+- `docker compose config` parses.
 
-In llama.cpp b10200 the MTP draft loop (`common/speculative.cpp:1520-1670`)
-tests the **p-min gate before the n-max gate**. At `p-min=0.75` the second token
-survives only if the head's top-1 probability clears 0.75, so the draft is cut
-to length 1 on most cycles and `n-max` is never reached — raising it measures a
-knob held shut by a different one. That is exactly why the inherited "2 fastest,
-3 no better, 4 collapses" result looked settled and was wrong.
+## What this branch does not measure
 
-The diagnostic is `draft/cycle` = `draft_n / (predicted_n - draft_accepted)`:
-near 1.0 at n-max 2 means p-min is truncating; near n-max means n-max is
-binding. **Acceptance is not the target** — it falls as p-min drops, and that is
-the trade being bought.
+Two honest gaps, both a consequence of the model being hosted:
 
-```bash
-./scripts/spec-sweep.sh --dry-run                    # plan and cost
-./scripts/spec-sweep.sh                              # novel text (pessimistic)
-./scripts/spec-sweep.sh --workload repeat            # repetitive (agentic)
-./scripts/spec-sweep.sh --workload synthetic,repeat  # BOTH, one reload each
-./scripts/spec-sweep.sh --rounds 5 --only a,b,c      # interleaved, drift-proof
-./scripts/spec-sweep.sh --report                     # re-print, run nothing
-```
+- **Output quality is not benchmarked here.** The harness that scored reasoning
+  effort against executed tests went with the local model. Nothing replaced it,
+  because a benchmark of a hosted model's quality is not a property of this
+  repo. If you want one, it belongs beside the prompts that shape the seats, not
+  in `.env`.
+- **Speed is Anthropic's to report.** The only timing this stack sees is the
+  session's own `time to first token` and per-generation duration, which the
+  observe dashboard records. Decode speed, draft acceptance and prefill rate
+  were llama.cpp counters and there is no longer a llama.cpp to ask.
 
-Pass **both** workloads in one invocation. The expensive step in an arm is the
-llama recreate; the bench is minutes, and both workloads interrogate the same
-server. Running them as two invocations pays for every recreate twice — about
-eight wasted hours on the 16-arm grid.
+What replaced that surface is the **cache accounting**: the session's
+`cacheRead` / `cacheWrite` / `cacheWrite1h` numbers, surfaced in `/session` and
+the dashboard, are the quantity this branch actually optimises. A cache write
+thrown away on the next turn is the regression to watch for, and
+`showCacheMissNotices` is what makes it visible.
 
-### Host load is part of the measurement (2026-08-31)
+## What ended with the local model
 
-**A sequential sweep on this box cannot be trusted on its own.** The machine is
-shared with other working sessions, and a sweep takes hours, so anything that
-drifts over that window is charged to whichever arms were scheduled late.
-
-The control number: the same config, unchanged, measured **181.4 then 202.3
-tok/s** an hour apart — a 12% swing with nothing different but the machine, which
-is wider than the gap between most rows this sweep exists to rank. It happened
-twice in one day and in both directions: one sweep ran while load fell 31 -> 3
-(flattering the arms that ran last), the follow-up while load climbed 1.4 -> 23.8
-(penalising the same ones).
-
-Two defences, both in the script:
-
-- **Every result stamps `load_before` / `load_after`.** A bench above
-  `--load-warn` (default 8.0) warns at measurement time, and `--report` lists the
-  offenders under `==> load`. Rows predating the stamping are reported as "cannot
-  be shown to have been measured on a quiet box" rather than silently trusted.
-- **`--rounds N` interleaves.** Configs run in a rotating order (`A B C` /
-  `B C A` / `C A B`), so drift lands on all arms roughly equally instead of on
-  whichever came last. Round 1 is discarded when a later round exists — the first
-  pass pays cold caches the others do not. Results are written per round as
-  `<name>.r<k>.json` and grouped by config name in the report.
-
-Read `==> load` before believing the table. Interleaving survives gradual drift;
-it does **not** survive a spike that hits one arm and not the others, and the
-stamps are how you tell those apart afterwards.
-
-`scripts/spec_sweep_compare.py` mechanises that judgement so it is a rule applied
-to recorded numbers rather than a call made after seeing which arm won. Two
-things it prints that `--report` cannot:
-
-- **Round health with the per-config load means**, e.g.
-  `LOAD-SPLIT 3.6-15.0 (4.1x) [8:32:24 3.9, pin 4.1, 12:64:32 13.3]` — which
-  shows at a glance whether one arm was hit or the whole box ramped together.
-  The split test needs a big ratio **and** a materially busy arm: a 2.8x ratio
-  between 2.3 and 6.5 is an idle machine twice over, and gating on the ratio
-  alone threw away the cleanest round of a five-round run.
-- **A sensitivity row** across every round subset. A delta that is +24% on one
-  subset and +2% on another is a direction to test, not a result — and the tool
-  says so out loud when fewer than two rounds survive.
-
-Run **both** workloads. `bench.sh` nonce-randomises every prompt to defeat the
-prefix cache, which also defeats any NGRAM arm — measured on the repeat
-workload alone, `ngram-simple` looked like a flat 2× win; measured on novel text
-at n-max 2 it *costs* 25%. Only the pair gives the real answer.
-
-That asymmetry is why the pin is chosen on the REPEAT workload (the shape pi
-produces) and why the synthetic axis keeps coming back underpowered: on
-2026-09-01 a synthetic run at n=24 a side could only resolve effects above
-10.6%, so "no measurable cost" from this instrument means "no LARGE cost".
-
-If no draft counters appear at all, either `SPEC_TYPE` is empty or the GGUF has
-no MTP head — check `block_count`, which must be **65**, not 64.
-
-### What a p-value on the novel workload is worth (2026-09-23)
-
-`min-hits` does nothing for ngram-map-k (read at the source), so an arm that
-sets it is an A/A test. It still reached **p=0.069** on novel-text decode and
-**p=0.039** on novel-text draft count, while the greedy repeat workload matched.
-The synthetic workload samples at temp 1.0 and every request writes different
-text; across many comparisons a p near 0.05 appears between identical servers.
-Treat a single novel-text p~0.04 as a lead: replication across independent
-sweeps, one sign in every round subset, and a mechanism are what make it a
-result. Greedy runs are not bit-reproducible in draft counts either, so compare
-distributions, not individual runs.
-
-`spec_sweep_compare.py --metric prefill|wall` compares prefill rate or whole-
-request time instead of decode (wall: lower is better). Use it for any change
-that could trade prefill for decode — MTP itself costs ~10% of prefill.
-
-### Do not watch for VRAM spill with Get-Counter while a bench runs (2026-09-22)
-
-The spill check that sudoingX/qwen38-mtp recommends for Windows —
-`Get-Counter "\GPU Process Memory(pid_*)\Shared Usage"` — **is itself a
-contaminant on this box.** Each call holds a ~1 s sampling window, and during it
-GPU<->host copies across WSL2's GPU paravirtualisation stall. Measured with the
-same server and the same `bench.sh --repeat 3`, one polled every 2 s and one not:
-
-| | prompt-cache update | prefill tok/s | decode tok/s | wall / request |
-|---|---|---|---|---|
-| no polling | 0.52-0.64 s | 725-1584 | 62.8-69.2 | 5.0-5.6 s |
-| `Get-Counter` every 2 s | **2.5 / 24.5 / 41.5 s** | 487-1234 | **57.4-80.3** | **7.8-47.7 s** |
-
-The prompt-cache update is `prompt_save` + `prompt_load` in
-`server-context.cpp` (b10689): a ~198 MiB device-to-host state copy. MTP's own
-per-step device-to-host traffic sits on the same path, which is why decode
-spread widened too. `nvidia-smi --query-gpu=...` polled every second did **not**
-do this. So: nvidia-smi during runs, and read `Shared Usage` (on the `vmwp`
-process, which hosts the WSL VM's GPU allocations) only with the box idle.
-
-
-## Every measurement command
-
-Moved out of the README's day-to-day table on 2026-08-25, where 40-odd rows of
-paragraph-length cells had made the everyday commands unfindable.
-
-| Command | What it does |
-| --- | --- |
-| `./scripts/ab-think-lang.sh` | A/B the `THINK_LANG` prompt before trusting it |
-| `./scripts/spec-sweep.sh --dry-run` | Plan the speculative-decoding sweep and price it |
-| `./scripts/spec-sweep.sh --only baseline,pmin-050,pmin-040` | Is the MTP draft p-min-bound or n-max-bound |
-| `./scripts/spec-sweep.sh --workload repeat` | What an ngram arm is worth on repetitive output — the workload the pin is chosen on |
-| `./scripts/spec-sweep.sh --workload synthetic,repeat` | Both workloads against each server, instead of paying every llama recreate twice |
-| `./scripts/spec-sweep.sh --rounds 5 --only pin,cand-a,cand-b` | Interleaved comparison that survives host-load drift — rotates the arms, discards round 1, groups rounds per config |
-| `./scripts/spec-sweep.sh --load-warn 4` | Tighten the load threshold above which a bench is flagged as not comparable (default 8.0) |
-| `python3 scripts/rotation_asymmetry_analyse.py` | **Re-analyse the n_ctx-8192 rotation asymmetry with no GPU** (OPEN-WORK 3). Re-derives the 2.597/0.365 figures, then runs the two tests the original pass could not: whether it is span SELECTION (depth 2048 is rotation-balanced, so it prices intrinsic difficulty — the control runs the other way), and whether it is a DOSE-RESPONSE across the four-rotation run. Also cross-checks the misfire RATE per token from the cliff logs **twice — once on the 2026-08-24 weights and once on the current ones, each stamped from `run.meta` and refusing to pool runs that disagree** (2026-08-24 gives 3.4x, the current weights 2.3x), and re-runs 3f's flatness test with `misfires/bin` beside every ratio so a low-rate chunk is not mistaken for a counter-example, plus a `weights` column and a `(built)` marker so a constructed-corpus range is not read as the source window of the same numbers |
-| `python3 scripts/spec_sweep_compare.py --results-dir <dir>` | **Is a difference real?** Applies the round-health rules to the RECORDED load stamps (a round is dropped when one arm was measurably busy and the others were not), pools the usable rounds, runs an exact permutation test, and prints how much the answer moves across every round subset. `--report` ranks; this decides |
-| `./scripts/spec-sweep.sh --report` | Re-print the last sweep's table without running anything — with mean, max and within-config spread, and a provenance block that says whether every row came off one stack |
-| `./scripts/spec-sweep.sh --pins` | What build, context size, KV types and weights this box would stamp on a result right now |
-| `./scripts/capacity-probe.sh --config 'ctx-96k\|CTX_SIZE=98304' --bench prefill` | Does a launch flag FIT, and what does it cost in VRAM — context window, ngram table size, draft cache type |
-| `./scripts/capacity-probe.sh --list` | Re-print the capacity table without running anything — now with within-config SPREAD, SPREAD% and DRAFT/CYCLE, and a provenance footer |
-| `python3 scripts/kv_alt_analyse.py` | Compare two launch configs across SEVERAL COLD LOADS, with the LOAD as the unit of replication. `capacity-probe.sh` writes one JSON per config and one config is one cold load, so alternating the arms (`kvalt-a-f16`, `kvalt-a-q8_0`, `kvalt-b-f16`, …) gives several independent loads per arm. Prints the between-load and within-load spreads side by side, because their ratio says whether a one-load-per-arm design could ever have answered the question — which is exactly what `versions.lock:kv_accept_note` says went wrong with its own -2.6 % prefill figure |
-| `./scripts/vram-floor.sh` | How much VRAM the Windows desktop is holding, sampled over 15 minutes without stopping llama, and what that leaves for a bigger context window |
-| `./scripts/vram-floor.sh --report` | Re-print the last floor capture without re-sampling |
-| `./scripts/vram-floor.sh --label active` | Capture under a name of its own, so an idle capture and a busy-desktop one can be compared instead of overwriting each other |
-| `./scripts/kld-run.sh --corpus /captures/corpus/deep-s26b5bb.txt --depths 4096 --null-control` | What q8_0 KV actually costs against f16, in KL divergence and top-1 agreement, on a real captured workstream. `--null-control` is not optional the first time: it points the test arm at the base arm's own KV type, so the run compares f16 with f16 and whatever that returns is the instrument's floor. Stops llama for the duration and refuses a depth that would only fit in swap |
-| `./scripts/ppl-depth-run.sh --corpus /captures/corpus/deep-s26b5bb.txt` | Does perplexity really degrade with context length on this model, or was the old ladder just scoring different tokens at every depth? Prefixes the corpus with EXACTLY n_ctx/2 tokens of filler so one pass scores the exact complement of another — the union is every corpus token once, at every depth. Reads its own filler length off `llama-perplexity`'s error path before scoring anything, and runs a whole-chunk alignment control as a first-class pass |
-| `./scripts/ppl-depth-run.sh --corpus … --depths 8192 --rotations 0,2048,4096,6144` | The within-depth control: four quarter-offset rotations cover each corpus quarter TWICE through two different chunk alignments, which is the only way to tell a property of the content from a property of where the chunk boundary fell |
-| `./scripts/ppl-depth-run.sh --analyse-only .ppl-depth-logs/<stamp>` | Re-read a finished depth run — per-arm perplexity on the matched token set, the per-span map, and the alignment control's verdict against the log's own printing floor. Touches no container, so a bad analysis costs nothing to redo |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --control` | Prove the quality harness before trusting it: reference implementations must score 5/5 or the grid refuses to run |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/ctx_needle.py --tokens 90000 --control 105000` | Prove a context window is real: a nonce at each end of the document must come back, and a prompt past the limit must be refused by name |
-| `./scripts/bench-literal.sh` | Do exact operational literals — a UUID, a commit hash, `GigabitEthernet0/0/1.201`, `page_size=112` — survive from deep context into a TOOL-CALL ARGUMENT? Two controls run first: the identical request at ~2k, so a failure at depth can be told apart from a probe that never worked, and a detection control that re-scores that real response against deliberately wrong expectations, so a clean result cannot come from a probe that is simply blind |
-| `docker run --rm --entrypoint python instantcoffee/proxy:${FORGE_VERSION} /work/scripts/test_forge_patches.py` | Do the thirteen build-time forge patches actually BEHAVE? The patches already fail the build when forge's source moves — that is a check on the input. This drives the patched functions inside the image: content vs reasoning_content on a tool-call turn, a reasoning-only turn surviving, the cross-tool merge staying off and `FORGE_MERGE_ACROSS_TOOLS=1` putting it back, a validation failure with no attempt left raising rather than returning an empty 200, the OpenAI SSE text path carrying the reasoning and the backend's finish_reason, and a backend read timeout becoming a clean 408 instead of escaping raw — on OpenAICompatClient.send_stream through a fake transport that times out on stream open AND mid-stream (a guard around only the stream-open would miss the second), and on LlamafileClient.send, which is the one forge's proxy actually calls. Two more drive the streaming ERROR path: an exception with no message must not reach the wire as `{"error": ""}`, and the stream must end with a finish_reason that is never "stop" |
-| `./scripts/bench-literal.sh --sweep 2000,16000,48000,90000 --repeat 3` | The same probe as a depth sweep. Reports per-field exact-match rates and classifies each miss — `tail_swap` and `dropped_head` are flipped tokens, `truncated` and `missing` are usually the model declining to copy |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/template_probe.py` | **Which request shapes does the ACTIVE chat template refuse?** The template ships inside the GGUF, so switching mode switches it, and the modes do not carry the same one — `coding`'s unsloth GGUF has a 9993-char fork, `uc-coding`/`prose` carry Qwen's published 8952-char original. Ten shapes, four of them controls; the llama column uses `/apply-template` and generates nothing, the forge column sends one token because a refusal the operator never sees is the actual defect: llama answers 500 with the sentence (`Unexpected reasoning effort high…`) and forge answers `502 Backend returned 500` with the sentence discarded. `--no-forge` skips inference entirely; a case that never answers prints `????` and is never counted as a refusal. Full account: `context/design/the-template-is-part-of-the-model.md` |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_repeat.py` | Decode speed on repetitive output — the file-rewrite shape pi actually produces |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_tools.py --counts 0,15,100 --repeat 9` | What a large `tools` array costs at DECODE time. The only bench here that sends tool schemas at all — `bench.py` and `bench_repeat.py` send none, so llama builds no tool grammar and a trigger-cost change comes back flat, which reads as "the fix does nothing" rather than "the instrument cannot see it". Every tool arm is paired with a BALLAST arm — no tools, padded with inert prose to the same prompt depth — because a 100-tool request carries ~11.6k extra prompt tokens and decode falls with depth on this model, so a tools-only curve confounds the grammar with the depth. Tool names are salted per run (the tools block renders AHEAD of the user message, so a nonce there does not defeat the prefix cache: `cache_n` reached 10603 before this), tool-call responses are excluded rather than averaged in, and warmups are discarded. Do not run it below `--repeat 9`: an n=3 pilot returned a non-monotonic 17% that was entirely noise |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py` | Which `REASONING_EFFORT` is worth it, scored on executed tests rather than output length |
-| `docker compose --profile tools run --rm --build --entrypoint python bench /work/scripts/bench_quality.py --only eval_expr --level xhigh --repeat 4 --show-code` | Re-run one grid cell several times and print what a failing run wrote — the task set is not deterministic, so one cell is one sample |
-
-## Capturing real workstreams
-
-The corpora the depth and KL runs above score are recorded from real sessions,
-not synthesised.
-
-| Command | What it does |
-| --- | --- |
-| `./scripts/capture.sh on` | Start recording real workstreams: forge is repointed at the capture container, so the tape is what the MODEL saw — pi's system prompt, the tool schemas, and forge's own rewrites. `off` puts it back. Off by default; the override lives in the gitignored `.env.local` |
-| `./scripts/capture.sh index` | What workstreams are on the tape, rebuilt from a flat log by longest-common-prefix over per-message hashes. `rw` counts history REWRITES — a turn whose prompt was not the previous one plus a suffix |
-| `./scripts/capture.sh export s7f3a91 --out /captures/corpus/deep.txt` | Turn one workstream into a `llama-perplexity --kl-divergence-base` corpus, rendered through the server's own `/apply-template` and checked against the token count the server itself reported for that request |
-| `./scripts/capture.sh import-pi ~/.pi/agent/sessions/<slug>/*.jsonl` | Read pi's own transcripts into the same shape — real sessions already on disk. They carry no system prompt and no tool schemas, so every record is stamped `gaps` and refused for a corpus without `--allow-gaps` |
-| `./scripts/capture.sh self-test` | 98 checks over the recorder and the session rebuilder, no server needed. Includes the two controls that can fail: an unbuffered-stream check and a recorder that raises on every write |
-
-## Testing the vendored forks
-
-| Command | What it does |
-| --- | --- |
-| `cd vendor/pi-loop-mode && npm test` | Test the vendored `/loop` fork (39 tests, no install) |
-| `cd vendor/prinny-channel && npm test` | Test the Matrix channel (296 tests, no install) |
-| `cd vendor/rtk-pi && node --experimental-strip-types --test tests/*.test.ts` | Test the rtk gate (28 tests, no install) |
+The measurement commands the local branch carried are gone with the hardware:
+the speculative-decoding sweeps (`spec-sweep.sh`, `capacity-probe.sh`), the
+perplexity-at-depth and KL runs (`ppl-depth-run.sh`, `kld-run.sh`), the
+throughput benches (`bench.sh`, `bench.py`, `bench_repeat.py`,
+`bench_quality.py`), the literal-survival and context probes (`ctx_needle.py`,
+`bench_literal.py`, `gguf_probe.py`, `template_probe.py`), and the workstream
+tape (`capture.sh`, `capture_proxy.py`, `capture_sessions.py`). Their results are
+still in `context/bench/` and `context/design/`, kept as the record of what the
+local model did and why. They are not resurrectable against a hosted API, and
+that is the point rather than an omission.
 
 ---
 

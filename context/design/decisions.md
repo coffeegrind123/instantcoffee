@@ -1551,6 +1551,15 @@ fails the build instead of quietly shipping unpatched.
 
 ## Still open (carried forward from HANDOFF.md, which is now deleted)
 
+> **Superseded on the `anthropic` branch (2026-10-08).** Every item below except
+> the rtk allow-list one was a property of the local model stack — `THINK_LANG`,
+> the MTP draft head, `REASONING_EFFORT`, `prose` mode, `/stack slots` — and is
+> void here, because the settings and the commands went with the layer that had
+> them. The rtk item still stands: rtk survives this branch, and widening its
+> allow-list for non-shell repos is still unmeasured work. The list is left in
+> place as the record of what the local branch had not settled; see the note at
+> the top of `context/README.md`.
+
 Genuinely unresolved, each with the thing that would settle it:
 
 - **`THINK_LANG=zh` has never been measured on this hardware.** It is on in
@@ -9336,4 +9345,3 @@ forge.
 - **Metrics over the compose network** (`http://llama:8080`,
   `http://forge:8081`) rather than host.docker.internal, which it needed as a
   separate project.
-

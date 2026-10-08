@@ -26,6 +26,8 @@ prompt that says "continue the analysis" returns nothing useful.
 **Ask for a bounded answer** — the specific finding with `file:line` citations,
 not a tour. You are paying for the child's window, not reading its transcript.
 
-Prefer one well-scoped agent to several overlapping ones. They share a single
-inference slot here and queue behind each other, so two agents are not faster
-than one, only noisier.
+Prefer one well-scoped agent to several overlapping ones. Children run on the
+hosted API here, so they genuinely run in parallel and a split costs no
+wall-clock — but overlapping agents duplicate each other's reading and hand you
+two answers to reconcile where a single narrower question would have returned
+one.

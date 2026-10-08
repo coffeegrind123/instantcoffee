@@ -10,6 +10,69 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**The local model is gone: the `anthropic` branch serves pi from the hosted
+Anthropic API (2026-10-08).** Everything below this entry was true of the branch
+that shipped a local Qwen3.8-27B under llama.cpp behind the forge guardrail
+proxy on one RTX 4090. That branch is not this one, and its entries are kept
+unchanged as the record of what it did and why — they are history, not a
+description of the current tree. This entry is what changed.
+
+- **pi now talks to `api.anthropic.com`**, over the Messages API
+  (`POST /v1/messages`, `x-api-key`, `anthropic-messages`). There is no
+  llama-server, no forge, no GGUF, no VRAM budget and no cold load. The RTX 4090
+  requirement is gone: the stack runs on any machine with a network.
+- **Three seats, and the seats are the design.** The session runs
+  `claude-opus-5-5` (`ANTHROPIC_MODEL`, launched as
+  `pi --provider anthropic --model …`); every subagent runs `claude-haiku-5-5`
+  (`SUBAGENT_MODEL`, seeded as the subagent extension's session default); and the
+  advisor/planner runs `claude-fable-5-1` (`ADVISOR_MODEL`), seeded as a
+  **per-agent-type override** because that entry sits above the session default
+  in the fork's ladder (`vendor/pi-subagents-lite/src/models/model-precedence.ts`)
+  and a value that is only a default gets dragged onto the session's price.
+  `prompts/orchestrator/agents/advisor.md` is the new agent type.
+- **Prompt caching is first-class rather than absent.** The launcher writes
+  `promptCache = {short: 300, long: 3600}` per seat into `models.json` (pi only
+  warms an idle cache for a model that declares a lifetime, so this is the
+  switch), `cacheWarming` and `showCacheMissNotices` into `settings.json`, and
+  exports `PI_CACHE_RETENTION=long` so pi's Anthropic serializer emits
+  `cache_control: {type: "ephemeral", ttl: "1h"}` instead of the 5-minute
+  default. `cacheRead` / `cacheWrite` / `cacheWrite1h` are reported to `/session`
+  and the dashboard.
+- **`pi update --models` is now a launch step.** The catalog bundled with an
+  installed pi lags the published one, and pi 0.85.1 ships **none** of the three
+  seats' models (14 anthropic models before a refresh, 17 after); a model the
+  catalog does not know is how a seat silently falls back to the parent's. The
+  launcher runs the refresh (`PI_UPDATE_MODELS_ON_LAUNCH`, fails soft), and the
+  orchestrator's probe refuses a seat it still cannot list.
+- **Secrets unchanged in shape.** `.env` stays committed and secret-free;
+  `ANTHROPIC_API_KEY` lives in the gitignored `.env.local` and is only ever
+  exported into the process — never written to `models.json` (which references
+  `$ANTHROPIC_API_KEY`) and never to `auth.json`.
+- **Deleted with the layer that served them:** `Dockerfile.forge`, `patches/`
+  (all fourteen build-time forge patches), `modes/`, the `/stack` extension, and
+  roughly 74 local-model scripts (the speculative-decoding sweeps, capacity
+  probes, perplexity and KL runs, throughput benches, context and literal probes,
+  the workstream-capture tape, the model downloader, the smoke test, and the
+  `setup`/`up`/`down`/`logs`/`update`/`mode` launcher plumbing). `THINK_LANG` and
+  the Chinese-reasoning prompt fragment are gone with them, as are the two docs
+  pages that described the local regimes (`modes.md`, `quants.md`).
+  `docker-compose.yml` now defines exactly one service, `observe`, whose llama
+  `/metrics` and forge `/forge/usage` pollers are pinned off because there is
+  nothing left to poll; `versions.lock` keeps only the rtk and observe pins.
+- **CI was rewritten for the branch.** The forge image build, the patch-behaviour
+  gate, the capture proxy and session rebuilder, the download-verification and
+  smoke-test suites, the generation-cap check and the mode-preset check all
+  referenced deleted files and are gone. What is left is the syntax checks over
+  the surviving scripts, the extension and vendored-fork suites, the prompt,
+  `.env`, skills and MCP config validation, and one assertion that still means
+  something: no scored eval harness has crept back in.
+
+The consequence worth stating plainly: **the model is no longer yours to
+measure.** Decode speed, draft acceptance, prefill rate and VRAM are not
+quantities this stack has, and the sweeps that measured them are gone with the
+hardware. What replaces them as the thing to watch is the cache accounting — a
+cache write thrown away on the next turn is the regression this branch can see.
+
 **ngram-map-k's draft cap 48 -> 96; its other knobs stay at defaults (2026-09-23).**
 `SPEC_NGRAM_MAPK_SIZE_N/SIZE_M/MIN_HITS` and a matching spec-sweep row field.
 Lowering the draft cap to 24 costs 11.9% on repetitive text (p=0.010); size-n

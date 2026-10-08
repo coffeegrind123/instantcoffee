@@ -70,6 +70,13 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(HERE, "..", "src");
 /**
+ * The scan's own control input — a fixture this file owns, holding one host
+ * `pi.exec` call. Used by the `.pi/extensions` control below so the check that
+ * "the scanner is looking at the source" no longer depends on how many host
+ * calls some other tree happens to contain.
+ */
+const SELF_CHECK = path.join(HERE, "fixtures");
+/**
  * `vendor/pi-subagents-lite/tests` → the repo root → `.pi/extensions`.
  *
  * The same relative reach `src/spawn/result-cap.ts` already makes to import
@@ -81,13 +88,30 @@ const EXTENSIONS = path.resolve(HERE, "..", "..", "..", ".pi", "extensions");
 interface Root {
   label: string;
   dir: string;
-  /** Fewest call sites this root must contain for the scan to be believed. */
-  atLeast: number;
+  /**
+   * Fewest call sites this root must contain for the scan to be believed.
+   * Omitted where the tree legitimately contains none (see `.pi/extensions`).
+   */
+  atLeast?: number;
+  /**
+   * A directory the test owns with a known host call site. When present, the
+   * root's control proves the scanner works by scanning this instead of relying
+   * on a count that another branch can move.
+   */
+  selfCheck?: string;
 }
 
 const ROOTS: Root[] = [
   { label: "vendor/pi-subagents-lite/src", dir: SRC, atLeast: 3 },
-  { label: ".pi/extensions", dir: EXTENSIONS, atLeast: 5 },
+  /**
+   * `.pi/extensions` no longer holds any host `pi.exec` call site: the fork's
+   * only ones lived in `.pi/extensions/stack.ts` (nine of them), and that file
+   * was deleted with the local-model layer. The `atLeast: 5` control it used to
+   * carry therefore asserted something false about the tree and rotted. The
+   * control now checks `selfCheck` instead, and this row keeps the directory
+   * covered so the classifier sweep still runs if a host call comes back.
+   */
+  { label: ".pi/extensions", dir: EXTENSIONS, selfCheck: SELF_CHECK },
 ];
 
 /** Every .ts under a directory, recursively. */
@@ -111,14 +135,16 @@ function stripComments(text: string): string {
 /**
  * Is this line a call to a HOST `exec`, rather than `RegExp.prototype.exec`?
  *
- * Excluded by shape — a `.exec(` whose receiver ends in `/`, i.e. a regex
- * literal — rather than by requiring the receiver to be named `pi`. Two real
- * call sites in this package are `getPiInstance().exec(`, so a receiver
- * allow-list would have dropped them silently, which is the failure mode this
- * whole file exists to prevent.
+ * The receiver is matched by name, because "any `.exec(` that is not a regex
+ * literal" is not enough: `.pi/extensions/observe/src/git.ts` parses text
+ * through regex CONSTANTS (`GITDIR_LINE.exec(…)`, `HEAD_REF.exec(…)`), which
+ * that rule reads as host calls and the classifier sweep then flags as
+ * offenders. A host call here always goes through pi — `pi.exec(…)`, or
+ * `getPiInstance().exec(…)` — so those are the receivers counted, and a call the
+ * scan cannot name is left alone rather than reported as a defect it is not.
  */
 function isHostExec(line: string): boolean {
-  return /\.exec\(/.test(line) && !/\/\.exec\(/.test(line);
+  return /\bpi\.exec\(/i.test(line) || /\b\w*[Ii]nstance\(?\)?\.exec\(/.test(line);
 }
 
 /** How many lines after a `.exec(` call the verdict has to be read within. */
@@ -161,11 +187,46 @@ describe("every pi.exec verdict reads `killed`, not `code` alone", () => {
   for (const root of ROOTS) {
     it(`${root.label}: has call sites to check (the control for the scan itself)`, () => {
       assert.ok(existsSync(root.dir), `${root.label} is not where the scan expects it (${root.dir})`);
+      if (root.selfCheck) {
+        // A tree another branch can legitimately shrink must not be the control
+        // for "the scanner works" — scan a fixture this test owns instead. One
+        // host call was written into it on purpose, so anything other than one
+        // is a broken scanner or a broken fixture, not a fact about the tree.
+        assert.ok(existsSync(root.selfCheck), `the ${root.label} self-check fixture is missing (${root.selfCheck})`);
+        const found = callSites(root.selfCheck);
+        assert.equal(
+          found.length,
+          1,
+          `the scan found ${found.length} host exec call sites in the self-check fixture, expected exactly 1 — ` +
+            `the scanner is not reading the source it was pointed at`,
+        );
+        return;
+      }
       const found = callSites(root.dir);
       assert.ok(
-        found.length >= root.atLeast,
+        found.length >= (root.atLeast ?? 0),
         `the scan found ${found.length} pi.exec call sites under ${root.label}, expected at least ` +
           `${root.atLeast} — it is not looking at the source`,
+      );
+    });
+
+    it(`${root.label}: discriminates a host exec from a RegExp-literal exec`, () => {
+      // `isHostExec` has to match a host call by name and refuse everything that
+      // only looks like one. If it stopped matching, the sweep below would pass
+      // vacuously; if it started matching regex receivers — the literal at
+      // `stack.ts:1024` or the named constants in `observe/src/git.ts` — the
+      // sweep would flag text parsing as an exec defect. One line of each shape
+      // in a controlled string pins both ends.
+      const probe = [
+        'const a = /x/.exec(s);', // regex literal
+        'const b = GITDIR_LINE.exec(line);', // regex constant, as in observe/git.ts
+        'const c = pi.exec("git", ["status"]);', // host call
+        'const d = getPiInstance().exec("git", ["status"]);', // host call via the instance
+      ].join("\n");
+      assert.equal(
+        probe.split("\n").filter(isHostExec).length,
+        2,
+        "the host-exec detector must count both pi exec calls and neither regex .exec",
       );
     });
 
