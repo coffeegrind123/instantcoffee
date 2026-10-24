@@ -10,6 +10,15 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**Two docs corrected after a GitHub sweep (2026-10-04).** `docs/context-budget.md`
+no longer claims `--slot-save-path` makes warm restarts skip re-prefill. Nothing
+calls slot save, and on this hybrid model a restore reuses zero tokens anyway
+(llama.cpp#28194). `docs/modes.md` named OBLITERATUS as the prose model;
+`prose` has run orcarouter `Q4_K_M` since 2026-08-25. `docs/benchmarking.md`
+gains a rule: draft-model speculation is not output-identical on a quantized
+target (llama.cpp#25618), so never compare text across spec arms. Plan:
+`context/plan-github-sweep-2026-10-04.md`.
+
 **ngram-map-k's draft cap 48 -> 96; its other knobs stay at defaults (2026-09-23).**
 `SPEC_NGRAM_MAPK_SIZE_N/SIZE_M/MIN_HITS` and a matching spec-sweep row field.
 Lowering the draft cap to 24 costs 11.9% on repetitive text (p=0.010); size-n

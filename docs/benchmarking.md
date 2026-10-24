@@ -152,6 +152,20 @@ sweeps, one sign in every round subset, and a mechanism are what make it a
 result. Greedy runs are not bit-reproducible in draft counts either, so compare
 distributions, not individual runs.
 
+### Speculation is not output-identical on a quantized target (2026-10-04)
+
+Never use "the output did not change" as a correctness check across spec arms.
+On a quantized target, greedy output with `draft-mtp` (or `draft-dflash`)
+diverges from the no-draft run, while ngram arms stay identical
+(llama.cpp#25618, open; reproduced on Qwen3.8-27B at IQ3_XXS, Q8_0 and BF16).
+One reporter reproduces the flip with no drafter loaded at all, just by scoring
+the same prefix as a batch. So the cause is batched-versus-sequential numerics
+in the target, not a weaker answer, and it does not matter at temperature 1.0.
+What it rules out is a byte-equality check between arms. hugosmoreira's 4090
+study saw the same thing: prose changed with MTP on, code fixtures did not. As
+of this entry, no script here compares generated text across arms. Keep it that
+way: compare acceptance, rates and task pass/fail.
+
 `spec_sweep_compare.py --metric prefill|wall` compares prefill rate or whole-
 request time instead of decode (wall: lower is better). Use it for any change
 that could trade prefill for decode — MTP itself costs ~10% of prefill.

@@ -63,10 +63,17 @@ Two things that were measured rather than assumed, on 2026-08-12:
   server-side by `REASONING_EFFORT` in `.env` and capped by `REASONING_BUDGET`.
 - **Prompt caching is not an API-level feature here.** There is no
   `cache_control` on the OpenAI wire; the stack gets the same effect from
-  `--cache-prompt` + `--slot-save-path` (KV cache persisted to disk, so warm
-  restarts skip re-prefill), `preserve_thinking` (no KV re-prefill across
-  agentic turns), and `--ctx-checkpoints` (fast rewind). See `.env` for
-  `CACHE_RAM`, `CACHE_REUSE` and the related knobs.
+  `--cache-prompt`, `preserve_thinking` (no KV re-prefill across agentic
+  turns), and `--ctx-checkpoints` (fast rewind). See `.env` for `CACHE_RAM`,
+  `CACHE_REUSE` and the related knobs.
+- **A restart always re-prefills.** `--slot-save-path` only enables the
+  `/slots/{id}?action=save|restore` endpoint; nothing in this repo calls it.
+  `scripts/slot-cache.sh` explains why it stays unwired: a save aborted
+  mid-write wedges the server, and container shutdown is exactly that abort.
+  Wiring it would not help anyway: on this hybrid model a restore reports
+  success and reuses **zero** tokens, because the save file omits the context
+  checkpoints the hybrid reuse gate needs (llama.cpp#28194, measured on
+  Qwen3.8-27B, open as of 2026-10-04).
 
 ## Shorter bash output
 

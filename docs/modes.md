@@ -93,7 +93,22 @@ had published one 3.8 model at migration time, with no GGUF — so the whole
 Fable-Fusion card, including its `temp <= 1` MTP ceiling and its rep-pen ban,
 is gone with it.
 
-Since **2026-08-25** the model is
+**Current model: the same GGUF as `uc-coding`**,
+[`orcarouter/Qwen3.8-27B-Uncensored-GGUF`](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-GGUF)
+(`Q4_K_M`). It moved there when `uc-coding` did. The reasons are `uc-coding`'s:
+it is the best-evidenced decensored 3.8 build here, and the only one publishing
+refusal numbers with thinking on. Prose has a reason of its own: one ~16.8 GB
+file backs both modes again, so switching regimes needs no download. What the
+move has **not** answered is prose's own selection criterion, soft deflections:
+orcarouter reports benign over-refusal falling, which is adjacent but not the
+same measurement. `modes/prose.env` holds the full reasoning and the two lines
+that revert it.
+
+The OBLITERATUS selection below is kept because it is how you revert, and
+because its source-GGUF autopsy is why this repo checks a chat template before
+trusting a model card.
+
+**Previously (2026-08-25, superseded):**
 [`mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF`](https://huggingface.co/mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF)
 (`i1-Q4_K_M`), an imatrix requant of
 [`OBLITERATUS/Qwen3.8-27B-OBLITERATED`](https://huggingface.co/OBLITERATUS/Qwen3.8-27B-OBLITERATED).
