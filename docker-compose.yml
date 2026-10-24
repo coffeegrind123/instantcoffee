@@ -503,6 +503,33 @@ services:
       LITERAL_TIMEOUT: ${LITERAL_TIMEOUT:-900}
 
   # ---------------------------------------------------------------------------
+  # emptyturn — does a sampler override stop empty answers? (QwenLM/Qwen3.8#216)
+  #
+  #   ./scripts/empty-turn-ab.sh --arm base: --arm fp03:frequency_penalty=0.3
+  #
+  # Goes straight to llama: forge retries an empty response, which is right in
+  # production and hides the event this counts. Every response lands as JSONL
+  # under ${CAPTURES_DIR}/empty-turn-ab/.
+  emptyturn:
+    profiles: ["tools"]
+    image: instantcoffee/proxy:${FORGE_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.forge
+      args:
+        FORGE_VERSION: ${FORGE_VERSION}
+    entrypoint: ["python", "/work/scripts/empty_turn_ab.py"]
+    # Root for the same reason as `sessions`: it creates its output directory
+    # on the captures bind, which the image's forge user cannot write.
+    user: "0:0"
+    environment:
+      LLAMA_URL: http://llama:8080
+      MODEL_ALIAS: ${MODEL_ALIAS}
+      EMPTY_AB_TIMEOUT: ${EMPTY_AB_TIMEOUT:-900}
+    volumes:
+      - "${CAPTURES_DIR}:/captures"
+
+  # ---------------------------------------------------------------------------
   # capture — the workstream tape. OFF unless FORGE_BACKEND_URL points at it.
   #
   #   ./scripts/capture.sh on      start it and repoint forge
