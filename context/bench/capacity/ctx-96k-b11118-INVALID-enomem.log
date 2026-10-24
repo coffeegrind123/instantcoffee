@@ -1,0 +1,206 @@
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+container instantcoffee-llama is unhealthy
+instantcoffee-llama  | 0.11.055.769 D create_tensor: loading tensor blk.54.ffn_gate.scale
+instantcoffee-llama  | 0.11.055.772 D create_tensor: loading tensor blk.54.ffn_down.scale
+instantcoffee-llama  | 0.11.055.775 D create_tensor: loading tensor blk.54.ffn_up.scale
+instantcoffee-llama  | 0.11.055.778 D create_tensor: loading tensor blk.54.ssm_out.scale
+instantcoffee-llama  | 0.11.055.782 D create_tensor: loading tensor blk.54.ssm_alpha.scale
+instantcoffee-llama  | 0.11.055.785 D create_tensor: loading tensor blk.54.ssm_beta.scale
+instantcoffee-llama  | 0.11.055.788 D create_tensor: loading tensor blk.54.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.055.791 D create_tensor: loading tensor blk.54.attn_gate.input_scale
+instantcoffee-llama  | 0.11.055.793 D create_tensor: loading tensor blk.54.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.055.796 D create_tensor: loading tensor blk.54.ffn_down.input_scale
+instantcoffee-llama  | 0.11.055.799 D create_tensor: loading tensor blk.54.ffn_up.input_scale
+instantcoffee-llama  | 0.11.055.802 D create_tensor: loading tensor blk.54.ssm_out.input_scale
+instantcoffee-llama  | 0.11.055.805 D create_tensor: loading tensor blk.54.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.055.808 D create_tensor: loading tensor blk.54.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.055.811 D create_tensor: loading tensor blk.55.attn_q.scale
+instantcoffee-llama  | 0.11.055.814 D create_tensor: loading tensor blk.55.attn_k.scale
+instantcoffee-llama  | 0.11.055.817 D create_tensor: loading tensor blk.55.attn_v.scale
+instantcoffee-llama  | 0.11.055.820 D create_tensor: loading tensor blk.55.attn_output.scale
+instantcoffee-llama  | 0.11.055.823 D create_tensor: loading tensor blk.55.ffn_gate.scale
+instantcoffee-llama  | 0.11.055.826 D create_tensor: loading tensor blk.55.ffn_down.scale
+instantcoffee-llama  | 0.11.055.829 D create_tensor: loading tensor blk.55.ffn_up.scale
+instantcoffee-llama  | 0.11.055.833 D create_tensor: loading tensor blk.55.attn_q.input_scale
+instantcoffee-llama  | 0.11.055.836 D create_tensor: loading tensor blk.55.attn_k.input_scale
+instantcoffee-llama  | 0.11.055.838 D create_tensor: loading tensor blk.55.attn_v.input_scale
+instantcoffee-llama  | 0.11.055.842 D create_tensor: loading tensor blk.55.attn_output.input_scale
+instantcoffee-llama  | 0.11.055.845 D create_tensor: loading tensor blk.55.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.055.848 D create_tensor: loading tensor blk.55.ffn_down.input_scale
+instantcoffee-llama  | 0.11.055.850 D create_tensor: loading tensor blk.55.ffn_up.input_scale
+instantcoffee-llama  | 0.11.055.854 D create_tensor: loading tensor blk.56.attn_qkv.scale
+instantcoffee-llama  | 0.11.055.857 D create_tensor: loading tensor blk.56.attn_gate.scale
+instantcoffee-llama  | 0.11.055.860 D create_tensor: loading tensor blk.56.ffn_gate.scale
+instantcoffee-llama  | 0.11.055.863 D create_tensor: loading tensor blk.56.ffn_down.scale
+instantcoffee-llama  | 0.11.055.866 D create_tensor: loading tensor blk.56.ffn_up.scale
+instantcoffee-llama  | 0.11.055.868 D create_tensor: loading tensor blk.56.ssm_out.scale
+instantcoffee-llama  | 0.11.055.872 D create_tensor: loading tensor blk.56.ssm_alpha.scale
+instantcoffee-llama  | 0.11.055.875 D create_tensor: loading tensor blk.56.ssm_beta.scale
+instantcoffee-llama  | 0.11.055.878 D create_tensor: loading tensor blk.56.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.055.881 D create_tensor: loading tensor blk.56.attn_gate.input_scale
+instantcoffee-llama  | 0.11.055.884 D create_tensor: loading tensor blk.56.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.055.886 D create_tensor: loading tensor blk.56.ffn_down.input_scale
+instantcoffee-llama  | 0.11.055.889 D create_tensor: loading tensor blk.56.ffn_up.input_scale
+instantcoffee-llama  | 0.11.055.892 D create_tensor: loading tensor blk.56.ssm_out.input_scale
+instantcoffee-llama  | 0.11.055.895 D create_tensor: loading tensor blk.56.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.055.899 D create_tensor: loading tensor blk.56.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.055.902 D create_tensor: loading tensor blk.57.attn_qkv.scale
+instantcoffee-llama  | 0.11.055.905 D create_tensor: loading tensor blk.57.attn_gate.scale
+instantcoffee-llama  | 0.11.055.908 D create_tensor: loading tensor blk.57.ffn_gate.scale
+instantcoffee-llama  | 0.11.055.910 D create_tensor: loading tensor blk.57.ffn_down.scale
+instantcoffee-llama  | 0.11.055.913 D create_tensor: loading tensor blk.57.ffn_up.scale
+instantcoffee-llama  | 0.11.055.916 D create_tensor: loading tensor blk.57.ssm_out.scale
+instantcoffee-llama  | 0.11.055.920 D create_tensor: loading tensor blk.57.ssm_alpha.scale
+instantcoffee-llama  | 0.11.055.923 D create_tensor: loading tensor blk.57.ssm_beta.scale
+instantcoffee-llama  | 0.11.055.926 D create_tensor: loading tensor blk.57.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.055.929 D create_tensor: loading tensor blk.57.attn_gate.input_scale
+instantcoffee-llama  | 0.11.055.932 D create_tensor: loading tensor blk.57.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.055.935 D create_tensor: loading tensor blk.57.ffn_down.input_scale
+instantcoffee-llama  | 0.11.055.938 D create_tensor: loading tensor blk.57.ffn_up.input_scale
+instantcoffee-llama  | 0.11.055.941 D create_tensor: loading tensor blk.57.ssm_out.input_scale
+instantcoffee-llama  | 0.11.055.944 D create_tensor: loading tensor blk.57.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.055.947 D create_tensor: loading tensor blk.57.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.055.950 D create_tensor: loading tensor blk.58.attn_qkv.scale
+instantcoffee-llama  | 0.11.055.953 D create_tensor: loading tensor blk.58.attn_gate.scale
+instantcoffee-llama  | 0.11.055.956 D create_tensor: loading tensor blk.58.ffn_gate.scale
+instantcoffee-llama  | 0.11.055.959 D create_tensor: loading tensor blk.58.ffn_down.scale
+instantcoffee-llama  | 0.11.055.962 D create_tensor: loading tensor blk.58.ffn_up.scale
+instantcoffee-llama  | 0.11.055.965 D create_tensor: loading tensor blk.58.ssm_out.scale
+instantcoffee-llama  | 0.11.055.968 D create_tensor: loading tensor blk.58.ssm_alpha.scale
+instantcoffee-llama  | 0.11.055.971 D create_tensor: loading tensor blk.58.ssm_beta.scale
+instantcoffee-llama  | 0.11.055.974 D create_tensor: loading tensor blk.58.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.055.977 D create_tensor: loading tensor blk.58.attn_gate.input_scale
+instantcoffee-llama  | 0.11.055.980 D create_tensor: loading tensor blk.58.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.055.983 D create_tensor: loading tensor blk.58.ffn_down.input_scale
+instantcoffee-llama  | 0.11.055.986 D create_tensor: loading tensor blk.58.ffn_up.input_scale
+instantcoffee-llama  | 0.11.055.989 D create_tensor: loading tensor blk.58.ssm_out.input_scale
+instantcoffee-llama  | 0.11.055.992 D create_tensor: loading tensor blk.58.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.055.995 D create_tensor: loading tensor blk.58.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.055.998 D create_tensor: loading tensor blk.59.attn_q.scale
+instantcoffee-llama  | 0.11.056.001 D create_tensor: loading tensor blk.59.attn_k.scale
+instantcoffee-llama  | 0.11.056.004 D create_tensor: loading tensor blk.59.attn_v.scale
+instantcoffee-llama  | 0.11.056.007 D create_tensor: loading tensor blk.59.attn_output.scale
+instantcoffee-llama  | 0.11.056.010 D create_tensor: loading tensor blk.59.ffn_gate.scale
+instantcoffee-llama  | 0.11.056.013 D create_tensor: loading tensor blk.59.ffn_down.scale
+instantcoffee-llama  | 0.11.056.016 D create_tensor: loading tensor blk.59.ffn_up.scale
+instantcoffee-llama  | 0.11.056.019 D create_tensor: loading tensor blk.59.attn_q.input_scale
+instantcoffee-llama  | 0.11.056.022 D create_tensor: loading tensor blk.59.attn_k.input_scale
+instantcoffee-llama  | 0.11.056.025 D create_tensor: loading tensor blk.59.attn_v.input_scale
+instantcoffee-llama  | 0.11.056.028 D create_tensor: loading tensor blk.59.attn_output.input_scale
+instantcoffee-llama  | 0.11.056.031 D create_tensor: loading tensor blk.59.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.056.034 D create_tensor: loading tensor blk.59.ffn_down.input_scale
+instantcoffee-llama  | 0.11.056.037 D create_tensor: loading tensor blk.59.ffn_up.input_scale
+instantcoffee-llama  | 0.11.056.040 D create_tensor: loading tensor blk.60.attn_qkv.scale
+instantcoffee-llama  | 0.11.056.043 D create_tensor: loading tensor blk.60.attn_gate.scale
+instantcoffee-llama  | 0.11.056.046 D create_tensor: loading tensor blk.60.ffn_gate.scale
+instantcoffee-llama  | 0.11.056.049 D create_tensor: loading tensor blk.60.ffn_down.scale
+instantcoffee-llama  | 0.11.056.052 D create_tensor: loading tensor blk.60.ffn_up.scale
+instantcoffee-llama  | 0.11.056.055 D create_tensor: loading tensor blk.60.ssm_out.scale
+instantcoffee-llama  | 0.11.056.059 D create_tensor: loading tensor blk.60.ssm_alpha.scale
+instantcoffee-llama  | 0.11.056.062 D create_tensor: loading tensor blk.60.ssm_beta.scale
+instantcoffee-llama  | 0.11.056.065 D create_tensor: loading tensor blk.60.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.056.068 D create_tensor: loading tensor blk.60.attn_gate.input_scale
+instantcoffee-llama  | 0.11.056.071 D create_tensor: loading tensor blk.60.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.056.074 D create_tensor: loading tensor blk.60.ffn_down.input_scale
+instantcoffee-llama  | 0.11.056.077 D create_tensor: loading tensor blk.60.ffn_up.input_scale
+instantcoffee-llama  | 0.11.056.080 D create_tensor: loading tensor blk.60.ssm_out.input_scale
+instantcoffee-llama  | 0.11.056.083 D create_tensor: loading tensor blk.60.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.056.086 D create_tensor: loading tensor blk.60.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.056.089 D create_tensor: loading tensor blk.61.attn_qkv.scale
+instantcoffee-llama  | 0.11.056.092 D create_tensor: loading tensor blk.61.attn_gate.scale
+instantcoffee-llama  | 0.11.056.095 D create_tensor: loading tensor blk.61.ffn_gate.scale
+instantcoffee-llama  | 0.11.056.099 D create_tensor: loading tensor blk.61.ffn_down.scale
+instantcoffee-llama  | 0.11.056.102 D create_tensor: loading tensor blk.61.ffn_up.scale
+instantcoffee-llama  | 0.11.056.105 D create_tensor: loading tensor blk.61.ssm_out.scale
+instantcoffee-llama  | 0.11.056.108 D create_tensor: loading tensor blk.61.ssm_alpha.scale
+instantcoffee-llama  | 0.11.056.112 D create_tensor: loading tensor blk.61.ssm_beta.scale
+instantcoffee-llama  | 0.11.056.115 D create_tensor: loading tensor blk.61.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.056.118 D create_tensor: loading tensor blk.61.attn_gate.input_scale
+instantcoffee-llama  | 0.11.056.121 D create_tensor: loading tensor blk.61.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.056.124 D create_tensor: loading tensor blk.61.ffn_down.input_scale
+instantcoffee-llama  | 0.11.056.127 D create_tensor: loading tensor blk.61.ffn_up.input_scale
+instantcoffee-llama  | 0.11.056.130 D create_tensor: loading tensor blk.61.ssm_out.input_scale
+instantcoffee-llama  | 0.11.056.133 D create_tensor: loading tensor blk.61.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.056.136 D create_tensor: loading tensor blk.61.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.056.139 D create_tensor: loading tensor blk.62.attn_qkv.scale
+instantcoffee-llama  | 0.11.056.143 D create_tensor: loading tensor blk.62.attn_gate.scale
+instantcoffee-llama  | 0.11.056.146 D create_tensor: loading tensor blk.62.ffn_gate.scale
+instantcoffee-llama  | 0.11.056.149 D create_tensor: loading tensor blk.62.ffn_down.scale
+instantcoffee-llama  | 0.11.056.152 D create_tensor: loading tensor blk.62.ffn_up.scale
+instantcoffee-llama  | 0.11.056.155 D create_tensor: loading tensor blk.62.ssm_out.scale
+instantcoffee-llama  | 0.11.056.158 D create_tensor: loading tensor blk.62.ssm_alpha.scale
+instantcoffee-llama  | 0.11.056.162 D create_tensor: loading tensor blk.62.ssm_beta.scale
+instantcoffee-llama  | 0.11.056.165 D create_tensor: loading tensor blk.62.attn_qkv.input_scale
+instantcoffee-llama  | 0.11.056.168 D create_tensor: loading tensor blk.62.attn_gate.input_scale
+instantcoffee-llama  | 0.11.056.171 D create_tensor: loading tensor blk.62.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.056.174 D create_tensor: loading tensor blk.62.ffn_down.input_scale
+instantcoffee-llama  | 0.11.056.177 D create_tensor: loading tensor blk.62.ffn_up.input_scale
+instantcoffee-llama  | 0.11.056.180 D create_tensor: loading tensor blk.62.ssm_out.input_scale
+instantcoffee-llama  | 0.11.056.184 D create_tensor: loading tensor blk.62.ssm_alpha.input_scale
+instantcoffee-llama  | 0.11.056.187 D create_tensor: loading tensor blk.62.ssm_beta.input_scale
+instantcoffee-llama  | 0.11.056.190 D create_tensor: loading tensor blk.63.attn_q.scale
+instantcoffee-llama  | 0.11.056.193 D create_tensor: loading tensor blk.63.attn_k.scale
+instantcoffee-llama  | 0.11.056.196 D create_tensor: loading tensor blk.63.attn_v.scale
+instantcoffee-llama  | 0.11.056.200 D create_tensor: loading tensor blk.63.attn_output.scale
+instantcoffee-llama  | 0.11.056.203 D create_tensor: loading tensor blk.63.ffn_gate.scale
+instantcoffee-llama  | 0.11.056.206 D create_tensor: loading tensor blk.63.ffn_down.scale
+instantcoffee-llama  | 0.11.056.210 D create_tensor: loading tensor blk.63.ffn_up.scale
+instantcoffee-llama  | 0.11.056.213 D create_tensor: loading tensor blk.63.attn_q.input_scale
+instantcoffee-llama  | 0.11.056.217 D create_tensor: loading tensor blk.63.attn_k.input_scale
+instantcoffee-llama  | 0.11.056.220 D create_tensor: loading tensor blk.63.attn_v.input_scale
+instantcoffee-llama  | 0.11.056.223 D create_tensor: loading tensor blk.63.attn_output.input_scale
+instantcoffee-llama  | 0.11.056.226 D create_tensor: loading tensor blk.63.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.056.230 D create_tensor: loading tensor blk.63.ffn_down.input_scale
+instantcoffee-llama  | 0.11.056.233 D create_tensor: loading tensor blk.63.ffn_up.input_scale
+instantcoffee-llama  | 0.11.056.237 D create_tensor: loading tensor blk.64.attn_q.scale
+instantcoffee-llama  | 0.11.056.240 D create_tensor: loading tensor blk.64.attn_k.scale
+instantcoffee-llama  | 0.11.056.243 D create_tensor: loading tensor blk.64.attn_v.scale
+instantcoffee-llama  | 0.11.056.247 D create_tensor: loading tensor blk.64.attn_output.scale
+instantcoffee-llama  | 0.11.056.250 D create_tensor: loading tensor blk.64.ffn_gate.scale
+instantcoffee-llama  | 0.11.056.253 D create_tensor: loading tensor blk.64.ffn_down.scale
+instantcoffee-llama  | 0.11.056.257 D create_tensor: loading tensor blk.64.ffn_up.scale
+instantcoffee-llama  | 0.11.056.261 D create_tensor: loading tensor blk.64.nextn.eh_proj.scale
+instantcoffee-llama  | 0.11.056.264 D create_tensor: loading tensor blk.64.attn_q.input_scale
+instantcoffee-llama  | 0.11.056.268 D create_tensor: loading tensor blk.64.attn_k.input_scale
+instantcoffee-llama  | 0.11.056.271 D create_tensor: loading tensor blk.64.attn_v.input_scale
+instantcoffee-llama  | 0.11.056.274 D create_tensor: loading tensor blk.64.attn_output.input_scale
+instantcoffee-llama  | 0.11.056.278 D create_tensor: loading tensor blk.64.ffn_gate.input_scale
+instantcoffee-llama  | 0.11.056.281 D create_tensor: loading tensor blk.64.ffn_down.input_scale
+instantcoffee-llama  | 0.11.056.285 D create_tensor: loading tensor blk.64.ffn_up.input_scale
+instantcoffee-llama  | 0.11.056.288 D create_tensor: loading tensor blk.64.nextn.eh_proj.input_scale
+instantcoffee-llama  | 0.12.381.320 I load_tensors: offloading output layer to GPU
+instantcoffee-llama  | 0.12.381.360 I load_tensors: offloading 64 repeating layers to GPU
+instantcoffee-llama  | 0.12.381.360 I load_tensors: offloaded 66/66 layers to GPU
+instantcoffee-llama  | 0.12.381.868 I load_tensors:        CUDA0 model buffer size = 15339.44 MiB
+instantcoffee-llama  | 0.12.381.913 I load_tensors:    CUDA_Host model buffer size =   682.03 MiB
+instantcoffee-llama  | 0.12.392.721 D load_all_data: using async uploads for device CUDA0, buffer type CUDA0, backend CUDA0
+instantcoffee-llama  | 2.14.429.308 E llama_model_load: error loading model: read error: Cannot allocate memory
+instantcoffee-llama  | 2.14.429.717 E llama_model_load_from_file_impl: failed to load model
+instantcoffee-llama  | 2.14.429.998 E cmn  common_init_: failed to load model '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+instantcoffee-llama  | 2.14.430.049 E srv    load_model: failed to load model, '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+instantcoffee-llama  | 2.14.430.053 I srv    operator(): operator(): cleaning up before exit...
+instantcoffee-llama  | 2.14.431.265 E srv  llama_server: exiting due to model loading error
+instantcoffee-llama  | 0.00.000.686 I srv  llama_server: initializing ...
+instantcoffee-llama  | warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+instantcoffee-llama  | 0.00.320.601 I cmn  common_param: common_params_print_info: build 11118 (e6ab7c1a4) with GNU 14.2.0 for Linux x86_64
+instantcoffee-llama  | 0.00.320.627 I cmn  common_param: common_params_print_info: verbosity = 5 (adjust with the `-lv N` CLI arg)
+instantcoffee-llama  | 0.00.320.628 I cmn  common_param: device_info:
+instantcoffee-llama  | 0.00.576.543 I cmn  common_param:   - CUDA0   : NVIDIA GeForce RTX 4090 (24563 MiB, 22992 MiB free)
+instantcoffee-llama  | 0.00.576.584 I cmn  common_param:   - CPU     : AMD Ryzen 9 3900X 12-Core Processor (22018 MiB, 22018 MiB free)
+instantcoffee-llama  | 0.00.576.748 I cmn  common_param: system_info: n_threads = 8 (n_threads_batch = 8) / 16 | CUDA : ARCHS = 500,610,700,750,800,860,890,900,1200 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+instantcoffee-llama  | 0.00.576.890 I srv  init_listene: running without SSL
+instantcoffee-llama  | 0.00.577.074 D srv  init_listene: serve nocache for _app/version.json
+instantcoffee-llama  | 0.00.577.443 D srv  init_listene: serve nocache for build.json
+instantcoffee-llama  | 0.00.577.486 D srv  init_listene: serve nocache for manifest.webmanifest
+instantcoffee-llama  | 0.00.577.531 D srv  init_listene: serve nocache for sw.js
+instantcoffee-llama  | 0.00.577.558 I srv          init: using 15 threads for HTTP server
+instantcoffee-llama  | 0.00.577.650 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+instantcoffee-llama  | 0.00.581.240 I srv    load_model: loading model '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+instantcoffee-llama  | 0.00.581.269 I srv    load_model: local path '/models/Qwen3.8-27B-Uncensored-Q4_K_M.gguf'
+instantcoffee-llama  | 0.00.581.306 I cmn  common_init_: fitting params to device memory ...
+instantcoffee-llama  | 0.00.581.307 I cmn  common_init_: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+instantcoffee-llama  | 0.00.581.442 I common_params_fit_impl: getting device memory data for initial parameters:

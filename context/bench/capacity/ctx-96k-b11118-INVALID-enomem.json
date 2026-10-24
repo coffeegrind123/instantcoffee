@@ -1,0 +1,22 @@
+{
+  "label": "ctx-96k-b11118-INVALID-enomem",
+  "settings": "CTX_SIZE=98304",
+  "loaded": false,
+  "server_n_ctx": "",
+  "vram_used_mib": "",
+  "vram_total_mib": "",
+  "vram_idle_mib": "1784",
+  "engine_memory_breakdown": null,
+  "bench": "prefill",
+  "measured_utc": "2026-10-04T01:04:40Z",
+  "pins": {
+    "llama_tag": "server-cuda-b11118",
+    "llama_digest": "sha256:bfb3264fc2166e01e2b4f9b537e45d7006d87c75021b911f132ef607f5bbced3",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479"
+  },
+  "result": null,
+  "invalid": "Not a fit result. llama failed with 'read error: Cannot allocate memory' reading the GGUF over the 9p mount while a 29 GB download held host memory (log line 181). The same config was serving on this pin at the time. Re-run with the box quiet."
+}
