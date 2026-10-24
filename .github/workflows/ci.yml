@@ -198,6 +198,20 @@ jobs:
       - name: Model download verification unit tests
         run: python scripts/test_download_verify.py
 
+      # kld-run.sh's weights axis. The budget module decides whether a run is
+      # allowed to start at all (a swapping base arm has written a short logits
+      # file and exited 0, and a sibling took the host down), so its placement
+      # rule and GGUF parser are pinned here; the arg tests prove every bad
+      # invocation is refused before docker is touched. The empty-turn A/B's
+      # statistics are pinned against published Fisher/Wilson values, and its
+      # arm parser must refuse a misspelt sampler key (else an A/A test).
+      - name: KLD weights-axis and empty-turn A/B tests
+        run: |
+          python -m pip install --quiet pytest
+          python -m pytest -q scripts/test_kld_budget.py scripts/test_kld_corpus.py \
+            scripts/test_empty_turn_ab.py
+          python scripts/test_kld_run_args.py
+
       # The capture proxy sits in the production path between forge and llama, so
       # two of its promises are the kind that fail silently and both have a
       # control that can FAIL: an upstream that sleeps mid-stream (catching any
