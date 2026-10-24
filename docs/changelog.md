@@ -10,6 +10,13 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**Downloads hash in 1 MiB reads; `up.sh` refuses a taken host port (2026-10-04).**
+`download_model.py`'s sha256 pass read 16 MiB at a time and died with ENOMEM on
+the 9p bind under memory pressure; the same file hashes cleanly in 1 MiB reads.
+`up.sh` now refuses to start when another container already publishes
+`LLAMA_PORT`, `FORGE_PORT` or `OBSERVE_PORT`, naming the holder. Docker used to
+start llama anyway, with no network, while its healthcheck passed.
+
 **Two docs corrected after a GitHub sweep (2026-10-04).** `docs/context-budget.md`
 no longer claims `--slot-save-path` makes warm restarts skip re-prefill. Nothing
 calls slot save, and on this hybrid model a restore reuses zero tokens anyway
