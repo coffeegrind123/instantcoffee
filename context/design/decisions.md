@@ -9337,3 +9337,112 @@ forge.
   `http://forge:8081`) rather than host.docker.internal, which it needed as a
   separate project.
 
+
+## 2026-10-04 — a GitHub sweep: two docs were wrong, one question was already answered, three measurements opened
+
+A sweep of GitHub for Qwen3.8-27B work, checked against this repo. The work it
+opened is in `context/plan-github-sweep-2026-10-04.md`; this entry holds the
+verdicts.
+
+**Corrected, no measurement needed.**
+
+- **Slot restore does not restore on this model** (llama.cpp#28194, open).
+  `/slots/{id}?action=restore` returns 200 with `n_restored == n_saved` and
+  then reuses 0 tokens: the save file omits `prompt.checkpoints`, and the
+  hybrid reuse gate needs one. `docs/context-budget.md` claimed
+  `--slot-save-path` made warm restarts skip re-prefill. Nothing calls save
+  (`slot-cache.sh` says why), so it was false before this bug and stays false
+  after it. A patch (`--slot-save-checkpoints N`) is in the thread. **Not
+  adopted:** it fixes a feature this stack refuses to use, and it needs a
+  custom build.
+- **`docs/modes.md` named the wrong prose model.** It said OBLITERATUS;
+  `modes/prose.env` has run orcarouter `Q4_K_M` since 2026-08-25. Corrected,
+  with OBLITERATUS kept as the revert path.
+
+**Answered by data already in the repo.** llama.cpp#29172 reports decode ~5.5x
+and prefill ~21x slower at 155K deep on the qwen35 16+48 layout. Inside this
+window it does not happen: `context/bench/capacity/ctx-96k.json` (2026-08-22)
+has a 90K-token prompt at **1,770–1,786 tok/s** prefill and **36–47 tok/s**
+decode, against ~46–53 tok/s at 60K. That predates the b11118 pin, so a re-run
+is an open item. The answer is not expected to move.
+
+**A rule, written into `docs/benchmarking.md`.** Draft-model speculation is not
+output-identical on a quantized target (llama.cpp#25618, open, reproduced on
+Qwen3.8-27B). It reproduces with no drafter, by batch-scoring the same prefix,
+so the cause is numerics, not quality. No script compares generated text
+across spec arms; that is now a rule, not an accident.
+
+**Opened for measurement.**
+
+- **Empty turns and `frequency_penalty`** (QwenLM/Qwen3.8#216). The empty
+  answer is 8% at `medium` there; `frequency_penalty: 0.3` gave 0 of 12. A
+  logprobs reading shows `<|im_end|>` in the top-2 inside `<think>` for
+  thousands of steps before it is sampled, which is a per-token hazard. That
+  fits this repo's own cliff (`docs/pi.md`: 33 of 63 empty above 87% fill,
+  3 of 196 below). Twelve calls decide nothing; the A/B runs at high fill,
+  where the base rate is large enough to measure.
+- **KLD for the GGUFs we actually run.** ironblock/discipline#334 published the
+  first Qwen3.8-27B KLD ladder against unsloth's Q8_0. GSQ-RCO IQ3_S (12.12 GB):
+  code 0.0542, prose 0.0860. Neither `UD-Q4_K_XL` nor orcarouter `Q4_K_M` has
+  a number. `kld-run.sh` gets a weights axis; the GSQ IQ3_S arm calibrates our
+  harness against theirs.
+- **GSQ-RCO for `coding`.** It is built from stock weights, runs on mainline,
+  and keeps the MTP head. It is 4.3 GB smaller than `UD-Q4_K_XL`, which is the
+  128K question again. Decided by the KLD gap, not by size.
+
+**Recorded, nothing to change.**
+
+- IronLLM Labs measured Fable-Fusion-711 at **49.6 vs 57.0 tok/s** for base
+  Qwen3.6-27B, at bf16 on vLLM. That is the same ~11–13% the 2026-08-13 entry
+  found at IQ4_XS on llama.cpp. Since it appears without quantization and on
+  another engine, the decode cost belongs to the fine-tune.
+- PascalAI2024/qwen38-27b-quant-bench saw MTP go from **+35–52%** on a headless
+  16 GB card to **-40%** with ~2 GB held by a desktop: one GDN layer is evicted
+  to CPU. That is `vram-floor-and-the-shared-desktop.md`'s mechanism on an
+  independent rig. Same repo: published imatrix files do not cover `blk.64`.
+- FastMTP's draft-vocab trim (llama.cpp#29143, open, unreviewed) needs a patched
+  build. Pin bump and a spec-sweep arm when it merges.
+- Already handled: the mid-conversation system message raise (QwenLM/Qwen3.8#244),
+  reasoning resend busting prefix reuse (llama.cpp#21831), and unbounded
+  `--cache-ram -1` on hybrids (llama.cpp#29324; we run 2048).
+
+### Addendum, later 2026-10-04: what running Phase C found
+
+- **C3 answered: no deep-context collapse on b11118.** `ctx-96k-b11118-90k`:
+  90,029-token prompt, prefill **1,896-1,903 tok/s**, decode **44.4-55.0
+  tok/s**, against 1,770-1,786 and 36-47 on b10573. llama.cpp#29172's
+  collapse stays outside this window, and the current pin is faster at depth.
+- **The empty-answer trigger does not reproduce at shipped settings.** At
+  `medium` with `REASONING_BUDGET=4096`, all 8 pilot turns ran their reasoning
+  into the budget, were force-closed by llama's budget message, and answered.
+  The budget ends `<think>` before #216's long-enumeration hazard can fire.
+  So `frequency_penalty` has nothing to fix in the shipped config. The
+  `xhigh` escape hatch is measured separately (plan C2b).
+- **Host port 8080 collision.** Another project's container held host port
+  8080, and Docker started llama with no network while its in-container
+  healthcheck passed. `up.sh` now refuses on a held port and warns on a
+  network-less container.
+- **9p ENOMEM is a read-size problem.** Under memory pressure, a llama load,
+  `download_model.py`'s hash pass and `sha256sum` each failed with
+  `Cannot allocate memory` reading over the 9p bind. The same 29 GB file
+  hashed cleanly in unbuffered 1 MiB reads, zero retries. `download_model.py`
+  now hashes in 1 MiB chunks (`HASH_CHUNK`), and `test_download_verify.py`
+  fails any read above 1 MiB the way the mount did. llama-perplexity's own
+  model read is NOT under our control, so a weights-axis KLD run on this box
+  still needs memory headroom, not just the fix.
+- **`frequency_penalty: 0.3` refused.** The `xhigh` + 16K-budget escape hatch,
+  which is #216's worst regime, gave **0 of 16** empty answers. That covers 8
+  turns at a 20.5K-token enumeration prompt and 8 at 34K (tryingET's scale);
+  half of the 34K turns were force-closed by the budget. At #216's reported 50%,
+  0 of 16 has p≈0.00002. With nothing to fix, a sampler change that perturbs
+  every turn is all cost. `scripts/empty-turn-ab.sh` stays as the instrument if
+  a real session ever shows the signature.
+- **The same 9p failure on the WRITE side (2026-10-24).** C1's first base
+  arm computed all 12 chunks and exited 0, but its logits file on the D:
+  captures bind was 243,704,732 of 12,199,858,100 bytes. perplexity writes
+  ~1 GB per chunk in one `write()` and never checks the stream, so the first
+  failed write dropped everything after it. `verify_logits` caught it before
+  any test arm read the file. The August "short logits file" failures at 16K
+  were this, not swap as such. `kld-run.sh` now writes logits to the Docker
+  named volume `instantcoffee-kld-logits` on the VM's own disk; only the
+  small logs cross 9p.

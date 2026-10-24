@@ -1,3 +1,236 @@
+# Handoff — 2026-10-24 (part 17: the GitHub sweep — everything done except C1's prose pass and the D1 decision; 9p truncates large writes too; Strata as a source of serve-layer ideas, ternary Bonsai 2 as a lead)
+
+Read `context/plan-github-sweep-2026-10-04.md` first; it has per-item status and
+the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addendum).
+
+## 1. State at hand-off
+
+- **Nothing is committed.** About 30 files modified or new since `e7beab7`. Commit
+  on `main`, one logical change per commit, area-prefixed subjects (`kld:`,
+  `up:`, `download:`, `docs:` ...). Suggested split: doc corrections; kld weights
+  axis + budget + corpus; kld logits on a Docker volume; kld-run WAS_RUNNING
+  guard; empty-turn harness (with its compose service, run as root to write to
+  captures); up.sh port preflight; download 1 MiB hashing; CI step; the
+  `ctx-96k-b11118*` capacity results (one relabelled INVALID-enomem);
+  plan/decisions/handoff/OPEN-WORK/changelog. Check `git status` against this
+  list; `.kld-logs/` is gitignored output.
+- **The stack is DOWN.** The `instantcoffee-llama`, `-forge` and `-observe`
+  containers no longer exist (removed while this session was away); only
+  `instantcoffee-pi` is up. `.env` is byte-identical to HEAD. Bring it back with
+  `LLAMA_PORT=18080 ./scripts/up.sh` — and first check whether 8080 is free now
+  (`docker ps --filter publish=8080`); on 2026-10-24 it was.
+- **C1 code pass: DONE.** After the logits moved off 9p (see below): null control
+  0.000000. UD-Q4_K_XL 0.0059 / 98.04% top-1. orcarouter Q4_K_M 0.0170 / 96.84%.
+  GSQ IQ3_S 0.0332 / 95.60%. The full table is in the plan's C1 row; the logs are
+  in `.kld-logs/20261024T101713Z/`.
+- **C1 prose pass: NOT DONE.** It was killed mid-base-arm by Claude Code's
+  low-memory reaper, which stops background shells when the box runs critically
+  low. The base arm holds ~10 GB of host RAM, and the rest of the box had swap at
+  10.5 GB. The orphaned perplexity container was stopped by hand, and its partial
+  logits were deleted from the volume. The reaper's own note says not to restart
+  without the operator.
+  - Either run it on a quiet box, or start Claude Code with
+    `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`. That only stops the reaper;
+    preflight still refuses to swap.
+- **Why the first code pass failed:** its logits file on the D: captures bind came
+  out at 243,704,732 of 12,199,858,100 bytes, although all 12 chunks were
+  computed (PPL 1.7449, exit 0). perplexity writes ~1 GB per chunk in one
+  `write()` and never checks the stream. That is the write-side twin of the 9p
+  read ENOMEM, and the cause of the August 16K failures. `verify_logits` caught
+  it. **Fix:** logits now go to the Docker volume `instantcoffee-kld-logits`
+  (override with `KLD_LOGITS_VOLUME`).
+
+## 2. What is left
+
+1. **The code result is in** (above). The null control is clean. The IQ3_S
+   calibration matches ironblock on top-1 (95.60 vs 95.43) and differs on KLD
+   (0.033 vs 0.054); the code corpora differ, so expect that.
+2. **Run the prose pass, only when the operator says so.** It is the code pass's
+   command (the plan's C1 row) with
+   `--corpus /captures/corpus/kld-weights/prose.txt --out-subdir kld-prose`.
+   Our prose corpus has the same hash prefix as ironblock's (`173c87a5…`), so
+   these rows compare directly; their IQ3_S prose is 0.0860 / 89.76%.
+   Before starting:
+   - Check `free -m` (preflight needs ~12.1 GB available) and drop the Docker VM
+     page cache
+     (`docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`).
+   - Keep the box quiet for the ~35 minutes it runs. The base arm holds ~10 GB
+     of host RAM for ~20 minutes; that is when the reaper fired.
+   - If the shell gets killed anyway, `docker ps` for an orphaned
+     `/app/llama perplexity` container, stop it, and empty the
+     `instantcoffee-kld-logits` volume.
+3. **D1, GSQ-RCO IQ3_S for `coding`.** It is stock weights only: the uncensored
+   modes cannot use it, because the GSQ pipeline is not public.
+   - The code pass leans against it: KLD 0.0332 vs UD-Q4_K_XL's 0.0059 (5.6×),
+     top-1 95.60% vs 98.04%. That buys ~4.3 GB of VRAM, i.e. a longer window.
+   - Decide after the prose pass. Adopt only as a deliberate trade (for example a
+     128K "long" variant of `coding`) and after a capacity-probe fit run and a
+     spec-sweep arm. Never as a silent replacement for the 96K default.
+4. **Exercised live but not unit-tested:** `kld-run.sh`'s logits-volume move and
+   its WAS_RUNNING guard (stop and restart llama only if it was running).
+   - The code pass printed `instantcoffee-llama is not running; nothing to stop`
+     and `logits volume … 788385 MiB free`, and `verify_logits` said `COMPLETE`.
+   - Both sit after preflight, where a unit test would have to stub every docker
+     call.
+   - The path where llama IS running (stop, then restart in the EXIT trap) has
+     not been exercised since the change.
+5. **Restart the stack** when the work is done (§1).
+6. **Strata follow-ups** (§3a). The first is cheap: capture a pi session through
+   `capture.sh on` and count tool-call markup stranded in `reasoning_content`.
+
+## 3. New leads (2026-10-24, from the operator)
+
+Nothing here is adopted. Each needs measuring on this box first.
+
+### 3a. Strata (Niko1221/Strata): ideas to borrow, NOT an engine to run
+
+The operator is explicit: we are not running Strata. The question is what in it
+this stack can use. Strata is MIT, ~4,900 files. Its engine (expert caching for
+the 125B Flash-Next MoE, a 29 GB Engram table on SSD) does not transfer to a
+dense 27B on llama.cpp. Its **serve layer** does. That layer does forge's job,
+and its tests read like a list of failures we may also be having. Ranked:
+
+1. **Tool calls stranded inside the reasoning** (`serve/test_reasoning_rescue.py`,
+   `test_reasoning_tools.py`, their #804 / #1058).
+   - **Failure:** the model writes a real `<tool_call>` inside `<think>`.
+     llama-server splits `reasoning_content` off first, so the call never
+     becomes a tool call, and the turn can come back empty or call-less. On the
+     HN thread, a ninfer user reports the 27B "will sometimes emit tool calling
+     tokens in its reasoning loop".
+   - **Strata's rules:** recover the call only if the name was declared; a call
+     inside a code fence or inline code stays text; a length-cut stays text; a
+     quoted `</think>` (right after a quote or backtick) does not end the
+     thinking (#537).
+   - **Measured 2026-10-24 on our tapes:**
+     - The proxy tape (`capture-2026-08-23.jsonl`, 49 responses, all with
+       reasoning) has 0 stranded calls. That is too small to rule anything out.
+     - The imported pi transcript (256 responses) carries **no reasoning text at
+       all** (`reasoning_chars=0`), so it cannot answer this. Nor can it answer
+       anything else that depends on reasoning.
+   - **Next:** capture a real multi-hour pi session through `capture.sh on`,
+     then count responses that have tool-call markup in `reasoning_content` and
+     no `tool_calls`. If any show up, a forge patch is the fix, with tests in
+     `test_forge_patches.py` modelled on Strata's cases (whole and chunked,
+     fences, undeclared names, length cuts).
+2. **Tool-call envelope drift and undeclared names** (`test_tool_call_envelope.py`,
+   #3441 / #3075; `test_tool_call_unclosed.py`).
+   - **Strata's rules:**
+     - Accept a call whose opener lost the `function` keyword.
+     - Keep a call to an undeclared tool as text, but **count it and name it in
+       the log**. Their "T1 rail": a call that went back as text is never
+       silent.
+     - Recover an unclosed wrapper only on a natural stop.
+   - forge has `rescue_tool_call` and `forge_toolcall_*` patches. Check which of
+     these cases forge already handles, then adopt the logging rail at least.
+     It is cheap, and it turns silent losses into evidence.
+3. **Reasoning-loop recovery** (`serve/test_reasoning_loop_recovery.py`, opt-in).
+   - **Strata's design:**
+     - Detect a loop in the reasoning, including one written as one long word:
+       their #1753 was 24k digits cycling an 11-digit pattern, which a word
+       splitter never sees repeat.
+     - Splice the prompt back as token IDs, never decode-and-re-encode.
+     - Resample once. Never extend the output limit, and never rewrite the
+       user's instruction.
+     - A "stop mode" ends the reply at the loop instead.
+   - We have a repeat detector (`scripts/test_repeat_detector.py`) and pi-side
+     guards. Compare against Strata's cases, the long-word loop especially.
+4. **A checkpoint at the previous turn boundary** (`docs/MESSAGE_BOUNDARY_CACHE.md`,
+   `docs/PROMPT_CACHE_TAIL.md`).
+   - **Idea:** when an agent keeps a long history but replaces the final user
+     message, save one extra checkpoint just before that message (prefix
+     ≥8,192 tokens, tail ≤1,024), so the edit reuses the prefix instead of
+     falling back to a distant periodic checkpoint.
+   - **Their result:** first-edit time −33% (17.2 s → 11.5 s) on Flash-Next.
+     It was a combined change, not isolated.
+   - **Why it matters here:** on this hybrid model, llama.cpp can reuse a prefix
+     only from a context checkpoint (llama.cpp#21831, #28194;
+     `CTX_CHECKPOINTS=4`), so every pi turn that rewrites its tail risks a full
+     re-prefill.
+   - **Next:** measure first. Grep llama's log from a real pi session for
+     `forcing full prompt re-processing` and the checkpoint lines, and read
+     where llama-server at b11118 places its checkpoints. Only then decide
+     between a llama.cpp change (that means CI, no local compile) and a
+     client-side fix: pi keeping the boundary stable.
+5. **Smaller items:**
+   - `tools/qwen35/parity.py` / `kl.py`: logit-parity and KL against llama.cpp
+     on fixed prompt IDs for the `qwen35` arch. A model for the cross-engine null
+     control that 3b needs.
+   - `docs/BENCHMARK_PROTOCOL.md`: frozen fixtures with a corpus SHA-256, a
+     versioned result schema, and a draft status until a pilot passes. We
+     already work this way; nothing to take.
+   - `tools/strata_mcp.py`: a stdlib-only MCP server that lets an assistant
+     install, start, stop, check status and logs, and run a speed test. Compare
+     with our `/stack` pi extension before adding anything.
+   - `logit_bias` with speculation: llama.cpp already has it. A bias bans
+     tokens, not words, so it is not a fix for CJK leaks.
+   - `VRAM_ELASTIC` (give VRAM back to the desktop on request) solves our
+     desktop-floor problem, but only for an expert cache; nothing in llama.cpp
+     maps onto it.
+
+From the HN thread: one user measured the same GGUF and mmproj through Strata at
+a median coordinate error of 154.8 px, against 46.5 px through llama.cpp. Treat
+it as a reminder that engine numerics are part of the model. It is the same
+lesson as `the-template-is-part-of-the-model.md`.
+
+### 3b. Ternary Bonsai 2 27B + grafted MTP (sudoingX/local-ai-on-your-gaming-gpu)
+
+- **What it is.** PrismML's 5.95 GB ternary (PTQ1_0) Qwen 3.8 27B, with the Qwen 3.8
+  MTP head grafted back on. It needs PrismML's llama.cpp fork (sudoingX branch
+  `bonsai2`), because PTQ1_0 is not in mainline. Prebuilt Linux bundles exist
+  (cuda12.4 sm86-sm89, cuda12.8 sm120). The installer is a one-liner. The same
+  repo ships "Offrail 27B", a Heretic-uncensored ternary build, which matters for
+  `uc-coding` / `prose`.
+- **Why it matters here:** the full 262,144 window plus vision fit in **15,070 MiB**
+  on a 16 GB card. On this 4090 that would mean 262K instead of 96K, with VRAM to
+  spare. The README's speed numbers are for the RTX 3060 and 5060 Ti; nothing is
+  measured on a 4090.
+- **`GGML_CUDA_BATCH_INVARIANT=1`.** sudoingX reports MTP greedy output
+  byte-identical with and without the head on CUDA. The exception is Turing, where
+  2 of 5 prompts flipped a token late. This bears directly on the 2026-10-04 rule
+  in `docs/benchmarking.md` (llama.cpp#25618: speculation is not output-identical
+  on a quantized target).
+  - `gh search code` did NOT find the variable in ggml-org/llama.cpp, and #16016
+    (a deterministic CUDA mode) is still open. Treat it as fork-only.
+  - That negative has no control, because code search under-indexes. Read the
+    mainline ggml-cuda source at the pinned tag before relying on it either way.
+- **Quality is disputed and unmeasured.** On HN one user says Bonsai models are
+  "really bad" past short answers; another says Bonsai 2 is "vastly improved".
+- **How to measure it with what exists:** `kld-run.sh` honours `LLAMA_IMAGE`. An image
+  that only COPIES the prebuilt fork binaries does not compile, so it is allowed
+  under the 2026-10-04 widened compile ban. Run it with
+  `--test-gguf <bonsai file>` against the same Q8_0 base and corpora as C1. The
+  base and test arms then run on different engines: run a null control on the
+  fork image as well, so the cross-engine numerics floor is known.
+  ironblock's #334 found mainline and BeeLlama within 0.0002 on identical
+  weights.
+- **Long context caution:** llama.cpp#29172 (deep-KV collapse, ~5.5x decode at
+  155K) was first reported ON Bonsai 2. Re-run `capacity-probe` at 128K and 200K+
+  before trusting a 262K window.
+
+## 4. Environment notes
+
+- The memory picture changed a lot. On 2026-10-05 the Docker VM had ~5 GB
+  available, 10 GB of swap used and 19 Claude sessions; on 2026-10-24 it had
+  13.8 GB available and 3 sessions. Check `free -m` before anything heavy.
+- **Large single I/O over the 9p binds fails under memory pressure, in both
+  directions.** Reads of 1 MiB or less survive and larger single reads fail with
+  ENOMEM. A ~1 GB single write fails silently and truncates the file. Keep big
+  files on Docker volumes or in small chunks (see the decisions addendum).
+- The host bridge was up on 2026-10-24 (`hostexec` answered).
+- **Claude Code reaps background shells on low memory.** On 2026-10-24 it killed
+  C1's prose pass, and the killed shell left its `docker run` container running.
+  Any long docker job started from a tool call can end the same way. Afterwards,
+  check `docker ps` for orphans.
+- The `instantcoffee-kld-logits` volume exists and is empty. Each base arm writes
+  ~12.2 GB to it, and `kld-run.sh` deletes the file unless `--keep-logits` is
+  passed.
+- CLAUDE.md (2026-10-04) widened the compile ban: nothing compiles locally,
+  including Docker image builds that compile. The forge image build is `pip
+  install` plus COPY. Any llama.cpp fork image must use prebuilt binaries or go
+  through CI.
+- CLAUDE.md (2026-10-05): `gh search code` is capped at 10 requests/minute; past
+  that, switch to the browser MCP on github.com/search.
+
 # Handoff — 2026-09-23 (part 16: orchestrator mode — local 27B orchestrates, up to 15 DeepSeek Flash subagents execute, two levels deep; built, tested, and run live on DeepSeek)
 
 ## 1. What exists

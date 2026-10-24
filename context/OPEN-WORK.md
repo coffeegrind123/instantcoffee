@@ -10,6 +10,33 @@ re-learn expensively.
 
 ---
 
+## 000. The 2026-10-04 GitHub sweep — three measurements and a watch list
+
+The plan, with status per item, is `context/plan-github-sweep-2026-10-04.md`.
+The verdicts are in `decisions.md` under 2026-10-04. Open, in plan order:
+
+- **C1 — KLD for the weights we run** is the only measurement left. Tooling is
+  done (`kld-run.sh` weights axis, `kld_budget.py`, `kld_corpus.py`), the
+  unsloth Q8_0 reference is on D: and hash-verified, and the GSQ IQ3_S-mtp is
+  downloading to D:. **Blocked on host RAM**: the Q8_0 base arm at the -ngl
+  the card allows (~48) needs ~12.1 GB of host RAM (weights + logits
+  buffers), and the shared Docker VM had ~6.5 GB available. That takes either
+  stopping other projects' containers or raising the Docker VM's memory; both
+  are the operator's call.
+- C2 and C3 are done, and D2 is refused. See the plan and `decisions.md` 2026-10-04.
+- **New leads, 2026-10-24** (`HANDOFF.md` part 17, section 3): (a) ideas to borrow from Strata's serve layer, ranked: tool calls stranded in the reasoning, tool-call envelope drift plus a log rail for calls that went back as text, reasoning-loop recovery, and a checkpoint at the previous turn boundary for prefix reuse on this hybrid model. We are not running Strata. (b) ternary Bonsai 2 27B with a grafted MTP head (262K fits), measurable with `kld-run.sh` via `LLAMA_IMAGE`.
+
+Watch, no action until it changes:
+
+| Upstream | Why it matters here | Act when |
+| --- | --- | --- |
+| llama.cpp#29143 | FastMTP draft-vocab trim, a decode lever for `draft-mtp` | merged: pin bump + spec-sweep arm |
+| llama.cpp#28194 | slot restore reuses 0 tokens on hybrids | only if slot save is ever wired, which `slot-cache.sh` argues against |
+| llama.cpp#25618 | spec output is not identical on quantized targets | fixed upstream: drop the rule in `docs/benchmarking.md` |
+| llama.cpp#29172 | deep-KV collapse past ~150K | if `CTX_SIZE` ever goes past 96K |
+
+---
+
 ## 00. ninfer: upstream rejects the 4090 — and a 4090 fork does not, for 16.96 GiB (2026-09-03; read the LAST subsection first)
 
 `ngram-mod-and-the-load-confound.md` ("Also unevaluated") dismisses ninfer with
