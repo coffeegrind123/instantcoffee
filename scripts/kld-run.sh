@@ -720,11 +720,22 @@ if (( DRY )); then
   exit 0
 fi
 
-echo
-echo "==> stopping ${LLAMA_CT} (it holds the card; a ~20 min cold reload follows this run)"
-docker stop "$LLAMA_CT" >/dev/null || die "could not stop ${LLAMA_CT}"
+# Stop llama only if it is running, and restart only what this run stopped: a
+# stack that is down (or whose container was removed) must stay that way, not
+# make the run die on `docker stop` or "restore" a server nobody asked for.
+WAS_RUNNING=0
+[[ "$(docker inspect -f '{{.State.Running}}' "$LLAMA_CT" 2>/dev/null)" == "true" ]] && WAS_RUNNING=1
+if (( WAS_RUNNING )); then
+  echo
+  echo "==> stopping ${LLAMA_CT} (it holds the card; a ~20 min cold reload follows this run)"
+  docker stop "$LLAMA_CT" >/dev/null || die "could not stop ${LLAMA_CT}"
+else
+  echo
+  echo "==> ${LLAMA_CT} is not running; nothing to stop, and it will not be started afterwards"
+fi
 
 restore() {
+  (( WAS_RUNNING )) || return 0
   echo
   echo "==> restarting ${LLAMA_CT}"
   docker start "$LLAMA_CT" >/dev/null && echo "    started; the model is now reading off disk (~20 min)" \
