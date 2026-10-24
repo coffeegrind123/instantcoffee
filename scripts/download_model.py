@@ -33,6 +33,11 @@ def _human(num_bytes: float) -> str:
 # and a stall that never raises is worse than an error. Retry around it — each
 # attempt resumes from the .incomplete file rather than starting over.
 MAX_ATTEMPTS = int(os.environ.get("DOWNLOAD_ATTEMPTS", "12"))
+# 1 MiB, not 16. MODELS_DIR is a 9p bind, and under memory pressure the 9p
+# client fails a single large read with ENOMEM: the hash pass over a 29 GB GGUF
+# died on a 16 MiB read (2026-10-04) while the same file hashed cleanly in 1 MiB
+# reads with zero retries. Throughput is the same either way.
+HASH_CHUNK = 1024 * 1024
 
 
 def _remote_meta(repo: str, filename: str, token: str | None):
@@ -77,10 +82,10 @@ def _sha256(path: Path, label: str) -> str:
     seen = 0
     total = path.stat().st_size
     with open(path, "rb") as fh:
-        while chunk := fh.read(16 * 1024 * 1024):
+        while chunk := fh.read(HASH_CHUNK):
             h.update(chunk)
             seen += len(chunk)
-            if total and seen % (2 * 1024 * 1024 * 1024) < 16 * 1024 * 1024:
+            if total and seen % (2 * 1024 * 1024 * 1024) < HASH_CHUNK:
                 print(f"[hash] {label}: {100 * seen // total}%", flush=True)
     return h.hexdigest()
 

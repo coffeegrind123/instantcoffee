@@ -63,6 +63,38 @@ def main() -> int:
     check("_sha256 on a multi-chunk file",
           dm._sha256(big, "t"), hashlib.sha256(b"x" * (5 * 1024 * 1024)).hexdigest())
 
+    # --- reads stay small enough for a 9p mount under memory pressure ---------
+    # 2026-10-04: the hash pass over a 29 GB GGUF on //d/ died with ENOMEM on a
+    # 16 MiB read while the same file hashed cleanly in 1 MiB reads, zero
+    # retries. The fake below fails any single read above 1 MiB the way the 9p
+    # client did, so a chunk size that regresses fails here instead of at
+    # hour three of a download.
+    import builtins
+    import errno
+    real_open = builtins.open
+
+    class NinePish:
+        def __init__(self, fh):
+            self.fh = fh
+        def read(self, n=-1):
+            if n < 0 or n > 1024 * 1024:
+                raise OSError(errno.ENOMEM, "Cannot allocate memory")
+            return self.fh.read(n)
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            self.fh.close()
+
+    builtins.open = lambda f, mode="r", *a, **k: NinePish(real_open(f, mode, *a, **k)) if "b" in mode else real_open(f, mode, *a, **k)
+    try:
+        got = dm._sha256(big, "t")
+    except OSError as e:
+        got = f"OSError: {e}"
+    finally:
+        builtins.open = real_open
+    check("_sha256 reads in chunks a 9p mount under pressure accepts",
+          got, hashlib.sha256(b"x" * (5 * 1024 * 1024)).hexdigest())
+
     # --- the happy path ------------------------------------------------------
     check("size+sha both match -> ok", dm._verify(p, size, sha, "t.gguf"), True)
 
