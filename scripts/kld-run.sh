@@ -235,7 +235,16 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 # reference and a KV run against GGUF_FILE cannot collide either.
 BASE_TAG="$BASE_KV"
 (( WEIGHTS )) && BASE_TAG="$(gguf_label "$BASE_GGUF")-${BASE_KV}"
-logits_path() { echo "${OUTDIR}/logits-${BASE_TAG}-$1.bin"; }
+# THE LOGITS FILE IS NOT WRITTEN TO THE CAPTURES MOUNT. /captures is a 9p bind
+# of a Windows drive, and perplexity writes each chunk's log-probs (~1 GB at
+# n_ctx 4096 on this vocabulary) in ONE write and never checks the stream. Under
+# memory pressure that write fails, the ofstream latches badbit, every later
+# write is dropped, and the base arm still exits 0. Measured 2026-10-24: all 12
+# chunks computed (PPL 1.7449), file 243,704,732 of 12,199,858,100 bytes. The
+# August 16K failures were the same thing. A Docker named volume lives on the
+# VM's own disk, so the file never crosses 9p; the logs (small) stay on captures.
+LOGITS_VOL="${KLD_LOGITS_VOLUME:-instantcoffee-kld-logits}"
+logits_path() { echo "/logits/logits-${BASE_TAG}-$1.bin"; }
 base_log()    { echo "${OUTDIR}/base-${BASE_TAG}-$1.log"; }
 test_log()    { echo "${OUTDIR}/test-$2-vs-${BASE_TAG}-$1.log"; }
 
@@ -518,6 +527,8 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
     || die "cannot create $OUTDIR under the captures mount"
 
   local free; free="$(docker run --rm -v "${CAPS}:/captures" alpine df -Pm /captures | awk 'NR==2{print $4}')"
+  local lfree; lfree="$(docker run --rm -v "${LOGITS_VOL}:/logits" alpine df -Pm /logits | awk 'NR==2{print $4}')"
+  echo "    logits volume ${LOGITS_VOL}: ${lfree} MiB free (the VM's own disk, not 9p)"
   echo "    free on tape  ${free} MiB"
 
   # A live session dies mid-turn when llama stops. Ten minutes of quiet is not
@@ -555,6 +566,7 @@ pass() {
     docker run --rm --gpus all
       "${mounts[@]}"
       -v "${CAPS}:/captures"
+      -v "${LOGITS_VOL}:/logits"
       --entrypoint /app/llama
       "$IMAGE" perplexity
       -m "$(gguf_path "$gguf")"
@@ -616,7 +628,7 @@ pass() {
 verify_logits() {
   local logits="$1"
   local report rc=0
-  report="$(docker run --rm -v "${CAPS}:/captures" --entrypoint python "$SIDECAR_IMAGE" -c "
+  report="$(docker run --rm -v "${LOGITS_VOL}:/logits" --entrypoint python "$SIDECAR_IMAGE" -c "
 import os, struct, sys
 path = '$logits'
 try:
@@ -743,7 +755,7 @@ for d in ${DEPTHS//,/ }; do
   if (( ! KEEP_LOGITS )); then
     # Full-vocab logits are ~10 GB per depth. They are reproducible from the
     # base arm; the numbers that matter are in the logs.
-    docker run --rm -v "${CAPS}:/captures" alpine rm -f "$LOG_BASE" || true
+    docker run --rm -v "${LOGITS_VOL}:/logits" alpine rm -f "$LOG_BASE" || true
     echo "    removed $LOG_BASE (pass --keep-logits to keep it)"
   fi
 done
