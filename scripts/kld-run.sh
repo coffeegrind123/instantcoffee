@@ -6,6 +6,20 @@
 #   ./scripts/kld-run.sh --corpus ... --null-control   f16 vs f16: RUN THIS FIRST
 #   ./scripts/kld-run.sh --corpus ... --dry-run        print the commands, run nothing
 #
+# THE WEIGHTS AXIS (quant damage instead of KV damage):
+#   ./scripts/kld-run.sh --corpus /captures/corpus/code.txt --unpinned \
+#       --base-gguf Qwen3.8-27B-Q8_0.gguf --base-ngl 44 \
+#       --test-gguf Qwen3.8-27B-UD-Q4_K_XL.gguf,/models2/gsq-IQ3_S-mtp.gguf \
+#       --models2 //d/llm-models --null-control --depths 4096 --chunks 12
+# Every arm runs at --base-kv (f16 by default), so the only thing that differs
+# between base and test is the file. A bare name is under MODELS_DIR; a
+# /models2/... path is under --models2. --base-ngl is required in practice for
+# a reference that does not fit the card: -ngl 999 is explicit, and --fit does
+# not scale an explicit -ngl down. scripts/kld_budget.py sizes the CPU-resident
+# share of each file, and preflight adds it to the host-RAM verdict.
+# --chunks caps how many n_ctx chunks the base arm scores, so a corpus can be
+# longer than the run without the run growing with it.
+#
 # RUN THE NULL CONTROL BEFORE QUOTING ANY NUMBER. `--null-control` points the
 # test arm at the base arm's own KV type, so the run compares f16 against f16
 # across two processes. It must return KLD ~ 0 and same-top-1 ~ 100%; whatever
@@ -67,6 +81,12 @@ BASE_KV="f16"
 TEST_KV="q8_0"
 NULL_CONTROL=0
 ALLOW_SWAP=0
+TEST_KV_SET=0
+BASE_GGUF=""
+TEST_GGUFS=""
+BASE_NGL=""
+MODELS2=""
+CHUNKS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -78,13 +98,23 @@ while [[ $# -gt 0 ]]; do
     --keep-logits) KEEP_LOGITS=1; shift ;;
     --base-kv) BASE_KV="${2:-}"; shift 2 || die "--base-kv needs a value" ;;
     --base-kv=*) BASE_KV="${1#*=}"; shift ;;
-    --test-kv) TEST_KV="${2:-}"; shift 2 || die "--test-kv needs a value" ;;
-    --test-kv=*) TEST_KV="${1#*=}"; shift ;;
+    --test-kv) TEST_KV="${2:-}"; TEST_KV_SET=1; shift 2 || die "--test-kv needs a value" ;;
+    --test-kv=*) TEST_KV="${1#*=}"; TEST_KV_SET=1; shift ;;
+    --base-gguf) BASE_GGUF="${2:-}"; shift 2 || die "--base-gguf needs a value" ;;
+    --base-gguf=*) BASE_GGUF="${1#*=}"; shift ;;
+    --test-gguf) TEST_GGUFS="${2:-}"; shift 2 || die "--test-gguf needs a value" ;;
+    --test-gguf=*) TEST_GGUFS="${1#*=}"; shift ;;
+    --base-ngl) BASE_NGL="${2:-}"; shift 2 || die "--base-ngl needs a value" ;;
+    --base-ngl=*) BASE_NGL="${1#*=}"; shift ;;
+    --models2) MODELS2="${2:-}"; shift 2 || die "--models2 needs a value" ;;
+    --models2=*) MODELS2="${1#*=}"; shift ;;
+    --chunks) CHUNKS="${2:-}"; shift 2 || die "--chunks needs a value" ;;
+    --chunks=*) CHUNKS="${1#*=}"; shift ;;
     --null-control) NULL_CONTROL=1; shift ;;
     --allow-swap) ALLOW_SWAP=1; shift ;;
     --unpinned) UNPINNED=1; shift ;;
     --dry-run) DRY=1; shift ;;
-    -h|--help) sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR>1 && !/^#/{exit} NR>1' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown argument '$1'" ;;
   esac
 done
@@ -126,6 +156,65 @@ GGUF="$(env_get GGUF_FILE)";             [[ -n "$GGUF" ]] || die "GGUF_FILE is n
 MODELS="$(env_get MODELS_DIR)";          [[ -n "$MODELS" ]] || die "MODELS_DIR is not set in .env"
 CAPS="$(env_get CAPTURES_DIR)";          [[ -n "$CAPS" ]] || die "CAPTURES_DIR is not set in .env"
 NGL="$(env_get NGL)";                    : "${NGL:=999}"
+
+# ---------------------------------------------------------------------------
+# The arms. One axis varies per run, never both: a KLD that moved because the
+# KV type AND the file changed cannot say which one moved it.
+#
+#   KV axis (default)   every arm is GGUF_FILE; the test arms differ in KV type
+#   weights axis        every arm runs at BASE_KV; the test arms differ in file
+#
+# Each arm is a (kv, gguf, label) triple held in three parallel arrays, so the
+# header, the dry run and the real run all walk one list.
+# ---------------------------------------------------------------------------
+[[ -n "$BASE_NGL" && ! "$BASE_NGL" =~ ^[0-9]+$ ]] && die "--base-ngl must be a non-negative integer"
+[[ -n "$CHUNKS" && ! "$CHUNKS" =~ ^[1-9][0-9]*$ ]] && die "--chunks must be a positive integer"
+[[ -n "$TEST_GGUFS" ]] && WEIGHTS=1 || WEIGHTS=0
+if (( ! WEIGHTS )) && [[ -n "$BASE_GGUF" || -n "$MODELS2" ]]; then
+  die "--base-gguf / --models2 belong to the weights axis; name the test files with --test-gguf"
+fi
+if (( WEIGHTS && TEST_KV_SET )); then
+  die "--test-kv and --test-gguf vary two axes at once; every weights-axis arm runs at --base-kv"
+fi
+: "${BASE_GGUF:=$GGUF}"
+: "${BASE_NGL:=$NGL}"
+
+# A bare name is under MODELS_DIR (/models); /models2/... is under --models2.
+# Nothing else is mounted into the runner, so anything else is refused here
+# rather than discovered as "file not found" after llama has been stopped.
+gguf_path() {
+  case "$1" in
+    /models2/*) [[ -n "$MODELS2" ]] || die "'$1' needs --models2"; printf '%s' "$1" ;;
+    /*)         die "'$1': a GGUF is a bare name under MODELS_DIR or a /models2/... path" ;;
+    *)          printf '/models/%s' "$1" ;;
+  esac
+}
+model_mounts() {
+  printf '%s\n' -v "${MODELS}:/models:ro"
+  [[ -n "$MODELS2" ]] && printf '%s\n' -v "${MODELS2}:/models2:ro"
+  return 0
+}
+gguf_label() { local b; b="$(basename "$1" .gguf)"; printf '%s' "${b//[^A-Za-z0-9._-]/_}"; }
+
+# The weights-axis null arm is the base file again, so it runs at --base-ngl:
+# a reference too big for the card does not fit at the test arms' -ngl either.
+ARM_KV=(); ARM_GGUF=(); ARM_LABEL=(); ARM_NGL=()
+if (( WEIGHTS )); then
+  TEST_LIST="$TEST_GGUFS"
+  (( NULL_CONTROL )) && TEST_LIST="${BASE_GGUF},${TEST_GGUFS}"
+  for g in ${TEST_LIST//,/ }; do
+    ARM_KV+=("$BASE_KV"); ARM_GGUF+=("$g"); ARM_LABEL+=("$(gguf_label "$g")")
+    if [[ "$g" == "$BASE_GGUF" ]]; then ARM_NGL+=("$BASE_NGL"); else ARM_NGL+=("$NGL"); fi
+  done
+else
+  for kv in ${TEST_KVS//,/ }; do
+    ARM_KV+=("$kv"); ARM_GGUF+=("$GGUF"); ARM_LABEL+=("$kv"); ARM_NGL+=("$NGL")
+  done
+fi
+for g in "$BASE_GGUF" "${ARM_GGUF[@]}"; do gguf_path "$g" >/dev/null; done
+is_null_arm() {
+  if (( WEIGHTS )); then [[ "${ARM_GGUF[$1]}" == "$BASE_GGUF" ]]; else [[ "${ARM_KV[$1]}" == "$BASE_KV" ]]; fi
+}
 # llama_image() so a fork (LLAMA_IMAGE) can be measured with the same runner.
 # LLAMA_TAG_V above is still read because it is what the run RECORDS as its pin;
 # the two are the same string whenever LLAMA_IMAGE is unset, which is the default.
@@ -141,12 +230,17 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
 # Both arms are in the filenames so a null control and a q8_0 run can share a
 # directory without one silently overwriting the other's evidence.
-logits_path() { echo "${OUTDIR}/logits-${BASE_KV}-$1.bin"; }
-base_log()    { echo "${OUTDIR}/base-${BASE_KV}-$1.log"; }
-test_log()    { echo "${OUTDIR}/test-$2-vs-${BASE_KV}-$1.log"; }
+#
+# On the weights axis the base FILE is in the names as well, so a Q8_0
+# reference and a KV run against GGUF_FILE cannot collide either.
+BASE_TAG="$BASE_KV"
+(( WEIGHTS )) && BASE_TAG="$(gguf_label "$BASE_GGUF")-${BASE_KV}"
+logits_path() { echo "${OUTDIR}/logits-${BASE_TAG}-$1.bin"; }
+base_log()    { echo "${OUTDIR}/base-${BASE_TAG}-$1.log"; }
+test_log()    { echo "${OUTDIR}/test-$2-vs-${BASE_TAG}-$1.log"; }
 
-# n_vocab comes from the GGUF's own metadata — gguf_n_vocab() in lib.sh, shared
-# with ppl-stride-run.sh, which bounds its host memory on the same product.
+# n_vocab comes from the GGUF's own metadata, read by scripts/kld_budget.py in
+# the same pass that sizes each file's host share.
 
 # ---------------------------------------------------------------------------
 # Preflight. Everything that can be checked without stopping the server is
@@ -159,8 +253,12 @@ preflight() {
   docker image inspect "$IMAGE" >/dev/null 2>&1 \
     || die "image $IMAGE is not present locally; pull it before stopping the server"
 
-  docker run --rm -v "${MODELS}:/models:ro" alpine test -f "/models/${GGUF}" \
-    || die "/models/${GGUF} is not readable through the MODELS_DIR mount"
+  local g
+  local -a mounts; mapfile -t mounts < <(model_mounts)
+  for g in "$BASE_GGUF" "${ARM_GGUF[@]}"; do
+    docker run --rm "${mounts[@]}" alpine test -f "$(gguf_path "$g")" \
+      || die "$(gguf_path "$g") is not readable through its models mount"
+  done
 
   docker run --rm -v "${CAPS}:/captures" alpine test -f "$CORPUS" \
     || die "corpus $CORPUS is not readable through the CAPTURES_DIR mount"
@@ -291,12 +389,63 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
   #     16384 "ok: ~14244 MiB" for a pass that in fact wanted ~22.7 GiB on a
   #     22 GiB box. A wrong constant in a guard is worse than no guard: it
   #     answers confidently.
-  local nvocab
-  nvocab="$(gguf_n_vocab "$MODELS" "$GGUF" "$SIDECAR_IMAGE")"
+  #
+  # (3) THE WEIGHTS LEFT ON THE CPU ARE HOST RAM TOO. --load-mode none copies
+  #     every CPU-assigned tensor into a host buffer: token_embd always (682 MiB
+  #     on both Q4 files here), and on the weights axis every block a partial
+  #     -ngl leaves behind — ~9 GiB for a 28.6 GB Q8_0 at -ngl 44. That is read
+  #     out of the file by scripts/kld_budget.py, which reproduced llama.cpp's
+  #     own CUDA_Host/CUDA0 buffer report on both Q4 files to 0.01 MiB. The
+  #     arms are separate processes, so the verdict charges the buffers plus
+  #     the LARGEST host share of any one arm.
+  local nvocab="" base_host=0 base_gpu=0 arm_host=0 i j json
+  for (( i = -1; i < ${#ARM_GGUF[@]}; i++ )); do
+    local g ngl role
+    if (( i < 0 )); then g="$BASE_GGUF"; ngl="$BASE_NGL"; role="base"
+    else
+      g="${ARM_GGUF[$i]}"; ngl="${ARM_NGL[$i]}"; role="test"
+      # One line per distinct file: a KV-axis run is N arms on one file.
+      local seen=0
+      for (( j = 0; j < i; j++ )); do [[ "${ARM_GGUF[$j]}" == "$g" ]] && seen=1; done
+      if [[ "$g" == "$BASE_GGUF" && "$ngl" == "$BASE_NGL" ]] || (( seen )); then continue; fi
+    fi
+    json="$(docker run --rm -i --user 0:0 "${mounts[@]}" --entrypoint python "$SIDECAR_IMAGE" \
+              - "$(gguf_path "$g")" --ngl "$ngl" < "${REPO_ROOT}/scripts/kld_budget.py" 2>&1)"
+    local host gpu nvf unplaced
+    host="$(grep -oE '"host_weights_mib": [0-9]+' <<<"$json" | grep -oE '[0-9]+$')"
+    gpu="$(grep -oE '"gpu_weights_mib": [0-9]+' <<<"$json" | grep -oE '[0-9]+$')"
+    nvf="$(grep -oE '"n_vocab": [0-9]+' <<<"$json" | grep -oE '[0-9]+$')"
+    unplaced="$(grep -oE '"unplaced": \[[^]]*\]' <<<"$json")"
+    if [[ -z "$host" || -z "$gpu" ]]; then
+      echo "    ${role} weights  COULD NOT BE SIZED: $(gguf_path "$g"): ${json}"
+      echo "                  REFUSING: the host share of this file is unknown, and on"
+      echo "                  this box an unsized host share is how a run swaps."
+      return 1
+    fi
+    printf '    %-4s weights  %s  -ngl %s: host %s MiB, GPU %s MiB\n' "$role" "$(gguf_path "$g")" "$ngl" "$host" "$gpu"
+    [[ "$unplaced" != '"unplaced": []' ]] && echo "                  counted on the host, unrecognised: ${unplaced}"
+    if (( i < 0 )); then
+      base_host=$host; base_gpu=$gpu; nvocab="$nvf"
+    else
+      (( host > arm_host )) && arm_host=$host
+      [[ -n "$nvocab" && "$nvf" != "$nvocab" ]] \
+        && die "$(gguf_path "$g") has n_vocab ${nvf}, the base has ${nvocab}: KLD across vocabularies is meaningless"
+    fi
+  done
+  # A warning, not a refusal: on Windows an overfull card spills to shared
+  # memory and the run gets slow, not wrong. 21,700 MiB is the 24,564 MiB card
+  # less the ~2.8 GiB desktop floor docs/changelog.md measured (2026-08), and
+  # the KV and compute buffers (~1.3 GiB) still have to fit on top.
+  if (( base_gpu > 21700 - 1300 )); then
+    echo "                  WARNING: ${base_gpu} MiB of base weights on the GPU leaves no room"
+    echo "                  for KV and compute buffers under the desktop floor; expect a"
+    echo "                  spill to shared memory. Lower --base-ngl."
+  fi
+  local weights_host=$(( base_host > arm_host ? base_host : arm_host ))
   if [[ "$nvocab" =~ ^[0-9]+$ ]]; then
     echo "    n_vocab       ${nvocab} (tokenizer.ggml.tokens, read from the GGUF)"
   else
-    echo "    n_vocab       COULD NOT BE READ from /models/${GGUF}: ${nvocab}"
+    echo "    n_vocab       COULD NOT BE READ from $(gguf_path "$BASE_GGUF")"
     echo "                  the host-memory verdicts below cannot be computed, so they"
     echo "                  are not printed. Nothing is guarding the depth you picked."
     nvocab=""
@@ -308,7 +457,7 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
   local blocked=0
   for d in ${DEPTHS//,/ }; do
     local need_mb=0
-    (( nvocab )) && need_mb=$(( ( (d / 2) * nvocab * 4 + d * nv * 2 ) / 1048576 ))
+    (( nvocab )) && need_mb=$(( ( (d / 2) * nvocab * 4 + d * nv * 2 ) / 1048576 + weights_host ))
     local need_tok=$(( 2 * d ))
     local verdict="ok"
     if [[ -n "$REF_TOKENS" ]] && (( REF_TOKENS < need_tok )); then
@@ -394,20 +543,24 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
 # One pass. arm=base writes the logits file; arm=test reads it and reports.
 # ---------------------------------------------------------------------------
 pass() {
-  local arm="$1" kvtype="$2" depth="$3" logits="$4" log="$5"
+  local arm="$1" kvtype="$2" depth="$3" logits="$4" log="$5" gguf="$6" ngl="$7"
   local extra=()
   if [[ "$arm" == "test" ]]; then extra+=(--kl-divergence); fi
+  # Only the base arm needs the cap. The KLD reader takes n_chunk from the
+  # logits file's header and never reads --chunks (perplexity.cpp, b11118).
+  if [[ "$arm" == "base" && -n "$CHUNKS" ]]; then extra+=(--chunks "$CHUNKS"); fi
+  local -a mounts; mapfile -t mounts < <(model_mounts)
 
   local cmd=(
     docker run --rm --gpus all
-      -v "${MODELS}:/models:ro"
+      "${mounts[@]}"
       -v "${CAPS}:/captures"
       --entrypoint /app/llama
       "$IMAGE" perplexity
-      -m "/models/${GGUF}"
+      -m "$(gguf_path "$gguf")"
       -f "$CORPUS"
       -c "$depth"
-      -ngl "$NGL"
+      -ngl "$ngl"
       -fa on
       -ctk "$kvtype" -ctv "$kvtype"
       -kvu
@@ -419,7 +572,7 @@ pass() {
   )
 
   echo
-  echo "--- ${arm}  kv=${kvtype}  n_ctx=${depth}  ->  ${log}"
+  echo "--- ${arm}  $(gguf_label "$gguf")  kv=${kvtype}  -ngl ${ngl}  n_ctx=${depth}  ->  ${log}"
   printf '   '; printf ' %q' "${cmd[@]}"; echo
   if (( DRY )); then return 0; fi
 
@@ -511,24 +664,30 @@ LOCAL_LOGDIR="${REPO_ROOT}/.kld-logs/${STAMP}"
 # --dry-run is litter that looks like a run that produced no output.
 (( DRY )) || mkdir -p "$LOCAL_LOGDIR"
 
-echo "KV-cache fidelity run   ${STAMP}"
+if (( WEIGHTS )); then
+  echo "Weights fidelity run (quant damage)   ${STAMP}"
+else
+  echo "KV-cache fidelity run   ${STAMP}"
+fi
 echo "  image     ${IMAGE}"
-echo "  model     /models/${GGUF}"
 echo "  corpus    ${CORPUS}"
 echo "  depths    ${DEPTHS}"
-echo "  base arm  -ctk ${BASE_KV} -ctv ${BASE_KV}   (writes the logits)"
-for kv in ${TEST_KVS//,/ }; do
-  if [[ "$kv" == "$BASE_KV" ]]; then
-    echo "  test arm  -ctk ${kv} -ctv ${kv}   NULL CONTROL — measures the instrument, not the KV type"
+echo "  base arm  $(gguf_path "$BASE_GGUF")  -ctk ${BASE_KV} -ctv ${BASE_KV}  -ngl ${BASE_NGL}   (writes the logits)"
+HAS_NULL=0
+for i in "${!ARM_KV[@]}"; do
+  arm="$(gguf_path "${ARM_GGUF[$i]}")  -ctk ${ARM_KV[$i]} -ctv ${ARM_KV[$i]}  -ngl ${ARM_NGL[$i]}"
+  if is_null_arm "$i"; then
+    HAS_NULL=1
+    echo "  test arm  ${arm}   NULL CONTROL — measures the instrument, not the arm"
   else
-    echo "  test arm  -ctk ${kv} -ctv ${kv}   (reads the logits, reports KLD)"
+    echo "  test arm  ${arm}   (reads the logits, reports KLD)"
   fi
 done
-if (( ! NULL_CONTROL )) && [[ ",${TEST_KVS}," != *",${BASE_KV},"* ]]; then
+if (( ! HAS_NULL )); then
   echo
   echo "  NOTE: no null control in this run. Nothing establishes the floor these"
   echo "        numbers sit above. Add --null-control unless one has already been"
-  echo "        run against this corpus, this model and these depths."
+  echo "        run against this corpus, these weights and these depths."
 fi
 echo "  logs      ${LOCAL_LOGDIR}"
 echo
@@ -539,9 +698,9 @@ if (( DRY )); then
   echo
   echo "==> dry run: the passes that WOULD run"
   for d in ${DEPTHS//,/ }; do
-    pass base "$BASE_KV" "$d" "$(logits_path "$d")" "$(base_log "$d")"
-    for kv in ${TEST_KVS//,/ }; do
-      pass test "$kv" "$d" "$(logits_path "$d")" "$(test_log "$d" "$kv")"
+    pass base "$BASE_KV" "$d" "$(logits_path "$d")" "$(base_log "$d")" "$BASE_GGUF" "$BASE_NGL"
+    for i in "${!ARM_KV[@]}"; do
+      pass test "${ARM_KV[$i]}" "$d" "$(logits_path "$d")" "$(test_log "$d" "${ARM_LABEL[$i]}")" "${ARM_GGUF[$i]}" "${ARM_NGL[$i]}"
     done
   done
   echo
@@ -564,7 +723,7 @@ trap restore EXIT INT TERM
 FAILED=0
 for d in ${DEPTHS//,/ }; do
   LOG_BASE="$(logits_path "$d")"
-  pass base "$BASE_KV" "$d" "$LOG_BASE" "$(base_log "$d")" \
+  pass base "$BASE_KV" "$d" "$LOG_BASE" "$(base_log "$d")" "$BASE_GGUF" "$BASE_NGL" \
     || { FAILED=1; echo "    base arm at ${d} failed; skipping its test arm"; continue; }
 
   # Between the arms, because a truncated file is the base arm's failure and
@@ -578,8 +737,8 @@ for d in ${DEPTHS//,/ }; do
     continue
   fi
 
-  for kv in ${TEST_KVS//,/ }; do
-    pass test "$kv" "$d" "$LOG_BASE" "$(test_log "$d" "$kv")" || FAILED=1
+  for i in "${!ARM_KV[@]}"; do
+    pass test "${ARM_KV[$i]}" "$d" "$LOG_BASE" "$(test_log "$d" "${ARM_LABEL[$i]}")" "${ARM_GGUF[$i]}" "${ARM_NGL[$i]}" || FAILED=1
   done
   if (( ! KEEP_LOGITS )); then
     # Full-vocab logits are ~10 GB per depth. They are reproducible from the
