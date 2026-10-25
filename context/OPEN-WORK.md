@@ -24,7 +24,7 @@ The verdicts are in `decisions.md` under 2026-10-04. Open, in plan order:
   stopping other projects' containers or raising the Docker VM's memory; both
   are the operator's call.
 - C2 and C3 are done, and D2 is refused. See the plan and `decisions.md` 2026-10-04.
-- **New leads, 2026-10-24** (`HANDOFF.md` part 17, section 3): (a) ideas to borrow from Strata's serve layer, ranked: tool calls stranded in the reasoning, tool-call envelope drift plus a log rail for calls that went back as text, reasoning-loop recovery, and a checkpoint at the previous turn boundary for prefix reuse on this hybrid model. We are not running Strata. (b) ternary Bonsai 2 27B with a grafted MTP head (262K fits), measurable with `kld-run.sh` via `LLAMA_IMAGE`.
+- **New leads, 2026-10-24** (`HANDOFF.md` part 17, section 3): (a) ideas to borrow from Strata's serve layer, ranked: tool calls stranded in the reasoning, tool-call envelope drift plus a log rail for calls that went back as text, reasoning-loop recovery, and a checkpoint at the previous turn boundary for prefix reuse on this hybrid model. We are not running Strata. (b) ternary Bonsai 2 27B with a grafted MTP head (262K fits), measurable with `kld-run.sh` via `LLAMA_IMAGE`. (c, 2026-10-25) a 3090 inference-options sweep: the Ampere GPU unlock is skipped (+0–5% prefill / ~0% decode on our 4090 model, and no WSL2-4090 host path); HyperQwen (patched vLLM, prebuilt image, a 4090/WSL2 datapoint) is measurable without compiling but is a whole-GPU engine swap on a different quant the uncensored modes cannot use; llamAmpere is sm_86 only, but its resume-without-reprefill prompt cache is worth borrowing against llama.cpp#28194.
 
 Watch, no action until it changes:
 

@@ -1,4 +1,4 @@
-# Handoff — 2026-10-24 (part 17: the GitHub sweep — everything done except C1's prose pass and the D1 decision; 9p truncates large writes too; Strata as a source of serve-layer ideas, ternary Bonsai 2 as a lead)
+# Handoff — 2026-10-24 (part 17: the GitHub sweep — everything done except C1's prose pass and the D1 decision; 9p truncates large writes too; Strata as a source of serve-layer ideas, ternary Bonsai 2 as a lead, the 3090 inference-options sweep weighed and the Ampere GPU unlock skipped)
 
 Read `context/plan-github-sweep-2026-10-04.md` first; it has per-item status and
 the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addendum).
@@ -206,6 +206,82 @@ lesson as `the-template-is-part-of-the-model.md`.
 - **Long context caution:** llama.cpp#29172 (deep-KV collapse, ~5.5x decode at
   155K) was first reported ON Bonsai 2. Re-run `capacity-probe` at 128K and 200K+
   before trusting a 262K window.
+
+### 3c. The 3090 inference-options sweep + the Ampere GPU unlock (2026-10-25, from the operator)
+
+Source: an HN thread on `Zagitta/gpu-unlock` and a Claude-written benchmark
+writeup it links. Both are about an **RTX 3090 (Ampere, sm_86)**; this box is a
+**4090 (Ada, sm_89) inside Docker Desktop on WSL2**. That gap decides most of it.
+Nothing here is adopted.
+
+- **The GPU unlock: skip it.** `Zagitta/gpu-unlock` (and the Ada fork
+  `JustAResearcher/gpu-unlock-ada`) flips two bits in the GA10x/AD10x boot
+  firmware to double the issue rate of FP16/BF16-with-FP32-accumulate (and TF32)
+  tensor instructions. On a 4090 the matched microbenchmarks show a clean 2.0x on
+  exactly those ops — but our workload barely touches them. Checked against the
+  b11118 CUDA source:
+  - Prefill weight matmuls go through **MMQ, which is INT8** (`ggml_cuda_should_use_mmq`
+    picks it for Q4_K/Q6_K on Turing+). INT8 is untouched by the unlock. Decode
+    reads weights through **MMVQ (dp4a)**, memory-bound, also untouched.
+  - Only flash attention's **Q·K step** accumulates in FP32 and would gain; its V
+    step is already FP16-accumulate at full rate. And **only 16 of 64 layers have
+    attention** — the other 48 are GatedDeltaNet, which uses no tensor cores at
+    all. Rough budget at a 90K prefill: Q·K is <10% of per-token time, so halving
+    it saves ~5% at most, less at shorter context. Estimate: **+0–5% prefill, ~0%
+    decode**. The closest real measurement (`gpu-unlock` #71, llama.cpp, a hybrid
+    model at 100K) agrees: **+2.9% prefill, +0.3% decode**. The HN +30% / 1.57x
+    figures are BF16/FP16 engines (vLLM, Krea diffusion), not a quantized GGUF.
+  - **There is no way to run it here anyway.** The Linux module must load from
+    initramfs before the nvidia driver claims the card; WSL2 has no real nvidia
+    kernel driver. Every Windows port is a pre-boot UEFI exploit locked to one
+    exact card+board+VBIOS hash, and **none covers a 4090**. Building one means a
+    custom EFI (breaks the no-local-compile rule), Secure Boot off, and a
+    power-off to recover a failed flash. It does show through WSL2 once the host
+    is unlocked, so if a 4090 Windows port ever appears the container would see
+    the higher rates — but the ceiling above makes that not worth chasing.
+
+- **HyperQwen (`syv-ai/HyperQwen`): the one with a 4090-in-WSL2 datapoint.** A
+  patched vLLM 0.31.0 (int8 Marlin + int8 flash-attention kernels) with a prebuilt
+  image `ghcr.io/syv-ai/hyperqwen` and its own W4A16 AutoRound model. On a 3090 at
+  250 W: ~127 tok/s single-stream, ~1,035 tok/s at 64 concurrent, 150k–262k ctx.
+  Why it only half-applies to us:
+  - The Marlin/int8-FA kernels are **tuned for sm_86**. On a 4090 the default
+    falls back to int8 + Triton; `FA2_FP8KV=1` opts the fp8+FA2 path in on sm_89,
+    unmeasured here. The repo lists a **WSL2 4090** as a vLLM-0.31 datapoint and
+    warns `VLLM_WSL2_ENABLE_PIN_MEMORY=1` is mandatory or the runner aborts on UVA,
+    and `GPU_UTIL=0.93` for the WSL2 free-memory gate.
+  - It **needs the whole GPU** (holds 21–23 GB, 2–15 min cold load), exposes **no
+    server-side timings**, and serves a **different quant** (W4A16 AutoRound, not
+    our GGUF). So it is an *alternative* single-user engine, never a companion to
+    the router, and the **uncensored modes cannot use it** — same wall as GSQ: the
+    model/pipeline is not our weights.
+  - **Measurable without compiling** (prebuilt image, so it is allowed), but the
+    measurement is a wholesale engine swap, not a tweak. If run, stop llama first
+    (it wants all 24 GB) and compare on a fixed prompt as in C1.
+
+- **llamAmpere (`drassadnikov/llamAmpere`, mirror `JakeATX/llamAmpere`): Ampere
+  only, but one idea worth stealing.** A llama.cpp fork for **sm_86** (3090/3090Ti,
+  prebuilt `ghcr.io/alx/llampere-sm86`): MTP drafter, TurboQuant `turbo2`–`turbo6`
+  KV, and **SJ-KVaRN** (a compressed KV cache on Huawei's KVarN method, 4/4 3/3t
+  3/2t), 262K ctx on 24 GB at ~21.9 GB peak. The 3090 writeup's best llama.cpp
+  number (73 t/s, 1.76x) is this fork with MTP depth 2 + turbo4 KV.
+  - **It is sm_86.** Our card is sm_89; the prebuilt images are sm_86; testing it
+    via `LLAMA_IMAGE` needs an sm_89 prebuilt or a CI build (compile ban → CI, as
+    for Bonsai 2 in §3b). turbo/SJ-KVaRN answer quality at long context is
+    unmeasured; the writeup flags it as a precondition before any default.
+  - **The idea that transfers regardless of arch:** its prompt cache (RAM + disk
+    tier) lets a **resumed conversation skip the full re-prefill**, with SJ-KVaRN
+    included. That is exactly what llama.cpp#28194 denies us on this hybrid (a slot
+    restore reuses zero tokens), and it is the same target as the Strata
+    turn-boundary-checkpoint lead (§3a item 4). Read how llamAmpere persists and
+    reuses KV across a resume before building anything; it may be the clearest
+    existing implementation of the thing we want.
+
+- **Bottom line.** None of the three transfers cleanly to a 4090 in WSL2. The GPU
+  unlock is out (low ceiling and no host path). HyperQwen is the only one with a
+  4090/WSL2 datapoint and a no-compile path — evaluate it as an alternative
+  single-user engine for the stock-weight modes only, never the router. llamAmpere
+  is Ampere, but its resume-without-reprefill is worth borrowing on its own.
 
 ## 4. Environment notes
 
