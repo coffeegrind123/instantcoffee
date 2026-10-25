@@ -25,7 +25,7 @@ import tempfile
 import unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCRIPT = os.path.join(REPO, "scripts", "kld-run.sh")
+SCRIPTS = os.path.join(REPO, "scripts")
 
 # The stub dispatches on the whole argument string. Order matters: the specific
 # `perplexity` / `--entrypoint python` cases are tested before anything generic,
@@ -61,6 +61,23 @@ class KldRunGuard(unittest.TestCase):
         self.calls = os.path.join(d, "calls")
         self.running = os.path.join(d, "running")
         open(self.calls, "w").close()
+        # Run a MIRROR of scripts/, not the tree in place: lib.sh derives
+        # REPO_ROOT from the script's own path, and the real run writes its
+        # log dir under ${REPO_ROOT}/.kld-logs. Mirroring sends that into the
+        # temp dir, so the test leaves nothing in the real repo to clean up —
+        # the guard against a stray cleanup wiping real logits logs, which is
+        # how the 2026-10-24 code-pass logs were lost.
+        mirror = os.path.join(d, "scripts")
+        os.mkdir(mirror)
+        for name in os.listdir(SCRIPTS):
+            os.symlink(os.path.join(SCRIPTS, name), os.path.join(mirror, name))
+        os.remove(os.path.join(mirror, "kld-run.sh"))
+        with open(os.path.join(SCRIPTS, "kld-run.sh")) as src, \
+                open(os.path.join(mirror, "kld-run.sh"), "w") as dst:
+            dst.write(src.read())
+        os.chmod(os.path.join(mirror, "kld-run.sh"), 0o755)
+        os.symlink(os.path.join(REPO, ".env"), os.path.join(d, ".env"))
+        self.script = os.path.join(mirror, "kld-run.sh")
         stub = os.path.join(d, "docker")
         with open(stub, "w") as f:
             f.write(STUB.replace("__CALLS__", self.calls).replace("__RUNNING__", self.running))
@@ -83,7 +100,7 @@ class KldRunGuard(unittest.TestCase):
         # One tiny depth keeps the host-RAM verdict trivially "ok". The base
         # pass fails (stub exit 1), so the run ends right after the guard.
         p = subprocess.run(
-            ["bash", SCRIPT, "--corpus", "/captures/x.txt", "--depths", "512"],
+            ["bash", self.script, "--corpus", "/captures/x.txt", "--depths", "512"],
             env=self.env, capture_output=True, text=True, timeout=120,
         )
         out = p.stdout + p.stderr

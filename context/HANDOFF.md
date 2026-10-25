@@ -21,8 +21,11 @@ the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addend
   (`docker ps --filter publish=8080`); on 2026-10-24 it was.
 - **C1 code pass: DONE.** After the logits moved off 9p (see below): null control
   0.000000. UD-Q4_K_XL 0.0059 / 98.04% top-1. orcarouter Q4_K_M 0.0170 / 96.84%.
-  GSQ IQ3_S 0.0332 / 95.60%. The full table is in the plan's C1 row; the logs are
-  in `.kld-logs/20261024T101713Z/`.
+  GSQ IQ3_S 0.0332 / 95.60%. The full table is in the plan's C1 row. The raw
+  logs were in `.kld-logs/20261024T101713Z/` but were deleted in error on
+  2026-10-25 (a too-broad `.kld-logs` cleanup; the dir is gitignored, so there
+  was no commit to recover from). The numbers above and in the plan are the
+  record; the logs regenerate only by re-running the code pass.
 - **C1 prose pass: NOT DONE.** It was killed mid-base-arm by Claude Code's
   low-memory reaper, which stops background shells when the box runs critically
   low. The base arm holds ~10 GB of host RAM, and the rest of the box had swap at
