@@ -48,17 +48,38 @@ the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addend
 1. **The code result is in** (above). The null control is clean. The IQ3_S
    calibration matches ironblock on top-1 (95.60 vs 95.43) and differs on KLD
    (0.033 vs 0.054); the code corpora differ, so expect that.
-2. **Run the prose pass, only when the operator says so.** It is the code pass's
-   command (the plan's C1 row) with
-   `--corpus /captures/corpus/kld-weights/prose.txt --out-subdir kld-prose`.
-   Our prose corpus has the same hash prefix as ironblock's (`173c87a5…`), so
-   these rows compare directly; their IQ3_S prose is 0.0860 / 89.76%.
-   Before starting:
-   - Check `free -m` (preflight needs ~12.1 GB available) and drop the Docker VM
+2. **Run the prose pass, only when the operator says so.** The exact command,
+   dry-run-validated 2026-10-25 (this is the authoritative copy; the code pass's
+   own echo was in the logs that were deleted):
+
+   ```
+   ./scripts/kld-run.sh \
+     --corpus /captures/corpus/kld-weights/prose.txt --out-subdir kld-prose --unpinned \
+     --models2 //d/llm-models \
+     --base-gguf /models2/Qwen3.8-27B-Q8_0.gguf --base-ngl 44 \
+     --test-gguf /models2/Qwen3.8-27B-UD-Q4_K_XL.gguf,/models2/Qwen3.8-27B-Uncensored-Q4_K_M.gguf,/models2/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf \
+     --null-control --depths 4096 --chunks 12
+   ```
+
+   `--unpinned` is required: the prose corpus has no capture sidecar (it was
+   built by `kld_corpus.py`, not `capture.sh export`). Our prose corpus has the
+   same hash prefix as ironblock's (`173c87a5…`), so these rows compare
+   directly; their IQ3_S prose is 0.0860 / 89.76%.
+   - **The hard gate is host RAM, and preflight enforces it.** Dry run
+     2026-10-25: the Q8_0 base at -ngl 44 wants **~13,659 MiB** (9,779 weights +
+     ~3.9 GB logits buffers) and preflight REFUSES below that rather than swap.
+     On 2026-10-25 only 11,075 MiB was available (11 live claude sessions, swap
+     at ~9.6 GB), a ~2.6 GB deficit, so it could not start. Drop the Docker VM
      page cache
-     (`docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`).
+     (`docker run --rm --privileged alpine sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`),
+     and free ~2.6 GB of real RAM — on this box that means fewer live sessions
+     or more Docker VM memory, not a cache drop (nothing abandoned is reapable:
+     `/free` found zero candidates on 2026-10-25).
    - Keep the box quiet for the ~35 minutes it runs. The base arm holds ~10 GB
-     of host RAM for ~20 minutes; that is when the reaper fired.
+     of host RAM for ~20 minutes; that is when the reaper fired last time.
+     Launch it detached (`setsid`) so a reaped foreground shell does not orphan
+     the container, or start Claude Code with
+     `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`.
    - If the shell gets killed anyway, `docker ps` for an orphaned
      `/app/llama perplexity` container, stop it, and empty the
      `instantcoffee-kld-logits` volume.
