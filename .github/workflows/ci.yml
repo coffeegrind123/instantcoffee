@@ -211,6 +211,7 @@ jobs:
           python -m pytest -q scripts/test_kld_budget.py scripts/test_kld_corpus.py \
             scripts/test_empty_turn_ab.py
           python scripts/test_kld_run_args.py
+          python scripts/test_kld_run_guard.py
 
       # The capture proxy sits in the production path between forge and llama, so
       # two of its promises are the kind that fail silently and both have a
