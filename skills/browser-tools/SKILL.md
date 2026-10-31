@@ -1,7 +1,7 @@
 ---
 name: browser-tools
-description: Drive a real Chrome with the browser_* tools — open pages, read them as text, click, type, fill forms, read cookies and network logs, get past bot protection. Use when a task needs a live web page rather than a file — reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
-compatibility: The browser starts and restarts itself — there is no setup step. Five tools are native; the other 93 are reached with mcp({ search }).
+description: Drive a real Chrome with the mcp__browser__* tools — open pages, read them as text, click, type, fill forms, read cookies and network logs, get past bot protection. Use when a task needs a live web page rather than a file — reading a URL the user gave you, checking whether a site or endpoint works, scraping content, logging in, or testing a page you just changed. Also use when the user says browser, Chrome, web page, URL, scrape, or "look at this site".
+compatibility: The browser starts and restarts itself — there is no setup step. Five tools are always declared; the other 93 are called from codemode scripts.
 ---
 
 # A real browser, as tools
@@ -10,11 +10,11 @@ Five browser tools are always available. The browser opens itself on the first
 one you call — there is no start step.
 
 ```
-browser_navigate({ url: "https://example.com" })
-browser_get_text_content({ max_chars: 4000 })      → the page as plain text
-browser_get_interaction_tree({ limit: 40 })        → numbered clickable elements
-browser_click({ selector: "3" })                   → click element 3
-browser_type_text({ selector: "7", text: "hello" })
+mcp__browser__navigate({ url: "https://example.com" })
+mcp__browser__get_text_content({ max_chars: 4000 })      → the page as plain text
+mcp__browser__get_interaction_tree({ limit: 40 })        → numbered clickable elements
+mcp__browser__click({ selector: "3" })                   → click element 3
+mcp__browser__type_text({ selector: "7", text: "hello" })
 ```
 
 `get_interaction_tree` returns compact records — `{"id":3,"t":"link","l":"Sign in","r":"hdr"}`
@@ -28,50 +28,52 @@ roughly doubles the tree, so ask for it when you need it, not by default.
 
 You are a text model. **You cannot see screenshots.** Read pages as text.
 
-## The other 93 tools
+## The other 93 tools, and several steps in one call
 
 Tabs, forms, cookies and localStorage, network and console logs, waiting for a
 request, request blocking and mocking, JS execution, scrolling, user-agent /
 locale / timezone / geolocation overrides, human-like typing, accessibility
-snapshots, Cloudflare challenges. They are one hop away:
+snapshots, Cloudflare challenges. They are called from a `codemode` script. Its
+input is plain JavaScript; every tool is `tools.<name>(args)`, and a browser
+call resolves to its MCP result (`content`, `isError`).
+
+Find one by describing what you need, then call it:
 
 ```
-mcp({ search: "cookie" })              → matching tools, with their parameters
-mcp({ describe: "browser_set_cookie" })→ one tool's full schema
-mcp({ tool: "browser_set_cookie", args: { name: "a", value: "b" } })
+const found = await searchTools("cookies", { namespace: "mcp__browser" });   // [{ name, description }]
+return [found, await describeTool(found[0].name)];                          // + its parameters
 ```
 
-Names are always prefixed: `browser_get_cookies`, not `get_cookies`. Search
-before assuming a capability is missing.
-
-## Several steps in one call
-
-When a job needs a few calls with logic between them, write it as one script
-instead of taking a turn per call:
-
 ```
-mcpScript({ code: `
-  const r = await tools.call("browser_navigate", { url: "https://news.ycombinator.com" });
-  if (!r.ok) return r;
-  const tree = await tools.call("browser_get_interaction_tree", { limit: 30 });
-  return tree.data;
-` })
+const r = await tools.mcp__browser__get_cookies({});
+return r.content[0].text;
 ```
 
-Each call returns `{ ok: true, data }` or `{ ok: false, error }`, so one failure
-does not abandon the rest of the script.
+A flow with logic between steps is one script, not one turn per call:
+
+```
+const nav = await tools.mcp__browser__navigate({ url: "https://news.ycombinator.com" });
+if (nav.isError) return nav.content;
+const tree = await tools.mcp__browser__get_interaction_tree({ limit: 30 });
+return tree.content[0].text;
+```
+
+Every browser tool is named `mcp__browser__<tool>`. Search before assuming a
+capability is missing. A failing call rejects; use `Promise.allSettled()` when
+one failure should not abandon the rest. What a script returns is fenced as web
+content like any other browser output.
 
 ## Keeping output small
 
 A web page is the easiest way to burn this session's whole context.
 
-- `browser_get_text_content` is paginated: `{ max_chars: 4000, offset: 0 }`. The
+- `mcp__browser__get_text_content` is paginated: `{ max_chars: 4000, offset: 0 }`. The
   reply opens with `[chars 0-4000 of 51234]`, so you know how much is left. Read
   the first page; fetch more only if the answer was not in it.
-- **Never call `browser_get_content` to read a page** — that is raw HTML, tens of
+- **Never call `mcp__browser__get_content` to read a page** — that is raw HTML, tens of
   thousands of tokens for the same words. It is for when you specifically need
   markup or attributes, and then with a small `max_chars`.
-- `browser_get_interaction_tree({ limit: 40 })` on a large page; it says how many
+- `mcp__browser__get_interaction_tree({ limit: 40 })` on a large page; it says how many
   it cut.
 - Don't call `screenshot` unless the user asked for an image file — you cannot
   read it. With `save_path` it writes a file a human can open.
@@ -81,14 +83,14 @@ A web page is the easiest way to burn this session's whole context.
 - **The page persists between calls**, and between your turns. Do not re-navigate
   to a URL you are already on; you would lose scroll position, form state, login.
 - **Read before you click.** Element numbers come from the last
-  `browser_get_interaction_tree` and change when the page changes. After a click
+  `mcp__browser__get_interaction_tree` and change when the page changes. After a click
   that loads new content, read the tree again.
-- **`browser_type_text` appends.** Use `mcp({ tool: "browser_clear_input", … })`
-  first when replacing a value.
-- **A click that navigates needs a moment.** `mcp({ tool: "browser_wait_for_element", args: { selector: "…" } })`
-  beats guessing with a sleep.
-- **Blocked, or a challenge page?** `mcp({ search: "cloudflare" })` — there is a
-  bypass tool and a check for whether a challenge is present.
+- **`mcp__browser__type_text` appends.** Call `tools.mcp__browser__clear_input`
+  in a codemode script first when replacing a value.
+- **A click that navigates needs a moment.** `tools.mcp__browser__wait_for_element({ selector: "…" })`
+  in a script beats guessing with a sleep.
+- **Blocked, or a challenge page?** `searchTools("cloudflare")` in a script — there
+  is a bypass tool and a check for whether a challenge is present.
 
 ## You do not start the browser — but you do un-wedge it
 
@@ -105,8 +107,11 @@ reported healthy with a live CDP port. A page that never settles leaves the tab'
 WebSocket dead, and nothing recovers that on its own.
 
 ```
-  browser_stop_browser        then      browser_start_browser
+  mcp__browser__stop_browser     then     mcp__browser__start_browser
 ```
+
+Both in one codemode script, in that order, or `./scripts/browser.sh restart`
+with bash.
 
 Then navigate again. Two things look like the fix and are not — both measured
 failing once the WebSocket is dead:

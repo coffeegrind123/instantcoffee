@@ -202,6 +202,11 @@ TOOLS:  read bash edit write stack_status mcpScript mcp browser_×5
 SKILLS: mcp-scripting
 ```
 
+(That was pi-mcp-adapter, a pi package a child discovers. Since 2026-10-31 the
+browser is pi's built-in MCP, which a child only gets from factories it is
+handed: `child-builtins.ts` hands `mcp` + `codemode`, `subagent-denylist.ts` adds
+`browser-mcp.ts` and `browser-guard.ts`, both only when `BROWSER_MCP_NATIVE=1`.)
+
 — no `prinny`, no `loop`, no `Agent` (so no recursive subagents), and a second
 probe confirmed `rtk` was absent by running `git status --short` unrewritten.
 

@@ -184,6 +184,31 @@ agent_dir() {
 # --- json --------------------------------------------------------------------
 # Prefer host python3; fall back to a throwaway container so the scripts work on
 # a machine that has Docker but no Python.
+# The installed pi's version, or empty. Read from the package.json beside the
+# resolved `pi` binary (milliseconds) rather than `pi --version` (~0.8 s); falls
+# back to `pi --version` for an install laid out some other way.
+installed_pi_version() {
+  local bin dir
+  bin="$(command -v pi 2>/dev/null)" || return 0
+  bin="$(readlink -f "$bin" 2>/dev/null)" || bin=""
+  dir="$(dirname "${bin:-/}")"
+  while [[ -n "$bin" && "$dir" != "/" ]]; do
+    if [[ -f "$dir/package.json" ]] \
+       && grep -q '"name": *"@earendil-works/pi-coding-agent"' "$dir/package.json"; then
+      sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/package.json" | head -1
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  pi --version 2>/dev/null | tr -d ' '
+}
+
+# version_ge A B: true when version A >= B. An empty A is never >= anything.
+version_ge() {
+  [[ -n "$1" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" == "$2" ]]
+}
+
 json_eval() {
   local code="$1"
   if command -v python3 >/dev/null 2>&1; then

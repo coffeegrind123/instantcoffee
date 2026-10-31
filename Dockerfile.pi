@@ -71,7 +71,6 @@ FROM node:22
 # the same numbers and scripts/pi-local.sh warns when the two drift apart.
 ARG PI_VERSION=latest
 ARG RTK_VERSION=0.45.0
-ARG MCP_ADAPTER_VERSION=2.26.0
 ARG MCP2CLI_VERSION=3.3.1
 ARG MCP_SDK_VERSION=1.29.0
 
@@ -99,7 +98,6 @@ ENV PI_AGENT_CONTAINER=1
 # Recorded in the image so `docker inspect` answers "what is actually installed"
 # without cross-referencing .env.
 ENV PINNED_RTK_VERSION=${RTK_VERSION} \
-    PINNED_MCP_ADAPTER_VERSION=${MCP_ADAPTER_VERSION} \
     PINNED_MCP2CLI_VERSION=${MCP2CLI_VERSION} \
     PINNED_MCP_SDK_VERSION=${MCP_SDK_VERSION}
 ENV PATH="/home/piuser/.local/bin:/usr/local/bin:$PATH"
@@ -319,17 +317,6 @@ xdpyinfo -display :99 >/dev/null 2>&1 \
     && echo "Display: :99 (Xvfb, listening)" \
     || echo "Display: :99 NOT reachable - Chrome will fall back to headless (see /tmp/xvfb99.log)"
 
-# --- pi-mcp-adapter ----------------------------------------------------------
-# Installed at RUN time, not build time: pi keeps it under
-# ~/.pi/agent/npm/node_modules, which is on the bind mount and therefore does
-# not exist during the build. Idempotent - a no-op once it is there.
-ADAPTER_PKG="/home/piuser/.pi/agent/npm/node_modules/pi-mcp-adapter/package.json"
-if [ ! -r "$ADAPTER_PKG" ] && [ -n "$PINNED_MCP_ADAPTER_VERSION" ]; then
-    echo "Installing pi-mcp-adapter@${PINNED_MCP_ADAPTER_VERSION} (first run, ~30s)"
-    timeout 300 pi install "npm:pi-mcp-adapter@${PINNED_MCP_ADAPTER_VERSION}" </dev/null \
-        || echo "warn: pi install pi-mcp-adapter failed - the browser falls back to the CLI path"
-fi
-
 # --- find the checkout, and check the knobs that do NOT follow this home -----
 # PI_SESSIONS_DIR, MODELS_DIR and CAPTURES_DIR are handed to docker compose,
 # which resolves them on the WINDOWS side. They do not move with this
@@ -432,7 +419,6 @@ RUN mkdir -p /home/piuser && chown -R root:root /home/piuser && git lfs install 
 LABEL org.opencontainers.image.title="instantcoffee pi agent" \
       org.opencontainers.image.description="pi coding agent + Zendriver browser stack, in a home of its own" \
       pi.rtk.version="${RTK_VERSION}" \
-      pi.mcp_adapter.version="${MCP_ADAPTER_VERSION}" \
       pi.mcp2cli.version="${MCP2CLI_VERSION}"
 
 WORKDIR /home/piuser

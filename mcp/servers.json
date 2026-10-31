@@ -44,6 +44,6 @@
     "it kept offering the old one, so get-page-info came back as 'invalid choice'",
     "rather than as anything naming the real problem.",
     "",
-    "Use the browser_* tools (adapter mode) or ./scripts/browser.sh (CLI mode)."
+    "Use the mcp__browser__* tools (native mode, pi's built-in MCP) or ./scripts/browser.sh (CLI mode)."
   ]
 }

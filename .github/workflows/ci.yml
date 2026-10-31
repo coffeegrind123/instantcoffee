@@ -259,6 +259,13 @@ jobs:
       - name: Mode switch unit tests
         run: python scripts/test_mode_switch.py
 
+      # The browser's native tools need pi's built-in MCP (>= 0.99) and
+      # --tools +codemode needs >= 1.1.0; older pi falls back to the CLI. Also
+      # pins that the retired pi-mcp-adapter is pruned from pi's settings and
+      # install telemetry is off. The gate reads a tab-indented package.json.
+      - name: pi version gate unit tests
+        run: python scripts/test_pi_version_gate.py
+
       # The browser CLI turns shell words into JSON arguments for a tool it has
       # never seen, from that tool's own schema. A regression there is silent:
       # a dropped or mistyped parameter produces a call that succeeds and does
@@ -340,7 +347,7 @@ jobs:
                      BROWSER_MCP_ENABLED ZENDRIVER_MCP_DIR BROWSER_MCP_HOST
                      BROWSER_MCP_PORT BROWSER_MCP_DISPLAY BROWSER_MCP_AUTOSTART
                      BROWSER_MCP_TIMEOUT
-                     MCP_ADAPTER_ENABLED MCP_ADAPTER_VERSION BROWSER_MCP_AUTOUP
+                     BROWSER_MCP_NATIVE BROWSER_MCP_AUTOUP PI_TELEMETRY PI_OFFLINE
                      RTK_ENABLED RTK_VERSION )
           missing=0
           for key in "${required[@]}"; do
@@ -466,42 +473,6 @@ jobs:
                   print(f"'{name}' points the mcp2cli path at the browser: {target}")
                   sys.exit(1)
           print("  no browser entry in the mcp2cli registry: OK")
-          EOF
-
-      # mcp/adapter.json is what pi-mcp-adapter reads (--mcp-config). Two ways it
-      # can rot silently: a hardcoded URL that drifts from the port browser.sh
-      # binds, and an empty directTools list — which still "works", it just
-      # quietly demotes the whole browse loop to proxy calls.
-      - name: Browser adapter config is well formed
-        run: |
-          python - <<'EOF'
-          import json, re, sys
-          cfg = json.load(open("mcp/adapter.json", encoding="utf-8"))
-          env = open(".env", encoding="utf-8").read()
-          bad = 0
-          server = (cfg.get("mcpServers") or {}).get("browser")
-          if not server:
-              print("no 'browser' server in mcp/adapter.json"); sys.exit(1)
-          url = server.get("url", "")
-          for var in ("BROWSER_MCP_HOST", "BROWSER_MCP_PORT"):
-              if "${%s}" % var not in url:
-                  # Built rather than written literally: a "${" followed by "{"
-                  # anywhere in this file is an Actions expression, and the run
-                  # fails before a step starts.
-                  want = "$" + "{" + var + "}"
-                  print(f"url must interpolate {want}, got {url!r}"); bad = 1
-              if not re.search(rf"^{var}=", env, re.M):
-                  print(f"{var} is not in .env"); bad = 1
-          direct = server.get("directTools")
-          if not isinstance(direct, list) or not direct:
-              print("directTools must be a non-empty list"); bad = 1
-          elif "start_browser" in direct:
-              print("start_browser is 2.3KB of schema; the server auto-starts instead"); bad = 1
-          guard = (cfg.get("settings") or {}).get("outputGuard") or {}
-          if guard.get("maxBytes", 51200) > 16384:
-              print("outputGuard.maxBytes is sized for a 200K window, not 32K"); bad = 1
-          print(f"  adapter config: OK ({len(direct)} direct tools, url {url})")
-          sys.exit(bad)
           EOF
 
       # The pin is what keeps mcp2cli working at all: SDK 2.0.0 renamed

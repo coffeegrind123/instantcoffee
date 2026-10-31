@@ -2,7 +2,7 @@
 name: explorer
 description: Answers one investigation question with file:line evidence; read-only
 tools: [read, grep, find, ls, bash, SubAgent]
-exclude_extensions: [pi-mcp-adapter]
+exclude_extensions: [browser-mcp, browser-guard]
 thinking: high
 ---
 

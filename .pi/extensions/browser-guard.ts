@@ -16,7 +16,7 @@
  * waited another sixty seconds, and only then guessed its way to curl. Two
  * minutes of wall clock and ~500 tokens for a page that was never going to load.
  *
- * The fix is not a shorter timeout (that is in mcp/adapter.json). It is telling
+ * The fix is not a shorter timeout (that is in browser-mcp.ts). It is telling
  * the model WHICH failure this is and what to do instead — and answering that
  * from a live probe of Chrome rather than from a guess, because "the browser is
  * wedged", "the server is down" and "the page itself is slow" have three
@@ -237,12 +237,18 @@ async function probeBrowser(): Promise<{ state: string; detail: string }> {
  * Only tearing the whole browser down clears it.
  */
 function recovery(toolName: string): string {
-	// Adapter mode registers the control tools natively; in CLI mode the same
+	// Native and adapter modes reach the control tools as tools; in CLI mode the same
 	// thing is one bash call. Told by the name of the tool that just failed.
-	const adapter = /^(?:browser_|mcp__browser__)/.test(toolName);
-	const steps = adapter
-		? "call browser_stop_browser, then browser_start_browser"
-		: "run ./scripts/browser.sh restart with the bash tool";
+	// pi's built-in MCP names them mcp__browser__*, and they are reached from a
+	// codemode script, or use the one bash call that needs nothing.
+	const native = /^mcp__browser__/.test(toolName);
+	const adapter = /^browser_/.test(toolName);
+	const steps = native
+		? "run one codemode script: await tools.mcp__browser__stop_browser({}); then " +
+			"await tools.mcp__browser__start_browser({}); or run ./scripts/browser.sh restart with the bash tool"
+		: adapter
+			? "call browser_stop_browser, then browser_start_browser"
+			: "run ./scripts/browser.sh restart with the bash tool";
 	return (
 		`RECOVER IT YOURSELF — do not wait for an operator, and on an unattended run there ` +
 		`is not one: ${steps}. Then navigate again.\n\n` +
@@ -290,14 +296,42 @@ function advice(toolName: string, state: string, detail: string): string {
 	}
 }
 
+/** Tools that run other tools; their result can carry what a nested browser call returned. */
+const SCRIPT_TOOLS = new Set(["codemode"]);
+
 export default function (pi: ExtensionAPI) {
+	// Script-tool calls whose nested calls included a browser tool. A script can
+	// slice page text out of a fenced nested result and return it bare, so its
+	// own result is fenced too. Nested calls carry `parentToolCallId` (pi >= 0.99).
+	const scriptsThatBrowsed = new Set<string>();
+
+	pi.on("tool_execution_start", async (event) => {
+		const e = event as unknown as { toolName?: string; parentToolCallId?: string };
+		if (!e.parentToolCallId) return;
+		const name = e.toolName ?? "";
+		if (ANY_BROWSER_TOOL.test(name) || BROWSER_TOOL.test(name)) scriptsThatBrowsed.add(e.parentToolCallId);
+	});
+
 	pi.on("tool_result", async (event) => {
 		const anyEvent = event as unknown as {
 			toolName?: string;
+			toolCallId?: string;
 			isError?: boolean;
 			content?: unknown;
 		};
 		const toolName = anyEvent.toolName ?? "";
+
+		if (SCRIPT_TOOLS.has(toolName)) {
+			const id = anyEvent.toolCallId ?? "";
+			if (!scriptsThatBrowsed.delete(id) || !Array.isArray(anyEvent.content)) return;
+			const blocks = anyEvent.content as { type?: string; text?: string }[];
+			return {
+				content: blocks.map((b) =>
+					b?.type === "text" ? { ...b, text: wrapUntrusted(b.text ?? "", `${toolName} (browser)`) } : b,
+				),
+			} as never;
+		}
+
 		if (!ANY_BROWSER_TOOL.test(toolName) && !BROWSER_TOOL.test(toolName)) return;
 
 		const text = textOf(anyEvent.content);

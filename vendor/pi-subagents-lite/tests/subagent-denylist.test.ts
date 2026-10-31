@@ -270,3 +270,21 @@ describe("what a subagent discovers — .pi/extensions must guard its tools", ()
     );
   });
 });
+
+describe("a child gets the browser exactly when its parent runs it natively", () => {
+  const always = () => true;
+
+  it("BROWSER_MCP_NATIVE=1 adds the registration AND its guard", () => {
+    const out = subagentExtraExtensionPaths({ BROWSER_MCP_NATIVE: "1" } as NodeJS.ProcessEnv, always);
+    assert.ok(out.some((p) => p.endsWith("/.pi/extensions/browser-mcp.ts")));
+    // Together or not at all: a child's page text is as untrusted as the parent's.
+    assert.ok(out.some((p) => p.endsWith("/.pi/extensions/browser-guard.ts")));
+  });
+
+  it("control — without it, neither", () => {
+    for (const env of [{}, { BROWSER_MCP_NATIVE: "0" }]) {
+      const out = subagentExtraExtensionPaths(env as NodeJS.ProcessEnv, always);
+      assert.ok(!out.some((p) => p.includes("/.pi/extensions/browser-")), JSON.stringify(env));
+    }
+  });
+});

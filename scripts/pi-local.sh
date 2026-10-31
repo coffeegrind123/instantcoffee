@@ -212,6 +212,16 @@ compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
 # just a hang.
 data["httpIdleTimeoutMs"] = min(900, max(300, -(-ctx // 36))) * 1000
 
+# pi-mcp-adapter was retired for pi's built-in MCP on 2026-10-31. An install
+# left in `packages` still loads, registers `/mcp`, and so replaces the built-in
+# for every session — the browser registration then has nothing to connect it.
+packages = data.get("packages")
+if isinstance(packages, list):
+    kept = [p for p in packages if not (isinstance(p, str) and "pi-mcp-adapter" in p)]
+    if len(kept) != len(packages):
+        data["packages"] = kept
+        print(f"removed pi-mcp-adapter from {path.name} packages (retired; pi's built-in MCP replaces it)")
+
 # The install ping to pi.dev on each version change, and pi's provider
 # attribution. Off here as well as by PI_TELEMETRY=0, so a plain `pi` started
 # without this script is covered too.
@@ -767,14 +777,16 @@ fi
 # sits on — scripts/browser.sh owns the server process either way, so the browser
 # outlives the session and is shared with anything else on this box.
 #
-#   adapter mode (default)  pi-mcp-adapter connects to that server over HTTP and
-#                           registers the browse loop as native pi tools. Calls
-#                           cost 25-417 ms and the other 93 tools stay one
-#                           mcp({ search }) away.
-#   cli mode                the model shells out to ./scripts/browser.sh. No npm
-#                           package, ~120 tokens, 1.7-6.5 s per call.
+#   native mode (default)   pi's built-in MCP (pi >= 0.99) connects to that
+#                           server over HTTP; .pi/extensions/browser-mcp.ts
+#                           registers it. The browse loop is five direct tools,
+#                           calls cost 25-417 ms, and the other 93 are reached
+#                           from codemode scripts. Replaced pi-mcp-adapter
+#                           2026-10-31 (context/pi-1.4-audit-2026-10-31.md).
+#   cli mode                the model shells out to ./scripts/browser.sh. No
+#                           built-in MCP needed, ~120 tokens, 1.7-6.5 s per call.
 #
-# Neither starts Chrome here. In adapter mode the SERVER is started (see
+# Neither starts Chrome here. In native mode the SERVER is started (see
 # BROWSER_MCP_AUTOUP) because the model's first call otherwise hits a closed
 # port; Chrome itself still waits for a tool that needs it.
 BROWSER_NOTE=""
@@ -798,44 +810,52 @@ if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
     BROWSER_OK=0
   fi
 
-  # mcp/adapter.json reaches the server through these two, so the config cannot
-  # name a port that browser.sh does not bind. The adapter fails loudly on a
-  # missing variable rather than resolving a wrong URL.
+  # browser-mcp.ts builds the server URL from these two, so the registration
+  # cannot name a port that browser.sh does not bind. Exported because the
+  # extension, and every subagent child that loads it, reads them from the
+  # environment.
   BROWSER_HOST="$(env_get BROWSER_MCP_HOST)"; : "${BROWSER_HOST:=127.0.0.1}"
   BROWSER_PORT="$(env_get BROWSER_MCP_PORT)"; : "${BROWSER_PORT:=8931}"
   export BROWSER_MCP_HOST="$BROWSER_HOST" BROWSER_MCP_PORT="$BROWSER_PORT"
 
-  USE_ADAPTER=0
-  if [[ "$(env_get MCP_ADAPTER_ENABLED)" == "1" ]]; then
-    # --mcp-config is a flag the ADAPTER registers, so passing it without the
-    # package installed makes pi reject the whole command line. Check first.
-    ADAPTER_PKG="$(agent_dir)/npm/node_modules/pi-mcp-adapter/package.json"
-    WANT_VER="$(env_get MCP_ADAPTER_VERSION)"
-    if [[ -r "$ADAPTER_PKG" ]]; then
-      USE_ADAPTER=1
-      HAVE_VER="$(json_eval "import json;print(json.load(open('$ADAPTER_PKG')).get('version',''))" 2>/dev/null || true)"
-      if [[ -n "$WANT_VER" && -n "$HAVE_VER" && "$HAVE_VER" != "$WANT_VER" ]]; then
-        warn "pi-mcp-adapter ${HAVE_VER} is installed but .env pins ${WANT_VER}."
-        warn "The tool surface the browser skill describes was written against ${WANT_VER}."
-        warn "Align them: pi install npm:pi-mcp-adapter@${WANT_VER}   (or update MCP_ADAPTER_VERSION)"
-      fi
+  # Native needs pi's built-in MCP and tool_search, both from 0.99.0. An older
+  # pi gets the CLI skill rather than a registration nothing would connect.
+  USE_NATIVE=0
+  if [[ "$(env_get BROWSER_MCP_NATIVE)" != "0" ]]; then
+    PI_VER="$(installed_pi_version)"
+    if version_ge "$PI_VER" 0.99.0; then
+      USE_NATIVE=1
     else
-      warn "MCP_ADAPTER_ENABLED=1 but pi-mcp-adapter is not installed — falling back to the CLI."
-      warn "Install it once with: pi install npm:pi-mcp-adapter@${WANT_VER:-latest}"
+      warn "pi ${PI_VER:-<not found>} has no built-in MCP (needs >= 0.99.0) — the browser falls back to the CLI."
     fi
   fi
+  # Read by pi-subagents-lite: a child gets the browser exactly when its parent does.
+  export BROWSER_MCP_NATIVE="$USE_NATIVE"
 
-  if (( USE_ADAPTER )); then
-    ADAPTER_CFG="$REPO_ROOT/mcp/adapter.json"
+  if (( USE_NATIVE )); then
+    BROWSER_EXT="$REPO_ROOT/.pi/extensions/browser-mcp.ts"
     BROWSER_SKILL="$REPO_ROOT/skills/browser-tools"
-    [[ -r "$ADAPTER_CFG" ]] || die "MCP_ADAPTER_ENABLED=1 but $ADAPTER_CFG is missing"
+    [[ -r "$BROWSER_EXT" ]] || die "$BROWSER_EXT is missing"
     [[ -r "$BROWSER_SKILL/SKILL.md" ]] || die "$BROWSER_SKILL/SKILL.md is missing"
-    pi_flags+=(--mcp-config "$ADAPTER_CFG" --skill "$BROWSER_SKILL")
+    pi_flags+=(-e "$BROWSER_EXT" --skill "$BROWSER_SKILL")
     BROWSER_NOTE=", browser (native tools)"
+
+    # codemode: how the 93 non-direct browser tools are reached (searchTools()
+    # inside a script), and one call runs a whole browse flow — the adapter's
+    # `mcp` proxy and mcpScript in one tool. Measured: 13,273 bytes of tool
+    # schemas against the adapter's 14,394. Declared from the first request so
+    # the tool list never changes mid-session (a change re-prefills the whole
+    # prompt). `+name` adds to the default tools (pi >= 1.1.0). browser-guard.ts
+    # fences a script's result when it called the browser.
+    if version_ge "$PI_VER" 1.1.0; then
+      pi_flags+=(--tools +codemode)
+    fi
 
     # Idempotent: a no-op when the server is already up, which is the common case
     # on a second session. Failure is not fatal — the model still has the tools
-    # and the skill says how to bring the server back.
+    # and the skill says how to bring the server back. Up BEFORE pi starts: the
+    # built-in MCP connects at session start, and the first prompt waits up to
+    # 10 s for a server with direct tools.
     if (( BROWSER_OK )) && [[ "$(env_get BROWSER_MCP_AUTOUP)" != "0" ]]; then
       if ! "$REPO_ROOT/scripts/browser.sh" up >/dev/null 2>&1; then
         warn "The browser server did not start — see ./scripts/browser.sh logs"

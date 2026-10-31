@@ -162,7 +162,7 @@ export function subagentExtraExtensionPaths(
   const requested =
     typeof raw === "string"
       ? raw.split(/[,:]/).map((entry) => entry.trim()).filter((entry) => entry !== "")
-      : defaultExtraExtensionPaths();
+      : defaultExtraExtensionPaths(env);
 
   return requested.filter((entry) => {
     if (isDeniedExtensionPath(entry)) return false;
@@ -208,10 +208,22 @@ export function subagentExtraExtensionPaths(
  * `vendor/prinny-channel` is deliberately not here, and could not be added if
  * someone tried: the denial above filters this list too.
  */
-function defaultExtraExtensionPaths(): string[] {
+function defaultExtraExtensionPaths(env: NodeJS.ProcessEnv): string[] {
   // vendor/pi-subagents-lite/src/agents → up four is the repo root.
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
-  return [path.join(repoRoot, "vendor", "rtk-pi", "extensions", "index.ts")];
+  const paths = [path.join(repoRoot, "vendor", "rtk-pi", "extensions", "index.ts")];
+  // The browser, when the parent has it natively (pi-local.sh exports
+  // BROWSER_MCP_NATIVE). Its registration and its guard travel together: a
+  // child's browser output is fenced as untrusted web content like the
+  // parent's, which it never was while the browser came from pi-mcp-adapter.
+  // pi's built-in mcp + codemode come with it — child-builtins.ts.
+  if (env.BROWSER_MCP_NATIVE === "1") {
+    paths.push(
+      path.join(repoRoot, ".pi", "extensions", "browser-mcp.ts"),
+      path.join(repoRoot, ".pi", "extensions", "browser-guard.ts"),
+    );
+  }
+  return paths;
 }
 
 /**

@@ -38,6 +38,8 @@ import { registerNestedAgentTool } from "../registration.js";
 import { DEFAULT_GRACE_TURNS, CUSTOM_PROMPT_PATH } from "../config/config-io.js";
 import { patchRetryClassifier } from "./stream-retry.js";
 import { subagentExtraExtensionPaths, withExtensionDenial, withSkillDenial } from "./subagent-denylist.js";
+import * as piSdk from "@earendil-works/pi-coding-agent";
+import { childBrowserToolNames, childBuiltinExtensions } from "./child-builtins.ts";
 import { classifyGitFailure } from "../spawn/git-failure.ts";
 import { declaredPromptSources, declaredResources } from "./declared-resources.ts";
 import { collectResponseText } from "./run-answer.ts";
@@ -590,7 +592,15 @@ function createResourceLoader(
     // Forge fork: SubAgent for a child below SUBAGENT_MAX_DEPTH, and nothing
     // for anyone else. Inline because a child never loads this extension from
     // its path — see build-context.ts.
-    extensionFactories: nested && extensions !== false ? [nested] : [],
+    // Plus pi's built-in mcp + codemode when the browser is native, so the
+    // browser-mcp.ts a child loads has something to connect it. See
+    // child-builtins.ts.
+    extensionFactories: extensions === false
+      ? []
+      : [
+          ...(nested ? [nested] : []),
+          ...(childBuiltinExtensions(piSdk as unknown as Record<string, unknown>) as never[]),
+        ],
   };
   const loader = new DefaultResourceLoader(loaderOpts);
   return {
@@ -622,11 +632,16 @@ async function initSession(
     sessionManager: SessionManager.inMemory(cwd),
     settingsManager,
     model,
-    tools: resolveSessionAllowedTools({
-      registeredTools: getToolNamesForType(type),
-      tools: agentConfig?.tools,
-      extToolMap,
-    }),
+    tools: [
+      ...resolveSessionAllowedTools({
+        registeredTools: getToolNamesForType(type),
+        tools: agentConfig?.tools,
+        extToolMap,
+      }),
+      // The browse loop registers when the MCP server connects, after this
+      // list is fixed; an agent that declares its own tools keeps exactly those.
+      ...(Array.isArray(agentConfig?.tools) || agentConfig?.tools === false ? [] : childBrowserToolNames()),
+    ],
     resourceLoader: loader,
   };
   if (thinkingLevel) sessionOpts.thinkingLevel = thinkingLevel;
