@@ -80,6 +80,7 @@ MODE_FILE="$MODES_DIR/$TARGET.env"
 [[ -f "$MODE_FILE" ]] || die "no such mode '$TARGET' — have: $(list_modes | tr '\n' ' ')"
 
 info "applying mode: $TARGET"
+CTX_BEFORE="$(env_get CTX_SIZE)"
 CHANGED=0
 for k in $(mode_keys "$MODE_FILE"); do
   want="$(mode_value "$MODE_FILE" "$k")"
@@ -113,6 +114,22 @@ if (( CHANGED == 0 )); then
     ok "llama recreated — watch it come up with: ./scripts/logs.sh llama"
   fi
   exit 0
+fi
+
+# pi reads its context window from models.json, which pi-local.sh writes from
+# CTX_SIZE, and only at launch. Modes now differ in window (coding is 96K, coding-128k
+# 128K, coding-192k 192K), so a switch that leaves models.json stale is not cosmetic: going
+# coding-192k -> coding, pi keeps budgeting for 192K against a 96K server and its
+# requests overflow the slot. Rewrite pi's config here, and say that a running
+# session still holds the old number.
+CTX_AFTER="$(env_get CTX_SIZE)"
+if [[ "$CTX_AFTER" != "$CTX_BEFORE" ]]; then
+  if "$REPO_ROOT/scripts/pi-local.sh" --install-only >/dev/null; then
+    ok "  pi config rewritten for a ${CTX_AFTER}-token window"
+  else
+    warn "  pi config NOT rewritten — run ./scripts/pi-local.sh --install-only"
+  fi
+  warn "window ${CTX_BEFORE:-unset} -> ${CTX_AFTER}: restart any running pi session; it read the old window at launch."
 fi
 
 # A model swap is the expensive case and worth naming separately: recreating

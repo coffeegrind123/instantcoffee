@@ -236,6 +236,12 @@ jobs:
       - name: Stranded tool-call counter unit tests
         run: python scripts/test_stranded_tool_calls.py
 
+      # Modes now differ in window (96K, 128K, 192K tiers) and model dir.
+      # mode.sh only rewrites keys the target names, so a key one mode omits
+      # survives a switch: coding-192k -> coding would keep 192K and the D: path.
+      - name: Mode switch unit tests
+        run: python scripts/test_mode_switch.py
+
       # The browser CLI turns shell words into JSON arguments for a tool it has
       # never seen, from that tool's own schema. A regression there is silent:
       # a dropped or mistyped parameter produces a call that succeeds and does
