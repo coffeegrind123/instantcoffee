@@ -56,6 +56,10 @@ export function registerAgentTool(pi: ExtensionAPI): void {
   const tool = {
     name: "Agent",
     label: "Agent",
+    // Empty, not absent: pi's codemode calls `tool.description.trim()` unguarded
+    // (extensions/codemode/tool.js, 1.4.0) and throws on a tool without one.
+    // On the wire this is `"description":""`, 17 bytes.
+    description: "",
     parameters: params,
     execute: executeAgentTool,
     ...(useConstrained ? { constrainedSampling: CONSTRAINED_SAMPLING } : {}),
@@ -66,12 +70,16 @@ export function registerAgentTool(pi: ExtensionAPI): void {
       result: { content: Array<{ type: string; text?: string }>; details?: Record<string, unknown>; isError?: boolean },
       options: { expanded?: boolean },
       theme: any,
+      context?: { isError?: boolean },
     ) => {
       const store = getStore();
-      return renderAgentToolResult(result, options, theme, store.agent.showCost, store.agent.modelDisplayStyle);
+      // pi passes `{content, details}` only and carries isError in the render
+      // context (tool-execution.js, 0.87.1 and 1.4.0), so `result.isError` alone
+      // drew every failed delegation with ✓.
+      const withError = { ...result, isError: result.isError ?? context?.isError };
+      return renderAgentToolResult(withError, options, theme, store.agent.showCost, store.agent.modelDisplayStyle);
     },
   };
-  // @ts-expect-error — description removed to save prompt tokens
   pi.registerTool(tool);
 }
 
@@ -120,6 +128,10 @@ export function registerTools(pi: ExtensionAPI): void {
   const stopAgentTool = {
     name: "StopAgent",
     label: "StopAgent",
+    // Empty, not absent: pi's codemode calls `tool.description.trim()` unguarded
+    // (extensions/codemode/tool.js, 1.4.0) and throws on a tool without one.
+    // On the wire this is `"description":""`, 17 bytes.
+    description: "",
     parameters: Type.Object(
       {
         agent_id: Type.String(),
@@ -129,17 +141,19 @@ export function registerTools(pi: ExtensionAPI): void {
     execute: executeStopAgentTool,
     constrainedSampling: CONSTRAINED_SAMPLING,
   };
-  // @ts-expect-error — description removed to save prompt tokens
   pi.registerTool(stopAgentTool);
 
   const agentStatusTool = {
     name: "AgentStatus",
     label: "AgentStatus",
+    // Empty, not absent: pi's codemode calls `tool.description.trim()` unguarded
+    // (extensions/codemode/tool.js, 1.4.0) and throws on a tool without one.
+    // On the wire this is `"description":""`, 17 bytes.
+    description: "",
     parameters: Type.Object({}, { additionalProperties: false }),
     execute: executeAgentStatusTool,
     constrainedSampling: CONSTRAINED_SAMPLING,
   };
-  // @ts-expect-error — description removed to save prompt tokens
   pi.registerTool(agentStatusTool);
 
   /**

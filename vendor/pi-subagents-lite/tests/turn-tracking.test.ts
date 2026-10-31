@@ -438,7 +438,9 @@ describe("turn counting — the repair is a continuation, and must count like on
     );
     // The fixed form, so this cannot pass by the teardown having been deleted.
     assert.match(code, /onSessionCreated:\s*\(session\)\s*=>\s*\{\s*judgeSession = session;/);
-    assert.match(code, /judgeSession\?\.dispose\(\)/);
+    // Through endChildSession, so the judge hears session_shutdown first (see
+    // record-teardown.test.ts).
+    assert.match(code, /endChildSession\(judgeSession\)/);
   });
 
   /**

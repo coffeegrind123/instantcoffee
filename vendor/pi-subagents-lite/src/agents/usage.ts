@@ -38,7 +38,10 @@ type SessionStatsLike = {
   tokens: { input: number; output: number; cacheWrite: number };
   contextUsage?: { percent: number | null };
 };
-export type SessionLike = { getSessionStats(): SessionStatsLike };
+export type SessionLike = {
+  getSessionStats(): SessionStatsLike;
+  getContextUsage?(): { percent: number | null } | undefined;
+};
 
 /** Format a token count compactly: "12.3k", "1.2M", or raw number. When compact is true, thousands round to whole numbers. */
 export function formatTokens(count: number, compact = false): string {
@@ -59,6 +62,11 @@ export function formatCost(cost: number): string {
 export function getSessionContextPercent(session: SessionLike | undefined): number | null {
   if (!session) return null;
   try {
+    // getSessionStats() walks every entry and then calls getContextUsage() for
+    // this one field (agent-session.js); the widget asks on every frame.
+    if (typeof session.getContextUsage === "function") {
+      return session.getContextUsage()?.percent ?? null;
+    }
     return session.getSessionStats().contextUsage?.percent ?? null;
   } catch {
     return null;

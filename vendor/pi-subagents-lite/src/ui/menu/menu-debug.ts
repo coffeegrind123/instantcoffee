@@ -112,7 +112,9 @@ async function handleAgentBriefing(ctx: ExtensionCommandContext): Promise<void> 
   lines.push(
     "- **Cross-repo trust:** a target in a different git repo is gated by pi's trust framework. An untrusted target still spawns, but its project resources (.pi/ settings, extensions, skills, prompts, themes, system prompt files, .agents/skills) are ignored and its `.pi/agents` types are not discovered.",
   );
-  getPiInstance().sendUserMessage(lines.join("\n"));
+  // A busy session rejects a sendUserMessage with no deliverAs, after the notify
+  // below has already said "sent". Ignored when idle.
+  getPiInstance().sendUserMessage(lines.join("\n"), { deliverAs: "followUp" });
   ctx.ui.notify("Agent briefing sent to LLM", "info");
 }
 

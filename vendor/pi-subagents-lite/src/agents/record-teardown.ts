@@ -58,13 +58,53 @@
  * `record-activity.ts` and `run-answer.ts`.
  */
 
+/** The slice of an AgentSession this reads. `extensionRunner` is a public getter on pi >= 0.87. */
+export interface ChildSession {
+  dispose(): void;
+  extensionRunner?: { emit(event: { type: "session_shutdown"; reason: "quit" }): unknown };
+}
+
 /** The slice of a record this reads. Duck-typed so the module imports nothing. */
 export interface TeardownRecord {
   execution: {
     transcript?: { dispose(): void };
     verifyAbort?: { abort(): void };
-    session?: { dispose(): void };
+    session?: ChildSession;
   };
+}
+
+/**
+ * End a child session the way pi ends its own: `session_shutdown`, then
+ * `dispose()`. pi's `AgentSession.dispose()` emits no `session_shutdown` (0.87.1
+ * and 1.4.0 alike), and a child runs this stack's extensions — `observe` forgets
+ * a child only on that event, so every delegation's state outlived it.
+ *
+ * `dispose()` waits for the emit because it invalidates the ctx the shutdown
+ * handlers are given. With no runner there is nothing to wait for, and the
+ * dispose stays synchronous. Never rejects: callers fire and forget it.
+ */
+export function endChildSession(session: ChildSession): Promise<void> {
+  const dispose = () => {
+    try {
+      session.dispose();
+    } catch {
+      // Same rule as the rest of this teardown: keep going.
+    }
+  };
+
+  const runner = session.extensionRunner;
+  if (!runner) {
+    dispose();
+    return Promise.resolve();
+  }
+
+  let shutdown: Promise<unknown>;
+  try {
+    shutdown = Promise.resolve(runner.emit({ type: "session_shutdown", reason: "quit" }));
+  } catch {
+    shutdown = Promise.resolve();
+  }
+  return shutdown.then(dispose, dispose);
 }
 
 /**
@@ -96,10 +136,9 @@ export function teardownRecord(record: TeardownRecord): void {
     // An AbortController that throws is not a reason to leak a session.
   }
 
-  try {
-    record.execution.session?.dispose();
-  } catch {
-    // Same rule as everywhere else in this teardown: keep going.
-  }
+  const session = record.execution.session;
   record.execution.session = undefined;
+  if (session) {
+    void endChildSession(session);
+  }
 }

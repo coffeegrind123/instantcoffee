@@ -116,9 +116,18 @@ function stripComments(text: string): string {
  * call sites in this package are `getPiInstance().exec(`, so a receiver
  * allow-list would have dropped them silently, which is the failure mode this
  * whole file exists to prevent.
+ *
+ * Also excluded by shape: a regex literal WITH flags (`/…/i.exec(`) and a
+ * receiver named like a constant (`GITDIR_LINE.exec(`). `.pi/extensions/observe/
+ * src/git.ts` has both and no host exec at all; the first form of this check
+ * reported its four regex matches as unclassified pi.exec verdicts.
  */
 function isHostExec(line: string): boolean {
-  return /\.exec\(/.test(line) && !/\/\.exec\(/.test(line);
+  if (!/\.exec\(/.test(line)) return false;
+  const withoutRegexExecs = line
+    .replace(/\/[dgimsuyv]*\.exec\(/g, "")
+    .replace(/\b[A-Z][A-Z0-9_]*\.exec\(/g, "");
+  return /\.exec\(/.test(withoutRegexExecs);
 }
 
 /** How many lines after a `.exec(` call the verdict has to be read within. */
@@ -138,6 +147,30 @@ function callSites(dir: string): { file: string; line: number; text: string }[] 
   }
   return sites;
 }
+
+describe("isHostExec tells a host exec from a regex exec", () => {
+  it("keeps every host form", () => {
+    for (const line of [
+      'const r = await pi.exec("git", ["status"]);',
+      "const r = await getPiInstance().exec(cmd, args, { timeout });",
+      'api.exec("docker", ["ps"])',
+      'const m = RE.exec(x); await pi.exec("git", [])',
+    ]) {
+      assert.equal(isHostExec(line), true, line);
+    }
+  });
+
+  it("drops regex literals, flagged or not, and constant-named regexes", () => {
+    for (const line of [
+      "const m = /^a$/.exec(line);",
+      "const kv = /^url\\s*=\\s*(.*)$/i.exec(line);",
+      'const m = GITDIR_LINE.exec((read(dotGit) ?? "").trim());',
+      "const branch = HEAD_REF.exec(head)?.[1] ?? null;",
+    ]) {
+      assert.equal(isHostExec(line), false, line);
+    }
+  });
+});
 
 describe("every pi.exec verdict reads `killed`, not `code` alone", () => {
   /**

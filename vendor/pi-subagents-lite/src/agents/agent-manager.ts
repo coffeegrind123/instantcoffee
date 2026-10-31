@@ -33,7 +33,7 @@ import { DEFAULT_CONCURRENCY, DEFAULT_GRACE_TURNS } from "../config/config-io.js
 import { DepthSlotTables, type ConcurrencyConfig, type ConcurrencySlot } from "./concurrency-slots.ts";
 import { anchorReachesATurn } from "./compaction-anchor.ts";
 import { isVerifyingRecord } from "./record-activity.ts";
-import { teardownRecord } from "./record-teardown.ts";
+import { type ChildSession, endChildSession, teardownRecord } from "./record-teardown.ts";
 import { undeliveredSteersReport } from "../ui/action-report.ts";
 
 export type { ConcurrencyConfig } from "./concurrency-slots.ts";
@@ -239,6 +239,8 @@ export class AgentManager {
   private agents = new Map<string, AgentRecord>();
   private watchdog = new Watchdog();
   private watchdogInterval: ReturnType<typeof setInterval>;
+  /** Set by dispose(). A child session created after it is ended, not attached. */
+  private disposed = false;
   private onComplete?: OnAgentComplete;
   private onStart?: OnAgentStart;
 
@@ -464,7 +466,7 @@ export class AgentManager {
           resolveVerifyTimeoutMs(process.env.SUBAGENT_VERIFY_TIMEOUT_MS),
           record.execution.verifyAbort?.signal,
         );
-        let judgeSession: { dispose(): void } | undefined;
+        let judgeSession: ChildSession | undefined;
         try {
           const result = await runAgent(ctx, VERIFIER_AGENT_TYPE, prompt, {
             pi,
@@ -496,10 +498,10 @@ export class AgentManager {
           return result.responseText;
         } finally {
           deadline.cancel();
-          try {
-            judgeSession?.dispose();
-          } catch {
-            // A judge that answered is worth more than a tidy teardown.
+          // endChildSession never rejects: a judge that answered is worth
+          // more than a tidy teardown.
+          if (judgeSession) {
+            void endChildSession(judgeSession);
           }
         }
       },
@@ -704,6 +706,13 @@ export class AgentManager {
         options.onTurnEnd?.(turnCount);
       }),
       onSessionCreated: (session) => {
+        // A reload during this child's setup: its record is gone, so the
+        // session has no owner. dispose() aborted the run, and runTurnLoop
+        // throws before prompt() (AB4); this ends the session it left behind.
+        if (this.disposed) {
+          void endChildSession(session);
+          return;
+        }
         record.execution.session = session;
         attachTranscript(record, session);
         // Flush any steers that arrived before the session was ready
@@ -1359,9 +1368,14 @@ export class AgentManager {
   }
 
   dispose() {
+    this.disposed = true;
     clearInterval(this.watchdogInterval);
     this.queue = [];
     for (const record of this.agents.values()) {
+      // A record still in setup has no session for teardownRecord to end, so
+      // its run would go on to prompt the slot with no owner. The abort makes
+      // runTurnLoop throw before prompt() (AB4).
+      record.execution.abortController?.abort();
       // Queued subagents never start: fail them honestly so the waiting tool
       // call resumes with an explicit error instead of hanging (US-9).
       if (record.lifecycle.status === "queued") {

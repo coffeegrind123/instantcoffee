@@ -34,7 +34,7 @@ import { describe, it } from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { teardownRecord } from "../src/agents/record-teardown.ts";
+import { endChildSession, teardownRecord } from "../src/agents/record-teardown.ts";
 import { verifyAnswer } from "../src/agents/verify-runner.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -183,5 +183,70 @@ describe("AM3 — what the two orders hand the parent model", () => {
     assert.match(outcome.answer, /the check did not complete/);
     assert.doesNotMatch(outcome.answer, /did not address it/, "a torn-down check must not read as a failed answer");
     assert.ok(outcome.answer.startsWith(ANSWER));
+  });
+});
+
+/**
+ * `AgentSession.dispose()` emits no `session_shutdown` (pi 0.87.1 and 1.4.0
+ * alike: only the runtime's replace/reload paths do). A child loads this
+ * stack's extensions, and `.pi/extensions/observe` forgets a child only on that
+ * event, so every delegation left its state behind for the life of the process.
+ * The event goes out first, and `dispose()` waits for it: disposing invalidates
+ * the extension ctx the shutdown handlers are handed.
+ */
+describe("a child session hears session_shutdown before it is disposed", () => {
+  function child(opts: { emitThrows?: boolean; emitRejects?: boolean } = {}) {
+    const order: string[] = [];
+    const session = {
+      extensionRunner: {
+        emit(event: { type: string; reason: string }) {
+          order.push(`emit:${event.type}:${event.reason}`);
+          if (opts.emitThrows) throw new Error("handler blew up");
+          return opts.emitRejects ? Promise.reject(new Error("async handler blew up")) : Promise.resolve();
+        },
+      },
+      dispose() {
+        order.push("dispose");
+      },
+    };
+    return { session, order };
+  }
+
+  it("emits session_shutdown, then disposes", async () => {
+    const { session, order } = child();
+    await endChildSession(session);
+    assert.deepEqual(order, ["emit:session_shutdown:quit", "dispose"]);
+  });
+
+  it("disposes even when the emit throws or rejects", async () => {
+    for (const opts of [{ emitThrows: true }, { emitRejects: true }]) {
+      const { session, order } = child(opts);
+      await endChildSession(session);
+      assert.deepEqual(order, ["emit:session_shutdown:quit", "dispose"], JSON.stringify(opts));
+    }
+  });
+
+  it("a session without a runner is disposed at once", async () => {
+    const order: string[] = [];
+    const done = endChildSession({ dispose: () => order.push("dispose") });
+    assert.deepEqual(order, ["dispose"], "nothing to wait for, so nothing is deferred");
+    await done;
+  });
+
+  it("teardownRecord routes the record's session through it", async () => {
+    const { session, order } = child();
+    const record = { execution: { session } };
+    teardownRecord(record);
+    assert.equal(record.execution.session, undefined, "the handle is dropped at once");
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(order, ["emit:session_shutdown:quit", "dispose"]);
+  });
+
+  it("the judge's session goes through it too", () => {
+    const source = readFileSync(join(PACKAGE_ROOT, "src", "agents", "agent-manager.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/[^\n]*/g, "");
+    assert.doesNotMatch(source, /judgeSession\?\.dispose\(\)/, "a bare dispose() skips session_shutdown");
+    assert.match(source, /endChildSession\(judgeSession\)/);
   });
 });

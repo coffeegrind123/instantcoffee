@@ -91,10 +91,11 @@ describe("AA4 — the background nudge's deliverAs", () => {
     // queue call; the triggerTurn branch goes straight to _runAgentPrompt.
     assert.match(branch, /this\.isStreaming && options\?\.triggerTurn !== false/);
     // pi 0.87 defers the prompt while agent_settled is being emitted; either
-    // way the triggerTurn branch runs a prompt and never reads deliverAs.
+    // way the triggerTurn branch runs a prompt and never reads deliverAs. pi
+    // 1.2+ starts it through `_startRun` (user and custom runs share one path).
     assert.match(
       branch,
-      /else if \(options\?\.triggerTurn\)\s*\{?\s*(if \(this\._isEmittingAgentSettled\)\s*\{[^}]*\}\s*)?await this\._runAgentPrompt\(appMessage\)/,
+      /else if \(options\?\.triggerTurn\)\s*\{?\s*(if \(this\._isEmittingAgentSettled\)\s*\{[^}]*\}\s*)?await this\.(_runAgentPrompt\(appMessage\)|_startRun\(\{ messageType: "custom", message: appMessage \}\))/,
     );
   });
 });
