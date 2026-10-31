@@ -213,6 +213,8 @@ patches/
                         backend verbatim; the model forge builds no longer lies
 .pi/extensions/
   stack.ts              /stack command + stack_status tool inside pi
+  browser-mcp.ts        registers the browser server with pi's built-in MCP
+                        (5 direct tools, the rest via codemode)
   browser-guard.ts      turns a browser-tool timeout into an instruction
   compaction-guard/     bounds pi's carried-over summary, caps oversized tool
                         results, and shows the model its context budget — in
@@ -274,10 +276,9 @@ vendor/pi-persona/      /persona — a character voice over invariant engineerin
                         file delete cannot do, and how it survives a resume
   tests/                123 tests, incl. the factory against a real pi import
 mcp/servers.json        registry of MCP servers reachable via scripts/mcp.sh
-mcp/adapter.json        pi-mcp-adapter config: how pi reaches the browser server
 skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
 skills/browser/         pi skill for CLI mode (scripts/browser.sh)
-skills/browser-tools/   pi skill for adapter mode (native browser_* tools)
+skills/browser-tools/   pi skill for native mode (mcp__browser__* tools + codemode)
 context/                why things are the way they are
   README.md              index of the above, and the conventions it follows
   design/decisions.md    all design decisions, flags, quant choice

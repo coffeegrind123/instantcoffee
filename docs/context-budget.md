@@ -201,71 +201,62 @@ something pi spawns: it outlives any one session, survives `/clear`, is shared
 with anything else on the box, and is stopped deliberately. What changes between
 the two modes below is only how pi *reaches* it.
 
-### Adapter mode — the browse loop as native tools (default)
+### Native mode — the browse loop as native tools (default)
 
-With `MCP_ADAPTER_ENABLED=1`, pi loads
-[pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) and
-`mcp/adapter.json` points it at the running server. Five tools register as
-ordinary pi tools; the other 93 stay one search away:
+With `BROWSER_MCP_NATIVE=1`, `.pi/extensions/browser-mcp.ts` registers the
+running server with **pi's built-in MCP** (pi >= 0.99). Five tools are declared
+like ordinary pi tools; the other 93 are reached from a `codemode` script:
 
 ```
-browser_navigate({ url: "https://example.com" })
-browser_get_text_content({ max_chars: 4000 })
-browser_get_interaction_tree({ limit: 40 })
-browser_click({ selector: "3" })
-browser_type_text({ selector: "7", text: "hello" })
+mcp__browser__navigate({ url: "https://example.com" })
+mcp__browser__get_text_content({ max_chars: 4000 })
+mcp__browser__get_interaction_tree({ limit: 40 })
+mcp__browser__click({ selector: "3" })
+mcp__browser__type_text({ selector: "7", text: "hello" })
 
-mcp({ search: "cookie" })                     → any of the other 93, with schemas
-mcp({ tool: "browser_set_cookie", args: … })  → call one
-mcpScript({ code: "…" })                      → several calls in ONE turn
+codemode: await searchTools("cookie")               → any of the other 93
+codemode: await tools.mcp__browser__get_cookies({}) → call one
+codemode: navigate → read → click → read            → several calls in ONE turn
 ```
 
-Measured on 2026-08-16 — not from the READMEs. The token figures are the bytes
-**pi actually put on the wire**, captured from a stub model that logged the
-request (the adapter's own README claims "~200 tokens" for the proxy tool; it is
-720):
+This replaced pi-mcp-adapter on 2026-10-31
+(`context/pi-1.4-audit-2026-10-31.md`). Measured as bytes of tool schemas pi
+put on the wire, same flags, live server:
 
-| | tokens | per call |
-| --- | --- | --- |
-| All 98 schemas, the normal MCP way | ~19,000 (60% of the window) | — |
-| `mcp` proxy tool | 720 | — |
-| `mcpScript` | 302 | — |
-| The five direct tools | 1,155 | 25–417 ms |
-| **Adapter mode total** | **2,178 (6.6%)** | in-process |
-| pi's own `read`/`bash`/`edit`/`write`, for scale | 723 | — |
-| CLI mode (`skills/browser`) | ~120 | 1.7–6.5 s |
+| | bytes | ≈ tokens | per call |
+| --- | --- | --- | --- |
+| pi-mcp-adapter: five tools + `mcp` + `mcpScript` | 9,875 | 2,178 (measured 2026-08-16) | 25–417 ms |
+| **Native: five tools + `codemode`** | **8,703** | **~1,900** (estimate, same bytes/token) | 25–417 ms |
+| CLI mode (`skills/browser`) | — | ~120 | 1.7–6.5 s |
 
-Two levers if 6.6% is too much: `"scriptMode": false` in `mcp/adapter.json`
-settings drops `mcpScript` (−302), and shortening `directTools` to
-`navigate`/`get_interaction_tree`/`get_text_content` drops another ~500 at the
-cost of a proxy hop for every click and keystroke.
+Why `codemode` exposure and not `deferred`: `tool_search` **declares** the tools
+it loads, and with this chat template the tool declarations sit at the top of
+the prompt, so every search changed the prefix and re-prefilled the whole
+conversation (measured on a child: 5,623 / 6,694 / 10,397-token prefills against
+a few hundred per steady turn, and its declared browser tools grew 0 → 20 → 41).
+With `codemode` the declared list never changes in a session, which is what the
+adapter's `freezeDirectTools` was for.
 
-The per-call figure is why this exists: the CLI pays a Python start and a full
-`tools/list` on every invocation, and `mcpScript` collapses navigate → read →
-click → read into a single turn, which on a 27B local model is worth more than
-the token arithmetic.
+What changed for safety: every nested call a script makes runs the extensions'
+`tool_call`/`tool_result` hooks, so `browser-guard.ts` fences each browser
+result, and it also fences a codemode result whose script used the browser.
+Behind the adapter, the 93 tools reached through its `mcp` proxy and every
+`mcpScript` result arrived unfenced.
+
+Subagent children get the same five tools, `codemode`, the registration and the
+guard (pi-subagents-lite: `child-builtins.ts`, `subagent-denylist.ts`).
 
 `start_browser` is deliberately **not** one of the five — its schema alone is
 2.3 KB (~570 tokens, the largest on the server). Instead `browser.sh` runs the
 server with `ZENDRIVER_MCP_AUTOSTART_BROWSER=1`, so the first tool that needs a
 browser opens one. That fix lives in the server, so both modes get it.
 
-`freezeDirectTools` is on: the registered surface is part of the prompt prefix,
-and this stack reuses KV cache across turns and restarts, so a reconnect must not
-rewrite it mid-session.
-
-The package is **not vendored** — 42 dependencies, 83 MB installed. `pi-local.sh`
-checks for it, warns with the exact install command, and falls back to CLI mode
-rather than passing pi a `--mcp-config` flag that only exists when the adapter is
-loaded:
-
-```bash
-pi install npm:pi-mcp-adapter@2.26.0     # the version .env pins
-```
+Nothing to install: the built-in MCP ships with pi. A pi older than 0.99 gets
+CLI mode with a warning; `--tools +codemode` needs 1.1.0.
 
 ### CLI mode — the same server, through the shell
 
-`MCP_ADAPTER_ENABLED=0` (or no adapter installed) loads `skills/browser` instead,
+`BROWSER_MCP_NATIVE=0` (or a pi older than 0.99) loads `skills/browser` instead,
 and the model shells out. This is also what a human or a script uses, and it needs
 no npm package at all:
 
@@ -315,7 +306,7 @@ Wiring these 98 tools into a client that loads schemas costs **76,893 bytes —
 about 19k tokens** — before the first message. That was **60% of the 32K window**
 this was measured on; at a 96K window it is **about 20%** (about 15% at 128K, 10% at 192K). Still a
 fifth of the window spent before the model has read anything. Neither mode
-pays that. Adapter mode buys back 5 tools and a search hop for 2,178 tokens; CLI
+pays that. Native mode buys back 5 tools and scripted reach to the rest for ~1,900 tokens; CLI
 mode pays almost nothing standing and charges for discovery instead:
 
 | What | Cost |
@@ -328,8 +319,8 @@ mode pays almost nothing standing and charges for discovery instead:
 The server *does* ship a search gateway (`ZENDRIVER_MCP_GATEWAY=1`) that collapses
 98 tools to 10 for clients that load schemas. Both modes deliberately turn it off:
 neither loads schemas up front, so the gateway would only add a `call_tool`
-indirection hop and hide 88 tools behind a search that the adapter's own `mcp`
-proxy and the CLI both do better.
+indirection hop and hide 88 tools behind a search that codemode's `searchTools()`
+and the CLI both do better.
 
 ### Nothing to manage
 
@@ -350,7 +341,7 @@ So the machinery holds itself up, at three levels:
   profile (measured: `ppid=1`, and the replacement server started a second Chrome
   beside it).
 - **Chrome opens on the first tool that needs it, and is replaced if it dies.**
-  Both live in the server, so the CLI and the adapter get them equally. Verified
+  Both live in the server, so both modes get them equally. Verified
   by killing each layer under a live session and watching the next call succeed.
 
 **None of that covered the failure that actually happened.** On 2026-08-16 Chrome
@@ -412,17 +403,16 @@ the supervisor together.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `BROWSER_MCP_ENABLED` | `1` | Offer the browser at all (loads one of the two skills) |
-| `MCP_ADAPTER_ENABLED` | `1` | Native tools via pi-mcp-adapter; `0` falls back to the CLI |
-| `MCP_ADAPTER_VERSION` | `2.26.0` | Pinned adapter version, checked at launch |
-| `BROWSER_MCP_AUTOUP` | `1` | Start the server at launch in adapter mode (no Chrome yet) |
+| `BROWSER_MCP_NATIVE` | `1` | Native tools via pi's built-in MCP; `0` falls back to the CLI |
+| `BROWSER_MCP_AUTOUP` | `1` | Start the server at launch in native mode (no Chrome yet) |
 | `ZENDRIVER_MCP_DIR` | `/opt/zendriver-mcp` | The Zendriver-MCP checkout to run |
-| `BROWSER_MCP_HOST` / `_PORT` | `127.0.0.1` / `8931` | Where the server listens; `mcp/adapter.json` interpolates both |
+| `BROWSER_MCP_HOST` / `_PORT` | `127.0.0.1` / `8931` | Where the server listens; `browser-mcp.ts` builds the URL from both |
 | `BROWSER_MCP_DISPLAY` | `:99` | X display for Chrome; empty inherits `DISPLAY` |
 | `BROWSER_MCP_AUTOSTART` | `1` | Let a tool call start the server, and the server open Chrome |
 | `BROWSER_MCP_TIMEOUT` | `180` | Seconds one tool call may take |
 
-Adapter tuning that is not a port — the direct-tool list, the output guard, the
-lifecycle — lives in `mcp/adapter.json`, commented in place.
+Tuning that is not a port — the direct-tool list, exposure, the request
+timeout — lives in `.pi/extensions/browser-mcp.ts`, commented in place.
 
 
 ## Commands
@@ -437,7 +427,6 @@ lifecycle — lives in `mcp/adapter.json`, commented in place.
 | `./scripts/browser.sh health` | Probe Chrome itself (exit 2 = wedged) |
 | `./scripts/browser.sh reap` | Clear leftovers from servers that died |
 | `./scripts/browser.sh down` | Stop Chrome and its server |
-| `pi install npm:pi-mcp-adapter@2.26.0` | One-time: the browser as native pi tools |
 
 ---
 

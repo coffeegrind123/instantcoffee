@@ -10,6 +10,25 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**pi 1.4.0 audit (2026-10-31).** Every extension checked against pi 0.87.1 ->
+1.4.0. Fixed: `/loop` sent its rules twice on every iteration (pi now runs the
+start hook on loop turns too); `/persona` started mid-turn switched the persona
+off and extracted nothing (it now refuses until the turn ends); a failed
+subagent was drawn with ✓; subagent sessions never got their shutdown event; a
+reload during a subagent's setup left it running with no owner. Two test
+suites that CI never ran had gone red and are now in CI.
+
+**The browser moves to pi's built-in MCP; pi's telemetry is off (2026-10-31).**
+pi-mcp-adapter is retired. Five browser tools are declared as before (now named
+`mcp__browser__*`); the other 93, and multi-step flows, go through `codemode`
+scripts. Slightly smaller on every request, and the tool list no longer changes
+mid-session. Browser output reached through the adapter's search tool was never
+marked as untrusted web content; now all of it is, and subagents get the browser
+and that marking too. `PI_TELEMETRY=0` and `PI_OFFLINE=1` stop pi's install ping
+to pi.dev, its provider attribution and its startup network calls; pi updates
+are unaffected. The launcher removes the old adapter from pi's settings. See
+`context/pi-1.4-audit-2026-10-31.md` §6.
+
 **Context-window tiers: `coding` 96K / `coding-128k` / `coding-192k`; uncensored
 modes at 128K (2026-10-31).** Two new modes: `coding-128k` (same UD-Q4_K_XL
 weights, 128K, ~1150 t/s prefill at depth) and `coding-192k` (GSQ-RCO IQ3_S,

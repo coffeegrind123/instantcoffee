@@ -1,6 +1,54 @@
+# Handoff — 2026-10-31 (part 20: the pi 0.87 -> 1.4 extension audit — done; six defects fixed, two suites CI never ran brought back green; the pi container image is gone)
+
+Everything below this part-20 block is history. Start here.
+
+## State at hand-off
+
+- Stack unchanged: UP on `uc-coding` at 128K, capture still ON.
+- **The pi container does not exist**: no `pi-agent:latest` image, no
+  `instantcoffee-pi` container. Rebuild it (`docs/container.md`) before the next
+  live pi session; it will install pi 1.4.0 (npm `latest`).
+- pi 1.4.0 is installed globally in THIS container (`/usr/local/bin/pi`), as the
+  part-15 table recorded it used to be, so the suites that load pi's own modules
+  run locally the way CI runs them.
+- Work is in the working tree, uncommitted (see `git status`); `vendor/pi-persona`
+  is a submodule, so its change commits in that repo first.
+
+## What this session did
+
+The whole account, with evidence, is `context/pi-1.4-audit-2026-10-31.md`.
+
+1. Every extension loads clean on 1.4.0 (with a throwing-extension control);
+   no hooked event removed; standing prompt cost unchanged (+117 chars).
+2. Fixed: L1 loop rules sent twice per iteration (pi 1.2 runs
+   `before_agent_start` on triggered runs; confirmed with a probe on real 0.87.1
+   vs 1.4.0); P1 `/persona` mid-turn; M1 built-in MCP vs adapter (`--no-mcp`,
+   version-gated); S1-S6 in pi-subagents-lite (✓ on failure, no child
+   `session_shutdown`, ownerless setup-phase child after reload, debug briefing,
+   write summary, context percent).
+3. T1: `pi-subagents-lite` and `pi-toolresult-guard` had no CI step and were red
+   on 1.4 (stale pins, not broken code). Fixed and added to CI. The tool-result
+   guard's contract still holds on 1.4.
+
+## Next
+
+1. DONE 2026-11-01 (audit §7): image rebuilt; live TUI checks passed (browser,
+   delegation after fixing S7, `/loop` with a reverted-fix control); startup
+   measured at 77-89 s to the first frame. The test container is removed;
+   `./scripts/pi-container.sh` creates the real one on first use. Its `data2`
+   clone still needs this work pulled in once it is committed.
+2. pi startup (77-89 s, extensions loaded from the Windows bind mount) is open:
+   measured, not fixed.
+3. DONE same session (audit §6): telemetry off; pi-mcp-adapter retired for pi's
+   built-in MCP.
+4. Part 18's queue is unchanged (#26004 confirmation, Strata count, GSQ to C:,
+   kld-run preflight).
+
+---
+
 # Handoff — 2026-10-31 (part 19: KLD re-baseline passed on b12019; context-window tiers shipped — coding 96K / 128K / 192K, uncensored at 128K; desktop VRAM is the hidden variable; NEXT: the pi 0.87 -> 1.4 extension audit)
 
-Everything below this part-19 block is history. Start here.
+Everything below part 20 is history.
 
 ## State at hand-off
 

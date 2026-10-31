@@ -46,7 +46,6 @@ Version pins are build args, defaulting to the values `.env` holds:
 | --- | --- | --- |
 | `PI_VERSION` | `latest` | — (`PI_AUTO_UPDATE` moves it after install) |
 | `RTK_VERSION` | `0.45.0` | `RTK_VERSION` |
-| `MCP_ADAPTER_VERSION` | `2.26.0` | `MCP_ADAPTER_VERSION` |
 | `MCP2CLI_VERSION` | `3.3.1` | `MCP2CLI_VERSION` |
 | `MCP_SDK_VERSION` | `1.29.0` | `MCP_SDK_VERSION` |
 
@@ -281,9 +280,15 @@ qpi                       # alias for ~/qwen3.8-forge/scripts/pi-local.sh
 **Everything is installed into the image, never into `$HOME`.** `$HOME` is the
 bind mount, so anything the build writes there is shadowed away the moment the
 volume is attached — the classic way a tool that is "built in" turns out to be
-missing at run time. `pi-mcp-adapter` is the one thing that cannot follow this
-rule, because pi insists on `~/.pi/agent/npm`; the start script installs it on
-first run instead, and skips it thereafter.
+missing at run time. (pi-mcp-adapter used to be the one exception, installed
+into `~/.pi/agent/npm` on first run; it was retired for pi's built-in MCP on
+2026-10-31, which ships with pi itself.)
+
+pi's own network traffic is off in the image: `PI_TELEMETRY=0` (no install ping
+to pi.dev, no provider attribution) and `PI_OFFLINE=1` (no catalog refresh,
+version check, package update checks or fd/rg downloads, which is why `fd-find`
+and `ripgrep` are installed). `PI_AUTO_UPDATE` is unaffected: `pi-local.sh` runs
+npm for that.
 
 `x11-utils` is a hard dependency, not a convenience. `scripts/browser.sh` probes
 the display with `xdpyinfo` before launching Chrome; without it the probe falls
@@ -297,9 +302,8 @@ server `mcp/servers.json` does not register. Add the blocks and an
 
 ## First start
 
-The entrypoint seeds `~/.bashrc` if absent, brings up Xvfb, installs
-`pi-mcp-adapter` on first run, and then prints what it could and could not
-verify:
+The entrypoint seeds `~/.bashrc` if absent, brings up Xvfb, and then prints
+what it could and could not verify:
 
 ```
 Display: :99 (Xvfb, listening)

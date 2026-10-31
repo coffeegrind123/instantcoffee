@@ -895,6 +895,15 @@ via a stamp file, so you are not paying a registry round trip every session, and
 it **fails soft** in every direction — no npm, no network, or a failed install
 all warn and launch on the version already there. `PI_AUTO_UPDATE=0` pins it.
 
+Checked against pi 1.4.0 on 2026-10-31: every extension here loads clean and the
+standing prompt cost is unchanged. `context/pi-1.4-audit-2026-10-31.md` has what
+changed and what was fixed. The browser now runs through pi's own built-in MCP
+(`.pi/extensions/browser-mcp.ts`), which replaced pi-mcp-adapter; see
+`docs/context-budget.md`. pi's network traffic is off: `PI_TELEMETRY=0` stops the
+install ping to pi.dev and provider attribution, `PI_OFFLINE=1` the catalog
+refresh, version check and download-on-demand. `PI_AUTO_UPDATE` above still
+works; it is plain npm, run by this launcher.
+
 ## If it will not start
 
 `pi-local.sh` refuses to launch rather than dropping you into a session that
@@ -1011,9 +1020,11 @@ the post-compaction floor from 20,000 tokens to 7,000. Global rather than a
 at — and project settings only load for a *trusted* project.
 
 **What that sizing cannot fix, and `.pi/extensions/compaction-guard/` does.**
-Two knobs are not enough, because `reserveTokens` is also the summarizer's own
-`maxTokens` and nothing bounds the summary pi carries from one compaction into
-the next. pi's `UPDATE_SUMMARIZATION_PROMPT` tells the model to *"PRESERVE all
+Two knobs are not enough, because nothing bounds the summary pi carries from
+one compaction into the next. (Up to pi 0.87 `reserveTokens` also capped the
+summarizer's output, at `min(0.8 × reserveTokens, maxTokens)`; from 1.4.0 the
+summary uses the model's own output limit. Both come to 8,192 tokens here, so
+nothing changed in practice.) pi's `UPDATE_SUMMARIZATION_PROMPT` tells the model to *"PRESERVE all
 existing information from the previous summary"* and to include *"previously
 done items AND newly completed items"*, so the summary is monotonic by
 construction. Across the 42 real compaction points under `~/.pi/agent/sessions`

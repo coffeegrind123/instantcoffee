@@ -9604,3 +9604,27 @@ switch-back reset; it fails on the pre-change mode files.
 **kld-run.sh preflight note:** it counts a running llama's ~1.8 GiB as
 unavailable although it stops llama before the base arm; stop llama by hand if
 it refuses by less than that.
+
+## 2026-10-31 (late) — the browser on pi's built-in MCP; pi's telemetry off
+
+pi-mcp-adapter retired. `.pi/extensions/browser-mcp.ts` registers the browser
+server with pi's built-in MCP: the five-tool browse loop `direct`, the other 93
+`codemode` (reached with `searchTools()` and `tools.mcp__browser__*` inside a
+script, which is the adapter's `mcp` proxy and `mcpScript` in one tool). 13,273
+bytes of tool schemas against the adapter's 14,394.
+
+Rejected: `deferred` + `tool_search`. It is cheaper (11,087) and it changes the
+declared tool list every time it loads something; on this template that
+re-prefills the prompt (measured 10,397-token prefills on a ~10K child context).
+A frozen tool list is the same requirement the adapter config met with
+`freezeDirectTools`.
+
+Gained: every browser result is fenced as untrusted web content, including
+nested calls and codemode results that used the browser; the adapter's proxy
+tools were never fenced. Subagent children get the browser and the guard.
+
+Telemetry: `PI_TELEMETRY=0` + `PI_OFFLINE=1` (image ENV, .env, pi-local.sh
+exports) and `enableInstallTelemetry: false` in pi's settings. Nothing the
+stack uses needs pi's startup network; pi updates are npm, run by pi-local.sh.
+
+Evidence: `context/pi-1.4-audit-2026-10-31.md` §6.
