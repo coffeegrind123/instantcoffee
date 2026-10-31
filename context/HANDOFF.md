@@ -27,9 +27,11 @@ Everything below this part-18 block is history. Start here.
    0.0187/96.26%, orcarouter 0.0462/92.78%, GSQ IQ3_S 0.0846/89.68% — matches
    ironblock's prose to 0.0014 KLD. **D1: GSQ refused as the `coding` default**;
    open only as a deliberate 128K variant after a capacity + spec-sweep pass.
-3. **The 3090 inference sweep weighed** (§3c in part 17, below): GPU unlock
-   skipped, HyperQwen a whole-GPU swap the uncensored modes can't use, llamAmpere
-   sm_86-only but its resume-without-reprefill idea is now moot (see #26004 below).
+3. **The inference-options sweep weighed** (§3c in part 17, below; its sources
+   benchmark an RTX 3090, our card is a 4090/sm_89): GPU unlock ruled out (the
+   operator, 2026-10-31: no firmware/hardware modding on the 4090), HyperQwen a
+   whole-GPU swap the uncensored modes can't use, llamAmpere sm_86-only and its
+   resume-without-reprefill idea now moot (see #26004 below).
 4. **Strata stranded-tool-call counter built** (`scripts/stranded_tool_calls.py`
    + test, in CI). 0 on both existing tapes (one too small, one has no reasoning);
    capture is on to get a real tape.
@@ -315,7 +317,9 @@ writeup it links. Both are about an **RTX 3090 (Ampere, sm_86)**; this box is a
 **4090 (Ada, sm_89) inside Docker Desktop on WSL2**. That gap decides most of it.
 Nothing here is adopted.
 
-- **The GPU unlock: skip it.** `Zagitta/gpu-unlock` (and the Ada fork
+- **The GPU unlock: skip it — and since 2026-10-31, ruled out by the operator:
+  no firmware or hardware modding on the 4090, whatever port appears.**
+  `Zagitta/gpu-unlock` (and the Ada fork
   `JustAResearcher/gpu-unlock-ada`) flips two bits in the GA10x/AD10x boot
   firmware to double the issue rate of FP16/BF16-with-FP32-accumulate (and TF32)
   tensor instructions. On a 4090 the matched microbenchmarks show a clean 2.0x on
@@ -339,7 +343,8 @@ Nothing here is adopted.
     custom EFI (breaks the no-local-compile rule), Secure Boot off, and a
     power-off to recover a failed flash. It does show through WSL2 once the host
     is unlocked, so if a 4090 Windows port ever appears the container would see
-    the higher rates — but the ceiling above makes that not worth chasing.
+    the higher rates — but the ceiling above makes that not worth chasing, and
+    the operator's no-modding rule closes it regardless.
 
 - **HyperQwen (`syv-ai/HyperQwen`): the one with a 4090-in-WSL2 datapoint.** A
   patched vLLM 0.31.0 (int8 Marlin + int8 flash-attention kernels) with a prebuilt
