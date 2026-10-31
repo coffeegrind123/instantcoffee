@@ -149,6 +149,23 @@ jobs:
           npm run lint
           npm test
 
+      # Neither suite was in CI until the pi 1.4 audit (2026-10-31), and both
+      # had gone red unseen: subagents-lite pinned pi 0.87's sendCustomMessage
+      # and its exec scan read RegExp.exec as pi.exec; the tool-result guard's
+      # pi-contract search missed code pi 1.4 moved to another bundle chunk.
+      # Both load pi's own modules from the global install above.
+      - name: Subagents fork unit tests
+        working-directory: vendor/pi-subagents-lite
+        run: |
+          npm run lint
+          npm test
+
+      - name: Tool-result guard unit tests
+        working-directory: vendor/pi-toolresult-guard
+        run: |
+          npm run lint
+          npm test
+
       # The other half of the same contract: that the rtk BINARY still behaves
       # the way the allow-list assumes. Filters are upstream's to change and a
       # filter that stops rewriting, or starts summarising a file read, does it
