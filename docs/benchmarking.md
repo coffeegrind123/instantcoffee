@@ -166,6 +166,15 @@ study saw the same thing: prose changed with MTP on, code fixtures did not. As
 of this entry, no script here compares generated text across arms. Keep it that
 way: compare acceptance, rates and task pass/fail.
 
+**Reproduced on THIS stack, 2026-10-31 (b12019, Q4_K_M, our production
+`ngram-map-k,draft-mtp`).** Eight fixed greedy prompts (temp 0), spec ON vs spec
+OFF, same engine: **6 of 8 byte-identical, 2 diverged** — both the long
+reasoning-heavy prompts (the monad explanation, the TCP handshake), diverging
+mid-reasoning into equally-plausible continuations; the short deterministic ones
+(code, arithmetic, translation, a one-word answer) matched. So #25618 is live for
+us, not just upstream, and it accumulates with length exactly as reported. The
+rule stands: no text-equality check across spec arms.
+
 `spec_sweep_compare.py --metric prefill|wall` compares prefill rate or whole-
 request time instead of decode (wall: lower is better). Use it for any change
 that could trade prefill for decode — MTP itself costs ~10% of prefill.

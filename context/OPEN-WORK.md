@@ -34,7 +34,7 @@ Watch, no action until it changes:
 | --- | --- | --- |
 | llama.cpp#29143 | FastMTP draft-vocab trim, a decode lever for `draft-mtp` | merged: pin bump + spec-sweep arm |
 | llama.cpp#28194 | slot restore reuses 0 tokens on hybrids | **FIXED upstream by #26004, in b12019** (context checkpoints now survive save/restore on hybrids). On the b12019 upgrade, re-verify `--ctx-checkpoints`+restore rolls back instead of re-prefilling; this is the resume-without-reprefill the llamAmpere/Strata leads wanted to borrow, now mainline |
-| llama.cpp#25618 | spec output is not identical on quantized targets | fixed upstream: drop the rule in `docs/benchmarking.md` |
+| llama.cpp#25618 | spec output is not identical on quantized targets | **STILL OPEN at b12019, and reproduced live 2026-10-31** (6/8 greedy prompts identical spec-on vs spec-off, 2 diverge). The `docs/benchmarking.md` rule stands; drop it only if a future build closes the issue |
 | llama.cpp#29172 | deep-KV collapse past ~150K | if `CTX_SIZE` ever goes past 96K |
 
 ---
