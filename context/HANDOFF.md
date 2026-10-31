@@ -1,3 +1,83 @@
+# Handoff — 2026-10-31 (part 18: the GitHub sweep is closed, the stack is upgraded to llama b12019 + forge 0.10.0 and verified live, capture is recording — four measurement follow-ups are queued for a fresh session)
+
+Everything below this part-18 block is history. Start here.
+
+## State at hand-off
+
+- **Working tree is clean; everything is committed and pushed to `main`** (21
+  commits this session, `e7beab7..1be94d5`). CI is green.
+- **The stack is UP and current.** `instantcoffee-llama` on
+  `server-cuda-b12019`, `instantcoffee-forge` and `instantcoffee-capture` on
+  `instantcoffee/proxy:0.10.0`, `instantcoffee-observe` on `abfe6aa`, all healthy.
+- **Capture is ON**, recording to `/captures/capture-2026-10-31.jsonl` at the
+  forge-llama position (reasoning preserved). Turn it off with
+  `./scripts/capture.sh off` when the Strata follow-up is done, or leave it to
+  accumulate a real session.
+- The b11118 llama image is kept local for rollback (flip `LLAMA_TAG` back and
+  recreate llama).
+
+## What this session did (all recorded in the docs named)
+
+1. **Committed the 2026-10-04 GitHub sweep** working tree as 12 area-prefixed
+   commits (doc fixes, the kld weights axis + budget + corpus, logits on a Docker
+   volume, the WAS_RUNNING guard, the empty-turn harness, up.sh port preflight,
+   download 1 MiB hashing, CI, capacity results).
+2. **C1 KLD closed** (`plan` C1 row, `decisions.md` 2026-10-31). Code pass
+   2026-10-24, prose pass 2026-10-31. Null control clean. Prose: UD-Q4_K_XL
+   0.0187/96.26%, orcarouter 0.0462/92.78%, GSQ IQ3_S 0.0846/89.68% — matches
+   ironblock's prose to 0.0014 KLD. **D1: GSQ refused as the `coding` default**;
+   open only as a deliberate 128K variant after a capacity + spec-sweep pass.
+3. **The 3090 inference sweep weighed** (§3c in part 17, below): GPU unlock
+   skipped, HyperQwen a whole-GPU swap the uncensored modes can't use, llamAmpere
+   sm_86-only but its resume-without-reprefill idea is now moot (see #26004 below).
+4. **Strata stranded-tool-call counter built** (`scripts/stranded_tool_calls.py`
+   + test, in CI). 0 on both existing tapes (one too small, one has no reasoning);
+   capture is on to get a real tape.
+5. **Stack upgraded and verified** (`context/upgrade-llama-b12019-2026-10-31.md`):
+   llama b11118->b12019, forge 0.9.5->0.10.0. See that brief for the full survey
+   and verification.
+
+## What is queued for the new session (nothing is blocking; pick in this order)
+
+1. **Quality re-baseline — the real "did the upgrade hurt quality" gate.** The
+   engine changed greedy output (measured: 1/8 identical b11118 vs b12019), but a
+   token diff cannot grade better/worse. Re-run the C1 KLD on b12019 (same command
+   as the prose pass, both corpora) and compare to the b11118 numbers in
+   `decisions.md` 2026-10-31. Stable KLD = the engine preserved quant fidelity.
+   ~1 hr GPU; needs a quiet box (the prose-pass gate: ~13.7 GB host RAM, preflight
+   refuses below it). The command is in part 17 §2 item 2.
+2. **Confirm the #26004 win.** b12019 should now roll a resumed turn back to a
+   context checkpoint instead of full re-prefill (fixes #28194 on hybrids).
+   Grep a real pi session's llama log for `forcing full prompt re-processing` vs
+   the checkpoint lines, and watch checkpoint VRAM drop (#30514).
+3. **#29172 capacity sweep at 128K/160K/200K** on b12019 — only matters for the
+   D1 128K variant and the Bonsai 262K lead; the 96K default is below the cliff.
+   `bench_cross_engine.py`/capacity-probe is the instrument (it is a perf
+   collapse, not an output change).
+4. **Strata first follow-up.** Once capture has a real multi-hour pi session,
+   run `scripts/stranded_tool_calls.py /captures/capture-2026-10-31.jsonl`. A
+   non-zero stranded count means a forge patch is warranted.
+
+## Gotchas this session paid for (environment, not project)
+
+- **Launch any long GPU job detached: `setsid nohup ... &`.** Claude Code's
+  low-memory reaper kills background shells; a detached process (PPID 1, own
+  session) survives, and only a disposable watcher dies. This is how the prose
+  pass finished after the 2026-10-24 reaper kill. Verified again this session.
+- **From inside this container, reach the stack via `host.docker.internal:8080`
+  (llama) / `:8081` (forge), NOT `127.0.0.1`** — 127.0.0.1 is the container's own
+  loopback, not the host's published port (`BIND_ADDR=127.0.0.1`). A whole smoke
+  probe came back empty before this was spotted. `/health` returns
+  `{"status":"ok"}`; a loading server returns 503.
+- **`.kld-logs/` is gitignored output; do not `rm -rf` it blindly.** A broad
+  cleanup this session deleted the 2026-10-24 code-pass raw logs (results
+  survived in the plan/decisions; raw logs did not). Tests that run the real
+  `kld-run.sh` now mirror scripts/ into a tempdir so they never write there.
+- **`cache_reuse is not supported by this context` is pre-existing**, a property
+  of the hybrid + kv_unified context, not a b12019 regression.
+
+---
+
 # Handoff — 2026-10-24 (part 17: the GitHub sweep — C1 and D1 now closed (prose KLD done 2026-10-31, GSQ refused as the `coding` default); 9p truncates large writes too; Strata as a source of serve-layer ideas, ternary Bonsai 2 as a lead, the 3090 inference-options sweep weighed and the Ampere GPU unlock skipped)
 
 Read `context/plan-github-sweep-2026-10-04.md` first; it has per-item status and

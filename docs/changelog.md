@@ -10,6 +10,25 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**llama b11118 -> b12019, forge 0.9.5 -> 0.10.0 (2026-10-31).** Both prebuilt,
+no local compile. llama was chosen after surveying all 902 commits
+(`context/upgrade-llama-b12019-2026-10-31.md`): it fixes the hybrid
+checkpoint-reuse (#26004, closes #28194) and cuts MTP checkpoint VRAM (#30514),
+and its breaking defaults (server port, `--model` required) do not touch us. It
+is not output-identical — temp-0 greedy shifted (#29797 + CUDA FA retune) — so a
+KLD quality re-baseline is queued. forge 0.10.0 let the `stream_timeout` patch be
+dropped: 0.10.0 added the identical native streaming read-timeout handler. 132/132
+forge patch-behaviour tests pass in the built image.
+
+**Weights-axis KLD, prose and code; `coding` stays on `UD-Q4_K_XL` (2026-10-31).**
+`kld-run.sh` gained a weights axis (compare quant files at one KV type), a
+host-RAM budget guard, and logits on a Docker volume (perplexity truncates a
+~1 GB write over 9p silently). Measured vs unsloth Q8_0: UD-Q4_K_XL (coding)
+0.0187/96.26% prose, GSQ-RCO IQ3_S 0.0846/89.68%. **GSQ refused as the `coding`
+default** — 4.5-5.6x the divergence of UD-Q4_K_XL for ~4.3 GB VRAM; open only as
+a deliberate 128K variant. A stranded-tool-call counter
+(`scripts/stranded_tool_calls.py`) and an empty-turn A/B harness were added.
+
 **Downloads hash in 1 MiB reads; `up.sh` refuses a taken host port (2026-10-04).**
 `download_model.py`'s sha256 pass read 16 MiB at a time and died with ENOMEM on
 the 9p bind under memory pressure; the same file hashes cleanly in 1 MiB reads.

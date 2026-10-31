@@ -9484,3 +9484,33 @@ adopted after a `capacity-probe` fit run at 128K and a spec-sweep arm confirm it
 earns the window — never a silent replacement for the UD-Q4_K_XL default. The
 GSQ pipeline is stock-weights-only, so the uncensored modes cannot use it
 regardless.
+
+## 2026-10-31 (later) — stack upgraded to llama b12019 + forge 0.10.0
+
+Full survey and verification: `context/upgrade-llama-b12019-2026-10-31.md`. The
+short of it.
+
+**llama b11118 -> b12019.** Surveyed all 902 commits before moving the pin. It is
+worth taking: #26004 (in b12019) fixes #28194, the hybrid context-checkpoint
+reuse that reused zero tokens and forced full re-prefills — the exact
+resume-without-reprefill the llamAmpere/Strata leads wanted to borrow, now
+mainline — and #30514 cuts MTP checkpoint VRAM for our `draft-mtp` +
+`CTX_CHECKPOINTS=4`. Both b12019 breaking defaults are non-issues: we pass
+`--port 8080` and `-m` explicitly. It is NOT output-identical (temp-0 greedy
+#29797 + CUDA FA retune), so the quality gate is a KLD re-baseline, not the smoke
+check — that is queued. Still open upstream and not fixed by the bump: #29172
+(deep-KV collapse >150K; we run 96K) and #25618 (MTP greedy divergence on a
+quantized target — reproduced live this day, 6/8 greedy prompts identical
+spec-on vs off). Applied by hand (survey-gated) rather than via `update.sh`,
+because update.sh bumps llama and forge together and would have failed the forge
+build on the stale `stream_timeout` patch.
+
+**forge 0.9.5 -> 0.10.0.** 13 of 14 build-time patches apply unchanged. The 14th,
+`forge_stream_timeout`, was DROPPED: 0.10.0 added `_stream_with_timeout`, which
+wraps the whole stream and converts `httpx.ReadTimeout` to `BackendError(408)` on
+open and mid-stream — byte-for-byte the behaviour our patch supplied, verified in
+the 0.10.0 source and by `test_forge_patches` driving the native path in the
+built image. Its test was converted to guard the native handler rather than
+deleted, and the llamafile test harness was fixed for 0.10.0's
+`_apply_slot_id` -> `_apply_id_slot` rename. 132/132 patch-behaviour tests pass;
+tool-calling verified end to end through forge -> capture -> llama.

@@ -10,10 +10,15 @@ re-learn expensively.
 
 ---
 
-## 000. The 2026-10-04 GitHub sweep — three measurements and a watch list
+## 000. The 2026-10-04 GitHub sweep — CLOSED; stack upgraded to b12019 + forge 0.10.0
 
-The plan, with status per item, is `context/plan-github-sweep-2026-10-04.md`.
-The verdicts are in `decisions.md` under 2026-10-04. Open, in plan order:
+**All sweep measurements are done and all decisions made (2026-10-31).** The
+stack now runs llama `server-cuda-b12019` + forge `0.10.0`; see **HANDOFF part 18**
+for current state and the four queued measurement follow-ups (quality KLD
+re-baseline on b12019, the #26004 checkpoint-reuse check, the #29172 capacity
+sweep, and the Strata stranded-call count once capture has a real session).
+The plan, with status per item, is `context/plan-github-sweep-2026-10-04.md`;
+verdicts are in `decisions.md` under 2026-10-04 and 2026-10-31. For the record:
 
 - **C1 — KLD for the weights we run: DONE** (code 2026-10-24, prose 2026-10-31).
   Both corpora measured against unsloth Q8_0, null control clean. Prose
@@ -33,7 +38,7 @@ Watch, no action until it changes:
 | Upstream | Why it matters here | Act when |
 | --- | --- | --- |
 | llama.cpp#29143 | FastMTP draft-vocab trim, a decode lever for `draft-mtp` | merged: pin bump + spec-sweep arm |
-| llama.cpp#28194 | slot restore reuses 0 tokens on hybrids | **FIXED upstream by #26004, in b12019** (context checkpoints now survive save/restore on hybrids). On the b12019 upgrade, re-verify `--ctx-checkpoints`+restore rolls back instead of re-prefilling; this is the resume-without-reprefill the llamAmpere/Strata leads wanted to borrow, now mainline |
+| llama.cpp#28194 | slot restore reuses 0 tokens on hybrids | **FIXED by #26004, now RUNNING in b12019.** Queued follow-up (HANDOFF part 18): confirm `--ctx-checkpoints`+restore rolls back instead of re-prefilling, watch checkpoint VRAM drop (#30514). This is the resume-without-reprefill the llamAmpere/Strata leads wanted — now mainline |
 | llama.cpp#25618 | spec output is not identical on quantized targets | **STILL OPEN at b12019, and reproduced live 2026-10-31** (6/8 greedy prompts identical spec-on vs spec-off, 2 diverge). The `docs/benchmarking.md` rule stands; drop it only if a future build closes the issue |
 | llama.cpp#29172 | deep-KV collapse past ~150K | if `CTX_SIZE` ever goes past 96K |
 
