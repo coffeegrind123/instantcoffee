@@ -15,14 +15,16 @@ re-learn expensively.
 The plan, with status per item, is `context/plan-github-sweep-2026-10-04.md`.
 The verdicts are in `decisions.md` under 2026-10-04. Open, in plan order:
 
-- **C1 — KLD for the weights we run** is the only measurement left. Tooling is
-  done (`kld-run.sh` weights axis, `kld_budget.py`, `kld_corpus.py`), the
-  unsloth Q8_0 reference is on D: and hash-verified, and the GSQ IQ3_S-mtp is
-  downloading to D:. **Blocked on host RAM**: the Q8_0 base arm at the -ngl
-  the card allows (~48) needs ~12.1 GB of host RAM (weights + logits
-  buffers), and the shared Docker VM had ~6.5 GB available. That takes either
-  stopping other projects' containers or raising the Docker VM's memory; both
-  are the operator's call.
+- **C1 — KLD for the weights we run: DONE** (code 2026-10-24, prose 2026-10-31).
+  Both corpora measured against unsloth Q8_0, null control clean. Prose
+  (`.kld-logs/20261031T113454Z/`): UD-Q4_K_XL 0.0187 / 96.26%, orcarouter
+  Q4_K_M 0.0462 / 92.78%, GSQ-RCO IQ3_S 0.0846 / 89.68% — the last matches
+  ironblock's prose to within 0.0014 KLD. See the plan C1 row and
+  `decisions.md` 2026-10-31.
+- **D1 — GSQ for `coding`: REFUSED as the default** (2026-10-31). 4.5–5.6× the
+  KLD of `UD-Q4_K_XL` and 2.4–6.6 pt lower top-1, for ~4.3 GB VRAM. Open only
+  as a deliberate 128K variant after a capacity-probe fit run and a spec-sweep
+  arm; never a silent swap. `decisions.md` 2026-10-31.
 - C2 and C3 are done, and D2 is refused. See the plan and `decisions.md` 2026-10-04.
 - **New leads, 2026-10-24** (`HANDOFF.md` part 17, section 3): (a) ideas to borrow from Strata's serve layer, ranked: tool calls stranded in the reasoning, tool-call envelope drift plus a log rail for calls that went back as text, reasoning-loop recovery, and a checkpoint at the previous turn boundary for prefix reuse on this hybrid model. We are not running Strata. (b) ternary Bonsai 2 27B with a grafted MTP head (262K fits), measurable with `kld-run.sh` via `LLAMA_IMAGE`. (c, 2026-10-25) a 3090 inference-options sweep: the Ampere GPU unlock is skipped (+0–5% prefill / ~0% decode on our 4090 model, and no WSL2-4090 host path); HyperQwen (patched vLLM, prebuilt image, a 4090/WSL2 datapoint) is measurable without compiling but is a whole-GPU engine swap on a different quant the uncensored modes cannot use; llamAmpere is sm_86 only, but its resume-without-reprefill prompt cache is worth borrowing against llama.cpp#28194.
 

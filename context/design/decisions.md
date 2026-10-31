@@ -9446,3 +9446,41 @@ across spec arms; that is now a rule, not an accident.
   were this, not swap as such. `kld-run.sh` now writes logits to the Docker
   named volume `instantcoffee-kld-logits` on the VM's own disk; only the
   small logs cross 9p.
+
+## 2026-10-31 — C1 prose KLD done; D1 refuses GSQ-RCO IQ3_S as the `coding` default
+
+The weights-axis prose pass ran to completion (`.kld-logs/20261031T113454Z/`,
+base PPL 6.3465, null control 0.000000 / 99.996%). It is the pass the reaper
+killed on 2026-10-24; this time the box was quiet (16.6 GB host RAM against the
+~13.7 GB the Q8_0 base arm wants) and it was launched detached (`setsid`), so
+when Claude Code's low-memory reaper killed the watching shell mid-run the pass
+itself — PPID 1, its own session — kept going and finished clean, no orphan
+container. That detachment is the method for any long GPU job here.
+
+Prose vs Q8_0 (Mean KLD / Same top-1 / PPL ratio / RMS Δp):
+
+| model | KLD | top-1 | PPL ratio | RMS Δp |
+| --- | --- | --- | --- | --- |
+| Q8_0 null control | 0.000000 | 99.996% | 1.0018 | 0.001% |
+| UD-Q4_K_XL (`coding`) | 0.0187 | 96.26% | 0.9919 | 3.30% |
+| orcarouter Q4_K_M (`uc-coding`/`prose`) | 0.0462 | 92.78% | 0.9782 | 5.49% |
+| GSQ-RCO IQ3_S-mtp | 0.0846 | 89.68% | 0.9676 | 7.26% |
+
+Our GSQ prose (0.0846 / 89.68%) matches ironblock's (0.0860 / 89.76%) on the
+same corpus to within 0.0014 KLD and 0.08 pt top-1 — a clean cross-rig check
+that the instrument and corpus are sound. Prose KLD is 2.7–4.5× the code KLD on
+every arm, the same prose-costs-more pattern ironblock reported.
+
+**D1: GSQ-RCO IQ3_S is refused as the `coding` default.** Against `UD-Q4_K_XL`,
+the model `coding` runs today, it is 5.6× the KLD on code (0.0332 vs 0.0059) and
+4.5× on prose (0.0846 vs 0.0187), with top-1 down 2.4 pt (code) and 6.6 pt
+(prose). A prose top-1 of 89.68% means about one token in ten disagrees with the
+Q8_0 reference; that is a real quality cost, and prose widens the gap rather than
+narrowing it. What it buys is ~4.3 GB of VRAM, i.e. a longer window. Not a trade
+worth making for the 96K default.
+
+It stays open as ONE thing only: a deliberate 128K "long" variant of `coding`,
+adopted after a `capacity-probe` fit run at 128K and a spec-sweep arm confirm it
+earns the window — never a silent replacement for the UD-Q4_K_XL default. The
+GSQ pipeline is stock-weights-only, so the uncensored modes cannot use it
+regardless.

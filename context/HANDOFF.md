@@ -1,4 +1,4 @@
-# Handoff — 2026-10-24 (part 17: the GitHub sweep — everything done except C1's prose pass and the D1 decision; 9p truncates large writes too; Strata as a source of serve-layer ideas, ternary Bonsai 2 as a lead, the 3090 inference-options sweep weighed and the Ampere GPU unlock skipped)
+# Handoff — 2026-10-24 (part 17: the GitHub sweep — C1 and D1 now closed (prose KLD done 2026-10-31, GSQ refused as the `coding` default); 9p truncates large writes too; Strata as a source of serve-layer ideas, ternary Bonsai 2 as a lead, the 3090 inference-options sweep weighed and the Ampere GPU unlock skipped)
 
 Read `context/plan-github-sweep-2026-10-04.md` first; it has per-item status and
 the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addendum).
@@ -26,15 +26,15 @@ the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addend
   2026-10-25 (a too-broad `.kld-logs` cleanup; the dir is gitignored, so there
   was no commit to recover from). The numbers above and in the plan are the
   record; the logs regenerate only by re-running the code pass.
-- **C1 prose pass: NOT DONE.** It was killed mid-base-arm by Claude Code's
-  low-memory reaper, which stops background shells when the box runs critically
-  low. The base arm holds ~10 GB of host RAM, and the rest of the box had swap at
-  10.5 GB. The orphaned perplexity container was stopped by hand, and its partial
-  logits were deleted from the volume. The reaper's own note says not to restart
-  without the operator.
-  - Either run it on a quiet box, or start Claude Code with
-    `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP=1`. That only stops the reaper;
-    preflight still refuses to swap.
+- **C1 prose pass: DONE 2026-10-31** (`.kld-logs/20261031T113454Z/`, base PPL
+  6.3465, null control 0.000000 / 99.996%). UD-Q4_K_XL 0.0187 / 96.26%,
+  orcarouter Q4_K_M 0.0462 / 92.78%, GSQ-RCO IQ3_S 0.0846 / 89.68% — matches
+  ironblock's prose (0.0860 / 89.76%) to within 0.0014 KLD on the same corpus.
+  Ran clean on a quiet box (16.6 GB host RAM free). The 2026-10-24 reaper kill
+  is solved by launching detached: `setsid nohup ./scripts/kld-run.sh … &`. The
+  reaper then kills only a watching shell, not the pass (PPID 1, own session),
+  which finished with no orphan container. Full table and the D1 verdict are in
+  `decisions.md` 2026-10-31.
 - **Why the first code pass failed:** its logits file on the D: captures bind came
   out at 243,704,732 of 12,199,858,100 bytes, although all 12 chunks were
   computed (PPL 1.7449, exit 0). perplexity writes ~1 GB per chunk in one
@@ -48,9 +48,9 @@ the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addend
 1. **The code result is in** (above). The null control is clean. The IQ3_S
    calibration matches ironblock on top-1 (95.60 vs 95.43) and differs on KLD
    (0.033 vs 0.054); the code corpora differ, so expect that.
-2. **Run the prose pass, only when the operator says so.** The exact command,
-   dry-run-validated 2026-10-25 (this is the authoritative copy; the code pass's
-   own echo was in the logs that were deleted):
+2. **Prose pass: DONE 2026-10-31** (results in §1 and `decisions.md`). The
+   command that ran, kept as the record (the code pass's echo was in the deleted
+   logs):
 
    ```
    ./scripts/kld-run.sh \
@@ -83,21 +83,19 @@ the evidence. Verdicts are in `decisions.md` under 2026-10-04 (entry plus addend
    - If the shell gets killed anyway, `docker ps` for an orphaned
      `/app/llama perplexity` container, stop it, and empty the
      `instantcoffee-kld-logits` volume.
-3. **D1, GSQ-RCO IQ3_S for `coding`.** It is stock weights only: the uncensored
-   modes cannot use it, because the GSQ pipeline is not public.
-   - The code pass leans against it: KLD 0.0332 vs UD-Q4_K_XL's 0.0059 (5.6×),
-     top-1 95.60% vs 98.04%. That buys ~4.3 GB of VRAM, i.e. a longer window.
-   - Decide after the prose pass. Adopt only as a deliberate trade (for example a
-     128K "long" variant of `coding`) and after a capacity-probe fit run and a
-     spec-sweep arm. Never as a silent replacement for the 96K default.
-4. **Exercised live but not unit-tested:** `kld-run.sh`'s logits-volume move and
-   its WAS_RUNNING guard (stop and restart llama only if it was running).
-   - The code pass printed `instantcoffee-llama is not running; nothing to stop`
-     and `logits volume … 788385 MiB free`, and `verify_logits` said `COMPLETE`.
-   - Both sit after preflight, where a unit test would have to stub every docker
-     call.
-   - The path where llama IS running (stop, then restart in the EXIT trap) has
-     not been exercised since the change.
+3. **D1, GSQ-RCO IQ3_S for `coding`: REFUSED as the default** (2026-10-31). It is
+   stock weights only (the uncensored modes cannot use it; the GSQ pipeline is
+   not public). vs UD-Q4_K_XL: code KLD 0.0332 vs 0.0059 (5.6×), prose 0.0846 vs
+   0.0187 (4.5×); top-1 down 2.4 pt (code) and 6.6 pt (prose). ~4.3 GB VRAM is
+   not worth that for the 96K default. Open ONLY as a deliberate 128K "long"
+   variant, after a capacity-probe fit run at 128K and a spec-sweep arm; never a
+   silent swap. `decisions.md` 2026-10-31.
+4. **The WAS_RUNNING guard is now unit-tested** (`scripts/test_kld_run_guard.py`,
+   commit 6b886d4, in CI). A docker stub on PATH drives the real script past
+   preflight into both branches: running → stop + restart (EXIT trap) both fire;
+   stopped → neither does. The 2026-10-31 prose run also exercised the
+   llama-not-running path live (stack was down). The logits-volume move was
+   exercised live by both the code and prose passes.
 5. **Restart the stack** when the work is done (§1).
 6. **Strata follow-ups** (§3a). The first is cheap: capture a pi session through
    `capture.sh on` and count tool-call markup stranded in `reasoning_content`.
