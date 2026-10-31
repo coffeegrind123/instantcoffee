@@ -1,15 +1,17 @@
 ---
 name: mcp-tools
-description: Call MCP (Model Context Protocol) servers from the shell via ./scripts/mcp.sh, which wraps mcp2cli. Use when a task needs a capability this agent does not have built in and an MCP server provides it — issue trackers, browsers, databases, reverse-engineering tools, cloud APIs — or when the user mentions MCP, a named MCP server, or asks what external tools are available.
+description: Call MCP (Model Context Protocol) servers from the shell via ./scripts/mcp.sh, which wraps mcp2cli. Use when a task needs a capability this agent does not have built in and an MCP server provides it — issue trackers, databases, reverse-engineering tools, cloud APIs — or when the user mentions MCP, a named MCP server, or asks what external tools are available.
 compatibility: Needs uv on PATH and the repo's mcp/servers.json. First call installs a pinned mcp2cli automatically.
 ---
 
 # MCP tools from the shell
 
-This agent has no MCP support, and that is deliberate: one MCP server can publish
-hundreds of tool schemas, and on a 32K window they would be spent before you read
-your first file. `./scripts/mcp.sh` gives you the same servers through the shell,
-so a schema only costs you tokens at the moment you decide to use that one tool.
+MCP servers are not wired into this agent as tools, and that is deliberate: one
+MCP server can publish hundreds of tool schemas, and they would be spent before
+you read your first file. `./scripts/mcp.sh` gives you the same servers through
+the shell, so a schema only costs you tokens at the moment you decide to use that
+one tool. The browser is the one exception: it has its own `mcp__browser__*`
+tools and its own skill, and is not in this registry.
 
 **Never run `--list` without `--compact`, and never dump a whole server's schema
 into the conversation.** That throws away the entire reason this exists.

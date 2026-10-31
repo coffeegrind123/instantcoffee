@@ -2,8 +2,9 @@
   "_comment": [
     "Registry of MCP servers reachable through scripts/mcp.sh.",
     "",
-    "pi has no MCP support and this stack does not want it: a single MCP server can",
-    "publish hundreds of tool schemas into a 32K window before the first message.",
+    "This stack keeps MCP servers out of pi's tool list (the browser, on pi's built-in",
+    "MCP, is the one exception): a single MCP server can publish hundreds of tool",
+    "schemas into the window before the first message.",
     "mcp2cli turns those servers into a CLI instead, so a schema only enters the",
     "context when the model asks for that one tool.",
     "",

@@ -206,6 +206,20 @@ still names what broke. If that passes and the output is still wrong, the comman
 does not belong on the allow-list — take it out of `vendor/rtk-pi/src/gate.ts`
 and record why, the way the entries already there do.
 
+**pi in the container takes a minute and a half to show anything.**
+Expected, for now. Measured 2026-11-01 in the rebuilt `pi-agent` image: 77-89 s
+from launch to the first screen, against about 1 s for pi with no extensions.
+The time is the extensions loading from the Windows bind mount (`pi-subagents-lite`
+alone: 85-100 s from a 9p mount, 2-4 s from local disk); pi 0.87 and 1.4 are the
+same. Nothing is hung if `docker exec instantcoffee-pi ps` shows `pi` using CPU.
+`context/pi-1.4-audit-2026-10-31.md` §5 and §7 have the numbers.
+
+**`pi -p "..."` from a script or a tool never returns.**
+pi in print mode reads stdin until EOF when stdin is not a terminal, and a
+script's or an agent's stdin often never closes. Give it `</dev/null`. The same
+trap from the other side: piping `pi-container.sh` through `tee` hands pi pipes
+instead of a TTY, and it waits on stdin rather than drawing the TUI.
+
 **The bind-mount trap (Docker Desktop on Windows/WSL).**
 Docker Desktop resolves bind sources on the **Windows** side. A WSL-style path such as
 `/home/you/models` mounts an **empty directory** rather than failing, so the container
@@ -300,3 +314,7 @@ is the instrument for measuring it.
 that data and was retracted. Contention makes the tail worse — both three-figure
 observations came from a box at load 16–34 with another build running — but the
 mechanism behind the variance is not identified.
+
+---
+
+[← back to the README](../README.md)

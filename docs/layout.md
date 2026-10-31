@@ -16,13 +16,13 @@ README.md               what this is, how to run it, and where to read more
 docs/                   public documentation, split out of the README 2026-08-25
   modes.md              the regimes and window tiers, their models, every sampler value
   pi.md                 /stack, /loop, subagents, /prinny, provider config
-  context-budget.md     MCP-without-MCP, filtered bash output, the browser
+  context-budget.md     MCP as a CLI, filtered bash output, the browser
   reasoning.md          REASONING_EFFORT and thinking language
   quants.md             what fits in 24 GiB and what each step down costs
   benchmarking.md       verifying it works; every measurement command; capture
   troubleshooting.md    symptoms, in the order you are likely to hit them
   container.md          running pi in a container; mount rules; moving a home
-  orchestrator.md       ORCHESTRATOR=1: local orchestrator, remote subagents
+  orchestrator.md       ORCHESTRATOR=1 (off by default): local orchestrator, remote subagents
   layout.md             this file
   changelog.md          what changed, and when
 prompts/
@@ -280,8 +280,12 @@ skills/mcp-tools/       pi skill teaching the model to use scripts/mcp.sh
 skills/browser/         pi skill for CLI mode (scripts/browser.sh)
 skills/browser-tools/   pi skill for native mode (mcp__browser__* tools + codemode)
 context/                why things are the way they are
-  README.md              index of the above, and the conventions it follows
+  README.md              index of everything here, by section, and its conventions
+  HANDOFF.md             state of play per session, newest first
+  OPEN-WORK.md           only what is not done, ranked
   design/decisions.md    all design decisions, flags, quant choice
+  testing/               hand-testing scripts, probes, the pi audit harness
+  bench/                 raw benchmark results the decisions cite
 ```
 
 ---

@@ -1089,20 +1089,24 @@ see the note on `CACHE_RAM` above and run `/free`.
 
 ## Why pi, and what that costs
 
-pi is minimal by design: **no MCP** (its README says so outright — "build CLI
-tools with READMEs, or build an extension that adds MCP support"), no
-sub-agents. On a local window that is the feature, not the limitation. A
-single MCP server can publish hundreds of tool schemas that load before your
-first message, and that budget is gone before the model has read anything.
+pi is minimal by design, and on a local window that is the feature, not the
+limitation. It started with **no MCP and no sub-agents**; since 0.99 it ships a
+built-in MCP (servers default to codemode exposure, so their schemas are not
+declared up front), and this stack uses it for one server only, the browser
+(`docs/context-budget.md`). Every other MCP server stays a CLI, and sub-agents
+come from an extension. A single MCP server wired the normal way can publish
+hundreds of tool schemas that load before your first message, and that budget is
+gone before the model has read anything.
 (This section was written against a 32K window. `CTX_SIZE` has been at
 least **98304** since 2026-08-23 (128K or 192K in the larger modes since
 2026-10-31), so the pressure is a third of what it was or less — the argument is
 weaker than it reads, but it points the same way: standing cost you never chose
 is the expensive kind.)
 
-What you give up is real and worth stating: no MCP servers, no sub-agent
-fan-out, and no ecosystem of Claude Code plugins. What you get back is nearly
-the whole window for the actual session.
+What you give up is real and worth stating: MCP servers only through a CLI
+(the browser aside), sub-agents only through this stack's extension, and no
+ecosystem of Claude Code plugins. What you get back is nearly the whole window
+for the actual session.
 
 Your project's conventions still load: pi walks parent directories for
 `AGENTS.md`/`CLAUDE.md` and `PI_CONTEXT_FILES` is `1` by default. That is a

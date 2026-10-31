@@ -112,13 +112,19 @@ commands — sweeps, capacity probes, perplexity-at-depth, VRAM floors, capture 
 live in **[docs/benchmarking.md](docs/benchmarking.md)**, because burying
 `up.sh` among them was making the common case hard to find.
 
-## Three modes
+## Modes
 
-`coding` is the default and runs the stock unsloth weights. `uc-coding` keeps
-coding's exact sampler profile but swaps in a decensored build, for coding work
-the stock model would deflect on. `prose` runs that same decensored model tuned
-for fiction — DRY on, reasoning-language off. `uc-coding` and `prose` share one
-GGUF, so `uc-coding` costs no extra disk once you have `prose`.
+Three regimes. `coding` is the default and runs the stock unsloth weights.
+`uc-coding` keeps coding's exact sampler profile but swaps in a decensored
+build, for coding work the stock model would deflect on. `prose` runs that same
+decensored model tuned for fiction — DRY on, reasoning-language off.
+`uc-coding` and `prose` share one GGUF, so `uc-coding` costs no extra disk once
+you have `prose`.
+
+Coding also comes in larger windows: `coding` is 96K, `coding-128k` the same
+weights at 128K, `coding-192k` a smaller quant at 192K; `uc-coding` and `prose`
+run at 128K. After a switch that changes the window, restart pi — it reads its
+window at launch.
 
 ```bash
 ./scripts/mode.sh                 # what is active, and what each mode sets
@@ -145,6 +151,12 @@ Everything is in `.env`, committed on purpose — there are no secrets in it and
 the pins are the whole point. It is heavily commented; that file, not this one,
 is the reference. For machine-local changes that should not be committed, put the
 same keys in `.env.local` and the scripts will merge it on top.
+
+pi itself is kept off the network: `PI_TELEMETRY=0` and `PI_OFFLINE=1` stop its
+install ping to pi.dev, its provider attribution and its startup checks (pi
+updates are the launcher's job, `PI_AUTO_UPDATE`). Orchestrator mode, which
+sends subagent work to DeepSeek, is off unless you turn it on
+([docs/orchestrator.md](docs/orchestrator.md)).
 
 The handful you are most likely to touch:
 
@@ -193,7 +205,8 @@ be the wrong trade.
 | --- | --- |
 | [docs/modes.md](docs/modes.md) | The regimes and window tiers, their models, every sampler value |
 | [docs/pi.md](docs/pi.md) | `/stack`, `/loop`, subagents, `/prinny`, `/persona`, how the provider config is generated, why pi |
-| [docs/context-budget.md](docs/context-budget.md) | MCP without MCP, filtered bash output, the browser — the three big context consumers |
+| [docs/orchestrator.md](docs/orchestrator.md) | Orchestrator mode (off by default): the local model plans, DeepSeek subagents execute |
+| [docs/context-budget.md](docs/context-budget.md) | MCP servers as a CLI, filtered bash output, the browser on pi's built-in MCP — the three big context consumers |
 | [docs/reasoning.md](docs/reasoning.md) | `REASONING_EFFORT` in detail, and reasoning in another language |
 | [docs/quants.md](docs/quants.md) | What fits in 24 GiB and what each step down costs |
 | [docs/benchmarking.md](docs/benchmarking.md) | Verifying it works, every measurement command, capture |

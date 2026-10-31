@@ -19,13 +19,21 @@ the state on a board that survives compaction and new sessions.
 Same shape as the `~/codex` setup (GLM orchestrator, DeepSeek subagents), with
 the local model as the orchestrator.
 
+**Off by default** (`ORCHESTRATOR=0`). With it on, everything a subagent reads
+is sent to DeepSeek's API; with it off, subagents run on the local model and
+nothing leaves the machine.
+
 ## Turning it on
 
 1. `DEEPSEEK_API_KEY=...` in `.env.local` (gitignored). For pi in a container,
    the container checkout's `.env.local`.
-2. In `.env`: `ORCHESTRATOR=1`. `SUBAGENTS_ENABLED=1` must stay on.
-3. Start pi as usual (`./scripts/pi-local.sh` or `./scripts/pi-container.sh`).
-   The launch line ends `orchestrator (15x deepseek/deepseek-flash, depth 2)`.
+2. For one session: `ORCHESTRATOR=1 ./scripts/pi-container.sh` (or
+   `pi-local.sh`) — the launcher reads the variable ahead of `.env`, and the
+   container launcher passes it through. To keep it on for a machine, put
+   `ORCHESTRATOR=1` in `.env.local` rather than editing the committed `.env`,
+   which would leave that checkout permanently out of step with the repo.
+   `SUBAGENTS_ENABLED=1` must stay on either way.
+3. The launch line ends `orchestrator (15x deepseek/deepseek-flash, depth 2)`.
 
 It is pi-side only: llama is untouched, so no restart and nothing in
 `modes/`, which switches the llama regime and is orthogonal to this.
@@ -107,3 +115,7 @@ code and output, the red-gate run, and what was not done.
   finished background result is capped on the way in (the compaction guard's
   cap, `vendor/pi-subagents-lite/src/spawn/result-cap.ts`); the prompt tells it
   to read diffs rather than files.
+
+---
+
+[← back to the README](../README.md)

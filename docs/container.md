@@ -448,3 +448,7 @@ Two ways to be safe, in order of preference:
 
 `PRINNY_ENABLED=0` is the default, so a freshly copied home is inert until you
 turn it on.
+
+---
+
+[← back to the README](../README.md)
