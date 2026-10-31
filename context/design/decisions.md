@@ -9514,3 +9514,37 @@ built image. Its test was converted to guard the native handler rather than
 deleted, and the llamafile test harness was fixed for 0.10.0's
 `_apply_slot_id` -> `_apply_id_slot` rename. 132/132 patch-behaviour tests pass;
 tool-calling verified end to end through forge -> capture -> llama.
+
+## 2026-10-31 (evening) — b12019 KLD re-baseline: quant fidelity unchanged
+
+The quality gate for the b12019 upgrade. Same command, corpora, arms and flags as
+the b11118 C1 passes (12 x 4,096, f16 KV, base Q8_0 at -ngl 44), on
+`server-cuda-b12019`. Logs: `.kld-logs/20261031T135604Z/` (prose),
+`.kld-logs/20261031T142824Z/` (code); captures `kld-prose-b12019/`,
+`kld-code-b12019/`.
+
+Mean KLD / same top-1 / PPL ratio, b11118 -> b12019:
+
+| arm | prose | code |
+| --- | --- | --- |
+| Q8_0 null control | 0.000000 -> 0.000000, 99.996 -> 99.996% | 0.000000 -> 0.000000, 100.000% |
+| UD-Q4_K_XL (`coding`) | 0.0187 -> 0.0185 ±0.0026, 96.26 -> 96.25%, 0.9919 -> 0.9958 | 0.0059 -> 0.0060 ±0.0002, 98.04 -> 97.98%, 1.0016 -> 1.0022 |
+| orcarouter Q4_K_M | 0.0462 -> 0.0463 ±0.0031, 92.78 -> 92.94%, 0.9782 -> 0.9774 | 0.0170 -> 0.0168 ±0.0004, 96.84 -> 96.81%, 1.0093 -> 1.0092 |
+| GSQ-RCO IQ3_S-mtp | 0.0846 -> 0.0849 ±0.0035, 89.68 -> 89.67%, 0.9676 -> 0.9677 | 0.0332 -> 0.0332 ±0.0009, 95.60 -> 95.60%, 1.0149 -> 1.0147 |
+
+Base PPL: prose 6.3465 -> 6.3434, code 1.7450 on b12019 (the b11118 code base PPL
+went with the deleted 2026-10-24 logs).
+
+**Verdict: the engine change preserved quant fidelity.** Every KLD delta is at or
+under one standard error; the largest relative move is UD-Q4_K_XL code
+(+0.00015, ~1σ); top-1 moves at most 0.16 pt; the ranking of the three quants
+and the D1 ratios are unchanged. The 1/8 greedy-identical result measured earlier
+is a real change in which tokens win near-ties (#29797 + CUDA FA retune), not a
+loss of fidelity. The b12019 pin stands; D1 stands.
+
+Two run notes. (1) `kld-run.sh` preflight counts the live llama server's ~1.8 GiB
+as unavailable even though it stops that server before the base arm; it refused
+at 13,359 vs 13,659 MiB, and passed at 15,418 MiB once llama was stopped by hand
+first. (2) The first launch failed in the NVIDIA prestart hook
+(`nvidia-container-cli: ldcache error: /sbin/ldconfig terminated with signal 9`),
+no OOM in the Docker VM's dmesg; an immediate retry worked. Treat it as transient.

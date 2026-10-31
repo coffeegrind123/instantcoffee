@@ -39,13 +39,12 @@ Everything below this part-18 block is history. Start here.
 
 ## What is queued for the new session (nothing is blocking; pick in this order)
 
-1. **Quality re-baseline — the real "did the upgrade hurt quality" gate.** The
-   engine changed greedy output (measured: 1/8 identical b11118 vs b12019), but a
-   token diff cannot grade better/worse. Re-run the C1 KLD on b12019 (same command
-   as the prose pass, both corpora) and compare to the b11118 numbers in
-   `decisions.md` 2026-10-31. Stable KLD = the engine preserved quant fidelity.
-   ~1 hr GPU; needs a quiet box (the prose-pass gate: ~13.7 GB host RAM, preflight
-   refuses below it). The command is in part 17 §2 item 2.
+1. **Quality re-baseline: DONE 2026-10-31, PASSED** (next session after this
+   handoff). C1 KLD re-run on b12019, both corpora, every arm within one standard
+   error of b11118; null controls clean. Table in `decisions.md` 2026-10-31
+   (evening). Gotcha: kld-run's preflight counts the running llama's ~1.8 GiB as
+   unavailable; stop llama by hand first if it refuses by less than that, and
+   restart it after (the script won't restart a server it didn't stop).
 2. **Confirm the #26004 win.** b12019 should now roll a resumed turn back to a
    context checkpoint instead of full re-prefill (fixes #28194 on hybrids).
    Grep a real pi session's llama log for `forcing full prompt re-processing` vs

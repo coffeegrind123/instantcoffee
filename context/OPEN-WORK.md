@@ -14,9 +14,10 @@ re-learn expensively.
 
 **All sweep measurements are done and all decisions made (2026-10-31).** The
 stack now runs llama `server-cuda-b12019` + forge `0.10.0`; see **HANDOFF part 18**
-for current state and the four queued measurement follow-ups (quality KLD
-re-baseline on b12019, the #26004 checkpoint-reuse check, the #29172 capacity
-sweep, and the Strata stranded-call count once capture has a real session).
+for current state and the queued measurement follow-ups (the #26004
+checkpoint-reuse check, the #29172 capacity sweep, and the Strata stranded-call
+count once capture has a real session). The quality KLD re-baseline on b12019 is
+DONE and passed: every arm within one standard error of b11118.
 The plan, with status per item, is `context/plan-github-sweep-2026-10-04.md`;
 verdicts are in `decisions.md` under 2026-10-04 and 2026-10-31. For the record:
 

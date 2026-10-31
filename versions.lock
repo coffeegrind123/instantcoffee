@@ -39,7 +39,8 @@
 updated_utc         = 2026-10-31T13:39:14Z
 updated_note        = b11118 -> b12019 and forge 0.9.5 -> 0.10.0, 2026-10-31.
                       llama: 902-commit survey, smoke pass, #25618 and the
-                      engine greedy re-baseline measured. forge: dropped the
+                      engine greedy re-baseline measured; C1 KLD re-run on
+                      b12019 matches b11118 within 1 SE. forge: dropped the
                       now-redundant stream_timeout patch (0.10.0 added the
                       identical native handler). See
                       context/upgrade-llama-b12019-2026-10-31.md.

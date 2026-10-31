@@ -15,8 +15,9 @@ no local compile. llama was chosen after surveying all 902 commits
 (`context/upgrade-llama-b12019-2026-10-31.md`): it fixes the hybrid
 checkpoint-reuse (#26004, closes #28194) and cuts MTP checkpoint VRAM (#30514),
 and its breaking defaults (server port, `--model` required) do not touch us. It
-is not output-identical — temp-0 greedy shifted (#29797 + CUDA FA retune) — so a
-KLD quality re-baseline is queued. forge 0.10.0 let the `stream_timeout` patch be
+is not output-identical — temp-0 greedy shifted (#29797 + CUDA FA retune) — but
+a full KLD re-baseline (prose and code, all three quants vs Q8_0) matches b11118
+within one standard error on every arm: quant fidelity is unchanged. forge 0.10.0 let the `stream_timeout` patch be
 dropped: 0.10.0 added the identical native streaming read-timeout handler. 132/132
 forge patch-behaviour tests pass in the built image.
 
