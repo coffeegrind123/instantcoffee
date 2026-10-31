@@ -47,10 +47,12 @@ The stack ships three regimes, and `coding` comes in three context-window tiers
 `/stack mode` both discover `modes/*.env` at runtime, so nothing else needs
 editing.
 
-- **`coding`** — the default. Stock unsloth weights, Qwen's thinking preset.
+- **`coding`** — the default. Stock unsloth weights, Qwen's thinking preset, 96K.
+- **`coding-128k`**, **`coding-192k`** — `coding` at bigger windows (same
+  weights at 128K; GSQ IQ3_S at 192K). See "Context-window tiers".
 - **`uc-coding`** — `coding`'s exact sampler profile on the decensored
-  OBLITERATED model instead of the stock weights. For coding work that the
-  stock model would deflect on. Shares prose's GGUF, so it costs no extra disk.
+  orcarouter model instead of the stock weights, at 128K. For coding work that
+  the stock model would deflect on. Shares prose's GGUF, so it costs no extra disk.
 - **`prose`** — the same decensored model tuned for fiction (DRY on,
   `THINK_LANG` off).
 
@@ -71,13 +73,15 @@ than carrying a second definition of what "prose mode" means:
 
 | | `coding` | `uc-coding` | `prose` |
 | --- | --- | --- | --- |
-| model | unsloth `UD-Q4_K_XL` | OBLITERATED `i1-Q4_K_M` | OBLITERATED `i1-Q4_K_M` |
+| model | unsloth `UD-Q4_K_XL` | orcarouter `Q4_K_M` | orcarouter `Q4_K_M` |
+| window | 96K (128K / 192K tiers below) | 128K | 128K |
 | temperature | 1.0 | 1.0 | 1.0 |
 | DRY | off | off | 0.8 |
 | `REASONING_EFFORT` | medium | medium | medium |
 | `THINK_LANG` | zh | zh | off |
 
-`uc-coding` differs from `coding` in exactly one axis — the model — and from
+`uc-coding` differs from `coding` in its model and, since 2026-10-31, its window
+(128K against `coding`'s 96K; `coding-128k` is the like-for-like), and from
 `prose` in two (DRY off, `THINK_LANG` on). Because it shares `prose`'s GGUF,
 switching between `uc-coding` and `prose` is a sampler-only change with no
 download; only the sampler keys differ.

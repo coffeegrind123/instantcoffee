@@ -11,8 +11,9 @@ fails.
 
 The interesting part is not that a 27B model fits in 24 GiB — it is what it takes
 to make it *pleasant*. Speculative decoding so it types fast enough to wait for.
-A 96K window that is actually 96K, proven by planting a nonce at each end of a
-90,055-token document and getting both back. Tool calls that survive the round
+A window that is actually as big as it says, proven by planting a nonce at each
+end of a nearly full document and getting both back: 96K, 128K or 192K
+depending on the mode (`docs/modes.md`). Tool calls that survive the round
 trip. And a standing fight against everything that would spend your context
 window before the model has read a single line of your code.
 
@@ -29,7 +30,7 @@ window before the model has read a single line of your code.
                   ▼
        ┌─────────────────────┐   llama-server     :8080
        │  llama.cpp (CUDA)    │   Qwen3.8-27B, --jinja native function
-       │                      │   calling, 96K context
+       │                      │   calling, 96K-192K context by mode
        └─────────────────────┘
                   │
               RTX 4090 / 24 GiB
@@ -121,7 +122,7 @@ GGUF, so `uc-coding` costs no extra disk once you have `prose`.
 
 ```bash
 ./scripts/mode.sh                 # what is active, and what each mode sets
-./scripts/mode.sh --list          # coding, uc-coding, prose
+./scripts/mode.sh --list          # coding, coding-128k, coding-192k, uc-coding, prose
 ./scripts/mode.sh uc-coding       # rewrite .env (nothing is live yet)
 ./scripts/download-model.sh       # the model has to be on disk first
 docker compose up -d --force-recreate llama
@@ -150,7 +151,7 @@ The handful you are most likely to touch:
 | Key | Default | Notes |
 | --- | --- | --- |
 | `MODELS_DIR` | `//d/llm-models` | **Must be a Windows-style path** on Docker Desktop |
-| `CTX_SIZE` | `98304` | Context per slot, and forge's token budget. `DRY_PENALTY_LAST_N` must move with it |
+| `CTX_SIZE` | `131072` | Context per slot, and forge's token budget; each mode sets its own (96K / 128K / 192K, `docs/modes.md`). `DRY_PENALTY_LAST_N` must move with it |
 | `REASONING_EFFORT` | `medium` | **New in 3.8, and it will bite you.** Upstream defaults to `xhigh`, which eats any budget you give it |
 | `REASONING_BUDGET` | `4096` | Guard against a turn that thinks itself out of an answer. At a cap, `xhigh` has returned 12,582 reasoning chars and *zero* content |
 | `PI_MAX_TOKENS` | `8192` | Keep `-n` in `LLAMA_EXTRA_FLAGS` equal to it |
@@ -190,7 +191,7 @@ be the wrong trade.
 
 | Document | What is in it |
 | --- | --- |
-| [docs/modes.md](docs/modes.md) | The three regimes, their models, every sampler value |
+| [docs/modes.md](docs/modes.md) | The regimes and window tiers, their models, every sampler value |
 | [docs/pi.md](docs/pi.md) | `/stack`, `/loop`, subagents, `/prinny`, `/persona`, how the provider config is generated, why pi |
 | [docs/context-budget.md](docs/context-budget.md) | MCP without MCP, filtered bash output, the browser — the three big context consumers |
 | [docs/reasoning.md](docs/reasoning.md) | `REASONING_EFFORT` in detail, and reasoning in another language |

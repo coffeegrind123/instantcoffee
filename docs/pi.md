@@ -73,7 +73,8 @@ with `, /stack` when it is active.
 ```
 /stack                     model, context, slots, throughput, GPU, forge, settings
 /stack mode                which preset .env matches, and what differs
-/stack mode coding|prose   switch regime, then offer the restart it needs
+/stack mode <name>         switch mode (Tab completes), then offer the restart it needs;
+                           relaunch pi after a window-changing switch
 /stack env [FILTER]        every effective setting (.env + .env.local + exported)
 /stack set KEY=VALUE       edit .env, and say exactly what must restart
 /stack up | down           start / stop via scripts/
@@ -1082,8 +1083,9 @@ tools with READMEs, or build an extension that adds MCP support"), no
 sub-agents. On a local window that is the feature, not the limitation. A
 single MCP server can publish hundreds of tool schemas that load before your
 first message, and that budget is gone before the model has read anything.
-(This section was written against a 32K window. `CTX_SIZE` has been **98304**
-since 2026-08-23, so the pressure is a third of what it was — the argument is
+(This section was written against a 32K window. `CTX_SIZE` has been at
+least **98304** since 2026-08-23 (128K or 192K in the larger modes since
+2026-10-31), so the pressure is a third of what it was or less — the argument is
 weaker than it reads, but it points the same way: standing cost you never chose
 is the expensive kind.)
 

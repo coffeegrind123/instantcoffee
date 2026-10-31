@@ -45,7 +45,7 @@ Watch, no action until it changes:
 | llama.cpp#29143 | FastMTP draft-vocab trim, a decode lever for `draft-mtp` | merged: pin bump + spec-sweep arm |
 | llama.cpp#28194 | slot restore reuses 0 tokens on hybrids | **FIXED by #26004, now RUNNING in b12019.** Queued follow-up (HANDOFF part 18): confirm `--ctx-checkpoints`+restore rolls back instead of re-prefilling, watch checkpoint VRAM drop (#30514). This is the resume-without-reprefill the llamAmpere/Strata leads wanted — now mainline |
 | llama.cpp#25618 | spec output is not identical on quantized targets | **STILL OPEN at b12019, and reproduced live 2026-10-31** (6/8 greedy prompts identical spec-on vs spec-off, 2 diverge). The `docs/benchmarking.md` rule stands; drop it only if a future build closes the issue |
-| llama.cpp#29172 | deep-KV collapse past ~150K | if `CTX_SIZE` ever goes past 96K |
+| llama.cpp#29172 | deep-KV collapse past ~150K | `coding-192k` now runs past it: no effect measured to 155K deep on b12019 (2026-10-31); re-check at 190K if that tier feels slow with a quiet desktop |
 
 ---
 
@@ -464,6 +464,10 @@ The arms saw near-identical desktops (2535 / 2701 unaccounted), which is what
 makes this like-for-like — quoting the historical `ctx-96k` row instead would
 have compared across four different stacks, which is what the script's
 "re-measure the baseline in the same run" rule exists to prevent.
+
+**SUPERSEDED 2026-10-31** (decisions.md "window tiers"): on b12019, Q4_K_M
+96K -> 128K costs ~7% prefill and ~0% decode, so `uc-coding`/`prose` now run
+128K and `coding` has 128K/192K tiers. The verdict below was true on b10689.
 
 **VERDICT: 128K fits and is not worth taking.** Halving interactive decode to
 buy 32K of window is a bad trade for an agent workload. 96K stays the pin — now

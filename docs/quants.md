@@ -39,8 +39,9 @@ So a matched `q8_0/q8_0` was available the whole time. Only **16 of 64 layers** 
 a KV cache on this hybrid architecture (`16 × (3 × GatedDeltaNet → 1 × Gated
 Attention)`), so with the MTP block counted the cache is ~68 KiB/token at `f16` and
 ~34 KiB/token at `q8_0` (measured from llama's own `-lv 5` table, 16 layers).
-`CTX_SIZE` is now **98304**, which costs about 1,360 MiB more
-than the 32K `f16` window it replaced.
+`CTX_SIZE` was **98304** from 2026-08-23, which cost about 1,360 MiB more
+than the 32K `f16` window it replaced; since 2026-10-31 it is set per mode
+(96K / 128K / 192K, `docs/modes.md`).
 
 **4-bit KV is not an option here**, whatever the public 4090 recipes say: llama.cpp
 \#27109 (open) reports `q4_x` collapsing prefill to 34–106 tok/s on this exact

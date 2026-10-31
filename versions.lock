@@ -159,8 +159,15 @@ prose_model_prev2   = JonathanColetti/Qwen3.8-27B-Uncensored-GGUF ::
                       verified off the Hub on 2026-08-25 (866 tensors,
                       block_count=65, template 8952 chars) as a control while
                       checking the replacement.
-context_size        = 98304
-context_size_note   = CHANGED 2026-08-23, was 65536; MEASURED both ways.
+context_size        = 131072
+context_size_note   = CHANGED 2026-10-31, was 98304: windows are now per mode
+                      (coding 96K, coding-128k / uc-coding / prose 128K,
+                      coding-192k 192K; docs/modes.md, decisions.md 2026-10-31
+                      "window tiers"). Each tier proven by ctx_needle.py on
+                      b12019: both ends retrieved at 125K / 190K, past-window
+                      control refused at 135K / 200K; smoke 14/14 on each.
+                      The 2026-08-23 entry below is the history.
+                      CHANGED 2026-08-23, was 65536; MEASURED both ways.
                       Proven by scripts/ctx_needle.py, not by /props: a 90055-
                       token document with a distinct nonce planted at EACH END
                       came back "ALPHA=L32FBQR6 OMEGA=17W4QEJU", both exact,

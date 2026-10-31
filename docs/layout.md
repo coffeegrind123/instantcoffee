@@ -14,7 +14,7 @@ Dockerfile.pi           optional: pi + the browser stack in a container of its o
 badges/ci.json          shield.io endpoint JSON for the CI badge
 README.md               what this is, how to run it, and where to read more
 docs/                   public documentation, split out of the README 2026-08-25
-  modes.md              the three regimes, their models, every sampler value
+  modes.md              the regimes and window tiers, their models, every sampler value
   pi.md                 /stack, /loop, subagents, /prinny, provider config
   context-budget.md     MCP-without-MCP, filtered bash output, the browser
   reasoning.md          REASONING_EFFORT and thinking language

@@ -313,7 +313,7 @@ nothing pinned.
 
 Wiring these 98 tools into a client that loads schemas costs **76,893 bytes —
 about 19k tokens** — before the first message. That was **60% of the 32K window**
-this was measured on; at today's `CTX_SIZE=98304` it is **about 20%**. Still a
+this was measured on; at a 96K window it is **about 20%** (about 15% at 128K, 10% at 192K). Still a
 fifth of the window spent before the model has read anything. Neither mode
 pays that. Adapter mode buys back 5 tools and a search hop for 2,178 tokens; CLI
 mode pays almost nothing standing and charges for discovery instead:

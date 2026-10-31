@@ -177,7 +177,8 @@ many layers were actually offloaded.
 Drop a rung on the quant table or lower `CTX_SIZE`. **Do not reach for
 `-ctk f16 -ctv q8_0`** — a quantized V cache buys ~2 GiB of VRAM and takes
 prefill off the GPU entirely (~65x slower, measured); it is why `CTX_SIZE` is
-98304 since 2026-08-23 (65536 on 2026-08-22, 32768 before that). Proven by
+per-mode since 2026-10-31 (96K / 128K / 192K, `docs/modes.md`; 98304 from
+2026-08-23, 65536 on 2026-08-22, 32768 before that). Proven by
 `ctx_needle.py`, not by `/props` — see the quant section above.
 
 **`docker pull` from ghcr.io fails with `denied` on a public image.**
