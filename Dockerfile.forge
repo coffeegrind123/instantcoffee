@@ -140,22 +140,22 @@ RUN pip install --no-cache-dir \
 # indistinguishable from one the model chose to end, which is exactly how the
 # wedged turns above hid. See patches/forge_text_sse_passthrough.py.
 #
-# PATCH 10 — a backend read timeout on OpenAICompatClient.send_stream() returns
-# a clean 408. send() converts httpx.ReadTimeout into BackendError(408);
-# send_stream() never did, so a timeout mid-stream escaped raw and reached the
-# client as "can only concatenate list (not 'str') to list" — the same
-# uninterpretable string patch 1's bug produces, from an unrelated cause.
-# Upstream antoinezambelli/forge#142, still open at 0.9.5.
-# See patches/forge_stream_timeout.py.
+# PATCH 10 (stream_timeout) — DROPPED at forge 0.10.0 (2026-10-31). It gave
+# OpenAICompatClient.send_stream() a ReadTimeout->BackendError(408) handler that
+# 0.9.5 lacked. 0.10.0 adds it natively: _stream_with_timeout wraps the whole
+# stream, so it catches a timeout on-open AND mid-stream — verified in the 0.10.0
+# source and by test_forge_patches driving the native path in the built image.
+# Upstream antoinezambelli/forge#142 is closed by it. The later patches keep
+# their original numbers; there is simply no patch 10 now.
 #
 # CORRECTION (2026-09-01). That patch's docstring claimed the streaming path is
 # "the ONLY path that matters here". It is the one path that never runs, and the
 # module is not the one this stack uses. A live traceback settled both:
 # run_inference takes stream=False and handle_chat_completions never overrides
 # it, so the backend call is always client.send(); and the client is
-# LlamafileClient, not OpenAICompatClient. Patch 10 is kept — the hole it closes
-# is real and upstream's issue is open — but it guards traffic this stack does
-# not carry. PATCH 11 closes the same hole on llamafile.py, where the traffic
+# LlamafileClient, not OpenAICompatClient. (Patch 10 is now dropped — 0.10.0
+# handles it natively, see above — but it only ever guarded traffic this stack
+# does not carry.) PATCH 11 closes the same hole on llamafile.py, where the traffic
 # actually is, for both send() and send_stream(). Without it a dead backend
 # reached pi as "Stream ended without finish_reason", two hours after the fact.
 # See patches/forge_llamafile_timeout.py.
@@ -192,7 +192,7 @@ COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py \
      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py \
      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py \
      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py \
-     patches/forge_text_sse_passthrough.py patches/forge_stream_timeout.py \
+     patches/forge_text_sse_passthrough.py \
      patches/forge_llamafile_timeout.py patches/forge_sse_error_shape.py \
      patches/forge_backend_error_detail.py patches/forge_tool_schema.py \
      /tmp/patches/
@@ -206,7 +206,6 @@ RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')" \
     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE" \
     && python /tmp/patches/forge_empty_turn.py "$SITE" \
     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE" \
-    && python /tmp/patches/forge_stream_timeout.py "$SITE" \
     && python /tmp/patches/forge_llamafile_timeout.py "$SITE" \
     && python /tmp/patches/forge_sse_error_shape.py "$SITE" \
     && python /tmp/patches/forge_backend_error_detail.py "$SITE" \

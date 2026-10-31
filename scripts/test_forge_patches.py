@@ -421,11 +421,12 @@ def main() -> int:
           not any("reasoning_content" in d for d in plain_deltas))
     eq("...and the first delta still carries the role", plain_deltas[0].get("role"), "assistant")
 
-    print("\npatches/forge_stream_timeout.py")
+    print("\nnative streaming read-timeout (forge 0.10.0; stream_timeout patch dropped)")
     # DRIVEN, not grepped. A fake transport raises httpx.ReadTimeout from the
-    # streaming read; the patch must turn that into BackendError(408) the same
-    # way send() already does. Without the patch this test sees a raw
-    # httpx.ReadTimeout, which is the bug.
+    # streaming read; forge 0.10.0's native _stream_with_timeout must turn that
+    # into BackendError(408) the same way send() does — on open AND mid-stream.
+    # We dropped our patch because 0.10.0 added this; this is the guard that a
+    # future forge change removing it would trip.
     import asyncio
     import httpx as _httpx
     from forge.clients.openai_compat import OpenAICompatClient
@@ -492,12 +493,11 @@ def main() -> int:
     # wrapped rather than duplicated. Two handlers would mean it ran twice.
     import forge.clients.openai_compat as _oc
     _csrc = open(_oc.__file__).read()
-    eq("the original send_stream body survives under its inner name",
-       _csrc.count("async def _forge_send_stream_inner"), 1)
-    # Count HANDLERS, not mentions: the patch's own docstring names the
-    # exception too, so a bare count of "httpx.ReadTimeout" is 3 and asserting
-    # on it tests the prose rather than the code. (It did, first time round.)
-    eq("exactly two ReadTimeout handlers now: send() and the stream wrapper",
+    eq("0.10.0's native streaming-timeout wrapper is present",
+       _csrc.count("async def _stream_with_timeout"), 1)
+    # Count HANDLERS, not mentions. Native 0.10.0 has two: send()'s and
+    # _stream_with_timeout()'s.
+    eq("exactly two ReadTimeout handlers: send() and the stream wrapper",
        _csrc.count("except httpx.ReadTimeout"), 2)
 
     print("\npatches/forge_llamafile_timeout.py")
@@ -526,7 +526,9 @@ def main() -> int:
         client._chat_url = "http://backend/v1/chat/completions"
         client._cache_prompt = True
         client.model = "test-model"
-        client._apply_slot_id = lambda body: None
+        # forge 0.10.0 renamed _apply_slot_id -> _apply_id_slot (and it reads
+        # self._id_slot, which a bare __new__ instance lacks); stub the new name.
+        client._apply_id_slot = lambda body: None
         client._apply_sampling = lambda body, sampling: None
         client._request_headers = lambda extra=None: {}
 
