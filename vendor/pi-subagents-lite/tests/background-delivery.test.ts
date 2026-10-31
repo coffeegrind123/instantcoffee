@@ -40,9 +40,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { PI_ROOT } from "./pi-install.ts";
 
-const PI_AGENT_SESSION =
-  "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/agent-session.js";
+const PI_AGENT_SESSION = `${PI_ROOT}/dist/core/agent-session.js`;
 
 /** Strip comments: this file's own comments quote the defective form on purpose. */
 function codeOf(path: string): string {
@@ -129,8 +129,8 @@ describe("AA4 — the background nudge's deliverAs", () => {
  * See AC1 in `context/design/subagents-loop-verifier-deliveries.md`.
  */
 describe("AC1 — the background result reaches the parent", () => {
-  const PI_ENTRY = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/index.js";
-  const JITI = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.mjs";
+  const PI_ENTRY = `${PI_ROOT}/dist/index.js`;
+  const JITI = `${PI_ROOT}/node_modules/jiti/lib/jiti.mjs`;
   const SRC = fileURLToPath(new URL("../src", import.meta.url));
 
   /** A settled background record, and the shell state the nudge reads at call time. */

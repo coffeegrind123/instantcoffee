@@ -17,8 +17,9 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { PI_ROOT } from "./pi-install.ts";
 
-const PI = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent";
+const PI = PI_ROOT;
 const PI_ENTRY = `${PI}/dist/index.js`;
 const JITI = `${PI}/node_modules/jiti/lib/jiti.mjs`;
 const DEPS = `${PI}/node_modules`;

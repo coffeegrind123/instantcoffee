@@ -27,6 +27,7 @@ import { describe, it } from "node:test";
 import { ENV_AGENT_DIR, agentDir, agentDirFile } from "../src/agent-dir.ts";
 import { getPiSettingsPath } from "../src/pi-settings.ts";
 import { verifyLogFile } from "../src/agents/verify-log.ts";
+import { PI_ROOT } from "./pi-install.ts";
 
 const DEFAULT = join(homedir(), ".pi", "agent");
 
@@ -92,7 +93,7 @@ describe("AN7 — the two readers that must not diverge again", () => {
 });
 
 describe("AN7 — the variable name is pi's", () => {
-  const PI_CONFIG = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/config.js";
+  const PI_CONFIG = `${PI_ROOT}/dist/config.js`;
 
   it("pi still builds ENV_AGENT_DIR as <APP>_CODING_AGENT_DIR", { skip: !existsSync(PI_CONFIG) }, () => {
     const source = readFileSync(PI_CONFIG, "utf8");

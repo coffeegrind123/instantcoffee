@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { childBuiltinExtensions } from "../src/agents/child-builtins.ts";
+import { PI_ROOT } from "./pi-install.ts";
 
 const sdk = {
   createMcpExtension: () => "mcp-factory",
@@ -64,7 +65,7 @@ describe("childBrowserToolNames", () => {
    * other 93 off. Driven through pi's own matcher and the same rule.
    */
   it("against pi's own matcher: every browser tool allowed, other servers not", async () => {
-    const MCP = "/usr/local/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/mcp-servers.js";
+    const MCP = `${PI_ROOT}/dist/core/mcp-servers.js`;
     const { existsSync } = await import("node:fs");
     if (!existsSync(MCP)) return;
     const { createToolNameMatcher, isMcpToolName } = await import(MCP);
