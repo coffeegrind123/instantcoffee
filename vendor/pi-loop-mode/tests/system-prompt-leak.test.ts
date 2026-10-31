@@ -91,10 +91,10 @@ function makeHost() {
       await command!(args, ctx);
       return notices.join("\n");
     },
-    async beforeAgentStart(systemPrompt = "<<BASE SYSTEM PROMPT>>") {
+    async beforeAgentStart(systemPrompt = "<<BASE SYSTEM PROMPT>>", extra: Record<string, unknown> = {}) {
       const out: BeforeAgentStartResult[] = [];
       for (const fn of handlers.get("before_agent_start") ?? []) {
-        out.push((await fn({ systemPrompt }, ctx)) as BeforeAgentStartResult);
+        out.push((await fn({ systemPrompt, ...extra }, ctx)) as BeforeAgentStartResult);
       }
       return out;
     },
@@ -158,6 +158,40 @@ describe("AA1 — before_agent_start must not write the session's system prompt"
     await host.run("start ship it --max 5");
     const [endless] = await host.beforeAgentStart();
     assert.match(carried(endless), /endless mode/);
+    await host.run("end");
+  });
+});
+
+/**
+ * pi 1.2.0 made `before_agent_start` fire for runs started by
+ * `pi.sendMessage(…, {triggerTurn:true})` too — every turn the loop drives —
+ * with `messageType: "custom"` and the starting message instead of a prompt
+ * (`_startRun` → `_prepareRun` → `emitBeforeAgentStart`, `agent-session.js:1488`
+ * in 1.4.0). A handler message is added to that run as well, so without a guard
+ * every loop iteration carried the rules twice: once in `loopInstructions()` and
+ * once as this block, persisted to the session as a `custom` entry each time.
+ */
+describe("pi >= 1.2 — a loop-driven run does not get the operator-turn rules block", () => {
+  it("returns nothing for a custom-message run", async () => {
+    const host = makeHost();
+    await host.run("start ship the parser rewrite --max 5");
+
+    const results = await host.beforeAgentStart("<<BASE SYSTEM PROMPT>>", {
+      messageType: "custom",
+      message: { role: "custom", customType: "loop-iteration", content: "iteration 2" },
+    });
+    assert.deepEqual(results, [undefined], "the turn the loop drives already carries loopInstructions()");
+
+    await host.run("end");
+  });
+
+  it("control — an operator-typed run on pi >= 1.2 still gets it", async () => {
+    const host = makeHost();
+    await host.run("start ship the parser rewrite --max 5");
+
+    const [result] = await host.beforeAgentStart("<<BASE SYSTEM PROMPT>>", { messageType: "user", prompt: "how is it going?" });
+    assert.match(carried(result), /Loop mode is active/);
+
     await host.run("end");
   });
 });

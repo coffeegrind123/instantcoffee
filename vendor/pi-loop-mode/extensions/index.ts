@@ -2961,9 +2961,17 @@ export default function (pi: ExtensionAPI) {
    * `loopInstructions()`. This handler's only job is the turn that carries none
    * of that — the one a human typed. See AA1 in
    * `context/design/subagents-loop-verifier-hosts.md`.
+   *
+   * **pi 1.2.0 changed the first premise.** `before_agent_start` now also fires
+   * for runs started by `sendMessage(…, {triggerTurn:true})` — every loop turn —
+   * with `messageType: "custom"`, and a returned message is added to that run
+   * too, so each iteration carried the rules twice. Skipped on `"custom"` only:
+   * pi before 1.2 sends no `messageType`, and there the event is always a typed
+   * prompt.
    */
-  pi.on("before_agent_start", async () => {
+  pi.on("before_agent_start", async (event: { messageType?: string }) => {
     if (!state.active) return;
+    if (event?.messageType === "custom") return;
     const doneHint = state.untilDone
       ? "use LOOP_DONE: when the completion criteria are fully met"
       : "endless mode: after LOOP_DONE the loop continues with improvements, never stop on your own";
