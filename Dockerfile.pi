@@ -85,6 +85,12 @@ ENV CHROME_PATH=/usr/bin/google-chrome
 # rtk's telemetry is opt-in and off by default; pinned off here too because this
 # stack is meant to run with the network unplugged.
 ENV RTK_TELEMETRY_DISABLED=1
+# pi's own: no install ping to pi.dev, no provider attribution (PI_TELEMETRY), and
+# no startup network at all - catalog refresh, version check, package update
+# checks, fd/rg downloads (PI_OFFLINE). pi-local.sh exports the same from .env;
+# context/pi-1.4-audit-2026-10-31.md has what each one stops.
+ENV PI_TELEMETRY=0 \
+    PI_OFFLINE=1
 # Marker. scripts/pi-container.sh tests this to know it is already inside and
 # should just run pi rather than reach for docker. A purpose-built variable
 # rather than sniffing for /opt/zendriver-mcp or a PINNED_* value: those are
@@ -133,6 +139,7 @@ RUN apt-get update && apt-get install -y \
     xxd \
     gettext-base \
     ripgrep \
+    fd-find \
     dnsutils \
     tini \
     && rm -rf /var/lib/apt/lists/*

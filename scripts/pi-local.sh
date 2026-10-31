@@ -212,6 +212,11 @@ compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
 # just a hang.
 data["httpIdleTimeoutMs"] = min(900, max(300, -(-ctx // 36))) * 1000
 
+# The install ping to pi.dev on each version change, and pi's provider
+# attribution. Off here as well as by PI_TELEMETRY=0, so a plain `pi` started
+# without this script is covered too.
+data["enableInstallTelemetry"] = False
+
 path.write_text(json.dumps(data, indent=2) + "\n")
 print(f"wrote {path} (compaction: {compaction}, httpIdleTimeoutMs: {data['httpIdleTimeoutMs']})")
 PY
@@ -219,6 +224,24 @@ PY
 if (( INSTALL_ONLY )); then
   dim "Provider 'forge' installed. Check with: pi --list-models"
   exit 0
+fi
+
+# --- pi's own network traffic -------------------------------------------------
+# A local-model stack has no use for any of it (context/pi-1.4-audit-2026-10-31.md):
+#   PI_TELEMETRY=0  no install ping to pi.dev/api/report-install, no provider
+#                   attribution headers.
+#   PI_OFFLINE=1    also no pi.dev model-catalog refresh, latest-version check,
+#                   package update checks or fd/rg downloads. pi updates are this
+#                   script's job (PI_AUTO_UPDATE, plain npm), which it does not
+#                   touch; Dockerfile.pi ships ripgrep and fd so nothing is
+#                   downloaded on demand.
+PI_TELEMETRY_VAL="$(env_get PI_TELEMETRY)"; : "${PI_TELEMETRY_VAL:=0}"
+PI_OFFLINE_VAL="$(env_get PI_OFFLINE)";     : "${PI_OFFLINE_VAL:=1}"
+export PI_TELEMETRY="$PI_TELEMETRY_VAL"
+if [[ "$PI_OFFLINE_VAL" == "0" ]]; then
+  unset PI_OFFLINE
+else
+  export PI_OFFLINE="$PI_OFFLINE_VAL"
 fi
 
 # --- launch ------------------------------------------------------------------
