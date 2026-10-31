@@ -1,0 +1,566 @@
+ Container instantcoffee-llama Recreate 
+ Container instantcoffee-llama Recreated 
+ Container instantcoffee-llama Starting 
+ Container instantcoffee-llama Started 
+ Container instantcoffee-llama Waiting 
+ Container instantcoffee-llama Healthy 
+
+===== llama startup log (gsq-192k-at155k-b12019) =====
+instantcoffee-llama  | 2.08.865.734 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_294' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.735 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_322' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.736 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_372' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.737 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_400' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.738 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_450' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.739 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_478' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.740 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_579' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.741 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_607' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.742 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_657' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.743 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_685' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.745 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_735' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.746 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_763' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.747 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_864' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.748 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_892' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.749 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_942' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.750 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_970' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.751 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1020' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.752 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1048' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.753 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1149' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.754 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1177' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.755 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1227' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.757 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1255' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.758 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1305' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.759 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1333' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.760 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1434' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.762 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1462' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.763 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1512' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.764 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1540' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.765 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1590' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.767 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1618' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.768 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1719' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.769 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1747' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.770 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1797' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.771 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1825' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.772 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1875' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.773 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_1903' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.774 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2004' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.776 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2032' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.777 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2082' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.778 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2110' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.779 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2160' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.780 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2188' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.781 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2289' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.782 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2317' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.783 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2367' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.785 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2395' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.786 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2445' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.787 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2473' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.788 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2574' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.789 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2602' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.790 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2652' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.791 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2680' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.792 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2730' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.793 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2758' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.795 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2859' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.796 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2887' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.797 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2937' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.798 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_2965' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.799 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3015' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.801 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3043' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.802 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3144' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.803 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3172' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.804 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3222' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.805 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3250' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.807 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3300' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.808 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3328' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.809 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3429' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.810 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3457' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.811 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3507' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.813 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3535' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.814 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3585' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.815 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3613' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.817 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3714' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.818 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3742' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.819 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3792' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.820 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3820' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.821 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3870' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.822 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3898' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.823 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_3999' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.825 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4027' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.826 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4077' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.827 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4105' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.828 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4155' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.829 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4183' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.830 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4284' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.831 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4312' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.833 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4362' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.836 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4390' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.837 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4440' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.838 D llama_graph_n_input_tensors: input tensor '                       rs_s_copy' [i32, ne = {     1,     1,     1,     1 }] is used by node 'node_4468' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.839 D llama_graph_n_input_tensors: input tensor '                 inp_mixed_slots' [i64, ne = {   512,     1,     1,     1 }] is used by node ' (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.842 D llama_graph_n_input_tensors: input tensor '                  inp_mixed_embd' [f32, ne = {  5120,   512,     1,     1 }] is used by node 'node_2' (DUP)
+instantcoffee-llama  | 2.08.865.843 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-3' (ROPE)
+instantcoffee-llama  | 2.08.865.845 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-3' (ROPE)
+instantcoffee-llama  | 2.08.865.846 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-7' (ROPE)
+instantcoffee-llama  | 2.08.865.847 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-7' (ROPE)
+instantcoffee-llama  | 2.08.865.848 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-11' (ROPE)
+instantcoffee-llama  | 2.08.865.850 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-11' (ROPE)
+instantcoffee-llama  | 2.08.865.851 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-15' (ROPE)
+instantcoffee-llama  | 2.08.865.852 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-15' (ROPE)
+instantcoffee-llama  | 2.08.865.853 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-19' (ROPE)
+instantcoffee-llama  | 2.08.865.855 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-19' (ROPE)
+instantcoffee-llama  | 2.08.865.856 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-23' (ROPE)
+instantcoffee-llama  | 2.08.865.857 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-23' (ROPE)
+instantcoffee-llama  | 2.08.865.859 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-27' (ROPE)
+instantcoffee-llama  | 2.08.865.860 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-27' (ROPE)
+instantcoffee-llama  | 2.08.865.861 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-31' (ROPE)
+instantcoffee-llama  | 2.08.865.862 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-31' (ROPE)
+instantcoffee-llama  | 2.08.865.863 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-35' (ROPE)
+instantcoffee-llama  | 2.08.865.864 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-35' (ROPE)
+instantcoffee-llama  | 2.08.865.865 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-39' (ROPE)
+instantcoffee-llama  | 2.08.865.866 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-39' (ROPE)
+instantcoffee-llama  | 2.08.865.867 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-43' (ROPE)
+instantcoffee-llama  | 2.08.865.869 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-43' (ROPE)
+instantcoffee-llama  | 2.08.865.870 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-47' (ROPE)
+instantcoffee-llama  | 2.08.865.871 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-47' (ROPE)
+instantcoffee-llama  | 2.08.865.872 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-51' (ROPE)
+instantcoffee-llama  | 2.08.865.874 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-51' (ROPE)
+instantcoffee-llama  | 2.08.865.875 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-55' (ROPE)
+instantcoffee-llama  | 2.08.865.876 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-55' (ROPE)
+instantcoffee-llama  | 2.08.865.877 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-59' (ROPE)
+instantcoffee-llama  | 2.08.865.878 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-59' (ROPE)
+instantcoffee-llama  | 2.08.865.879 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Qcur-63' (ROPE)
+instantcoffee-llama  | 2.08.865.880 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'Kcur-63' (ROPE)
+instantcoffee-llama  | 2.08.865.882 D llama_graph_n_input_tensors: input tensor '                inp_mixed_tokens' [i32, ne = {   512,     1,     1,     1 }] is used by node 'node_1' (GET_ROWS)
+instantcoffee-llama  | 2.08.865.883 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l3 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.884 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l7 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.885 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l11 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.886 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l15 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.888 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l19 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.889 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l23 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.890 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l27 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.891 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l31 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.892 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l35 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.894 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l39 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.895 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l43 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.896 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l47 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.897 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l51 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.898 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l55 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.899 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l59 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.900 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l63 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.08.865.901 D llama_graph_n_input_tensors: input tensor '                      inp_tokens' [i32, ne = {   512,     1,     1,     1 }] is used by node 'model.input_embed' (GET_ROWS)
+instantcoffee-llama  | 2.08.869.236 I sched_reserve:      CUDA0 compute buffer size =  1060.02 MiB
+instantcoffee-llama  | 2.08.869.239 I sched_reserve:  CUDA_Host compute buffer size =   232.02 MiB
+instantcoffee-llama  | 2.08.869.243 I sched_reserve: graph: nodes = 4569, splits = 2, input objects = 4, input tensors = 10
+instantcoffee-llama  | 2.08.869.245 I sched_reserve: reserve took 325.02 ms, sched copies = 1
+instantcoffee-llama  | 2.08.870.333 I cmn          init: llama threadpool init, n_threads = 8
+instantcoffee-llama  | 2.08.870.401 D attach_threadpool: call
+instantcoffee-llama  | 2.08.870.420 D set_adapters_lora: adapters = (nil)
+instantcoffee-llama  | 2.08.870.422 D adapters_lora_are_same: adapters = (nil)
+instantcoffee-llama  | 2.08.870.424 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+instantcoffee-llama  | 2.09.062.162 I common_speculative_init_result: creating MTP draft context against the target model '/models/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf'
+instantcoffee-llama  | 2.09.062.236 I llama_context: constructing llama_context
+instantcoffee-llama  | 2.09.062.241 I llama_context: n_seq_max             = 1
+instantcoffee-llama  | 2.09.062.242 I llama_context: n_ctx                 = 196608
+instantcoffee-llama  | 2.09.062.242 I llama_context: n_ctx_seq             = 196608
+instantcoffee-llama  | 2.09.062.243 I llama_context: n_batch               = 2048
+instantcoffee-llama  | 2.09.062.243 I llama_context: n_ubatch              = 512
+instantcoffee-llama  | 2.09.062.243 I llama_context: causal_attn           = 1
+instantcoffee-llama  | 2.09.062.245 I llama_context: flash_attn            = enabled
+instantcoffee-llama  | 2.09.062.245 I llama_context: kv_unified            = true
+instantcoffee-llama  | 2.09.062.252 I llama_context: freq_base             = 10000000.0
+instantcoffee-llama  | 2.09.062.253 I llama_context: freq_scale            = 1
+instantcoffee-llama  | 2.09.062.254 I llama_context: n_rs_seq              = 0
+instantcoffee-llama  | 2.09.062.254 I llama_context: n_outputs_max         = 1
+instantcoffee-llama  | 2.09.062.255 I llama_context: n_outputs_max_per_seq = 1
+instantcoffee-llama  | 2.09.062.255 I llama_context: n_ctx_seq (196608) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+instantcoffee-llama  | 2.09.062.292 D set_abort_callback: call
+instantcoffee-llama  | 2.09.062.764 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+instantcoffee-llama  | 2.09.080.901 D llama_kv_cache: layer   0: filtered
+instantcoffee-llama  | 2.09.080.984 D llama_kv_cache: layer   1: filtered
+instantcoffee-llama  | 2.09.081.000 D llama_kv_cache: layer   2: filtered
+instantcoffee-llama  | 2.09.081.014 D llama_kv_cache: layer   3: filtered
+instantcoffee-llama  | 2.09.081.029 D llama_kv_cache: layer   4: filtered
+instantcoffee-llama  | 2.09.081.043 D llama_kv_cache: layer   5: filtered
+instantcoffee-llama  | 2.09.081.058 D llama_kv_cache: layer   6: filtered
+instantcoffee-llama  | 2.09.081.072 D llama_kv_cache: layer   7: filtered
+instantcoffee-llama  | 2.09.081.248 D llama_kv_cache: layer   8: filtered
+instantcoffee-llama  | 2.09.081.263 D llama_kv_cache: layer   9: filtered
+instantcoffee-llama  | 2.09.081.281 D llama_kv_cache: layer  10: filtered
+instantcoffee-llama  | 2.09.081.341 D llama_kv_cache: layer  11: filtered
+instantcoffee-llama  | 2.09.081.394 D llama_kv_cache: layer  12: filtered
+instantcoffee-llama  | 2.09.081.421 D llama_kv_cache: layer  13: filtered
+instantcoffee-llama  | 2.09.081.448 D llama_kv_cache: layer  14: filtered
+instantcoffee-llama  | 2.09.081.478 D llama_kv_cache: layer  15: filtered
+instantcoffee-llama  | 2.09.081.511 D llama_kv_cache: layer  16: filtered
+instantcoffee-llama  | 2.09.081.538 D llama_kv_cache: layer  17: filtered
+instantcoffee-llama  | 2.09.081.565 D llama_kv_cache: layer  18: filtered
+instantcoffee-llama  | 2.09.081.598 D llama_kv_cache: layer  19: filtered
+instantcoffee-llama  | 2.09.081.631 D llama_kv_cache: layer  20: filtered
+instantcoffee-llama  | 2.09.081.659 D llama_kv_cache: layer  21: filtered
+instantcoffee-llama  | 2.09.081.685 D llama_kv_cache: layer  22: filtered
+instantcoffee-llama  | 2.09.081.721 D llama_kv_cache: layer  23: filtered
+instantcoffee-llama  | 2.09.081.748 D llama_kv_cache: layer  24: filtered
+instantcoffee-llama  | 2.09.081.775 D llama_kv_cache: layer  25: filtered
+instantcoffee-llama  | 2.09.081.802 D llama_kv_cache: layer  26: filtered
+instantcoffee-llama  | 2.09.081.834 D llama_kv_cache: layer  27: filtered
+instantcoffee-llama  | 2.09.081.866 D llama_kv_cache: layer  28: filtered
+instantcoffee-llama  | 2.09.081.893 D llama_kv_cache: layer  29: filtered
+instantcoffee-llama  | 2.09.081.920 D llama_kv_cache: layer  30: filtered
+instantcoffee-llama  | 2.09.081.960 D llama_kv_cache: layer  31: filtered
+instantcoffee-llama  | 2.09.081.987 D llama_kv_cache: layer  32: filtered
+instantcoffee-llama  | 2.09.082.020 D llama_kv_cache: layer  33: filtered
+instantcoffee-llama  | 2.09.082.049 D llama_kv_cache: layer  34: filtered
+instantcoffee-llama  | 2.09.082.076 D llama_kv_cache: layer  35: filtered
+instantcoffee-llama  | 2.09.082.108 D llama_kv_cache: layer  36: filtered
+instantcoffee-llama  | 2.09.082.135 D llama_kv_cache: layer  37: filtered
+instantcoffee-llama  | 2.09.082.167 D llama_kv_cache: layer  38: filtered
+instantcoffee-llama  | 2.09.082.299 D llama_kv_cache: layer  39: filtered
+instantcoffee-llama  | 2.09.082.391 D llama_kv_cache: layer  40: filtered
+instantcoffee-llama  | 2.09.082.465 D llama_kv_cache: layer  41: filtered
+instantcoffee-llama  | 2.09.082.555 D llama_kv_cache: layer  42: filtered
+instantcoffee-llama  | 2.09.082.631 D llama_kv_cache: layer  43: filtered
+instantcoffee-llama  | 2.09.082.687 D llama_kv_cache: layer  44: filtered
+instantcoffee-llama  | 2.09.082.756 D llama_kv_cache: layer  45: filtered
+instantcoffee-llama  | 2.09.082.822 D llama_kv_cache: layer  46: filtered
+instantcoffee-llama  | 2.09.082.905 D llama_kv_cache: layer  47: filtered
+instantcoffee-llama  | 2.09.082.979 D llama_kv_cache: layer  48: filtered
+instantcoffee-llama  | 2.09.083.035 D llama_kv_cache: layer  49: filtered
+instantcoffee-llama  | 2.09.083.091 D llama_kv_cache: layer  50: filtered
+instantcoffee-llama  | 2.09.083.151 D llama_kv_cache: layer  51: filtered
+instantcoffee-llama  | 2.09.083.205 D llama_kv_cache: layer  52: filtered
+instantcoffee-llama  | 2.09.083.264 D llama_kv_cache: layer  53: filtered
+instantcoffee-llama  | 2.09.083.327 D llama_kv_cache: layer  54: filtered
+instantcoffee-llama  | 2.09.083.408 D llama_kv_cache: layer  55: filtered
+instantcoffee-llama  | 2.09.083.408 D llama_kv_cache: layer  56: filtered
+instantcoffee-llama  | 2.09.083.409 D llama_kv_cache: layer  57: filtered
+instantcoffee-llama  | 2.09.083.409 D llama_kv_cache: layer  58: filtered
+instantcoffee-llama  | 2.09.083.410 D llama_kv_cache: layer  59: filtered
+instantcoffee-llama  | 2.09.083.410 D llama_kv_cache: layer  60: filtered
+instantcoffee-llama  | 2.09.083.411 D llama_kv_cache: layer  61: filtered
+instantcoffee-llama  | 2.09.083.411 D llama_kv_cache: layer  62: filtered
+instantcoffee-llama  | 2.09.083.411 D llama_kv_cache: layer  63: filtered
+instantcoffee-llama  | 2.09.083.422 D llama_kv_cache: layer  64: dev = CUDA0
+instantcoffee-llama  | 2.09.107.464 I llama_kv_cache:      CUDA0 KV buffer size =   768.00 MiB
+instantcoffee-llama  | 2.09.107.486 I llama_kv_cache: size =  768.00 MiB (196608 cells,   1 layers,  1/1 seqs), K (f16):  384.00 MiB, V (f16):  384.00 MiB
+instantcoffee-llama  | 2.09.107.492 I llama_kv_cache: n_rot_k = 0, n_embd_head_k_all = 256
+instantcoffee-llama  | 2.09.107.492 I llama_kv_cache: n_rot_v = 0, n_embd_head_k_all = 256
+instantcoffee-llama  | 2.09.107.498 D llama_context: enumerating backends
+instantcoffee-llama  | 2.09.107.599 D llama_context: backend_ptrs.size() = 2
+instantcoffee-llama  | 2.09.107.601 I sched_reserve: reserving ...
+instantcoffee-llama  | 2.09.107.605 D sched_reserve: max_nodes = 27712
+instantcoffee-llama  | 2.09.125.937 D sched_reserve: reserving full memory module
+instantcoffee-llama  | 2.09.126.012 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+instantcoffee-llama  | 2.09.126.033 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+instantcoffee-llama  | 2.09.126.055 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.126.394 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.126.435 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,     1,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.126.454 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.126.474 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.126.500 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.126.519 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.126.544 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,     1,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.126.564 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.126.681 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+instantcoffee-llama  | 2.09.126.708 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.126.837 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.126.876 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,     1,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.126.894 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.127.057 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.127.165 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.127.276 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.127.410 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,     1,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.127.546 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.127.693 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+instantcoffee-llama  | 2.09.127.793 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.127.984 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.128.106 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,     1,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.128.213 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.128.311 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.128.422 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.128.520 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.128.626 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,     1,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.128.724 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.128.879 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+instantcoffee-llama  | 2.09.128.984 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.129.279 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.129.395 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,   512,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.129.524 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.129.621 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.129.710 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.129.803 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.129.909 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,   512,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.129.958 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {   512,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.356.251 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.356.531 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.356.639 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,     1,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.356.713 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.356.793 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.356.900 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.356.968 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.357.037 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,     1,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.357.068 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.357.269 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.357.403 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.357.456 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,   512,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.357.500 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.357.543 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.357.581 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.357.618 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.357.703 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,   512,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.357.798 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {   512,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.357.953 I sched_reserve:      CUDA0 compute buffer size =   260.02 MiB
+instantcoffee-llama  | 2.09.358.013 I sched_reserve:  CUDA_Host compute buffer size =   212.02 MiB
+instantcoffee-llama  | 2.09.358.051 I sched_reserve: graph: nodes = 50, splits = 2, input objects = 4, input tensors = 7
+instantcoffee-llama  | 2.09.358.096 I sched_reserve: reserve took 250.49 ms, sched copies = 1
+instantcoffee-llama  | 2.09.359.687 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+instantcoffee-llama  | 2.09.359.808 I cmn  common_conte: the context supports bounded partial sequence removal
+instantcoffee-llama  | 2.09.359.847 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 196608, kv_unified = 'true'
+instantcoffee-llama  | 2.09.363.597 I spec common_specu: adding speculative implementation 'ngram-map-k'
+instantcoffee-llama  | 2.09.363.750 I spec common_specu: - size_key=12, size_value=96, key_only=1, min_hits=1
+instantcoffee-llama  | 2.09.363.880 I spec common_specu: adding speculative implementation 'draft-mtp'
+instantcoffee-llama  | 2.09.363.930 I spec common_specu: - n_max=4, n_min=0, p_min=0.00, n_embd=5120, backend_sampling=1
+instantcoffee-llama  | 2.09.363.969 I spec common_specu: - gpu_layers=-1, cache_k=f16, cache_v=f16, ctx_tgt=yes, ctx_dft=yes, devices=[default]
+instantcoffee-llama  | 2.09.364.058 D set_sampler: seq_id = 0, sampler = 0x5d57777c8c40
+instantcoffee-llama  | 2.09.364.160 D set_embeddings_nextn: value = 1, masked = 0
+instantcoffee-llama  | 2.09.364.214 D set_embeddings_nextn: value = 1, masked = 1
+instantcoffee-llama  | 2.09.389.305 I sched_reserve: reserving ...
+instantcoffee-llama  | 2.09.389.493 D sched_reserve: max_nodes = 27717
+instantcoffee-llama  | 2.09.500.806 D sched_reserve: reserving full memory module
+instantcoffee-llama  | 2.09.500.931 D sched_reserve: worst-case: n_tokens = 512, n_seqs = 1, n_outputs = 1
+instantcoffee-llama  | 2.09.500.979 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.501.180 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.501.254 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,   512,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.501.301 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.501.345 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.501.387 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.501.457 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.501.503 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,   512,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.501.540 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {   512,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.686.991 D graph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.687.179 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.687.214 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,     1,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.687.215 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.687.216 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {     1,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.687.218 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.687.219 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {     4,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.687.220 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,     1,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.687.222 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.687.397 D graph_reserve: reserving a graph for ubatch with n_tokens =  512, n_seqs =  1, n_outputs =    1
+instantcoffee-llama  | 2.09.687.498 D llama_graph_n_input_tensors: input tensor '                         out_ids' [i32, ne = {     1,     1,     1,     1 }] is used by node 'mtp_shared_head_norm' (GET_ROWS)
+instantcoffee-llama  | 2.09.687.529 D llama_graph_n_input_tensors: input tensor '                attn_inp_kq_mask' [f16, ne = { 196608,   512,     1,     1 }] is used by node 'node_31' (FLASH_ATTN_EXT)
+instantcoffee-llama  | 2.09.687.531 D llama_graph_n_input_tensors: input tensor '                 attn_inp_v_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_v_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.687.532 D llama_graph_n_input_tensors: input tensor '                 attn_inp_k_idxs' [i64, ne = {   512,     1,     1,     1 }] is used by node 'cache_k_l64 (view)' (SET_ROWS)
+instantcoffee-llama  | 2.09.687.533 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_13' (ROPE)
+instantcoffee-llama  | 2.09.687.534 D llama_graph_n_input_tensors: input tensor '                         inp_pos' [i32, ne = {  2048,     1,     1,     1 }] is used by node 'node_20' (ROPE)
+instantcoffee-llama  | 2.09.687.536 D llama_graph_n_input_tensors: input tensor '                     mtp_h_input' [f32, ne = {  5120,   512,     1,     1 }] is used by node 'norm-64' (RMS_NORM)
+instantcoffee-llama  | 2.09.687.537 D llama_graph_n_input_tensors: input tensor '                          leaf_3' [i32, ne = {   512,     1,     1,     1 }] is used by node 'mtp_tok_embd-64' (GET_ROWS)
+instantcoffee-llama  | 2.09.687.622 I sched_reserve:      CUDA0 compute buffer size =   260.02 MiB
+instantcoffee-llama  | 2.09.687.628 I sched_reserve:  CUDA_Host compute buffer size =   212.02 MiB
+instantcoffee-llama  | 2.09.687.631 I sched_reserve: graph: nodes = 56, splits = 2, input objects = 5, input tensors = 7
+instantcoffee-llama  | 2.09.687.632 I sched_reserve: reserve took 298.15 ms, sched copies = 1
+instantcoffee-llama  | 2.09.758.721 I srv    load_model: speculative decoding context initialized
+instantcoffee-llama  | 2.09.758.768 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 196608
+instantcoffee-llama  | 2.09.758.773 D slot        reset: id  0 | task -1 | 
+instantcoffee-llama  | 2.09.758.824 I srv    load_model: prompt cache is enabled, size limit: 2048 MiB
+instantcoffee-llama  | 2.09.758.825 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+instantcoffee-llama  | 2.09.758.825 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+instantcoffee-llama  | 2.09.758.826 I srv    load_model: context checkpoints enabled, max = 4, min spacing = 256
+instantcoffee-llama  | 2.09.758.864 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+instantcoffee-llama  | 2.09.758.864 D srv          init: __TEST_TAG_CACHE_IDLE_SLOTS_ENABLED__
+instantcoffee-llama  | 2.09.768.438 D Using specialized template: Qwen3-Coder
+instantcoffee-llama  | 2.09.770.972 I srv          init: init: chat template, example_format: '<|im_start|>system
+instantcoffee-llama  | You are a helpful assistant<|im_end|>
+instantcoffee-llama  | <|im_start|>user
+instantcoffee-llama  | Hello<|im_end|>
+instantcoffee-llama  | <|im_start|>assistant
+instantcoffee-llama  | <think>
+instantcoffee-llama  | 
+instantcoffee-llama  | </think>
+instantcoffee-llama  | 
+instantcoffee-llama  | Hi there<|im_end|>
+instantcoffee-llama  | <|im_start|>user
+instantcoffee-llama  | How are you?<|im_end|>
+instantcoffee-llama  | <|im_start|>assistant
+instantcoffee-llama  | <think>
+instantcoffee-llama  | '
+instantcoffee-llama  | 2.09.771.873 I srv          init: init: chat template, thinking = 1
+instantcoffee-llama  | 2.09.771.910 I srv          init: preserve_reasoning kwarg: true
+instantcoffee-llama  | 2.09.771.911 W srv          init: chat template supports preserving reasoning, it is enabled by default (may use more tokens, disable via --no-reasoning-preserve)
+instantcoffee-llama  | 2.09.771.999 I srv  server_run_i: model loaded
+instantcoffee-llama  | 2.09.772.008 I srv  server_on_li: listening on http://0.0.0.0:8080
+instantcoffee-llama  | 2.09.772.206 D que    start_loop: processing new tasks
+instantcoffee-llama  | 2.09.772.232 D que    start_loop: update slots
+instantcoffee-llama  | 2.09.772.255 I srv  update_slots: all slots are idle
+instantcoffee-llama  | 2.09.772.278 D que    start_loop: waiting for new tasks
+instantcoffee-llama  | 2.11.240.671 D res  add_waiting_: add task 0 to waiting list. current waiting = 0 (before add)
+instantcoffee-llama  | 2.11.240.682 D que          post: new task, id = 0, front = 1
+instantcoffee-llama  | 2.11.240.755 D que    start_loop: processing new tasks
+instantcoffee-llama  | 2.11.240.764 D que  process_new_: processing task, id = 0
+instantcoffee-llama  | 2.11.240.771 D srv  process_sing: n_processing_slots = 0
+instantcoffee-llama  | 2.11.240.789 D res          send: sending result for task id = 0
+instantcoffee-llama  | 2.11.240.790 D res          send: task id = 0 pushed to result queue
+instantcoffee-llama  | 2.11.240.820 D que    start_loop: update slots
+instantcoffee-llama  | 2.11.240.846 I srv  update_slots: all slots are idle
+instantcoffee-llama  | 2.11.240.846 D que    start_loop: waiting for new tasks
+instantcoffee-llama  | 2.11.240.961 D res  remove_waiti: remove task 0 from waiting list. current waiting = 1 (before remove)
+instantcoffee-llama  | 2.11.241.013 D srv          stop: all tasks already finished, no need to cancel
+instantcoffee-llama  | 2.11.432.011 D srv          stop: all tasks already finished, no need to cancel
+instantcoffee-llama  | 2.12.462.757 D srv          stop: all tasks already finished, no need to cancel
+ Image instantcoffee/proxy:0.10.0 Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 592B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.forge
+#2 transferring dockerfile: 17.70kB 0.1s done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.13-slim
+#3 DONE 0.9s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B 0.1s done
+#4 DONE 0.1s
+
+#5 [internal] load build context
+#5 DONE 0.0s
+
+#6 [1/8] FROM docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+#6 resolve docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+#6 resolve docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb 0.0s done
+#6 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 1.85kB 0.6s done
+#5 DONE 0.6s
+
+#7 [5/8] RUN SITE="$(python -c 'import site; print(site.getsitepackages()[0])')"     && python /tmp/patches/forge_merge_consecutive.py "$SITE"     && python /tmp/patches/forge_cached_tokens.py "$SITE"     && python /tmp/patches/forge_reasoning_passthrough.py "$SITE"     && python /tmp/patches/forge_toolcall_content.py "$SITE"     && python /tmp/patches/forge_merge_across_tools.py "$SITE"     && python /tmp/patches/forge_anthropic_reasoning.py "$SITE"     && python /tmp/patches/forge_toolcall_passthrough.py "$SITE"     && python /tmp/patches/forge_empty_turn.py "$SITE"     && python /tmp/patches/forge_text_sse_passthrough.py "$SITE"     && python /tmp/patches/forge_llamafile_timeout.py "$SITE"     && python /tmp/patches/forge_sse_error_shape.py "$SITE"     && python /tmp/patches/forge_backend_error_detail.py "$SITE"     && python /tmp/patches/forge_tool_schema.py "$SITE"     && rm -rf /tmp/patches
+#7 CACHED
+
+#8 [7/8] COPY --chown=forge:forge prompts/ /work/prompts/
+#8 CACHED
+
+#9 [2/8] RUN test -n "0.10.0" || (echo "FORGE_VERSION build-arg is required" >&2; exit 1)
+#9 CACHED
+
+#10 [6/8] COPY --chown=forge:forge scripts/download_model.py scripts/smoke_test.py      scripts/bench.py scripts/bench_repeat.py scripts/bench_tools.py      scripts/bench_quality.py      scripts/ctx_needle.py scripts/ab_think_lang.py scripts/bench_literal.py      scripts/probe_lib.py scripts/capture_proxy.py scripts/capture_sessions.py      scripts/template_probe.py scripts/empty_turn_ab.py      scripts/test_forge_patches.py /work/scripts/
+#10 CACHED
+
+#11 [3/8] RUN pip install --no-cache-dir         "forge-guardrails==0.10.0"         "huggingface_hub[hf_xet]>=0.27"     && useradd --create-home --uid 1000 forge     && mkdir -p /work     && chown -R forge:forge /work
+#11 CACHED
+
+#12 [4/8] COPY patches/forge_merge_consecutive.py patches/forge_cached_tokens.py      patches/forge_reasoning_passthrough.py patches/forge_toolcall_content.py      patches/forge_merge_across_tools.py patches/forge_anthropic_reasoning.py      patches/forge_toolcall_passthrough.py patches/forge_empty_turn.py      patches/forge_text_sse_passthrough.py      patches/forge_llamafile_timeout.py patches/forge_sse_error_shape.py      patches/forge_backend_error_detail.py patches/forge_tool_schema.py      /tmp/patches/
+#12 CACHED
+
+#13 [8/8] WORKDIR /work
+#13 CACHED
+
+#14 exporting to image
+#14 exporting layers done
+#14 exporting manifest sha256:5b839d18a01ee390fc4774bf4231af18250dd1d51ae3746fff50287023a33841 done
+#14 exporting config sha256:678e34b26b9bfb8f3d39a7d5080f596ced4c93f722ca9c16cb752bd85d1fa048 done
+#14 exporting attestation manifest sha256:627eb5e9ee8eac3d050a892fa051e664503e0dd0a2ab80ae98933a678847c607 0.0s done
+#14 exporting manifest list sha256:ed4e4c3aa152669a93dbbab9bfd6a579eadeb45511c3541cee41d7830afcf2c1
+#14 exporting manifest list sha256:ed4e4c3aa152669a93dbbab9bfd6a579eadeb45511c3541cee41d7830afcf2c1 0.0s done
+#14 naming to docker.io/instantcoffee/proxy:0.10.0 done
+#14 unpacking to docker.io/instantcoffee/proxy:0.10.0 0.0s done
+#14 DONE 0.2s
+
+#15 resolving provenance for metadata file
+#15 DONE 0.0s
+ Image instantcoffee/proxy:0.10.0 Built 
+ Container instantcoffee-bench-run-610523e32b83 Creating 
+ Container instantcoffee-bench-run-610523e32b83 Created 
+
+bench — qwen3.8-27b via http://llama:8080
+prefill and decode rates come from llama's own timings block; each prompt carries a unique nonce
+
+  pp=155000 prompt=155029 prefill=  1613.9 tok/s  decode=  45.5 tok/s  wall=102.43s draft=182/375 (48% accepted)
+  pp=155000 prompt=155029 prefill=  1629.8 tok/s  decode=  40.8 tok/s  wall=101.97s draft=171/509 (34% accepted)
+  pp=155000 prompt=155029 prefill=  1631.6 tok/s  decode=  44.1 tok/s  wall=101.45s draft=174/409 (42% accepted)
+
+best prefill: 1631.6 tok/s     best decode: 45.5 tok/s
+MTP draft acceptance: 527/1293 = 40.8% across 3 run(s)
+Sweep SPEC_DRAFT_N_MAX in .env and re-run: raise it while decode improves, stop when acceptance stops paying for the extra drafts.
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 155000,
+      "status": 200,
+      "wall_s": 102.43,
+      "prompt_n": 155029,
+      "prompt_tps": 1613.9413786433859,
+      "predicted_n": 256,
+      "predicted_tps": 45.47235343324294,
+      "cache_n": 0,
+      "draft_n": 375,
+      "draft_accepted": 182,
+      "draft_acceptance": 0.485
+    },
+    {
+      "requested": 155000,
+      "status": 200,
+      "wall_s": 101.97,
+      "prompt_n": 155029,
+      "prompt_tps": 1629.8031748976691,
+      "predicted_n": 256,
+      "predicted_tps": 40.766076102110866,
+      "cache_n": 0,
+      "draft_n": 509,
+      "draft_accepted": 171,
+      "draft_acceptance": 0.336
+    },
+    {
+      "requested": 155000,
+      "status": 200,
+      "wall_s": 101.45,
+      "prompt_n": 155029,
+      "prompt_tps": 1631.622000283386,
+      "predicted_n": 256,
+      "predicted_tps": 44.07260607541739,
+      "cache_n": 0,
+      "draft_n": 409,
+      "draft_accepted": 174,
+      "draft_acceptance": 0.425
+    }
+  ]
+}
+
+===== engine memory breakdown (gsq-192k-at155k-b12019) =====
+instantcoffee-llama  | 0.01.654.715 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.01.654.744 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22992 + (19500 = 11159 +    7280 +    1060) +      -17928 |
+instantcoffee-llama  | 0.01.654.745 I common_memory_breakdown_print: |   - Host               |                    620 =   388 +       0 +     232                |
+instantcoffee-llama  | 0.01.724.170 I operator(): getting device memory data for the extra model at a context size of 196608:
+instantcoffee-llama  | 0.02.470.205 I llama_model_loader: loaded meta data with 53 key-value pairs and 866 tensors from /models/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.02.470.286 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.02.470.291 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.02.470.292 I llama_model_loader: - kv   1:                               general.name str              = Qwen3.8-27B GSQ-RCO
+instantcoffee-llama  | 0.02.470.292 I llama_model_loader: - kv   2:                           general.basename str              = Qwen3.8-27B
+instantcoffee-llama  | 0.02.470.293 I llama_model_loader: - kv   3:                       general.quantized_by str              = ISTA DASLab
+instantcoffee-llama  | 0.02.470.293 I llama_model_loader: - kv   4:                           general.repo_url str              = https://huggingface.co/ISTA-DASLab
+instantcoffee-llama  | 0.02.470.294 I llama_model_loader: - kv   5:                            general.license str              = apache-2.0
+instantcoffee-llama  | 0.02.470.296 I llama_model_loader: - kv   6:                               general.tags arr[str,2]       = ["gsq-rco", "ista-daslab"]
+--
+instantcoffee-llama  | 0.02.716.410 I common_memory_breakdown_print: | memory breakdown [MiB] | total    free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 0.02.716.434 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 22992 + (12187 = 11159 +     768 +     260) +      -10616 |
+instantcoffee-llama  | 0.02.716.434 I common_memory_breakdown_print: |   - Host               |                    600 =   388 +       0 +     212                |
+instantcoffee-llama  | 0.02.787.818 I common_params_fit_impl: projected to use 20528 MiB of device memory vs. 22992 MiB of free device memory
+instantcoffee-llama  | 0.02.787.849 I common_params_fit_impl: will leave 2463 >= 1024 MiB of free device memory, no changes needed
+instantcoffee-llama  | 0.02.787.850 I common_fit_params: successfully fit params to free device memory
+instantcoffee-llama  | 0.02.787.855 I common_fit_params: fitting params to free memory took 2.37 seconds
+instantcoffee-llama  | 0.03.518.778 I llama_model_loader: loaded meta data with 53 key-value pairs and 866 tensors from /models/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf (version GGUF V3 (latest))
+instantcoffee-llama  | 0.03.518.852 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+instantcoffee-llama  | 0.03.518.857 I llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+instantcoffee-llama  | 0.03.518.858 I llama_model_loader: - kv   1:                               general.name str              = Qwen3.8-27B GSQ-RCO
+instantcoffee-llama  | 0.03.518.859 I llama_model_loader: - kv   2:                           general.basename str              = Qwen3.8-27B
+instantcoffee-llama  | 0.03.518.859 I llama_model_loader: - kv   3:                       general.quantized_by str              = ISTA DASLab
+--
+instantcoffee-llama  | 7.24.741.082 I common_memory_breakdown_print: | memory breakdown [MiB] | total   free     self   model   context   compute    unaccounted |
+instantcoffee-llama  | 7.24.741.109 I common_memory_breakdown_print: |   - CUDA0 (RTX 4090)   | 24563 = 1619 + (19500 = 11159 +    7280 +    1060) +        3443 |
+instantcoffee-llama  | 7.24.741.110 I common_memory_breakdown_print: |   - Host               |                   620 =   388 +       0 +     232                |
+instantcoffee-llama  | 7.24.741.247 D set_sampler: seq_id = 0, sampler = (nil)
+instantcoffee-llama  | 7.24.747.537 D ~llama_context:      CUDA0 compute buffer size is 260.0157 MiB, matches expectation of 260.0157 MiB
+instantcoffee-llama  | 7.24.747.565 D ~llama_context:  CUDA_Host compute buffer size is 212.0176 MiB, matches expectation of 212.0176 MiB
+instantcoffee-llama  | 7.24.860.532 D ~llama_context:      CUDA0 compute buffer size is 1060.0201 MiB, matches expectation of 1060.0201 MiB
+instantcoffee-llama  | 7.24.860.562 D ~llama_context:  CUDA_Host compute buffer size is 232.0239 MiB, matches expectation of 232.0239 MiB
