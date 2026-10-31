@@ -229,6 +229,13 @@ jobs:
       - name: Capture session rebuilder unit tests
         run: python scripts/capture_sessions.py --self-test
 
+      # Counts tool calls the model stranded inside its reasoning (Strata
+      # #804/#1058). The rules are strict on purpose — a fenced or undeclared or
+      # length-cut call stays text — so a reported hit is a real lost call, and
+      # a regression that loosened them would over-report a forge bug.
+      - name: Stranded tool-call counter unit tests
+        run: python scripts/test_stranded_tool_calls.py
+
       # The browser CLI turns shell words into JSON arguments for a tool it has
       # never seen, from that tool's own schema. A regression there is silent:
       # a dropped or mistyped parameter produces a call that succeeds and does
