@@ -1,3 +1,74 @@
+# Handoff — 2026-10-31 (part 19: KLD re-baseline passed on b12019; context-window tiers shipped — coding 96K / 128K / 192K, uncensored at 128K; desktop VRAM is the hidden variable; NEXT: the pi 0.87 -> 1.4 extension audit)
+
+Everything below this part-19 block is history. Start here.
+
+## State at hand-off
+
+- Stack UP on `uc-coding` at 128K (llama b12019, forge/capture 0.10.0, observe
+  abfe6aa). Capture still ON. All work committed and pushed (see `git log`).
+- Modes: `coding` (UD-Q4_K_XL, 96K), `coding-128k` (UD-Q4_K_XL, 128K),
+  `coding-192k` (GSQ-RCO IQ3_S from D:, 192K), `uc-coding` / `prose`
+  (orcarouter Q4_K_M, 128K). Table, speeds and caveats: `docs/modes.md`
+  "Context-window tiers". Why: `decisions.md` 2026-10-31 "window tiers".
+- Switch inside pi with `/stack mode <name>` (Tab completes the names). After a
+  window-changing switch, **quit and relaunch pi**: it reads its window at launch.
+
+## What this session did
+
+1. **KLD re-baseline on b12019: PASSED.** Every arm, both corpora, within one SE
+   of b11118 (`decisions.md` 2026-10-31 evening). Upgrade quality gate closed.
+2. **#29172 sweep -> window tiers.** No #29172 effect up to 155K deep. GSQ fits
+   192K at full speed. UD-Q4_K_XL at 128K works (~1150 t/s prefill at depth) only
+   with a quiet desktop; the operator chose it over GSQ for `coding-128k` on
+   quality. `uc-coding`/`prose` raised to 128K (Q4_K_M ~1770 t/s @125K).
+3. **Desktop VRAM is the hidden variable.** Windows' own VRAM moved 1.4-2.4 GB;
+   near-full configs drop to 1/2-1/3 speed when it is high. Read every capacity
+   number next to `vram_idle_mib`; re-run slow results before believing them.
+4. **Mode mechanics:** every mode declares CTX_SIZE / DRY_PENALTY_LAST_N /
+   MODELS_DIR; `mode.sh` rewrites pi's models.json on window change;
+   `scripts/test_mode_switch.py` in CI.
+5. GPU firmware/hardware modding on the 4090 ruled out by the operator.
+
+## NEXT: audit every pi extension and command against pi 1.4.0
+
+The last pi version recorded here is 0.87.1; current is 1.4.0 (11 releases,
+0.99.0 -> 1.4.0, incl. the 1.0 cut; ~85 KB of release notes at
+github.com/earendil-works/pi). The pi container auto-updates
+(`PI_VERSION=latest`, Dockerfile.pi), so extensions written for 0.87 may be
+running on 1.4 now — a broken hook usually fails silently. Plan (operator agreed):
+
+1. What runs: `pi --version` in the pi container; confirm every extension
+   loads clean (no swallowed load errors).
+2. Read the release notes 0.87.1 -> 1.4.0 line by line. Mark each change:
+   breaks a hook/key we use / deprecates one / adds natively what one of our
+   extensions does (retire or slim ours) / new feature worth adopting.
+3. Each vendored fork vs its upstream: what upstream added since our fork
+   point, and whether our fork-only changes are still needed.
+4. Findings into `context/pi-1.4-audit-<date>.md`: keep / update / retire /
+   adopt per item, with evidence.
+5. Implement; keep `.pi/extensions/tests` and the fork unit tests (CI) green;
+   smoke-test in a live pi session.
+
+Surface: `.pi/extensions/` = `stack.ts` (`/stack`), `browser-guard.ts`,
+`compaction-guard/`, `observe/`. `vendor/` = `pi-loop-mode` (`/loop`),
+`pi-subagents-lite` (`/agents`, `subagent-result` renderer), `pi-persona`,
+`pi-toolresult-guard`, `prinny-channel`, `rtk-pi`. Hooks in use: tool_result,
+session_start/shutdown/compact/before_compact, input, before_agent_start,
+agent_settled/start/end, context, tool_call, message_start/update/end,
+turn_start, before_provider_request. Plus the models.json/settings.json keys
+`scripts/pi-local.sh` writes (compaction, httpIdleTimeoutMs, compat flags).
+
+## Still queued (unchanged from part 18)
+
+- #26004 checkpoint-reuse confirmation and the Strata stranded-call count: both
+  need a real multi-hour pi session through capture.
+- Copy the GSQ GGUF to C: once there is room (C: had 8 GB free), then point
+  `modes/coding-192k.env` MODELS_DIR at `//c/llm-models`.
+- kld-run.sh preflight counts a running llama's RAM as unavailable (it stops
+  llama first); worth crediting it.
+
+---
+
 # Handoff — 2026-10-31 (part 18: the GitHub sweep is closed, the stack is upgraded to llama b12019 + forge 0.10.0 and verified live, capture is recording — four measurement follow-ups are queued for a fresh session)
 
 Everything below this part-18 block is history. Start here.
@@ -51,7 +122,11 @@ Everything below this part-18 block is history. Start here.
    context checkpoint instead of full re-prefill (fixes #28194 on hybrids).
    Grep a real pi session's llama log for `forcing full prompt re-processing` vs
    the checkpoint lines, and watch checkpoint VRAM drop (#30514).
-3. **#29172 capacity sweep at 128K/160K/200K** on b12019 — only matters for the
+3. **DONE 2026-10-31 — became the window tiers** (`decisions.md` "window tiers",
+   `docs/modes.md`): coding 96K, coding-128k (UD), coding-192k (GSQ), uncensored
+   at 128K. Biggest lesson: desktop VRAM use (floor 1.4-2.4 GB) halves near-full
+   configs; read every capacity number with its `vram_idle_mib` and re-run slow
+   ones. Was: **#29172 capacity sweep at 128K/160K/200K** on b12019 — only matters for the
    D1 128K variant and the Bonsai 262K lead; the 96K default is below the cliff.
    `bench_cross_engine.py`/capacity-probe is the instrument (it is a perf
    collapse, not an output change).

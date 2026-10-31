@@ -1,4 +1,4 @@
-# Modes: coding, uc-coding, and prose
+# Modes: coding (96K / 128K / 192K), uc-coding, and prose
 
 The three switchable regimes, the model behind each, and every sampler knob
 they set. Applied with `./scripts/mode.sh` or `/stack mode` inside pi.
@@ -41,7 +41,8 @@ qpi -nt -nc --system-prompt "You are a literary fiction writer. Return only pros
 
 ## Three modes
 
-The stack ships three regimes. A mode is just a file of `KEY=VALUE` lines in
+The stack ships three regimes, and `coding` comes in three context-window tiers
+(see "Context-window tiers" below). A mode is just a file of `KEY=VALUE` lines in
 `modes/`; adding one means adding a file — `scripts/mode.sh` and pi's
 `/stack mode` both discover `modes/*.env` at runtime, so nothing else needs
 editing.
@@ -80,6 +81,43 @@ than carrying a second definition of what "prose mode" means:
 `prose` in two (DRY off, `THINK_LANG` on). Because it shares `prose`'s GGUF,
 switching between `uc-coding` and `prose` is a sampler-only change with no
 download; only the sampler keys differ.
+
+## Context-window tiers
+
+Added 2026-10-31, measured on llama b12019 (`context/bench/capacity/*-b12019*`,
+`decisions.md` 2026-10-31 "window tiers"). Same sampler profile in every
+`coding*` mode; they differ in window and weights.
+
+| mode | weights | window | GPU used / free | prefill at depth | decode | KLD vs Q8_0 code / prose |
+| --- | --- | --- | --- | --- | --- | --- |
+| `coding` | UD-Q4_K_XL | 96K | 23.2 / 1.3 GB | ~2030 t/s @ 90K | 50-53 | 0.0060 / 0.0185 |
+| `coding-128k` | UD-Q4_K_XL | 128K | 23.3 / 1.3 GB | ~1150 t/s @ 125K | 33-45 | 0.0060 / 0.0185 |
+| `coding-192k` | GSQ-RCO IQ3_S (D:) | 192K | 22.8 / 1.8 GB | ~1620 t/s @ 155K | 40-45 | 0.0332 / 0.0849 |
+| `uc-coding`, `prose` | orcarouter Q4_K_M | 128K | 23.7 / 0.8 GB | ~1770 t/s @ 125K | 44-48 | 0.0168 / 0.0463 |
+
+GPU figures are device-wide with a quiet desktop (Windows holding ~1.4-1.9 GB).
+
+- **Close GPU-heavy desktop apps for long sessions.** Every slow run on
+  2026-10-31 coincided with the desktop holding ~2.2-2.4 GB instead of
+  ~1.4-1.9 GB. With the card that full, Windows evicts llama's allocations and
+  prefill drops to a half or a third: `coding` at 96K fell to 595-938 t/s,
+  `coding-128k` to 300-480 t/s and 11-23 t/s decode. Re-run with a quiet desktop,
+  the same configs gave ~2030 and ~1150 t/s.
+- **`coding-128k` trades speed for quality.** It keeps `coding`'s weights (a fifth
+  of GSQ's divergence) and pays ~45% of 96K prefill speed at depth and the
+  thinnest headroom of any tier. Chosen by the operator over GSQ at 128K, which
+  ran ~1800 t/s with 4 GB free.
+- **`coding-192k` is the only GSQ mode.** 192K rather than 200K: at 155K deep a
+  192K window ran at full speed, while a 200K window left ~1.1 GB free and
+  slowed when the desktop was busy. GSQ is stock-weights only, so the
+  uncensored modes stop at 128K. Its GGUF is on D: (spinning disk) because C:
+  had 8 GB free; a cold switch can take a long time until it is copied to C:
+  and `MODELS_DIR` in `modes/coding-192k.env` points at `//c/llm-models`.
+- **Every mode file declares `CTX_SIZE`, `DRY_PENALTY_LAST_N` and
+  `MODELS_DIR`**, because `mode.sh` only rewrites keys the target names
+  (`scripts/test_mode_switch.py` enforces identical key sets). A switch that
+  changes the window rewrites pi's `models.json`; **restart any running pi
+  session** afterwards, since pi reads its window only at launch.
 
 All three modes now sit at temperature 1.0. On 3.6 `coding` ran at 0.6, which was
 Qwen3.6's separate "precise coding" preset; the 3.8 card publishes a single

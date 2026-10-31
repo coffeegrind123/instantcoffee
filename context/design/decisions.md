@@ -9548,3 +9548,59 @@ at 13,359 vs 13,659 MiB, and passed at 15,418 MiB once llama was stopped by hand
 first. (2) The first launch failed in the NVIDIA prestart hook
 (`nvidia-container-cli: ldcache error: /sbin/ldconfig terminated with signal 9`),
 no OOM in the Docker VM's dmesg; an immediate retry worked. Treat it as transient.
+
+## 2026-10-31 (night) — window tiers: coding 96K / 128K / 192K, uncensored at 128K
+
+Operator decision, measured on b12019 with `capacity-probe.sh --bench prefill`
+(three repeats per arm, prompt just under each window). Results:
+`context/bench/capacity/{gsq,udq4kxl,q4km}-*-b12019*.json`.
+
+**Modes.** `coding` UD-Q4_K_XL 96K (unchanged). `coding-128k` UD-Q4_K_XL 128K
+(new). `coding-192k` GSQ-RCO IQ3_S 192K (new; D1's "deliberate long variant",
+now adopted as opt-in, never the default). `uc-coding` and `prose` raised
+96K -> 128K on orcarouter Q4_K_M. The uncensored modes stop at 128K by operator
+choice: GSQ is stock-weights only, and Q4_K_M at 160K+ does not fit.
+
+**The confound that nearly decided this wrongly: desktop VRAM.** The idle
+device floor (Windows' own VRAM use) moved between ~1.4 and ~2.4 GB during the
+session. Every slow result coincided with the high floor:
+
+| config | floor MiB | free MiB | prefill t/s | decode t/s |
+| --- | --- | --- | --- | --- |
+| UD 96K, 90K deep | 2335 | 829 | 595-938 | 25-41 |
+| UD 96K, re-run | 1888 | 1348 | 2014-2063 | 50-53 |
+| UD 128K, 125K deep | 2193 | 586 | 299-483 | 11-23 |
+| UD 128K, re-run | 1653 | 1298 | 1142-1171 | 33-45 |
+| GSQ 200K window, 155K deep | 2359 | 1098 | 1073-1271 | 20-30 |
+| GSQ 200K window, 155K, re-run | 1602 | 1603 | 1627-1640 | 30-43 |
+| Q4_K_M 128K, 125K deep | 1369 | 839 | 1741-1779 | 44-48 |
+
+Free VRAM alone does not predict it (Q4_K_M at 839 MiB free was fine; UD at 829
+was not); the desktop actively holding extra VRAM does. Read every capacity
+number from this card next to its `vram_idle_mib`, and re-run anything slow
+before concluding the config is slow. A first reading blamed llama.cpp#29172
+(deep-KV collapse) for the 200K slowdown; the same-depth control (200K window,
+155K prompt) refuted that before it reached a doc.
+
+**GSQ depth sweep (no #29172 effect up to 155K deep):** prefill ~1990 @ 90K,
+~1796 @ 125K, ~1608 @ 155K (160K window), ~1590 / ~1624 @ 155K under 176K /
+192K windows, ~2100 @ 60K under a 200K window. 192K chosen over 200K by the
+operator: full speed at depth with ~1.8 GB free.
+
+**coding-128k on UD, not GSQ:** operator chose quality. UD at 128K is ~1150 t/s
+prefill with ~1.3 GB free and collapses under desktop load; GSQ at 128K was
+~1796 t/s with 4.1 GB free but 5x the KLD.
+
+**Old verdict superseded.** "128K halves decode" (2026-09-03, Q4_K_M, b10689)
+does not hold on b12019: Q4_K_M 96K -> 128K costs ~7% prefill and ~0% decode.
+
+**Mechanics.** Every mode declares `CTX_SIZE`, `DRY_PENALTY_LAST_N` and
+`MODELS_DIR` (mode.sh only rewrites keys the target names; a 192K window or the
+D: path would otherwise survive a switch back). `mode.sh` rewrites pi's
+models.json when the window changes and tells the operator to restart pi.
+`scripts/test_mode_switch.py` (CI) enforces identical key sets and the
+switch-back reset; it fails on the pre-change mode files.
+
+**kld-run.sh preflight note:** it counts a running llama's ~1.8 GiB as
+unavailable although it stops llama before the base arm; stop llama by hand if
+it refuses by less than that.

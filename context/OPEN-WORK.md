@@ -17,7 +17,11 @@ stack now runs llama `server-cuda-b12019` + forge `0.10.0`; see **HANDOFF part 1
 for current state and the queued measurement follow-ups (the #26004
 checkpoint-reuse check, the #29172 capacity sweep, and the Strata stranded-call
 count once capture has a real session). The quality KLD re-baseline on b12019 is
-DONE and passed: every arm within one standard error of b11118.
+DONE and passed: every arm within one standard error of b11118. The #29172
+sweep turned into the window tiers (decisions.md 2026-10-31 "window tiers"):
+coding 96K/128K/192K, uncensored at 128K; no #29172 effect measured up to 155K
+deep. Open: copy the GSQ GGUF to C: once there is room (C: had 8 GB free), so
+`coding-192k` stops loading from the spinning D: disk.
 The plan, with status per item, is `context/plan-github-sweep-2026-10-04.md`;
 verdicts are in `decisions.md` under 2026-10-04 and 2026-10-31. For the record:
 

@@ -10,6 +10,15 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**Context-window tiers: `coding` 96K / `coding-128k` / `coding-192k`; uncensored
+modes at 128K (2026-10-31).** Two new modes: `coding-128k` (same UD-Q4_K_XL
+weights, 128K, ~1150 t/s prefill at depth) and `coding-192k` (GSQ-RCO IQ3_S,
+192K, ~1620 t/s at 155K deep). `uc-coding` and `prose` move 96K -> 128K. Every
+mode file now declares its window and model directory, and a window-changing
+switch rewrites pi's config (restart pi afterwards). Close GPU-heavy desktop
+apps for long sessions: when Windows holds ~0.8 GB more VRAM, near-full configs
+drop to a half or a third of their speed. See `docs/modes.md`.
+
 **llama b11118 -> b12019, forge 0.9.5 -> 0.10.0 (2026-10-31).** Both prebuilt,
 no local compile. llama was chosen after surveying all 902 commits
 (`context/upgrade-llama-b12019-2026-10-31.md`): it fixes the hybrid
