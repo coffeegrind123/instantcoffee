@@ -34,25 +34,28 @@ const PI_INDEX = findPiIndex()
  * describe below skipped SILENTLY while reporting a green suite. A contract
  * test that cannot find the thing it pins is worse than no contract test, so
  * `SKIP` distinguishes "pi is absent" from "pi is here and the search failed".
+ *
+ * The needles are searched across EVERY chunk, not only the one holding
+ * `getTextOutput`: pi 1.4.0 split the tool-result path over two chunks, and a
+ * one-chunk search failed five pins whose code had only moved.
  */
 function findChunk(): string | null {
   if (!PI_INDEX) return null
   const dir = dirname(PI_INDEX)
   const roots = [join(dir, "chunks"), join(dir, "bundle", "chunks"), dir]
+  const sources: string[] = []
   for (const root of roots) {
     if (!existsSync(root)) continue
     for (const name of readdirSync(root)) {
       if (!name.endsWith(".js")) continue
-      let src: string
       try {
-        src = readFileSync(join(root, name), "utf8")
+        sources.push(readFileSync(join(root, name), "utf8"))
       } catch {
         continue
       }
-      if (src.includes("function getTextOutput(")) return src
     }
   }
-  return null
+  return sources.some(src => src.includes("function getTextOutput(")) ? sources.join("\n") : null
 }
 
 const SRC = findChunk()
@@ -83,7 +86,9 @@ describe("the pi contract this guard depends on", { skip: SKIP }, () => {
   //    truthy. Without this, returning `{content}` changes nothing.
   test("emitToolResult still returns a value only when a handler modified one", () => {
     assert.ok(
-      has("if(modified)return{content:currentEvent.content,details:currentEvent.details,isError:currentEvent.isError,usage:currentEvent.usage}"),
+      has("if(modified)return{content:currentEvent.content,details:currentEvent.details,isError:currentEvent.isError,usage:currentEvent.usage}") ||
+        // pi >= 0.99: structuredContent rides along; same "only if modified".
+        has("if(modified)return{content:currentEvent.content,details:currentEvent.details,structuredContent:currentEvent.structuredContent,isError:currentEvent.isError,usage:currentEvent.usage}"),
       "ExtensionRunner.emitToolResult changed. The guard works by setting `modified`; " +
         "re-read extensions/index.ts's header against the new code.",
     )
@@ -127,7 +132,9 @@ describe("the pi contract this guard depends on", { skip: SKIP }, () => {
   //    partial never passes through afterToolCall, so nothing here can reach it.
   test("tool_execution_update still bypasses the hook (the one case not covered)", () => {
     assert.ok(
-      has('emit({type:"tool_execution_update",toolCallId:prepared.toolCall.id,toolName:prepared.toolCall.name,args:prepared.toolCall.arguments,partialResult})'),
+      has('emit({type:"tool_execution_update",toolCallId:prepared.toolCall.id,toolName:prepared.toolCall.name,args:prepared.toolCall.arguments,partialResult})') ||
+        // pi >= 0.99: the same direct emit, moved into emitToolExecutionUpdate().
+        has('function emitToolExecutionUpdate(toolCall,emit){return partialResult=>emit({type:"tool_execution_update",toolCallId:toolCall.id,toolName:toolCall.name,args:toolCall.arguments,partialResult})'),
       "the partial-result path changed; re-check whether it now passes through afterToolCall.",
     )
   })
