@@ -24,6 +24,12 @@
 # pi-container.sh publishes it on 127.0.0.1 only. Every request except
 # /api/health and the page itself needs the token (measured 2026-11-01: 401
 # without it or with a wrong one). Telemetry and self-update are always off.
+#
+# OVIS_TOKEN=off runs it with no token, so the page opens without a sign-in.
+# Then anything that reaches the port gets in and can type into pi, until a
+# device is paired: every program on the host, every container (through
+# host.docker.internal), and a web page that rebinds its own name to
+# 127.0.0.1. This container mounts the docker socket, so that is the Docker VM.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -62,7 +68,11 @@ alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1" 2>/dev/null)" 2>/dev/null; }
 # OVIS_TOKEN from the env files wins. Otherwise one is generated once and kept
 # on the home mount, mode 0600, so it survives --recreate and never sits in a
 # tracked file or on a command line.
+# OVIS_TOKEN=off (any case): no token at all, and none is generated.
+auth_off() { [[ "$(env_get OVIS_TOKEN | tr '[:upper:]' '[:lower:]')" == off ]]; }
+
 token() {
+  auth_off && return 0
   local t; t="$(env_get OVIS_TOKEN)"
   if [[ -n "$t" ]]; then printf '%s' "$t"; return 0; fi
   if [[ ! -s "$TOKEN_FILE" ]]; then
@@ -120,8 +130,11 @@ supervise() {
     tok="$(token)"
     started=$(date +%s)
     log "starting Ovis ($(cat "$OVIS_DIR/bundle.json" 2>/dev/null))"
+    # Ovis reads its token from OVIS_TOKEN alone, and empty or unset means
+    # none (server/index.ts:209), so OVIS_TOKEN=off is an unset variable here.
     ( cd "$OVIS_DIR" && \
-      HOST=0.0.0.0 PORT="$OVIS_CONTAINER_PORT" OVIS_TOKEN="$tok" \
+      if [[ -n "$tok" ]]; then export OVIS_TOKEN="$tok"; else unset OVIS_TOKEN; fi && \
+      HOST=0.0.0.0 PORT="$OVIS_CONTAINER_PORT" \
       OVIS_TELEMETRY=0 OVIS_AUTO_UPDATE=0 NO_OPEN_BROWSER=1 OVIS_NO_OPEN=1 \
       OVIS_HERDR_BIN="$HERDR" PATH="$SHIM_DIR:$PATH" \
       exec "$BUN" server/index.ts ) >> "$LOG" 2>&1 &
@@ -172,7 +185,13 @@ start() {
     warn "Ovis did not answer within 30 s — see ${LOG}"
     return 0
   fi
-  (( quiet )) || echo "Ovis:    $(url)  (token: ./scripts/ovis.sh token; sessions: pi-container.sh --ovis)"
+  if (( ! quiet )); then
+    if auth_off; then
+      echo "Ovis:    $(url)  (no token: OVIS_TOKEN=off; sessions: pi-container.sh --ovis)"
+    else
+      echo "Ovis:    $(url)  (token: ./scripts/ovis.sh token; sessions: pi-container.sh --ovis)"
+    fi
+  fi
 }
 
 stop() {
@@ -190,7 +209,7 @@ status() {
   local state
   if ! ovis_enabled; then state="off (OVIS_ENABLED=0)"
   elif ! have_bundle; then state="enabled, but not in this image — rebuild pi-agent"
-  elif healthy; then state="up at $(url)"
+  elif healthy; then state="up at $(url)"; auth_off && state+=" (no token: OVIS_TOKEN=off)"
   elif alive "$SUPERVISOR_PID"; then state="starting or restarting — see ${LOG}"
   else state="enabled, not running — ./scripts/ovis.sh start"
   fi
@@ -204,7 +223,11 @@ status() {
   else
     printf 'herdr        not running\n'
   fi
-  printf 'token file   %s\n' "$TOKEN_FILE"
+  if auth_off; then
+    printf 'access       no token (OVIS_TOKEN=off): open to anything that reaches the port\n'
+  else
+    printf 'access       token required (%s)\n' "$TOKEN_FILE"
+  fi
   printf 'log          %s\n' "$LOG"
 }
 
@@ -287,7 +310,7 @@ case "${1:-}" in
   start)     shift; start "$@" ;;
   stop)      stop ;;
   status)    shift; status "$@" ;;
-  token)     token; echo ;;
+  token)     if auth_off; then echo "no token: OVIS_TOKEN=off" >&2; else token; echo; fi ;;
   enabled)   ovis_enabled ;;
   run)       shift; run "$@" ;;
   supervise) in_container; mkdir -p "$RUN_DIR"; supervise ;;

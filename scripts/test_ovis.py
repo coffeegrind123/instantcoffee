@@ -120,6 +120,36 @@ class Token(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
 
 
+class NoToken(unittest.TestCase):
+    """OVIS_TOKEN=off: no token, none generated, and the server started without one."""
+
+    def test_off_means_no_token_and_no_file(self) -> None:
+        for value in ("off", "OFF"):
+            with tempfile.TemporaryDirectory() as td:
+                path = os.path.join(td, "token")
+                self.assertEqual(sourced("token", OVIS_TOKEN_FILE=path, OVIS_TOKEN=value).stdout, "", value)
+                self.assertFalse(os.path.exists(path), value)
+
+    def test_the_server_starts_without_ovis_token(self) -> None:
+        # The supervisor's own subshell, with bun replaced by a recorder: what
+        # matters is what Ovis would see in its environment.
+        with tempfile.TemporaryDirectory() as td:
+            seen = os.path.join(td, "seen")
+            for value, want in (("off", "UNSET"), ("s3cret", "s3cret")):
+                script = (f'tok="$(token)"; ( if [[ -n "$tok" ]]; then export OVIS_TOKEN="$tok"; '
+                          f'else unset OVIS_TOKEN; fi && echo "${{OVIS_TOKEN-UNSET}}" > "{seen}" )')
+                sourced(script, OVIS_TOKEN=value)
+                with open(seen) as fh:
+                    self.assertEqual(fh.read().strip(), want, value)
+
+    def test_control_the_supervisor_uses_that_wiring(self) -> None:
+        # The case above replays the supervisor's lines; this pins that they are its lines.
+        with open(OVIS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('if [[ -n "$tok" ]]; then export OVIS_TOKEN="$tok"; else unset OVIS_TOKEN; fi', src)
+        self.assertNotIn('OVIS_TOKEN="$tok" \\', src)
+
+
 class LaunchScript(unittest.TestCase):
     """What a herdr pane runs: write it with ovis.sh, run it against a fake launcher."""
 
