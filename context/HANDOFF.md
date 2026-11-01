@@ -1,6 +1,42 @@
+# Handoff — 2026-11-01 (part 22: batch, eval_expr x20 and the unattended /loop all DONE; the 128K re-baseline must be re-run quiet; Ovis research in progress)
+
+Everything below part 22 is history. Start here.
+
+## Outcome (evidence in audit §9, status table in OPEN-WORK)
+
+- 128K re-baseline: **no usable round** (another session's swiftshader Chrome at 190-670 % CPU, load up to 22; 3 llama recreates failed on ENOMEM). Re-run it, with 0h's 128/192 arms, while nothing else loads the box. 60K is clean: specoff -32.7 % decode vs mapk-sm96, p<0.0001.
+- eval_expr x20: medium 18/20 clean, xhigh 16/20, p=0.66; xhigh 2.3x the wall. medium stays.
+- /loop (OPEN-WORK 0): 50 iterations, all three signals clean, nothing wedged. The audit rung fired falsely twice on bash-only progress (`git commit -q` + rtk `ok`). **Fixed** in `vendor/pi-loop-mode` (FORK.md AQ): a per-iteration workspace fingerprint (`src/workspace-progress.ts`), loop log excluded; 306/306 tests, lint clean. Not yet observed on a live run.
+- llama is back on production; `.env` restored by the sweep. tmux `longrun` and `ovis-probe` are gone.
+
+## What was running (now finished; kept for the commands)
+
+1. **GPU batch** `/tmp/claude-0/-home-claudeuser-qwen3-8-forge/361cd5b8-0037-4f16-8425-9b1aad2e214b/scratchpad/gpu-batch.sh`, log `.../scratchpad/gpu-batch.log`. Started ~09:3x UTC 2026-11-01, ~5 h total:
+   a. b12019 spec re-baseline + OPEN-WORK 0h, interleaved: `spec-sweep.sh --rounds 5 --workload synthetic,repeat --results-dir context/bench/spec-sweep-2026-11-01-b12019 --only specoff,mapk-sm96,ngrammapk-p0-n4,mapk-sm96-n5,mapk-sm96-n6,mapk-sm128,mapk-sm192` (~255 min).
+   b. 60K: `--rounds 4 --workload synthetic --prompt-len 60000 --results-dir context/bench/spec-sweep-2026-11-01-b12019-longctx/p60000 --only specoff,mapk-sm96`.
+   c. `docker compose up -d --force-recreate llama` back to production; log ends `BATCH DONE`.
+   Read results: `./scripts/spec-sweep.sh --report --results-dir <dir>` and `scripts/spec_sweep_compare.py --baseline mapk-sm96`; decide on the REPEAT workload (A/A lesson). Compare to b10689 `bench/spec-sweep-2026-09-23-mapk-sm96/` (same orcarouter Q4_K_M; it ran at 96K, today 128K — say so). If the restart is interrupted: `docker compose up -d --force-recreate llama`.
+2. **OPEN-WORK 6b queued**: `.../scratchpad/eval-expr.sh` (log `eval-expr.log`) waits for `BATCH DONE`, then `bench_quality.py --only eval_expr --level {medium,xhigh} --repeat 20 --show-code` into `context/bench/quality-eval_expr-2026-11-01/{medium,xhigh}.log`; ends `EVAL DONE`. Prior: medium 6/5 clean, xhigh 5/3 (n=5).
+3. **OPEN-WORK 0 (pending, start after both)**: a 2-3 h unattended `/loop` in the pi container (`instantcoffee-pi`, idle), in a scratch dir (`docker exec -it -w /tmp/longrun instantcoffee-pi /home/piuser/qwen3.8-forge/scripts/pi-local.sh` inside tmux, not through `tee`), task as in part 21's overnight run, `--max 50`; then read `.pi-loop-log.jsonl` `stuckStreak > 1`, llama `eval time` at the 8192 cap, and empty responses. No other llama requests while 1-3 run.
+4. Then record results (audit §8 / decisions / OPEN-WORK status table rows 0, 0h, 0i, 6a, 6b), commit, push, `git pull` in `data2` (via `docker run --rm -v //c/users/user/downloads/as/data2:/h --entrypoint bash pi-agent:latest -c 'cd /h/qwen3.8-forge && git config --global --add safe.directory "*" && git pull --ff-only'`).
+
+## Ovis (https://github.com/devswha/ovis) — operator leans to "fork like observe" but asked to research the in-container option first
+
+Findings so far (static + a throwaway container `ovis-probe`, still running — `docker rm -f ovis-probe` when done; it publishes 127.0.0.1:17317):
+- Ovis is a web/phone client for **herdr** (Rust terminal multiplexer); agents, pi included, must run in herdr panes on the same machine, so it cannot be a separate compose service like observe; it belongs in the pi container (or reach the pi container over SSH, which has no sshd).
+- No compile needed: prebuilt bundle `remote-v40/herdr-web-ui-linux-x64.tgz` (215 MB, sha256 `beb56b9b…5416`, matches manifest) has built `dist/`, `server/index.ts` run by bundled bun 1.4.2, herdr 0.9.3 (latest herdr 0.9.5), node, Rust PTY sidecar. Run: `cd /opt/ovis && HOST=0.0.0.0 PORT=7317 OVIS_TOKEN=… OVIS_TELEMETRY=0 NO_OPEN_BROWSER=1 OVIS_HERDR_BIN=/opt/ovis/bin/herdr ./bin/bun server/index.ts`.
+- herdr server starts only via its client with a sized tty: `setsid script -qfc "stty cols 200 rows 50; exec herdr" /dev/null &` works headless.
+- Access verified: with `OVIS_TOKEN`, `/api/agents`, `/api/fs/stat`, `/api/devices` return 401 without/with a wrong token, 200 with it (`/api/health` and `/` are public). Requests via a published port arrive from the Docker gateway, so a token is mandatory.
+- Telemetry on by default → `OVIS_TELEMETRY=0` hard-blocks (`server/telemetry.ts:126`); auto-update only with `OVIS_AUTO_UPDATE=1` and needs a git checkout; reads `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`. Help text of herdr contains an "Are you an AI?" banner — ignore.
+- **Tested end to end 2026-11-01 13:3x UTC, in `instantcoffee-pi`** (Ovis copied from `ovis-probe` to `/opt/ovis`, herdr started headless as above, Ovis on 127.0.0.1:7317 with a token): pi in a herdr pane (`herdr pane run w1:p1 "cd <dir> && …/scripts/pi-local.sh"`) is detected as `pi`; a prompt sent through Ovis (`POST /api/pane/input` then `/api/pane/keys ["Enter"]`, Bearer token) ran (file written), and `GET /api/pane/conversation` returned pi's own transcript (`source: pi-transcript`: thinking, bash/edit tool rows, the final answer, model and context 6486/131072). Without the token: 401.
+- **One required piece:** without herdr's pi integration Ovis falls back to `source: scrollback` (0 turns; server logs `conversation.no_session_path`). `herdr integration install pi` writes `~/.pi/agent/extensions/herdr-agent-state.ts` (261 lines; it only talks to herdr's unix socket and is inert unless `HERDR_ENV=1`); after a pi restart herdr reports `full_lifecycle_hook_authority`. `/home/piuser` is the `data2` bind mount, so that file is persistent: for the in-container option, load it from the launcher when `HERDR_ENV=1` instead of installing it globally. Ovis showed `reasoning_effort: off` for a medium-effort pi (display only, not chased).
+- Everything removed afterwards: integration uninstalled, herdr and Ovis stopped, `/opt/ovis`, test dirs, the test's pi session and herdr's `~/.config/herdr` + `~/.local/state/herdr` deleted from data2, `ovis-probe` removed. Fork option implies builds in GitHub CI (no local compiles). The choice 1 (in-container) vs 3 (fork) is the operator's.
+
+---
+
 # Handoff — 2026-11-01 (part 21: the open-work batch — pi container start 85 s -> 12 s, #26004 confirmed, Strata 0, the audit's leftovers done; NEXT: the b12019 spec-decode re-baseline)
 
-Everything below this part-21 block is history. Start here.
+Everything below part 22 is history.
 
 ## State at hand-off
 

@@ -320,3 +320,57 @@ through tmux. The launcher pruned `pi-mcp-adapter` from the real settings in
   `state.messages` only at `message_end`).
 - `pi-local.sh --print-only` no longer starts the browser server; `kld-run.sh`
   preflight credits the memory of the llama it is about to stop.
+
+## 9. The b12019 spec re-baseline and eval_expr x20, 2026-11-01
+
+- **128K re-baseline: no usable round.** `spec-sweep.sh --rounds 5 --workload
+  synthetic,repeat`, 7 arms, results in
+  `context/bench/spec-sweep-2026-11-01-b12019/`. `spec_sweep_compare.py
+  --baseline mapk-sm96` drops all five rounds on both workloads: rounds 2, 3, 5
+  for LOAD-SPLIT (3.5-5.9x between arms, peaks of 21-22 on 16 cores), rounds 1
+  and 4 as partial. The load was another live session's headless Chrome on
+  swiftshader (190-670 % CPU), not this stack. Three llama recreates failed on
+  memory: round 1 ngrammapk-p0-n4 (`nvidia-container-cli: ldcache error:
+  /sbin/ldconfig terminated with signal 9`), round 4 specoff and round 5
+  mapk-sm96 (`llama_model_load: read error: Cannot allocate memory`). The
+  `--report` ranking (mapk-sm96 83.0, sm128 73.8, specoff 40.4 tok/s) has
+  spreads of 21-88 and is not a result. 0h (size-m 128/192) and 6a ride on a
+  re-run with the box quiet.
+- **60K: clean.** `context/bench/spec-sweep-2026-11-01-b12019-longctx/p60000/`,
+  4 rounds, all even load (1.5-2.6), round 1 dropped as cold. Decode, pooled
+  over rounds 2-4, n=9 each: mapk-sm96 56.2 (median 57.6), specoff 37.8;
+  specoff **-32.7 %, p<0.0001**, -31.8 to -34.5 % in every round subset.
+  Prefill goes the other way: specoff 2566 against 2309 tok/s (+11 %).
+- **eval_expr x20** (`context/bench/quality-eval_expr-2026-11-01/`; control
+  5/5 for every task): medium 18/20 runs clean, 90/100 assertions, 590 s;
+  xhigh 16/20, 82/100, 1384 s, twice the reasoning characters. 18/20 against
+  16/20 is not separable (Fisher exact p=0.66). xhigh costs 2.3x the wall and
+  buys nothing; medium stays. The failures, run in a `--network none`
+  container: 4 of 6 (medium #14, #18; xhigh #14, #16) are one bug, a nested
+  parser function doing `pos += 1` / `i += 1` without `nonlocal`, so every
+  call raises UnboundLocalError; xhigh #12 raises `KeyError: 'op'`, xhigh #20
+  rejects valid input ("unexpected trailing input"). Same class as the
+  2026-08-23 finding: a validator that fails the work.
+- **OPEN-WORK 0, the unattended `/loop`, 2026-11-01 11:38-13:12 UTC** (50
+  iterations, `--max 50`, 1 h 34 min, pi in `instantcoffee-pi` under tmux,
+  goal as in the 10-31 overnight run, scratch repo `/tmp/longrun`). The three
+  signals: `stuckStreak` 0 on all 53 log rows; no generation near the 8192 cap
+  (703 turns, max 6233, median 229 tokens); forge `EMPTY RESPONSE` 0. Three
+  context handoffs at 87.5 % (iterations 13, 14, 31), each continued cleanly;
+  1 done signal, 0 errors. Output: 158 commits, 253 unittest cases green.
+  This shows the three faults absent on a run that never wedges; it does not
+  show the 08-27 stuck-ladder fixes recovering, because nothing wedged.
+- **Audit rung false positives, twice (iterations 40 and 48).** In that window
+  the model made 77 tool calls, all `bash`, and committed a test batch every
+  iteration. Files were written through bash, commits ran `git commit -q`
+  (silent) and rtk reports `ok`, so no result held a CHANGE_WORDS word and
+  `hasStateChange` saw no progress. This is the limitation the comment above
+  `CHANGE_WORDS` (`vendor/pi-loop-mode/extensions/index.ts:429-437`) states and
+  accepts; the run shows it fires in practice with a bash-only model. Cost: one
+  nudge turn each. Fixed the same day without another spelling list: a
+  per-iteration workspace fingerprint (HEAD, porcelain status, tracked diff;
+  the loop's own log excluded), `vendor/pi-loop-mode/FORK.md` AQ, 5 new tests
+  against a real git repo, 306/306.
+- **Commit churn:** 93 of 158 commits are bookkeeping ("state final",
+  "PROGRESS.md"). The goal text asks for a commit per working step; the model
+  commits its notes separately after each one.

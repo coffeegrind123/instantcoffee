@@ -19,21 +19,21 @@ sections keep their text, and this table says what each one is today.
 | 000 sweep | DONE, except GSQ to C: | #26004 confirmed and Strata 0 of 198 (audit §8); kld preflight credits llama. GSQ to C: is blocked on C: space (operator, 2026-11-01). |
 | 00 ninfer | DONE as a question | measured 2026-09-04; re-opening needs a CI-built image (no local compiles) and a b12019 baseline |
 | 00b 128K | SUPERSEDED | b12019: 128K costs ~7% prefill, ~0% decode; window tiers (decisions 2026-10-31) |
-| 0 unattended /loop | OPEN | no multi-hour run has been read for the three signals since the 08-27 fixes |
+| 0 unattended /loop | DONE as far as a non-wedging run can go | 2026-11-01, 50 iterations / 1.5 h: stuckStreak 0 throughout, no 8192-cap generation, no forge EMPTY RESPONSE; nothing wedged, so the ladder fixes are still unexercised end to end; audit rung fired twice falsely on bash-only progress, fixed in pi-loop-mode AQ (audit §9) |
 | 0b-0d ngram | DONE / SUPERSEDED | map-k adopted, p-min 0, size-m 96 |
 | 0e novel-text cost | SUPERSEDED | its arms no longer run; the question moves into the b12019 spec re-baseline |
 | 0f CUDA abort | dormant | no recurrence on b10689/b11118/b12019; if it returns, `CUDA_LAUNCH_BLOCKING=1` |
 | 0g watchdog | DONE | |
-| 0h size-m > 96 | OPEN | ~50 min GPU, after the re-baseline |
-| 0i b11118 measurement | SUPERSEDED, gap carried | **no spec sweep has run on b12019**: the re-baseline is the first item now |
+| 0h size-m > 96 | OPEN | ran 2026-11-01 inside the re-baseline; every 128K round load-split or partial (audit §9), so no verdict: re-run on a quiet box |
+| 0i b11118 measurement | SUPERSEDED, gap carried | b12019 re-baseline ran 2026-11-01: 128K unusable (load from another session, 3 ENOMEM restarts); 60K clean, specoff -32.7% decode vs mapk-sm96 (p<0.0001). 128K pass still owed (audit §9) |
 | 0j orchestrator | OPEN, low | never run end to end on a real task; needs DeepSeek |
 | 1, 2, 4 | DONE | |
 | 3 rotation asymmetry | OPEN, research only | drives no setting; b12019 changed greedy output, so controls first |
 | 5 browser injection | PARTIAL: bash fetches fenced by pattern | every browser result fenced since 2026-10-31, children included; since 2026-11-01 browser-guard also fences bash results whose command fetches (curl, wget, text browsers, Python/Node fetch APIs) — a pattern, so a fetch it does not recognise still passes unfenced. The 08-31 audit's "adapter mostly clean" was wrong for its proxy tools |
-| 6a acceptance null | OPEN | belongs in the b12019 re-baseline |
-| 6b eval_expr x20 | OPEN | a few hours GPU; decides medium vs xhigh |
+| 6a acceptance null | OPEN | the 2026-11-01 re-baseline had no usable 128K round; rides on its quiet re-run |
+| 6b eval_expr x20 | DONE | medium 18/20 clean (90/100 assertions, 590 s), xhigh 16/20 (82/100, 1384 s); not separable (Fisher p=0.66), xhigh 2.3x the wall for nothing: medium stays (audit §9) |
 
-Order now: b12019 spec re-baseline (absorbs 0e, 6a) -> 0h -> 0 -> the rest.
+Order now: quiet 128K re-run of the b12019 re-baseline (absorbs 0e, 0h, 6a) -> the rest.
 
 ---
 
