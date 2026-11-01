@@ -856,7 +856,8 @@ if [[ "$(env_get BROWSER_MCP_ENABLED)" == "1" ]]; then
     # and the skill says how to bring the server back. Up BEFORE pi starts: the
     # built-in MCP connects at session start, and the first prompt waits up to
     # 10 s for a server with direct tools.
-    if (( BROWSER_OK )) && [[ "$(env_get BROWSER_MCP_AUTOUP)" != "0" ]]; then
+    # Not under --print-only: that prints the command and must change nothing.
+    if (( BROWSER_OK && ! PRINT_ONLY )) && [[ "$(env_get BROWSER_MCP_AUTOUP)" != "0" ]]; then
       if ! "$REPO_ROOT/scripts/browser.sh" up >/dev/null 2>&1; then
         warn "The browser server did not start — see ./scripts/browser.sh logs"
         BROWSER_NOTE=", browser (server down)"

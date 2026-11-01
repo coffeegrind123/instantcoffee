@@ -125,5 +125,45 @@ class LaunchFlags(unittest.TestCase):
         self.assertIs(settings["enableInstallTelemetry"], False)
 
 
+class PrintOnlyHasNoSideEffects(unittest.TestCase):
+    """--print-only prints the command and stops. It used to start the browser
+    server first (BROWSER_MCP_AUTOUP), which left a browser running after what
+    reads as a dry run. Driven from a mirror of the repo whose scripts/browser.sh
+    is a stub that records being called."""
+
+    def browser_up_called(self) -> bool:
+        with tempfile.TemporaryDirectory() as td:
+            mirror = os.path.join(td, "repo")
+            os.makedirs(os.path.join(mirror, "scripts"))
+            for name in os.listdir(REPO):
+                if name not in ("scripts", ".git"):
+                    os.symlink(os.path.join(REPO, name), os.path.join(mirror, name))
+            for name in os.listdir(os.path.join(REPO, "scripts")):
+                if name != "browser.sh":
+                    os.symlink(os.path.join(REPO, "scripts", name), os.path.join(mirror, "scripts", name))
+            marker = os.path.join(td, "browser-called")
+            stub = os.path.join(mirror, "scripts", "browser.sh")
+            with open(stub, "w") as fh:
+                fh.write(f'#!/bin/sh\necho "$*" >> "{marker}"\nexit 0\n')
+            os.chmod(stub, 0o755)
+            bindir = fake_pi(os.path.join(td, "pi"), "1.4.0")
+            agent = os.path.join(td, "agent")
+            env = dict(os.environ)
+            env.update({"PATH": f"{bindir}:{os.environ['PATH']}", "PI_CODING_AGENT_DIR": agent,
+                        "BROWSER_MCP_ENABLED": "1", "BROWSER_MCP_NATIVE": "1", "BROWSER_MCP_AUTOUP": "1",
+                        "PI_AUTO_UPDATE": "0"})
+            args = [os.path.join(mirror, "scripts", "pi-local.sh"), "--print-only"]
+            subprocess.run(args, capture_output=True, text=True, env=env, timeout=120, stdin=subprocess.DEVNULL)
+            if not os.path.exists(marker):
+                return False
+            with open(marker) as fh:
+                return "up" in fh.read().split()
+
+    def test_print_only_does_not_start_the_browser(self) -> None:
+        # Red before the fix (the stub recorded `up`), which is what shows the
+        # stub can see the call at all.
+        self.assertFalse(self.browser_up_called(), "--print-only started the browser server")
+
+
 if __name__ == "__main__":
     unittest.main()
