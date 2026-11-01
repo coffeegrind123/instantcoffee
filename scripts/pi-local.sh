@@ -364,6 +364,15 @@ if [[ "${HERDR_ENV:-}" == "1" && -n "${HERDR_PANE_ID:-}" ]]; then
   else
     warn "$HERDR_EXT is missing — Ovis will show this session from the screen only."
   fi
+  # What Ovis cannot read off disk or the screen: this session's live command
+  # list, its notifications, its footer statuses and the real reasoning effort
+  # (forge applies REASONING_EFFORT; pi itself records "off"). See the file.
+  OVIS_BRIDGE="$REPO_ROOT/.pi/extensions/ovis-bridge.ts"
+  if [[ -r "$OVIS_BRIDGE" ]]; then
+    pi_flags+=(-e "$OVIS_BRIDGE")
+    OVIS_REASONING_EFFORT="$(env_get REASONING_EFFORT)"
+    export OVIS_REASONING_EFFORT
+  fi
 fi
 
 # /loop comes from vendor/pi-loop-mode — a fork of pi-loop-mode@2.5.4 that this
