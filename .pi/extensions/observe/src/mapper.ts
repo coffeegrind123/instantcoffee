@@ -282,6 +282,8 @@ export interface ToolEnd {
 	toolName: string;
 	result: { content?: unknown; details?: unknown } | undefined;
 	isError: boolean;
+	/** pi >= 1.1: the recorded execution time of the final result. */
+	durationMs?: number;
 }
 
 /** tool_execution_end → PostToolUse / PostToolUseFailure. */
@@ -306,6 +308,11 @@ export function postToolUse(
 	if (start) {
 		env.tool_input = clipDeep(start.input, maxChars);
 		env.duration_ms = Math.max(0, at - start.startedAt);
+	}
+	// pi's own figure when it sends one: the clock above also counts every
+	// extension's tool hooks, and has no start at all after a reload.
+	if (typeof end.durationMs === "number" && Number.isFinite(end.durationMs)) {
+		env.duration_ms = Math.max(0, Math.round(end.durationMs));
 	}
 	if (end.isError) {
 		env.error = clip(contentText(end.result?.content), maxChars);

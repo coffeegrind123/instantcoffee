@@ -110,6 +110,33 @@ describe("mapper", () => {
 		assert.deepEqual(env.tool_input, { command: "false" });
 	});
 
+	// pi >= 1.1 puts the recorded execution time on tool_execution_end. The
+	// paired-start clock also counts every extension's tool_call/tool_result
+	// handlers, and it restarts on a reload. Prefer pi's; fall back to the clock.
+	test("postToolUse prefers pi's own durationMs over the paired-start clock", () => {
+		const env = postToolUse(
+			{ toolCallId: "c2", toolName: "bash", result: { content: [] }, isError: false, durationMs: 42 },
+			{ toolCallId: "c2", toolName: "bash", input: {}, startedAt: 100 },
+			ROOT,
+			350,
+			null,
+			1000,
+		);
+		assert.equal(env.duration_ms, 42);
+	});
+
+	test("postToolUse reports pi's durationMs even without a paired start", () => {
+		const env = postToolUse(
+			{ toolCallId: "c3", toolName: "read", result: { content: [] }, isError: false, durationMs: 7 },
+			undefined,
+			ROOT,
+			350,
+			null,
+			1000,
+		);
+		assert.equal(env.duration_ms, 7);
+	});
+
 	test("child naming and background ids", () => {
 		assert.deepEqual(parseChildName("general-purpose#e8181b66"), { type: "general-purpose", shortId: "e8181b66" });
 		assert.equal(parseChildName("my session"), null);

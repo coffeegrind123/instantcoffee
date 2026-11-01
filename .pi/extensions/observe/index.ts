@@ -329,7 +329,7 @@ export default function observe(pi: PiLike): void {
 		s.tools.delete(id);
 
 		const env = postToolUse(
-			{ toolCallId: id, toolName: String(e?.toolName), result: e?.result, isError: e?.isError === true },
+			{ toolCallId: id, toolName: String(e?.toolName), result: e?.result, isError: e?.isError === true, durationMs: e?.durationMs },
 			start,
 			who,
 			now(),
