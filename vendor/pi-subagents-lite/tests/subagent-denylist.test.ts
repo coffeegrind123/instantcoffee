@@ -288,3 +288,21 @@ describe("a child gets the browser exactly when its parent runs it natively", ()
     }
   });
 });
+
+/**
+ * pi-local.sh may load vendor/ from a local copy of the extensions (the repo
+ * is a slow bind mount in the pi container). A child working in the repo also
+ * DISCOVERS the repo's own .pi/extensions, so a browser-mcp.ts path into the
+ * copy registered the "browser" server twice and the child's extension load
+ * failed. The .pi/extensions paths come from PI_STACK_REPO_ROOT, the real
+ * repo, so they match what discovery finds and pi deduplicates them.
+ */
+describe("a child's .pi/extensions paths point at the real repo", () => {
+  const always = () => true;
+  it("uses PI_STACK_REPO_ROOT for them when set", () => {
+    const out = subagentExtraExtensionPaths({ BROWSER_MCP_NATIVE: "1", PI_STACK_REPO_ROOT: "/real/repo" } as NodeJS.ProcessEnv, always);
+    assert.ok(out.includes("/real/repo/.pi/extensions/browser-mcp.ts"), out.join("\n"));
+    assert.ok(out.includes("/real/repo/.pi/extensions/browser-guard.ts"), out.join("\n"));
+    assert.ok(!out.some((p) => p.startsWith("/real/repo/vendor/")), "vendor/ stays wherever this package was loaded from");
+  });
+});

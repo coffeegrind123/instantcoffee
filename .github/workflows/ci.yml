@@ -266,6 +266,11 @@ jobs:
       - name: pi version gate unit tests
         run: python scripts/test_pi_version_gate.py
 
+      # In the pi container, vendor/ extensions load from a per-launch copy on
+      # local disk (111 s from the bind mount, ~12 s to the first frame this way).
+      - name: Extension local-copy unit tests
+        run: python scripts/test_ext_mirror.py
+
       # The browser CLI turns shell words into JSON arguments for a tool it has
       # never seen, from that tool's own schema. A regression there is silent:
       # a dropped or mistyped parameter produces a call that succeeds and does

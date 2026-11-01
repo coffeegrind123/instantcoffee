@@ -218,9 +218,14 @@ function defaultExtraExtensionPaths(env: NodeJS.ProcessEnv): string[] {
   // parent's, which it never was while the browser came from pi-mcp-adapter.
   // pi's built-in mcp + codemode come with it — child-builtins.ts.
   if (env.BROWSER_MCP_NATIVE === "1") {
+    // From the real repo, not from wherever this file loaded: pi-local.sh may
+    // load vendor/ from a local copy, and a child working in the repo also
+    // discovers the repo's .pi/extensions. Two paths to one extension register
+    // it twice and fail the child's load; one path is deduplicated.
+    const dotPi = env.PI_STACK_REPO_ROOT || repoRoot;
     paths.push(
-      path.join(repoRoot, ".pi", "extensions", "browser-mcp.ts"),
-      path.join(repoRoot, ".pi", "extensions", "browser-guard.ts"),
+      path.join(dotPi, ".pi", "extensions", "browser-mcp.ts"),
+      path.join(dotPi, ".pi", "extensions", "browser-guard.ts"),
     );
   }
   return paths;

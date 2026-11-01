@@ -203,6 +203,30 @@ installed_pi_version() {
   pi --version 2>/dev/null | tr -d ' '
 }
 
+# mirror_extensions REPO BASE: copy pi's extensions to BASE/ext.XXXXXX and print
+# that directory. Measured 2026-11-01 in the pi container: 111-113 s to load the
+# extension set from the Windows bind mount, 3-5 s from local disk, 4.4 s to copy.
+# The layout is the repo's (vendor packages import ../../../../.pi/extensions).
+# One directory per launch: a running session may still spawn subagents from its
+# own copy, so only copies older than a day are pruned. prinny-channel is not
+# copied (it carries a server runtime and is off by default).
+MIRROR_PACKAGES=(pi-toolresult-guard pi-loop-mode pi-subagents-lite rtk-pi pi-persona)
+mirror_extensions() {
+  local repo=$1 base=$2 dir p
+  mkdir -p "$base" || return 1
+  find "$base" -mindepth 1 -maxdepth 1 -type d -name 'ext.*' -mmin +1440 -exec rm -rf {} + 2>/dev/null
+  dir="$(mktemp -d "$base/ext.XXXXXX")" || return 1
+  if ! { mkdir -p "$dir/.pi" "$dir/vendor" && cp -a "$repo/.pi/extensions" "$dir/.pi/"; }; then
+    rm -rf "$dir"; return 1
+  fi
+  for p in "${MIRROR_PACKAGES[@]}"; do
+    if ! cp -a "$repo/vendor/$p" "$dir/vendor/" 2>/dev/null; then
+      rm -rf "$dir"; return 1
+    fi
+  done
+  printf '%s\n' "$dir"
+}
+
 # version_ge A B: true when version A >= B. An empty A is never >= anything.
 version_ge() {
   [[ -n "$1" ]] || return 1

@@ -255,6 +255,29 @@ else
 fi
 
 # --- launch ------------------------------------------------------------------
+# --- where the extensions load from -------------------------------------------
+# In the pi container the repo is a Windows bind mount, and pi took 111-113 s to
+# load the extension set from it against 3-5 s from local disk (measured
+# 2026-11-01; the copy takes ~4 s), nearly all of it vendor/ (pi-subagents-lite
+# alone ~90 s). So vendor/ loads from a copy on the container's disk. Not
+# .pi/extensions: pi also DISCOVERS those when it runs inside the repo, and a
+# second path to the same extension registers it twice and fails the load
+# (measured: "MCP server browser is already registered"); one path is
+# deduplicated. They are copied anyway, because vendor code imports from them.
+# Not under --print-only, which must change nothing, and not outside the
+# container. PI_EXT_LOCAL_COPY=0 turns it off. PI_STACK_REPO_ROOT tells a
+# subagent child (and stack.ts, browser-guard.ts) where the real repo is.
+EXT_ROOT="$REPO_ROOT"
+export PI_STACK_REPO_ROOT="$REPO_ROOT"
+EXT_NOTE=""
+if [[ "${PI_AGENT_CONTAINER:-}" == "1" && "$(env_get PI_EXT_LOCAL_COPY)" != "0" ]] && (( ! PRINT_ONLY )); then
+  if EXT_COPY="$(mirror_extensions "$REPO_ROOT" "${PI_EXT_MIRROR_BASE:-/var/tmp/pi-ext}")"; then
+    EXT_ROOT="$EXT_COPY"
+    EXT_NOTE=", vendor extensions from a local copy"
+  else
+    warn "could not copy the extensions to local disk; loading them from the repo (slow on a bind mount)"
+  fi
+fi
 pi_flags=(--provider forge --model "$MODEL")
 
 # pi discovers AGENTS.md / CLAUDE.md by walking parent directories. Loaded by
@@ -289,7 +312,7 @@ fi
 # the previous one's edits: going first means every other tool_result handler in
 # the session reads a content array that has already been made safe. It
 # registers no tool and no command, so it costs nothing in the window.
-TRGUARD_DIR="$REPO_ROOT/vendor/pi-toolresult-guard"
+TRGUARD_DIR="$EXT_ROOT/vendor/pi-toolresult-guard"
 if [[ -r "$TRGUARD_DIR/extensions/index.ts" ]]; then
   pi_flags+=(-e "$TRGUARD_DIR/extensions/index.ts")
 else
@@ -334,7 +357,7 @@ fi
 #
 # The extension needs no node_modules: its only non-relative import is a
 # `import type` of pi's own types, which is erased before the file ever runs.
-LOOP_DIR="$REPO_ROOT/vendor/pi-loop-mode"
+LOOP_DIR="$EXT_ROOT/vendor/pi-loop-mode"
 LOOP_NOTE=""
 if [[ -r "$LOOP_DIR/extensions/index.ts" ]]; then
   pi_flags+=(-e "$LOOP_DIR/extensions/index.ts")
@@ -418,7 +441,7 @@ fi
 # Off by default. A subagent tool costs its schema on EVERY turn whether or not
 # it is ever called, and on a 32k window that is a standing charge to opt into
 # rather than inherit.
-SUBAGENTS_DIR="$REPO_ROOT/vendor/pi-subagents-lite"
+SUBAGENTS_DIR="$EXT_ROOT/vendor/pi-subagents-lite"
 SUBAGENTS_NOTE=""
 if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" ]]; then
   if [[ ! -r "$SUBAGENTS_DIR/src/index.ts" ]]; then
@@ -635,7 +658,7 @@ fi
 # an approval for a command nobody typed. (`permissionMode` is `off` by default,
 # so this only bites a session that has turned the relay on — which is exactly
 # the session that cares.)
-RTK_DIR="$REPO_ROOT/vendor/rtk-pi"
+RTK_DIR="$EXT_ROOT/vendor/rtk-pi"
 RTK_NOTE=""
 if [[ "$(env_get RTK_ENABLED)" == "1" ]]; then
   if [[ -r "$RTK_DIR/extensions/index.ts" ]]; then
@@ -695,7 +718,7 @@ fi
 # decoration on top of "you are a coding assistant". Running last means it is in
 # front of everything any other extension appended, which is the position the
 # block was written for.
-PERSONA_DIR="$REPO_ROOT/vendor/pi-persona"
+PERSONA_DIR="$EXT_ROOT/vendor/pi-persona"
 PERSONA_NOTE=""
 if [[ "$(env_get PERSONA_ENABLED)" == "1" ]]; then
   if [[ -r "$PERSONA_DIR/extensions/index.ts" ]]; then
@@ -1102,5 +1125,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE}${EXT_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

@@ -158,6 +158,10 @@ const PROBE_CACHE_MS = 15_000;
 let cachedProbe: { at: number; state: string; detail: string } | undefined;
 
 function repoRoot(): string | null {
+	// pi-local.sh exports it: in the pi container this file may load from a
+	// local copy of the extensions, which is not the repo.
+	const given = process.env.PI_STACK_REPO_ROOT;
+	if (given && existsSync(join(given, "scripts", "browser.sh")) && existsSync(join(given, ".env"))) return given;
 	let dir: string;
 	try {
 		dir = dirname(fileURLToPath(import.meta.url));

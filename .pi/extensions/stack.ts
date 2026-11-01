@@ -36,6 +36,9 @@ import { fileURLToPath } from "node:url";
 
 function findRepoRoot(): string | null {
 	const starts: string[] = [];
+	// pi-local.sh exports it: in the pi container this file may load from a
+	// local copy of the extensions, which is not the repo. Same markers apply.
+	if (process.env.PI_STACK_REPO_ROOT) starts.push(process.env.PI_STACK_REPO_ROOT);
 	try {
 		starts.push(dirname(fileURLToPath(import.meta.url)));
 	} catch {
