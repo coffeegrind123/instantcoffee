@@ -138,6 +138,7 @@ supervise() {
       sleep "$backoff"; backoff=$(( backoff * 2 > 60 ? 60 : backoff * 2 ))
       continue
     fi
+    ensure_pi_pane
     if ! alive "$FORWARD_PID"; then
       python3 "$REPO_ROOT/scripts/ovis_forward.py" 0.0.0.0 "$OVIS_CONTAINER_PORT" \
         127.0.0.1 "$OVIS_INTERNAL_PORT" >> "$LOG" 2>&1 9>&- &
@@ -202,6 +203,7 @@ start() {
     warn "Ovis did not answer within 30 s — see ${LOG}"
     return 0
   fi
+  herdr_up && ensure_pi_pane
   if (( ! quiet )); then
     if auth_off; then
       echo "Ovis:    $(url)  (no token: OVIS_TOKEN=off; sessions: pi-container.sh --ovis)"
@@ -286,6 +288,41 @@ write_launch() {
     printf '\n'
   } > "$f"
   printf '%s' "$f"
+}
+
+# Opening Ovis should land on pi. herdr's first pane is a bare shell, and its
+# chat tab is whatever runs in the pane: the operator typed "hello" there and
+# got `bash: hello: command not found` (2026-11-01). So whenever no pane runs
+# pi, start one through pi-local.sh: in the first pane with no agent in it,
+# else in a new workspace. OVIS_PI_PANE=0 turns it off; OVIS_PI_DIR is where
+# it works (default the container home). Quitting it leaves the shell; the
+# next `ovis.sh start` (every pi-container.sh launch) or Ovis restart brings
+# it back.
+ensure_pi_pane() {
+  [[ "$(env_get OVIS_PI_PANE | tr '[:upper:]' '[:lower:]')" =~ ^(0|false|no|off)$ ]] && return 0
+  "$HERDR" agent list 2>/dev/null | grep -q '"agent":"pi"' && return 0
+
+  local dir pane launch
+  dir="$(env_get OVIS_PI_DIR)"; : "${dir:=$HOME}"
+  [[ -d "$dir" ]] || { log "OVIS_PI_DIR=$dir does not exist; no default pi pane"; return 0; }
+  pane="$("$HERDR" pane list 2>/dev/null | python3 -c '
+import json, sys
+try:
+    panes = json.load(sys.stdin)["result"]["panes"]
+except Exception:
+    panes = []
+print(next((p["pane_id"] for p in panes if p.get("agent_status") == "unknown"), ""))' 2>/dev/null || true)"
+  if [[ -z "$pane" ]]; then
+    pane="$("$HERDR" workspace create --cwd "$dir" --label pi --no-focus 2>/dev/null | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])' 2>/dev/null || true)"
+  fi
+  [[ -n "$pane" ]] || { log "no pane for the default pi session"; return 0; }
+  launch="$(write_launch "$dir")"
+  "$HERDR" pane run "$pane" "bash $(printf '%q' "$launch")" >/dev/null 2>&1 \
+    && log "default pi session started in pane $pane ($dir)" \
+    || log "could not start the default pi session in pane $pane"
+  return 0
 }
 
 strip_path() {

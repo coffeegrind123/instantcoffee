@@ -244,6 +244,53 @@ class Relay(unittest.TestCase):
         self.assertIn('ovis_forward.py" 0.0.0.0 "$OVIS_CONTAINER_PORT"', src)
 
 
+class DefaultPiPane(unittest.TestCase):
+    """Opening Ovis lands on pi, not on herdr's bare shell.
+
+    herdr's first pane is a shell. The operator opened Ovis's chat on it, typed
+    "hello", and got `bash: hello: command not found` (2026-11-01). The
+    supervisor now starts pi there (through pi-local.sh) whenever no pane runs pi.
+    """
+
+    def run_ensure(self, agents: str, panes: str, **extra: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as td:
+            calls = os.path.join(td, "calls")
+            herdr = os.path.join(td, "herdr")
+            with open(herdr, "w") as fh:
+                fh.write('#!/usr/bin/env bash\n'
+                         f'echo "$*" >> "{calls}"\n'
+                         f'case "$1 $2" in "agent list") echo \'{agents}\';; "pane list") echo \'{panes}\';; esac\n')
+            os.chmod(herdr, 0o755)
+            run_dir = os.path.join(td, "run")
+            os.makedirs(run_dir)
+            sourced(f'HERDR="{herdr}"; RUN_DIR="{run_dir}"; ensure_pi_pane', **extra)
+            if not os.path.exists(calls):
+                return []
+            with open(calls) as fh:
+                return [ln for ln in fh.read().splitlines() if ln.startswith("pane run")]
+
+    SHELL_ONLY = ('{"result":{"panes":[{"pane_id":"w1:p1","agent_status":"unknown"}]}}')
+    NO_AGENTS = '{"result":{"agents":[]}}'
+    PI_RUNNING = '{"result":{"agents":[{"agent":"pi","pane_id":"w2:p1"}]}}'
+
+    def test_starts_pi_in_the_shell_pane_when_none_runs(self) -> None:
+        runs = self.run_ensure(self.NO_AGENTS, self.SHELL_ONLY)
+        self.assertEqual(len(runs), 1, runs)
+        self.assertTrue(runs[0].startswith("pane run w1:p1 bash "), runs[0])
+
+    def test_leaves_it_alone_when_pi_already_runs(self) -> None:
+        self.assertEqual(self.run_ensure(self.PI_RUNNING, self.SHELL_ONLY), [])
+
+    def test_off_switch(self) -> None:
+        self.assertEqual(self.run_ensure(self.NO_AGENTS, self.SHELL_ONLY, OVIS_PI_PANE="0"), [])
+
+    def test_control_the_supervisor_calls_it(self) -> None:
+        with open(OVIS, encoding="utf-8") as fh:
+            src = fh.read()
+        body = src[src.index("supervise() {"):src.index("healthy() {")]
+        self.assertIn("ensure_pi_pane", body)
+
+
 class LaunchScript(unittest.TestCase):
     """What a herdr pane runs: write it with ovis.sh, run it against a fake launcher."""
 
