@@ -75,6 +75,7 @@ Then:
 ./scripts/pi-container.sh -p "summarize"  # any pi flag passes through
 ./scripts/pi-container.sh -C myproj       # work on <container home>/myproj
 ./scripts/pi-container.sh --session <id>  # resume one, in its own directory
+./scripts/pi-container.sh --ovis          # the session in a herdr pane, so Ovis shows it
 ./scripts/pi-container.sh --shell         # a shell in there instead of pi
 ./scripts/pi-container.sh --status        # what is running, and against what
 ./scripts/pi-container.sh --stop          # state is all on the mount
@@ -276,6 +277,7 @@ qpi                       # alias for ~/qwen3.8-forge/scripts/pi-local.sh
 | Zendriver MCP | `/opt/zendriver-mcp` — the exact path `ZENDRIVER_MCP_DIR` defaults to |
 | Chrome + Xvfb on `:99` | matches `BROWSER_MCP_DISPLAY` |
 | docker CLI + compose plugin, `gh`, `git`, `rg`, `jq`, `fd` | |
+| Ovis + herdr | `/opt/ovis`, the pinned prebuilt bundle (sha256-checked), with herdr's pi integration in `integrations/` |
 
 **Everything is installed into the image, never into `$HOME`.** `$HOME` is the
 bind mount, so anything the build writes there is shadowed away the moment the
@@ -299,6 +301,70 @@ headless, and headless is what many sites block or stall.
 Ghidra and GhidraMCP are deliberately absent: ~3 GB of JDK and Ghidra for a
 server `mcp/servers.json` does not register. Add the blocks and an
 `mcp/servers.json` entry if you want it.
+
+## Ovis: the session in a browser or on a phone
+
+[Ovis](https://github.com/devswha/ovis) is a web client for agents running in
+[herdr](https://github.com/herdrdev/herdr) panes: it shows pi's own transcript
+(thinking, tool calls, answers, context use), answers pi's prompts, sends
+messages, and opens the pane's terminal. It runs inside the pi container,
+**on by default**:
+
+```bash
+OVIS_ENABLED=1     # .env; 0 starts neither herdr nor Ovis
+OVIS_PORT=7317     # host side, published on 127.0.0.1 only
+```
+
+The container's start script calls `scripts/ovis.sh start`, which starts herdr
+headless and the Ovis server under a restart loop (log `/tmp/ovis/ovis.log`).
+Changing either key needs `./scripts/pi-container.sh --recreate`, because the
+port is fixed when the container is created; the launcher warns when the two
+disagree.
+
+Ovis only sees pi when pi runs in a herdr pane, so plain launches are
+unchanged and a session meant for Ovis is started with `--ovis`:
+
+```bash
+./scripts/pi-container.sh --ovis               # pi in a new herdr pane, attached here
+ORCHESTRATOR=1 ./scripts/pi-container.sh --ovis -C myproj
+```
+
+The terminal attaches to the pane; **Ctrl+B then Q detaches** and pi keeps
+running, in Ovis. Exported stack keys reach the pane the same way they reach a
+plain launch (herdr starts panes from its own environment, so `ovis.sh` writes
+them into a one-shot launch script that deletes itself). A `pi` started from
+Ovis itself, or typed into a pane, goes through `pi-local.sh` too: herdr's
+panes have `scripts/ovis-shims/` first on PATH.
+
+Open `http://127.0.0.1:7317/` and paste the token:
+
+```bash
+./scripts/pi-container.sh --shell      # then:
+./scripts/ovis.sh token
+```
+
+It is generated once into `~/.config/ovis/token` in the container home (mode
+0600); `OVIS_TOKEN` in the container checkout's `.env.local` overrides it.
+Every request except `/api/health` and the page itself needs it. The server
+listens on 0.0.0.0 inside the container because a published port arrives from
+the Docker gateway, not from loopback, which is also why the token is
+mandatory. Ovis telemetry and self-update are always off.
+
+**On a phone**, publish the host port to your tailnet from the machine that
+runs Docker (on Windows, from the Windows side): `tailscale serve --bg 7317`.
+Nothing here does that for you.
+
+`./scripts/ovis.sh status` (inside) and `./scripts/pi-container.sh --status`
+(outside) say whether it is up. `./scripts/ovis.sh stop` stops the Ovis server
+and leaves herdr and its panes running.
+
+**Why the integration is loaded by path.** Without herdr's pi integration Ovis
+cannot find pi's session file and falls back to reading the screen, which
+showed 0 turns when measured. `herdr integration install pi` would write it into
+`~/.pi/agent/extensions`, which is on the home mount and would load into every
+session; the image generates it into `/opt/ovis/integrations` instead, and
+`pi-local.sh` passes it with `-e` only when `HERDR_ENV=1`. It talks only to
+herdr's local socket.
 
 ## Why the extensions load from a copy
 
