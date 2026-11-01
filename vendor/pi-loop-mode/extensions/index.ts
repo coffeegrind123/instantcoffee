@@ -161,6 +161,11 @@ let pendingTimer: ReturnType<typeof setTimeout> | undefined;
 let runToken = 0;
 /** Set when we abort a streaming response due to degenerate repetition; consumed in agent_end. */
 let degenerateAbortPending = false;
+/**
+ * Same moment, kept until agent_settled: pi reports the run as `aborted` there
+ * whoever aborted it, and the loop must not read its own abort as the operator's.
+ */
+let selfAbortThisRun = false;
 /** Marks a ctx.compact() request that must bypass the already-saturated summarization model. */
 let emergencyCompactionPending = false;
 /** True while the compaction pi is running is one WE asked for; session_compact then stays out of it. */
@@ -1084,6 +1089,7 @@ function finalizeSoftStop(pi: ExtensionAPI, ctx: ExtensionContext, noticeSuffix 
   clearPendingTimer();
   void standDownRescue(pi, ctx);
   degenerateAbortPending = false;
+  selfAbortThisRun = false;
   resetTurnBuffers();
   resetContextRecovery();
   state.softStopRequested = false;
@@ -1138,6 +1144,25 @@ function notify(ctx: ExtensionContext, message: string, kind: "info" | "warning"
 }
 
 /** Appends one JSONL entry per loop event; used by /loop stats. Never throws. */
+/**
+ * The operator stopped the run: pause, and say how to resume. Reached from
+ * agent_end (the last message says `aborted`) and from agent_settled (pi says
+ * the run was aborted although the last message does not — Esc during a
+ * provider-error retry leaves it at `error`). `where` only labels the log.
+ */
+async function pauseForOperatorAbort(pi: ExtensionAPI, ctx: ExtensionContext, where: "turn" | "settled"): Promise<void> {
+  await standDownRescue(pi, ctx);
+  runToken++;
+  clearPendingTimer();
+  state.active = false;
+  state.status = "paused";
+  state.lastNotice = "Turn aborted by operator. Use /loop resume to continue.";
+  persistState(pi);
+  logIteration("operator_abort", { where });
+  notify(ctx, "Loop paused (turn aborted). Use /loop resume to continue.", "warning");
+  ctx.ui.setStatus("loop", "Loop paused (aborted)");
+}
+
 function logIteration(event: string, extra: Record<string, unknown> = {}): void {
   appendLogEntry(LOG_FILE, {
     ts: new Date().toISOString(),
@@ -2070,6 +2095,7 @@ function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   runToken++;
   clearPendingTimer();
   degenerateAbortPending = false;
+  selfAbortThisRun = false;
   resetTurnBuffers();
   resetContextRecovery();
   state.active = true;
@@ -2487,6 +2513,7 @@ export default function (pi: ExtensionAPI) {
           // buffers — but every other stop path does this, and the next person to
           // add per-turn state will read the table, not this branch.
           degenerateAbortPending = false;
+          selfAbortThisRun = false;
           resetTurnBuffers();
           resetContextRecovery();
           state.softStopRequested = false;
@@ -2510,6 +2537,7 @@ export default function (pi: ExtensionAPI) {
         runToken++;
         clearPendingTimer();
         degenerateAbortPending = false;
+        selfAbortThisRun = false;
         resetTurnBuffers();
         resetContextRecovery();
         const wasActive = state.active;
@@ -2534,6 +2562,7 @@ export default function (pi: ExtensionAPI) {
         runToken++;
         clearPendingTimer();
         degenerateAbortPending = false;
+        selfAbortThisRun = false;
         resetTurnBuffers();
         resetContextRecovery();
         const wasActive = state.active;
@@ -2908,7 +2937,16 @@ export default function (pi: ExtensionAPI) {
   });
 
   // Final safety net for /loop finish requested while agent_end awaited checks/model switches.
-  pi.on("agent_settled", async (_event, ctx) => {
+  pi.on("agent_settled", async (event, ctx) => {
+    // pi >= 1.1: `aborted` is the run's abort flag, set by ANY abort. The last
+    // message alone misses Esc during a retry wait (it still says `error`).
+    // Older pi sends no field, and nothing here changes for it.
+    const selfAbort = selfAbortThisRun;
+    selfAbortThisRun = false;
+    if (state.active && (event as { aborted?: boolean })?.aborted === true && !selfAbort) {
+      await pauseForOperatorAbort(pi, ctx, "settled");
+      return;
+    }
     if (state.active && state.softStopRequested) {
       finalizeSoftStop(pi, ctx, " (finalized after agent settled)");
       return;
@@ -3051,6 +3089,7 @@ export default function (pi: ExtensionAPI) {
     const info = detectDegenerateRepetition(text, DEGENERATE_STREAM_REPEATS);
     if (info) {
       degenerateAbortPending = true;
+      selfAbortThisRun = true;
       notify(ctx, `Loop: degenerate ${info.kind} repetition mid-stream (×${info.repeats}) — aborting turn.`, "warning");
       ctx.abort();
     }
@@ -3413,15 +3452,7 @@ export default function (pi: ExtensionAPI) {
     // has always ignored `paused`. Measured:
     // `context/testing/probes/r1-the-pause-that-keeps-running.mjs`.
     if (stopReason === "aborted") {
-      await standDownRescue(pi, ctx);
-      runToken++;
-      state.active = false;
-      state.status = "paused";
-      state.lastNotice = "Turn aborted by operator. Use /loop resume to continue.";
-      persistState(pi);
-      logIteration("operator_abort");
-      notify(ctx, "Loop paused (turn aborted). Use /loop resume to continue.", "warning");
-      ctx.ui.setStatus("loop", "Loop paused (aborted)");
+      await pauseForOperatorAbort(pi, ctx, "turn");
       return;
     }
 
