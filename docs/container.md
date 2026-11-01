@@ -345,10 +345,29 @@ Open `http://127.0.0.1:7317/` and paste the token:
 
 It is generated once into `~/.config/ovis/token` in the container home (mode
 0600); `OVIS_TOKEN` in the container checkout's `.env.local` overrides it.
-Every request except `/api/health` and the page itself needs it. The server
-listens on 0.0.0.0 inside the container because a published port arrives from
-the Docker gateway, not from loopback, which is also why the token is
-mandatory. Ovis telemetry and self-update are always off.
+Every request except `/api/health` and the page itself needs it. Ovis telemetry
+and self-update are always off.
+
+Ovis itself listens on `127.0.0.1:7318` inside the container, behind a byte
+relay on `0.0.0.0:7317` (`scripts/ovis_forward.py`). Docker delivers a
+published port to the container's own address, never to its loopback, and Ovis
+shows "Anyone who can reach 0.0.0.0 on your network can type into every pane"
+for any non-loopback bind without a token, with no setting to turn it off.
+Behind the relay it sees a loopback bind. Who gets in is unchanged: Ovis checks
+a configured token before it looks at where a connection came from.
+
+herdr runs with `SHELL=/bin/bash`. The container has no `SHELL`, and herdr then
+gives every pane `/bin/sh`, which has no bracketed paste: text pasted from Ovis
+arrived as `^[[200~...` and ran as a command.
+
+**No sign-in: `OVIS_TOKEN=off`** in the container checkout's `.env.local`, then
+`./scripts/ovis.sh stop && ./scripts/ovis.sh start` inside (no recreate
+needed). Ovis then lets in anything that reaches the port, until a device is
+paired: every program on the host, every container on the same Docker (through
+`host.docker.internal:7317`, the agent's own bash tool included), and a web
+page that rebinds its own name to 127.0.0.1, which passes Ovis's same-origin
+check. Whatever gets in can type into pi, and this container mounts the docker
+socket. `--status` says when it is on.
 
 **On a phone**, publish the host port to your tailnet from the machine that
 runs Docker (on Windows, from the Windows side): `tailscale serve --bg 7317`.
