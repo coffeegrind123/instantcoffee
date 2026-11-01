@@ -27,6 +27,7 @@ import {
 } from "../src/goal-check.ts";
 import { beginCompaction, compactionInFlight, endCompaction, LOOP_OWNER } from "../src/compaction-lock.ts";
 import { appendLogEntry, formatLoopStats, LOG_FILE, readLogEntries } from "../src/loop-log.ts";
+import { workspaceFingerprint } from "../src/workspace-progress.ts";
 import {
   defaultState,
   persistedLoopState,
@@ -435,6 +436,11 @@ const CAN_CHANGE_TOOLS: ReadonlySet<string> = new Set(["bash", "Agent"]);
  * the same class of mistake one level down. `pi.exec` is not involved and the
  * `tool_result` event does carry `input`, so it is doable — it is not done
  * because a second spelling list is not an improvement on the first.
+ *
+ * In a git work tree that direction is now closed another way: `agent_end`
+ * compares a workspace fingerprint between iterations (src/workspace-progress.ts,
+ * FORK.md AQ), which sees a silent `git commit -q` or a heredoc write however
+ * the command was spelled. This heuristic remains the signal outside git.
  */
 const CHANGE_WORDS = /\b(written|edited|changed|updated|created|deleted|renamed|committed|installed)\b/i;
 
@@ -2110,6 +2116,7 @@ function runLoop(pi: ExtensionAPI, ctx: ExtensionContext): void {
   state.doneSignalCount = 0;
   state.blockedSignalCount = 0;
   state.lastStateChangeIteration = 0;
+  state.lastWorkspaceFingerprint = "";
   state.lastAssistantFingerprints = [];
   state.lastAssistantSnippets = [];
   state.lastAssistantTexts = [];
@@ -3463,6 +3470,19 @@ export default function (pi: ExtensionAPI) {
     state.contextCompressionLevel = 0;
     contextRecoveryPending = undefined;
     state.iterationCount++;
+
+    // Workspace progress for the audit rung, which tool-result wording alone
+    // misses on a bash-only model (see src/workspace-progress.ts). The first
+    // fingerprint is a baseline, not progress. No fingerprint (not a git work
+    // tree, probe failed) leaves the wording heuristic as the only signal.
+    const workspace = await workspaceFingerprint(pi.exec.bind(pi), ctx.cwd);
+    if (!state.active || token !== runToken) return;
+    if (workspace !== undefined) {
+      if (state.lastWorkspaceFingerprint && workspace !== state.lastWorkspaceFingerprint) {
+        state.lastStateChangeIteration = state.iterationCount;
+      }
+      state.lastWorkspaceFingerprint = workspace;
+    }
 
     // Track narration-only turns (no tool calls at all). Read from the local
     // captured at the top of the handler — the field was cleared there so an

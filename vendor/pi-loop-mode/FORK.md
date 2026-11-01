@@ -2389,3 +2389,41 @@ weakened: `context-recovery.test.ts`'s "an empty response with room to spare"
 asserted `Status: running` as a proxy for "the context ladder did not claim this
 turn"; it now asserts that half directly (no compaction, no context-pressure
 notice) plus the new verdict.
+
+## AQ — the audit rung fired on a run that committed every turn
+
+Found on the 2026-11-01 unattended run (`context/pi-1.4-audit-2026-10-31.md`
+§9 in the parent repo): 50 iterations, a test batch committed every one, and
+the audit rung fired at iterations 40 and 48 ("No concrete changes for 8
+iterations"). In that window the model made 77 tool calls, every one `bash`:
+files written through bash, commits made with `git commit -q`, and rtk
+reducing what output was left to `ok`. No result held a CHANGE_WORDS word, so
+`hasStateChange` saw no progress. The comment above CHANGE_WORDS already named
+this direction as an accepted proxy failure; the run shows it firing in
+practice, at one wasted turn each time.
+
+The fix does not add a second spelling list. `src/workspace-progress.ts` takes
+a fingerprint of the workspace at the end of each completed iteration (one
+`pi.exec`: `git status --porcelain=v2 --branch` and `git diff --binary HEAD`,
+both hashed in the script) and a changed fingerprint counts as progress. The
+first fingerprint is a baseline. Outside a git work tree, or when the probe
+fails or times out (10 s), there is no fingerprint and the wording heuristic
+is the only signal, as before.
+
+The loop's own `.pi-loop-log.jsonl` (and its `.1`) is excluded by pathspec.
+The same run's `git add -A` had committed it, and the loop appends to it every
+iteration, so without the exclusion every iteration would read as progress and
+the rung could never fire again. `GIT_OPTIONAL_LOCKS=0` keeps the probe off the
+index lock.
+
+Still invisible: rewriting an untracked file that already existed (status
+lists untracked names, not contents).
+
+## AQ — the tests
+
+**301 → 306**, `tests/workspace-progress.test.ts`, against a real git repository
+and a real `bash`, so the probe script is under test. Before the fix, the two
+progress cases failed (`commits every turn while its results only say ok`,
+`a tracked file is edited every turn without a commit`) and the three controls
+passed. With the log exclusion disabled, the tracked-log case and the
+nothing-changes control both fail, so the exclusion is load-bearing.

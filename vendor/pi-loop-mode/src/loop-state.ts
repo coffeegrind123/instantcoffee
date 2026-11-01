@@ -88,6 +88,8 @@ export interface LoopState {
   doneSignalCount: number;
   blockedSignalCount: number;
   lastStateChangeIteration: number;
+  /** `workspaceFingerprint` at the end of the last iteration; "" until one is taken. */
+  lastWorkspaceFingerprint: string;
   status: "running" | "stuck" | "retrying" | "paused" | "completed" | "stopped" | "preparing";
   lastNotice: string;
 }
@@ -136,6 +138,7 @@ export function defaultState(): LoopState {
     doneSignalCount: 0,
     blockedSignalCount: 0,
     lastStateChangeIteration: 0,
+    lastWorkspaceFingerprint: "",
     status: "stopped",
     lastNotice: "",
   };
