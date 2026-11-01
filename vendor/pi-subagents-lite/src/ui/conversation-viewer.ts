@@ -88,6 +88,17 @@ export class ConversationViewer implements Component {
   private streamingThinkingMd: Markdown | undefined;
   /** Persistent Markdown instance for streaming text — lazily initialized. */
   private streamingTextMd: Markdown | undefined;
+  /**
+   * The in-flight assistant message as of its last block boundary, drawn ahead
+   * of the accumulators. pi 1.4 streams into a copy of the transcript and puts
+   * the message into `session.messages` only at `message_end`
+   * (pi-agent-core agent.js: `createContextSnapshot()`, `processEvents`), so
+   * once an accumulator is cleared at `*_end` this is the finished block's only
+   * copy. Taken only at the boundaries that clear an accumulator, where the
+   * block being streamed is empty or done, so it never duplicates the live
+   * suffix. `lines` is the render at `width`; undefined = render again.
+   */
+  private inFlight: { message: any; width: number; lines?: string[] } | undefined;
   /** Debounce timer for streaming renders — avoids fighting the TUI's 16ms loop. */
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -127,6 +138,7 @@ export class ConversationViewer implements Component {
             case "thinking_end":
               this.streamingThinking = "";
               this.streamingThinkingMd?.setText("");
+              this.snapshotInFlight(event.message);
               break;
             case "thinking_delta":
               this.streamingThinking += me.delta;
@@ -136,6 +148,7 @@ export class ConversationViewer implements Component {
             case "text_end":
               this.streamingText = "";
               this.streamingTextMd?.setText("");
+              this.snapshotInFlight(event.message);
               break;
             case "text_delta":
               this.streamingText += me.delta;
@@ -145,6 +158,11 @@ export class ConversationViewer implements Component {
           if (this.streamingThinking !== prevThinking || this.streamingText !== prevText) {
             this.scheduleRender();
           }
+        } else if (event?.type === "message_end" && this.inFlight) {
+          // The final message is in session.messages now (pi pushes it before
+          // notifying), so the snapshot would draw it a second time.
+          this.inFlight = undefined;
+          this.scheduleRender();
         }
       } catch (err) {
         // Swallow — a throw here would crash the host menu; events can arrive after closure, before dispose.
@@ -167,6 +185,16 @@ export class ConversationViewer implements Component {
     }
     return this.streamingTextMd;
   }
+  /**
+   * Copy the block contents: providers mutate one partial in place, and a kept
+   * reference would grow the block being streamed into the snapshot.
+   */
+  private snapshotInFlight(message: any): void {
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) return;
+    this.inFlight = { message: { ...message, content: message.content.map((c: any) => ({ ...c })) }, width: 0 };
+    this.scheduleRender();
+  }
+
   private scheduleRender(): void {
     if (this.renderTimer !== undefined) return; // already scheduled
     this.renderTimer = setTimeout(() => {
@@ -427,6 +455,7 @@ export class ConversationViewer implements Component {
     this.cachedContentLines = undefined;
     this.cacheMeta = { count: 0, width: 0, messagesRef: undefined };
     this.cachedNonStreamingCount = 0;
+    if (this.inFlight) this.inFlight.lines = undefined;
   }
 
   dispose(): void {
@@ -724,6 +753,15 @@ export class ConversationViewer implements Component {
   private buildStreamingLines(width: number): string[] {
     const lines: string[] = [];
     const th = this.theme;
+
+    if (this.inFlight) {
+      if (!this.inFlight.lines || this.inFlight.width !== width) {
+        // No results yet: the in-flight message's calls render as pending.
+        this.inFlight.lines = this.renderAssistantMessage(this.inFlight.message, width, new Map(), new Set());
+        this.inFlight.width = width;
+      }
+      lines.push(...this.inFlight.lines);
+    }
 
     // Streaming thinking text — rendered before text, matching assistant message order
     if (this.streamingThinking.trim()) {

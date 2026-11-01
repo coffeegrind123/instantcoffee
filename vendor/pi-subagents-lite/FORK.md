@@ -3303,3 +3303,32 @@ before it (`↳ [201f5309] …` in the operator's transcript), and in a second r
 a depth-2 helper listed its tools with neither `SubAgent` nor `Agent`.
 
 **Tests: 571** (depth-slots 6, nesting 21). Lint 122/122.
+
+## Thinking precedence and `parent`; the viewer's in-flight message (ported from 1.17.1, 2026-11-01)
+
+**Thinking.** `defaultThinking` was folded into the explicit spawn level
+(`frontmatter ?? defaultThinking`, in `toolCallListener`, `executeAgentTool`,
+`executeNestedAgentTool` and the `/agents` wizard). pi's `createAgentSession`
+reads `modelThinkingLevels` only when no explicit level is passed (sdk.js), so
+the subagent default beat the operator's per-model choice. Now
+`src/models/thinking-resolution.ts` (upstream's chain, without its display
+half) is the one order: explicit > frontmatter > pi per-model >
+`defaultThinking` > pi's default. The tool side resolves frontmatter only; the
+runner (`initSession`) resolves the rest, with per-model read from the spawn's
+own trust-gated SettingsManager. Any position may hold `parent`, the parent
+session's `ctx.thinkingLevel` (pi 1.4 runner.js `createContext()`); with none it
+reads as unset. Frontmatter accepts `thinking: parent`; both thinking pickers
+offer it. No tool schema changed. The `__verifier` judge goes through the same
+runner, so `defaultThinking` now applies to it too when its frontmatter is
+silent. Tests: `tests/thinking-precedence.test.ts`.
+
+**Viewer.** Upstream re-renders `session.messages`' last slot at block
+boundaries, on the premise that pi replaces that slot while streaming. Measured
+against pi 1.4 it does not: the loop streams into `createContextSnapshot()`'s
+copy, and `state.messages` (what `AgentSession.messages` returns) gets the
+message only at `message_end`. The symptom was real by that other route: a block
+cleared from the accumulators at `*_end` was on screen nowhere until
+`message_end`. The viewer now keeps a copy of the event's partial message from
+the last accumulator boundary and draws it ahead of the accumulators, until
+`message_end`. A copy, because providers mutate one partial in place. Test:
+`tests/viewer-streaming.test.ts` (real pi `Agent`, scripted stream).

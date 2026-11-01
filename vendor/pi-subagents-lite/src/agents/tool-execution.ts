@@ -20,6 +20,7 @@ import { resolveSubagentTrust, createSubagentTrustDeps, untrustedProjectWarning 
 import { isBusyRecord, isVerifyingRecord } from "./record-activity.ts";
 import { parseModelKey, findModelInRegistry, parseThinkingLevel } from "../utils.js";
 import { getPiInstance, getSessionCtx, getStore, getCoordinator, getManager } from "../shell.js";
+import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 import { effectiveTools, mayNest } from "../spawn/build-context.ts";
 
 // --- Tool result helpers ---
@@ -229,9 +230,17 @@ function resolveSpawnModel(canonicalType: string, ctx: ExtensionContext): string
   return getStore().modelFor(canonicalType, parentModelId, getAgentConfig(canonicalType));
 }
 
-/** Thinking level for one canonical type: the agent's frontmatter, else the operator's default. */
-function resolveSpawnThinking(canonicalType: string) {
-  return getAgentConfig(canonicalType)?.thinkingLevel ?? getStore().agent.defaultThinking;
+/**
+ * The explicit thinking level for one canonical type: its frontmatter, with
+ * `parent` resolved against the caller's session. defaultThinking is NOT folded
+ * in: this value is passed to pi as the explicit level, which would shadow pi's
+ * per-model one. The runner resolves per-model and defaultThinking below it.
+ */
+function resolveSpawnThinking(canonicalType: string, ctx: ExtensionContext) {
+  return resolveThinkingLevel({
+    frontmatter: getAgentConfig(canonicalType)?.thinkingLevel,
+    parentLevel: ctx.thinkingLevel,
+  });
 }
 
 export async function executeAgentTool(
@@ -351,13 +360,13 @@ export async function executeAgentTool(
   const modelName = model?.id;
 
   // Resolve thinking: the listener's injected value when it is about this type,
-  // then the agent's own frontmatter, then the operator's default. Same rule as
-  // the model above and for the same reason — a `thinking` injected against a
-  // type the listener could not see is the store's DEFAULT, and it would shadow
-  // the frontmatter the discovery retry has just made readable.
+  // else the agent's own frontmatter. Same rule as the model above and for the
+  // same reason — a `thinking` injected against another key would shadow the
+  // frontmatter the discovery retry has just made readable. Per-model and the
+  // operator's default are resolved by the runner (thinking-resolution.ts).
   const thinkingLevel = listenerResolvedThisType
-    ? (parseThinkingLevel(params.thinking as string | undefined) ?? resolveSpawnThinking(resolvedType))
-    : resolveSpawnThinking(resolvedType);
+    ? (parseThinkingLevel(params.thinking as string | undefined) ?? resolveSpawnThinking(resolvedType, ctx))
+    : resolveSpawnThinking(resolvedType, ctx);
 
   const coordinator = getCoordinator()!;
   // Background spawns (explicit or forceBackground) never bind to the parent
@@ -469,7 +478,7 @@ export async function executeNestedAgentTool(
   const maxTurns = getAgentConfig(resolvedType)?.maxTurns ?? getStore().agent.defaultMaxTurns;
   const model = findModelInRegistry(resolveSpawnModel(resolvedType, ctx), ctx.modelRegistry, ctx.model);
   const modelKey = model ? `${model.provider}/${model.id}` : undefined;
-  const thinkingLevel = resolveSpawnThinking(resolvedType);
+  const thinkingLevel = resolveSpawnThinking(resolvedType, ctx);
 
   const { record } = await coordinator.spawn(getPiInstance(), ctx, {
     type: resolvedType,
@@ -630,8 +639,8 @@ export async function toolCallListener(event: ToolCallEvent, ctx: ExtensionConte
     }
   }
 
-  // Inject thinking if not explicitly passed: agent frontmatter > spawn options default
+  // Inject thinking if not explicitly passed: the agent's frontmatter only.
   if (input.thinking === undefined) {
-    input.thinking = resolveSpawnThinking(canonicalType);
+    input.thinking = resolveSpawnThinking(canonicalType, ctx);
   }
 }

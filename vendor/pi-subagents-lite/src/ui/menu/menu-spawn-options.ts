@@ -15,7 +15,7 @@ import { buildSettingsListTheme, buildSelectListTheme } from "./helpers.js";
 import { createTargetSelectSubmenu } from "./submenus/target-select.js";
 import { createNumericSubmenu } from "./submenus/numeric-input.js";
 import { SettingsListWrapper } from "./wrappers/settings-list.js";
-import type { ThinkingLevel } from "../../types.js";
+import { PARENT_THINKING_CHOICE, type ThinkingChoice } from "../../models/thinking-resolution.ts";
 import type { Theme } from "../types.js";
 import { DEFAULT_GRACE_TURNS, DEFAULT_WATCHDOG_TIMEOUT_MINUTES } from "../../config/config-io.js";
 import { VALID_THINKING_LEVELS } from "../../utils.js";
@@ -117,14 +117,14 @@ export async function showSpawnOptionsMenu(ctx: ExtensionCommandContext): Promis
       currentValue: `${store.agent.defaultThinking ?? "inherit"}${projectTag("defaultThinking")}`,
 
       submenu: persistedTargetSubmenu(theme, (target, pickDone) => {
-        const levelItems = [...VALID_THINKING_LEVELS, "inherit"].map((v) => ({
+        const levelItems = [...VALID_THINKING_LEVELS, PARENT_THINKING_CHOICE, "inherit"].map((v) => ({
           value: v,
           label: v,
         }));
         const list = new SelectList(levelItems, 10, buildSelectListTheme(theme));
         list.onSelect = (item) => {
           store.mutate.agent.setDefaultThinking(
-            item.value === "inherit" ? undefined : (item.value as ThinkingLevel),
+            item.value === "inherit" ? undefined : (item.value as ThinkingChoice),
             target,
           );
           ctx.ui.notify(`Default thinking level set to ${item.value} (${target})`, "info");
@@ -133,7 +133,8 @@ export async function showSpawnOptionsMenu(ctx: ExtensionCommandContext): Promis
         list.onCancel = () => pickDone();
         return list;
       }),
-      description: "Thinking level applied when agent frontmatter omits one.",
+      description:
+        "Thinking level when neither agent frontmatter nor pi's per-model setting sets one. parent = the parent session's current level.",
     },
     {
       id: "disableDefaultAgents",

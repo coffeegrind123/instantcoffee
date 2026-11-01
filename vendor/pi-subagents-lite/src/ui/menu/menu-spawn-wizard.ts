@@ -11,7 +11,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsList, SelectList, type SettingItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels, clampThinkingLevel } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "../../types.js";
+import { PARENT_THINKING_CHOICE, resolveThinkingLevel, type ThinkingChoice } from "../../models/thinking-resolution.ts";
 import type { Theme } from "../types.js";
 import { getAgentConfig, getAvailableTypes, discoverNewAgents } from "../../agents/agent-types.js";
 import { findModelInRegistry } from "../../utils.js";
@@ -125,14 +125,14 @@ async function isInGitRepo(cwd: string): Promise<boolean> {
 
 /**
  * Build a submenu for selecting the thinking level based on the current model.
- * Non-reasoning models only show 'off'; reasoning models show supported levels plus 'inherit'.
+ * Non-reasoning models only show 'off'; reasoning models show supported levels plus 'parent' and 'inherit'.
  */
 function createThinkingLevelSubmenu(
   registry: Parameters<typeof findModelInRegistry>[1],
   currentModelStr: string,
   fallbackModel: Parameters<typeof findModelInRegistry>[2],
   theme: Theme,
-  onThinkingChange: (level: ThinkingLevel | undefined) => void,
+  onThinkingChange: (level: ThinkingChoice | undefined) => void,
 ): (_currentValue: string, done: (v?: string) => void) => any {
   return (_currentValue, done) => {
     const model = findModelInRegistry(currentModelStr, registry, fallbackModel);
@@ -151,12 +151,13 @@ function createThinkingLevelSubmenu(
     }));
 
     if (isReasoning) {
+      items.push({ value: PARENT_THINKING_CHOICE, label: "Parent", description: "The parent session's current level" });
       items.push({ value: "inherit", label: "Inherit" });
     }
 
     const list = new SelectList(items, 10, buildSelectListTheme(theme));
     list.onSelect = (item) => {
-      onThinkingChange(item.value === "inherit" ? undefined : (item.value as ThinkingLevel));
+      onThinkingChange(item.value === "inherit" ? undefined : (item.value as ThinkingChoice));
       done(item.value);
     };
     list.onCancel = () => done();
@@ -238,7 +239,9 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
   const effectiveModelStr = store.modelFor(selectedType, parentModelId, agentConfig);
 
   let currentModelStr = effectiveModelStr || "";
-  let currentThinking: ThinkingLevel | undefined = agentConfig.thinkingLevel ?? store.agent.defaultThinking;
+  // Not `?? defaultThinking`: this is handed to the spawn as the EXPLICIT level,
+  // which would shadow pi's per-model one. "inherit" leaves it to the chain.
+  let currentThinking: ThinkingChoice | undefined = agentConfig.thinkingLevel;
   let currentMaxTurns: number | undefined = agentConfig.maxTurns ?? store.agent.defaultMaxTurns;
   let currentMaxTokens: number | undefined = agentConfig.maxTokens;
   let currentGraceTurns: number = store.agent.graceTurns ?? DEFAULT_GRACE_TURNS;
@@ -262,7 +265,8 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
           const descItem = items.find((i) => i.id === "description");
           const promptItem = items.find((i) => i.id === "prompt");
 
-          const thinking = currentThinking;
+          // `parent` never reaches the spawn: resolved here, against the session spawned from.
+          const thinking = resolveThinkingLevel({ explicit: currentThinking, parentLevel: session?.thinkingLevel });
           const maxTurns = currentMaxTurns;
           const maxTokens = currentMaxTokens;
           const graceTurns = Number(gtItem?.currentValue ?? DEFAULT_GRACE_TURNS);
@@ -351,7 +355,7 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
             currentModelStr = model === "(inherits parent)" || model === null ? "" : model;
 
             // Clamp thinking level to nearest supported level for the new model
-            if (currentThinking != null && currentModelStr) {
+            if (currentThinking != null && currentThinking !== PARENT_THINKING_CHOICE && currentModelStr) {
               const registry = session?.modelRegistry ?? ctx.modelRegistry;
               const resolved = findModelInRegistry(currentModelStr, registry, session?.model);
               if (resolved) {
@@ -494,7 +498,7 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
     const onChange = (id: string, newValue: string) => {
       switch (id) {
         case "thinkingLevel":
-          currentThinking = newValue === "inherit" ? undefined : (newValue as ThinkingLevel);
+          currentThinking = newValue === "inherit" ? undefined : (newValue as ThinkingChoice);
           break;
         case "background":
           currentBackground = newValue === "ON";

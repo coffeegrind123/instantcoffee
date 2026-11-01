@@ -13,8 +13,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "./types.js";
-import type { ThinkingLevel } from "../types.js";
-import { parseThinkingLevel } from "../utils.js";
+import { parseThinkingChoice, type ThinkingChoice } from "../models/thinking-resolution.ts";
 
 // --- Types ---
 
@@ -38,7 +37,7 @@ export interface AgentConfigFromMd {
   skills?: boolean | string[];
   preload_skills?: string[] | false;
   model?: string;
-  thinking?: ThinkingLevel;
+  thinking?: ThinkingChoice;
   max_turns?: number;
   max_tokens?: number;
   hidden?: boolean;
@@ -278,7 +277,7 @@ export function parseAgentFile(content: string, source: "user" | "project"): Age
     skills: parseExtensions(frontmatter.skills),
     preload_skills: parsePreloadSkills(frontmatter.preload_skills),
     model: parseString(frontmatter, "model"),
-    thinking: parseThinkingLevel(parseString(frontmatter, "thinking")),
+    thinking: parseThinkingChoice(parseString(frontmatter, "thinking")),
     max_turns: parseNumber(frontmatter, "max_turns"),
     max_tokens: parseNumber(frontmatter, "max_tokens"),
     hidden: parseBoolean(frontmatter, "hidden"),

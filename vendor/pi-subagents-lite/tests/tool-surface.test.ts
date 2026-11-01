@@ -85,7 +85,7 @@ describe("the Agent tool's parameters", () => {
     assert.match(execution, /const listenerResolvedThisType = params\._resolvedAgent === resolvedType;/);
     assert.match(execution, /listenerResolvedThisType\s*\?\s*\(params\.model as string \| undefined\)\s*:\s*resolveSpawnModel\(resolvedType, ctx\)/);
     assert.match(execution, /const thinkingLevel = listenerResolvedThisType/);
-    assert.match(execution, /:\s*resolveSpawnThinking\(resolvedType\);/);
+    assert.match(execution, /:\s*resolveSpawnThinking\(resolvedType, ctx\);/);
   });
 
   it("control — the listener is what puts them there, keyed on the CANONICAL name", () => {
@@ -103,7 +103,7 @@ describe("the Agent tool's parameters", () => {
     assert.match(listener, /input\._resolvedAgent = canonicalType;/);
     assert.match(listener, /input\.model = effectiveModel/);
     assert.match(listener, /const effectiveModel = resolveSpawnModel\(canonicalType, ctx\);/);
-    assert.match(listener, /input\.thinking = resolveSpawnThinking\(canonicalType\);/);
+    assert.match(listener, /input\.thinking = resolveSpawnThinking\(canonicalType, ctx\);/);
     assert.doesNotMatch(
       listener,
       /modelFor\(\s*subagentType/,

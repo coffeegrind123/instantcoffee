@@ -12,7 +12,7 @@
  *   6. parentModelId                   (inherit from parent)
  */
 
-import type { ThinkingLevel } from "../types.js";
+import type { ThinkingChoice } from "./thinking-resolution.ts";
 import type { SystemPromptMode } from "../agents/types.js";
 import type { ModelThinkingPlacement } from "../config/types.js";
 
@@ -37,8 +37,11 @@ export interface SubagentsConfig {
     systemPromptMode?: SystemPromptMode;
     /** Whether to include AGENTS.md context files in the subagent system prompt. Default: true. */
     includeContextFiles?: boolean;
-    /** Default thinking level for spawned agents. Undefined = inherit from agent config. */
-    defaultThinking?: ThinkingLevel;
+    /**
+     * Default thinking level for spawned agents, below agent frontmatter and pi's
+     * per-model level. `parent` follows the parent session. Undefined = pi decides.
+     */
+    defaultThinking?: ThinkingChoice;
     /** Default max turns for spawned agents. Undefined = unlimited. */
     defaultMaxTurns?: number;
     /** Global default for skills loading when agent doesn't explicitly set skills. true (default) or false. */

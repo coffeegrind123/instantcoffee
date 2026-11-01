@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "../types.js";
+import type { ThinkingChoice } from "../models/thinking-resolution.ts";
 
 export type SubagentType = string;
 
@@ -30,7 +31,8 @@ export interface AgentConfig {
   /** Skills to preload with full content into system prompt. string[] = listed, false/undefined = none */
   preloadSkills?: string[] | false;
   model?: string;
-  thinkingLevel?: ThinkingLevel;
+  /** `parent` follows the parent session's level; see thinking-resolution.ts. */
+  thinkingLevel?: ThinkingChoice;
   maxTurns?: number;
   /** Max output tokens per LLM response. Passed to provider as max_tokens or max_completion_tokens. */
   maxTokens?: number;

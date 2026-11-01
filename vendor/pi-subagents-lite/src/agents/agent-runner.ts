@@ -27,6 +27,7 @@ import {
 } from "./agent-types.js";
 import type { AgentUsage } from "./usage.js";
 import { findModelInRegistry, GIT_EXEC_TIMEOUT_MS } from "../utils.js";
+import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { buildAgentPrompt, type PromptExtras } from "../prompt/prompts.js";
 import { preloadSkills, loadSkillMeta } from "../prompt/skill-loader.js";
@@ -40,6 +41,7 @@ import { patchRetryClassifier } from "./stream-retry.js";
 import { subagentExtraExtensionPaths, withExtensionDenial, withSkillDenial } from "./subagent-denylist.js";
 import * as piSdk from "@earendil-works/pi-coding-agent";
 import { childBrowserToolNames, childBuiltinExtensions } from "./child-builtins.ts";
+import { applyOutputLimit, resolveOutputLimit } from "./max-tokens-field.ts";
 import { classifyGitFailure } from "../spawn/git-failure.ts";
 import { declaredPromptSources, declaredResources } from "./declared-resources.ts";
 import { collectResponseText } from "./run-answer.ts";
@@ -466,9 +468,11 @@ function buildPrompt(
 function buildExtToolMap(extensions: Array<{ path: string; tools: Map<string, unknown> }>) {
   const map = new Map<string, string[]>();
   for (const ext of extensions) {
-    const name = extractExtensionName(ext.path);
+    // Package name first, and merge: every vendored extension here loads from
+    // `extensions/index.ts`, so path names collide and the last one won.
+    const name = extensionPackageName(ext.path) ?? extractExtensionName(ext.path);
     const tools = [...ext.tools.keys()];
-    if (tools.length > 0) map.set(name, tools);
+    if (tools.length > 0) map.set(name, [...new Set([...(map.get(name) ?? []), ...tools])]);
   }
   return map;
 }
@@ -624,7 +628,16 @@ async function initSession(
   settingsManager: SettingsManager,
 ): Promise<AgentSession> {
   const model = options.model ?? findModelInRegistry(agentConfig?.model, ctx.modelRegistry, ctx.model);
-  const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinkingLevel;
+  // Per-model comes from this spawn's own trust-gated SettingsManager, the one
+  // the session is created with. All unset = pass nothing: pi's own fallback
+  // (defaultThinkingLevel, then medium, clamped to the model) applies.
+  const thinkingLevel = resolveThinkingLevel({
+    explicit: options.thinkingLevel,
+    frontmatter: agentConfig?.thinkingLevel,
+    perModel: model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined,
+    defaultThinking: getStore().agent.defaultThinking,
+    parentLevel: ctx.thinkingLevel,
+  });
   const agentDir = getAgentDir();
   const sessionOpts: Parameters<typeof createAgentSession>[0] = {
     cwd,
@@ -651,13 +664,15 @@ async function initSession(
 
   // Inject max_tokens into provider payloads; spawn-time value wins over agent config.
   const maxTokens = options.maxTokens ?? agentConfig?.maxTokens;
-  if (maxTokens != null && maxTokens > 0 && model) {
-    const field = (model.compat as any)?.maxTokensField ?? "max_tokens";
+  // The field and location pi itself uses for this model's API. A literal
+  // `max_tokens` here sent BOTH fields to a provider pi addresses with
+  // `max_completion_tokens` (forge among them). See max-tokens-field.ts.
+  const limit = maxTokens != null && maxTokens > 0 && model ? resolveOutputLimit(model, maxTokens) : undefined;
+  if (limit) {
     const origOnPayload = session.agent.onPayload;
     session.agent.onPayload = async (payload, m) => {
       const applied = origOnPayload ? ((await origOnPayload(payload, m)) ?? payload) : payload;
-      const obj = typeof applied === "object" && applied && !Array.isArray(applied) ? applied : {};
-      return { ...obj, [field]: maxTokens };
+      return applyOutputLimit(applied, limit);
     };
   }
 
