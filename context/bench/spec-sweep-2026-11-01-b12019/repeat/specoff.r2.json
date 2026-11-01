@@ -1,0 +1,79 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 32.58,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1384.4351081768557,
+      "predicted_n": 1178,
+      "predicted_tps": 37.63578339938355,
+      "cache_n": 0,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 28.54,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 2002.6624992764946,
+      "predicted_n": 1178,
+      "predicted_tps": 42.92039404641259,
+      "cache_n": 0,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    },
+    {
+      "requested": 12,
+      "status": 200,
+      "wall_s": 30.45,
+      "workload": "repeat",
+      "prompt_n": 1211,
+      "prompt_tps": 1629.6266392146572,
+      "predicted_n": 1178,
+      "predicted_tps": 40.34964665776712,
+      "cache_n": 0,
+      "echo": 0.988,
+      "echo_exact_tokenizer": true,
+      "completion_tokens_measured": 1120
+    }
+  ],
+  "config": {
+    "name": "specoff",
+    "spec_type": "none",
+    "n_max": 4,
+    "p_min": 0,
+    "draft_gguf": null,
+    "ngram_mod": null,
+    "graph_opt": 0,
+    "ngram_mapk": null,
+    "workload": "repeat",
+    "repeat": 3,
+    "round": 2,
+    "load_before": 9.19,
+    "load_after": 6.07,
+    "load_warn": 8,
+    "prompt_len": null
+  },
+  "pins": {
+    "llama_tag": "server-cuda-b12019",
+    "llama_digest": "sha256:c1d664830580e1651c1cc8d3bbc161af474800a56a83226e6e22f94bb8ba1c59",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479",
+    "ctx_size": "131072",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
+  },
+  "measured_utc": "2026-11-01T08:56:11Z"
+}

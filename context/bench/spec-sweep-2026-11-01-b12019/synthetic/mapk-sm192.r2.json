@@ -1,0 +1,76 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.25,
+      "prompt_n": 1053,
+      "prompt_tps": 820.6546220858188,
+      "predicted_n": 256,
+      "predicted_tps": 64.76646103103634,
+      "cache_n": 0,
+      "draft_n": 325,
+      "draft_accepted": 173,
+      "draft_acceptance": 0.532
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 6.5,
+      "prompt_n": 1053,
+      "prompt_tps": 1086.0596559263997,
+      "predicted_n": 256,
+      "predicted_tps": 50.62722164160851,
+      "cache_n": 0,
+      "draft_n": 530,
+      "draft_accepted": 168,
+      "draft_acceptance": 0.317
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 5.66,
+      "prompt_n": 1053,
+      "prompt_tps": 1125.5772190867112,
+      "predicted_n": 256,
+      "predicted_tps": 58.80936632561847,
+      "cache_n": 0,
+      "draft_n": 504,
+      "draft_accepted": 174,
+      "draft_acceptance": 0.345
+    }
+  ],
+  "config": {
+    "name": "mapk-sm192",
+    "spec_type": "ngram-map-k,draft-mtp",
+    "n_max": 4,
+    "p_min": 0,
+    "draft_gguf": null,
+    "ngram_mod": null,
+    "graph_opt": 0,
+    "ngram_mapk": ":192:",
+    "workload": "synthetic",
+    "repeat": 3,
+    "round": 2,
+    "load_before": 10.02,
+    "load_after": 9.2,
+    "load_warn": 8,
+    "prompt_len": null
+  },
+  "pins": {
+    "llama_tag": "server-cuda-b12019",
+    "llama_digest": "sha256:c1d664830580e1651c1cc8d3bbc161af474800a56a83226e6e22f94bb8ba1c59",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479",
+    "ctx_size": "131072",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
+  },
+  "measured_utc": "2026-11-01T08:49:23Z"
+}

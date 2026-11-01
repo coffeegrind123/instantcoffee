@@ -1,0 +1,442 @@
+ Container instantcoffee-bench-run-b18d422204a5 Creating 
+ Container instantcoffee-bench-run-b18d422204a5 Created 
+/work/scripts/bench_quality.py:363: SyntaxWarning: invalid escape sequence '\s'
+  _TOK = _re_expr.compile(r"\s*(\d+|[()+\-*/])")
+
+bench-quality — qwen3.8-27b via http://llama:8080
+pass rate is executed, not judged; LOC is the over-engineering proxy
+
+control — reference implementations through the real assertions
+  merge_intervals   5/5
+  word_wrap         5/5
+  roman_to_int      5/5
+  flatten_dict      5/5
+  eval_expr         5/5
+  overlap_minutes   5/5
+  parse_csv_line    5/5
+  next_permutation  5/5
+  control PASSED
+
+running 1 level(s) x 1 task(s) x 20 repeat(s) — NOT the full grid, do not table this against one
+
+  xhigh   eval_expr         #1 5/5  loc= 66  wall= 68.2s
+  xhigh   eval_expr         #2 5/5  loc= 65  wall= 68.3s
+  xhigh   eval_expr         #3 5/5  loc= 76  wall= 70.5s
+  xhigh   eval_expr         #4 5/5  loc= 72  wall= 65.7s
+  xhigh   eval_expr         #5 5/5  loc= 71  wall= 68.0s
+  xhigh   eval_expr         #6 5/5  loc= 78  wall= 70.2s
+  xhigh   eval_expr         #7 5/5  loc= 72  wall= 63.4s
+  xhigh   eval_expr         #8 5/5  loc= 72  wall= 69.8s
+  xhigh   eval_expr         #9 5/5  loc= 73  wall= 61.8s
+  xhigh   eval_expr         #10 5/5  loc= 77  wall= 67.1s
+  xhigh   eval_expr         #11 5/5  loc= 84  wall= 72.0s
+  xhigh   eval_expr         #12 1/5  loc=106  wall= 71.8s
+  --- what xhigh wrote for eval_expr (1/5) ---
+  | def eval_expr(s):
+  |     if not isinstance(s, str):
+  |         raise ValueError("expression must be a string")
+  | 
+  |     tokens = []
+  |     i = 0
+  |     n = len(s)
+  | 
+  |     def skip_spaces():
+  |         nonlocal i
+  |         while i < n and s[i].isspace():
+  |             i += 1
+  | 
+  |     while True:
+  |         skip_spaces()
+  |         if i >= n:
+  |             break
+  | 
+  |         c = s[i]
+  | 
+  |         if c.isdigit():
+  |             start = i
+  |             while i < n and s[i].isdigit():
+  |                 i += 1
+  |             tokens.append(("num", int(s[start:i])))
+  |         elif c in "+-*/":
+  |             if c == "-" and (not tokens or tokens[-1][0] in ("op", "lp")):
+  |                 tokens.append(("unary", "-"))
+  |             else:
+  |                 tokens.append(("op", c))
+  |             i += 1
+  |         elif c == "(":
+  |             tokens.append(("lp", None))
+  |             i += 1
+  |         elif c == ")":
+  |             tokens.append(("rp", None))
+  |             i += 1
+  |         else:
+  |             raise ValueError("invalid character")
+  | 
+  |     if not tokens:
+  |         raise ValueError("empty expression")
+  | 
+  |     prec = {
+  |         "unary": 3,
+  |         "*": 2,
+  |         "/": 2,
+  |         "+": 1,
+  |         "-": 1,
+  |     }
+  | 
+  |     left_assoc = {"*", "/", "+", "-"}
+  | 
+  |     out = []
+  |     ops = []
+  | 
+  |     for tok in tokens:
+  |         kind = tok[0]
+  | 
+  |         if kind == "num":
+  |             out.append(("num", tok[1]))
+  |         elif kind == "lp":
+  |             ops.append(("lp", None))
+  |         elif kind == "rp":
+  |             found = False
+  |             while ops and ops[-1][0] != "lp":
+  |                 out.append(ops.pop())
+  |                 found = True
+  |             if not ops:
+  |                 raise ValueError("unbalanced parentheses")
+  |             ops.pop()
+  |             if not found:
+  |                 raise ValueError("empty parentheses")
+  |         else:
+  |             op = tok[1] if kind == "unary" else kind
+  |             while ops:
+  |                 top = ops[-1][0]
+  |                 if top == "lp":
+  |                     break
+  |                 top_prec = prec[top]
+  |                 cur_prec = prec[op]
+  |                 if top_prec > cur_prec or (top_prec == cur_prec and op in left_assoc):
+  |                     out.append(ops.pop())
+  |                 else:
+  |                     break
+  |             ops.append(tok)
+  | 
+  |     while ops:
+  |         if ops[-1][0] == "lp":
+  |             raise ValueError("unbalanced parentheses")
+  |         out.append(ops.pop())
+  | 
+  |     stack = []
+  | 
+  |     for tok in out:
+  |         if tok[0] == "num":
+  |             stack.append(float(tok[1]))
+  |         elif tok[0] == "unary":
+  |             if not stack:
+  |                 raise ValueError("missing operand")
+  |             stack.append(-stack.pop())
+  |         else:
+  |             if len(stack) < 2:
+  |                 raise ValueError("missing operand")
+  |             rhs = stack.pop()
+  |             lhs = stack.pop()
+  |             op = tok[0]
+  | 
+  |             if op == "+":
+  |                 stack.append(lhs + rhs)
+  |             elif op == "-":
+  |                 stack.append(lhs - rhs)
+  |             elif op == "*":
+  |                 stack.append(lhs * rhs)
+  |             elif op == "/":
+  |                 if rhs == 0.0:
+  |                     raise ValueError("division by zero")
+  |                 stack.append(lhs / rhs)
+  | 
+  |     if len(stack) != 1:
+  |         raise ValueError("malformed expression")
+  | 
+  |     return float(stack[0])
+  --- per-assertion: [False, False, False, False, True]
+  xhigh   eval_expr         #13 5/5  loc= 73  wall= 66.1s
+  xhigh   eval_expr         #14 0/5  loc= 72  wall= 69.1s
+  --- what xhigh wrote for eval_expr (0/5) ---
+  | def eval_expr(s):
+  |     if not isinstance(s, str):
+  |         raise ValueError("input must be a string")
+  | 
+  |     i = 0
+  |     n = len(s)
+  | 
+  |     def skip_spaces():
+  |         nonlocal i
+  |         while i < n and s[i].isspace():
+  |             i += 1
+  | 
+  |     def peek():
+  |         skip_spaces()
+  |         return s[i] if i < n else None
+  | 
+  |     def take():
+  |         nonlocal i
+  |         skip_spaces()
+  |         if i >= n:
+  |             raise ValueError("unexpected end of expression")
+  |         ch = s[i]
+  |         i += 1
+  |         return ch
+  | 
+  |     def parse_expr():
+  |         value = parse_term()
+  |         while True:
+  |             op = peek()
+  |             if op == '+':
+  |                 take()
+  |                 value += parse_term()
+  |             elif op == '-':
+  |                 take()
+  |                 value -= parse_term()
+  |             else:
+  |                 break
+  |         return value
+  | 
+  |     def parse_term():
+  |         value = parse_factor()
+  |         while True:
+  |             op = peek()
+  |             if op == '*':
+  |                 take()
+  |                 value *= parse_factor()
+  |             elif op == '/':
+  |                 take()
+  |                 value /= parse_factor()
+  |             else:
+  |                 break
+  |         return value
+  | 
+  |     def parse_factor():
+  |         ch = peek()
+  |         if ch is None:
+  |             raise ValueError("unexpected end of expression")
+  | 
+  |         if ch == '-':
+  |             take()
+  |             return -parse_factor()
+  | 
+  |         if ch == '(':
+  |             take()
+  |             value = parse_expr()
+  |             if peek() != ')':
+  |                 raise ValueError("missing closing parenthesis")
+  |             take()
+  |             return value
+  | 
+  |         if ch.isdigit():
+  |             skip_spaces()
+  |             value = 0
+  |             while i < n and s[i].isdigit():
+  |                 value = value * 10 + ord(s[i]) - ord('0')
+  |                 i += 1
+  |             return value
+  | 
+  |         raise ValueError(f"unexpected character: {ch!r}")
+  | 
+  |     result = parse_expr()
+  |     if peek() is not None:
+  |         raise ValueError(f"trailing input: {peek()!r}")
+  |     return float(result)
+  --- per-assertion: [False, False, False, False, False]
+  xhigh   eval_expr         #15 5/5  loc= 78  wall= 70.6s
+  xhigh   eval_expr         #16 0/5  loc= 67  wall= 69.2s
+  --- what xhigh wrote for eval_expr (0/5) ---
+  | def eval_expr(s):
+  |     if not isinstance(s, str):
+  |         raise ValueError("expression must be a string")
+  | 
+  |     i = 0
+  |     n = len(s)
+  | 
+  |     def skip_whitespace():
+  |         nonlocal i
+  |         while i < n and s[i].isspace():
+  |             i += 1
+  | 
+  |     def parse_expr():
+  |         skip_whitespace()
+  |         value = parse_term()
+  |         while True:
+  |             skip_whitespace()
+  |             if i < n and s[i] == "+":
+  |                 i += 1
+  |                 value += parse_term()
+  |             elif i < n and s[i] == "-":
+  |                 i += 1
+  |                 value -= parse_term()
+  |             else:
+  |                 break
+  |         return value
+  | 
+  |     def parse_term():
+  |         skip_whitespace()
+  |         value = parse_factor()
+  |         while True:
+  |             skip_whitespace()
+  |             if i < n and s[i] == "*":
+  |                 i += 1
+  |                 value *= parse_factor()
+  |             elif i < n and s[i] == "/":
+  |                 i += 1
+  |                 value /= parse_factor()
+  |             else:
+  |                 break
+  |         return value
+  | 
+  |     def parse_factor():
+  |         skip_whitespace()
+  |         if i < n and s[i] == "-":
+  |             i += 1
+  |             return -parse_factor()
+  |         return parse_primary()
+  | 
+  |     def parse_primary():
+  |         skip_whitespace()
+  |         if i >= n:
+  |             raise ValueError("missing operand")
+  | 
+  |         c = s[i]
+  | 
+  |         if c.isdigit():
+  |             start = i
+  |             while i < n and s[i].isdigit():
+  |                 i += 1
+  |             return int(s[start:i])
+  | 
+  |         if c == "(":
+  |             i += 1
+  |             value = parse_expr()
+  |             skip_whitespace()
+  |             if i >= n or s[i] != ")":
+  |                 raise ValueError("unbalanced parentheses")
+  |             i += 1
+  |             return value
+  | 
+  |         raise ValueError(f"unexpected character: {c!r}")
+  | 
+  |     result = parse_expr()
+  |     skip_whitespace()
+  |     if i != n:
+  |         raise ValueError("unexpected trailing input")
+  | 
+  |     return float(result)
+  --- per-assertion: [False, False, False, False, False]
+  xhigh   eval_expr         #17 5/5  loc= 85  wall= 69.9s
+  xhigh   eval_expr         #18 5/5  loc= 70  wall= 72.1s
+  xhigh   eval_expr         #19 5/5  loc= 75  wall= 74.5s
+  xhigh   eval_expr         #20 1/5  loc= 82  wall= 75.8s
+  --- what xhigh wrote for eval_expr (1/5) ---
+  | def eval_expr(s):
+  |     if not isinstance(s, str):
+  |         raise ValueError("expression must be a string")
+  | 
+  |     n = len(s)
+  |     i = 0
+  | 
+  |     def skip(idx):
+  |         while idx < n and s[idx].isspace():
+  |             idx += 1
+  |         return idx
+  | 
+  |     def parse_number(idx):
+  |         end = idx
+  |         while end < n and s[end].isdigit():
+  |             end += 1
+  |         if end == idx:
+  |             raise ValueError("invalid number")
+  |         return int(s[idx:end]), end
+  | 
+  |     def parse_expr(idx):
+  |         idx, left = parse_term(idx)
+  |         while True:
+  |             idx = skip(idx)
+  |             if idx >= n:
+  |                 break
+  |             ch = s[idx]
+  |             if ch == '+':
+  |                 idx += 1
+  |                 idx, right = parse_term(idx)
+  |                 left += right
+  |             elif ch == '-':
+  |                 idx += 1
+  |                 idx, right = parse_term(idx)
+  |                 left -= right
+  |             else:
+  |                 break
+  |         return idx, left
+  | 
+  |     def parse_term(idx):
+  |         idx, left = parse_factor(idx)
+  |         while True:
+  |             idx = skip(idx)
+  |             if idx >= n:
+  |                 break
+  |             ch = s[idx]
+  |             if ch == '*':
+  |                 idx += 1
+  |                 idx, right = parse_factor(idx)
+  |                 left *= right
+  |             elif ch == '/':
+  |                 idx += 1
+  |                 idx, right = parse_factor(idx)
+  |                 left = left / right
+  |             else:
+  |                 break
+  |         return idx, left
+  | 
+  |     def parse_factor(idx):
+  |         idx = skip(idx)
+  |         if idx >= n:
+  |             raise ValueError("unexpected end of expression")
+  | 
+  |         ch = s[idx]
+  |         if ch == '-':
+  |             idx += 1
+  |             idx, value = parse_factor(idx)
+  |             return idx, -value
+  | 
+  |         if ch.isdigit():
+  |             return parse_number(idx)
+  | 
+  |         if ch == '(':
+  |             idx += 1
+  |             idx, value = parse_expr(idx)
+  |             idx = skip(idx)
+  |             if idx >= n or s[idx] != ')':
+  |                 raise ValueError("unbalanced parentheses")
+  |             return idx + 1, value
+  | 
+  |         raise ValueError(f"unexpected character: {ch!r}")
+  | 
+  |     idx = skip(0)
+  |     if idx >= n:
+  |         raise ValueError("empty expression")
+  | 
+  |     idx, result = parse_expr(idx)
+  |     idx = skip(idx)
+  |     if idx != n:
+  |         raise ValueError("unexpected trailing input")
+  | 
+  |     try:
+  |         return float(result)
+  |     except OverflowError:
+  |         return float('-inf') if result < 0 else float('inf')
+  --- per-assertion: [False, False, False, False, True]
+
+=== REPRODUCIBILITY (per-run scores) ===
+  xhigh   eval_expr         [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 1, 5, 0, 5, 0, 5, 5, 5, 1]   16/20 runs at 5/5
+
+=== EFFORT vs QUALITY ===
+effort     tests passed   pass%    LOC  reason_ch   total s  empty
+xhigh            82/100   82.0%   1514     328960   1384.2s      0
+
+Read LOC as over-engineering, not effort: a level that ties on pass rate
+while writing more code is producing a worse answer, which is the whole
+complaint about the xhigh default. `empty` counts turns that returned no
+content at all — xhigh can spend a whole budget thinking and answer nothing.

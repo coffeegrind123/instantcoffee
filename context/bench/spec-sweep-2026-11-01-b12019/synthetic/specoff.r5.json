@@ -1,0 +1,67 @@
+{
+  "model": "qwen3.8-27b",
+  "rows": [
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 6.58,
+      "prompt_n": 1053,
+      "prompt_tps": 1123.7321995697162,
+      "predicted_n": 256,
+      "predicted_tps": 45.38543985254537,
+      "cache_n": 0
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 7.66,
+      "prompt_n": 1053,
+      "prompt_tps": 1271.45658452711,
+      "predicted_n": 256,
+      "predicted_tps": 45.63206312757507,
+      "cache_n": 0
+    },
+    {
+      "requested": 1024,
+      "status": 200,
+      "wall_s": 9.22,
+      "prompt_n": 1053,
+      "prompt_tps": 1250.4527398927676,
+      "predicted_n": 256,
+      "predicted_tps": 45.522797192011055,
+      "cache_n": 0
+    }
+  ],
+  "config": {
+    "name": "specoff",
+    "spec_type": "none",
+    "n_max": 4,
+    "p_min": 0,
+    "draft_gguf": null,
+    "ngram_mod": null,
+    "graph_opt": 0,
+    "ngram_mapk": null,
+    "workload": "synthetic",
+    "repeat": 3,
+    "round": 5,
+    "load_before": 7.17,
+    "load_after": 6.78,
+    "load_warn": 8,
+    "prompt_len": null
+  },
+  "pins": {
+    "llama_tag": "server-cuda-b12019",
+    "llama_digest": "sha256:c1d664830580e1651c1cc8d3bbc161af474800a56a83226e6e22f94bb8ba1c59",
+    "model_repo": "orcarouter/Qwen3.8-27B-Uncensored-GGUF",
+    "gguf_file": "Qwen3.8-27B-Uncensored-Q4_K_M.gguf",
+    "gguf_size": "16810714496",
+    "gguf_mtime": "1787676479",
+    "ctx_size": "131072",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "ngram_min_hits": "",
+    "ngram_size_n": "",
+    "ngram_size_m": ""
+  },
+  "measured_utc": "2026-11-01T10:13:20Z"
+}

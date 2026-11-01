@@ -1,0 +1,232 @@
+ Container instantcoffee-bench-run-76c838d98f1a Creating 
+ Container instantcoffee-bench-run-76c838d98f1a Created 
+/work/scripts/bench_quality.py:363: SyntaxWarning: invalid escape sequence '\s'
+  _TOK = _re_expr.compile(r"\s*(\d+|[()+\-*/])")
+
+bench-quality — qwen3.8-27b via http://llama:8080
+pass rate is executed, not judged; LOC is the over-engineering proxy
+
+control — reference implementations through the real assertions
+  merge_intervals   5/5
+  word_wrap         5/5
+  roman_to_int      5/5
+  flatten_dict      5/5
+  eval_expr         5/5
+  overlap_minutes   5/5
+  parse_csv_line    5/5
+  next_permutation  5/5
+  control PASSED
+
+running 1 level(s) x 1 task(s) x 20 repeat(s) — NOT the full grid, do not table this against one
+
+  medium  eval_expr         #1 5/5  loc= 71  wall= 28.2s
+  medium  eval_expr         #2 5/5  loc= 73  wall= 28.1s
+  medium  eval_expr         #3 5/5  loc= 72  wall= 28.8s
+  medium  eval_expr         #4 5/5  loc= 66  wall= 26.3s
+  medium  eval_expr         #5 5/5  loc= 60  wall= 20.6s
+  medium  eval_expr         #6 5/5  loc= 80  wall= 34.2s
+  medium  eval_expr         #7 5/5  loc= 58  wall= 24.4s
+  medium  eval_expr         #8 5/5  loc= 83  wall= 36.7s
+  medium  eval_expr         #9 5/5  loc= 56  wall= 36.1s
+  medium  eval_expr         #10 5/5  loc= 67  wall= 36.7s
+  medium  eval_expr         #11 5/5  loc= 74  wall= 38.1s
+  medium  eval_expr         #12 5/5  loc= 63  wall= 35.0s
+  medium  eval_expr         #13 5/5  loc= 82  wall= 33.1s
+  medium  eval_expr         #14 0/5  loc= 80  wall= 27.2s
+  --- what medium wrote for eval_expr (0/5) ---
+  | def eval_expr(s):
+  |     if not isinstance(s, str):
+  |         raise ValueError("Input must be a string")
+  |     s = s.strip()
+  |     if not s:
+  |         raise ValueError("Empty expression")
+  | 
+  |     pos = 0
+  |     n = len(s)
+  | 
+  |     def skip_spaces():
+  |         nonlocal pos
+  |         while pos < n and s[pos] in (' ', '\t'):
+  |             pos += 1
+  | 
+  |     def peek():
+  |         skip_spaces()
+  |         if pos < n:
+  |             return s[pos]
+  |         return None
+  | 
+  |     def advance():
+  |         nonlocal pos
+  |         c = peek()
+  |         if c is None:
+  |             raise ValueError("Unexpected end of input")
+  |         pos += 1
+  |         return c
+  | 
+  |     def parse_expr():
+  |         result = parse_term()
+  |         while True:
+  |             c = peek()
+  |             if c == '+':
+  |                 advance()
+  |                 result = result + parse_term()
+  |             elif c == '-':
+  |                 advance()
+  |                 result = result - parse_term()
+  |             else:
+  |                 break
+  |         return result
+  | 
+  |     def parse_term():
+  |         result = parse_factor()
+  |         while True:
+  |             c = peek()
+  |             if c == '*':
+  |                 advance()
+  |                 result = result * parse_factor()
+  |             elif c == '/':
+  |                 advance()
+  |                 result = result / parse_factor()
+  |             else:
+  |                 break
+  |         return result
+  | 
+  |     def parse_factor():
+  |         c = peek()
+  |         if c == '+':
+  |             advance()
+  |             return parse_factor()
+  |         elif c == '-':
+  |             advance()
+  |             return -parse_factor()
+  |         return parse_atom()
+  | 
+  |     def parse_atom():
+  |         c = peek()
+  |         if c is None:
+  |             raise ValueError("Unexpected end of input")
+  |         if c == '(':
+  |             advance()
+  |             result = parse_expr()
+  |             if peek() != ')':
+  |                 raise ValueError("Expected ')'")
+  |             advance()
+  |             return result
+  |         if c.isdigit():
+  |             start = pos
+  |             while pos < n and s[pos].isdigit():
+  |                 pos += 1
+  |             return int(s[start:pos])
+  |         raise ValueError(f"Unexpected character: {c}")
+  | 
+  |     result = parse_expr()
+  |     if pos != n:
+  |         raise ValueError(f"Unexpected character at position {pos}: {s[pos]}")
+  |     return float(result)
+  --- per-assertion: [False, False, False, False, False]
+  medium  eval_expr         #15 5/5  loc= 82  wall= 22.0s
+  medium  eval_expr         #16 5/5  loc= 86  wall= 21.0s
+  medium  eval_expr         #17 5/5  loc= 70  wall= 31.5s
+  medium  eval_expr         #18 0/5  loc= 78  wall= 35.9s
+  --- what medium wrote for eval_expr (0/5) ---
+  | def eval_expr(s):
+  |     s = s.strip()
+  |     if not s:
+  |         raise ValueError("Empty expression")
+  | 
+  |     pos = 0
+  | 
+  |     def skip_spaces():
+  |         nonlocal pos
+  |         while pos < len(s) and s[pos].isspace():
+  |             pos += 1
+  | 
+  |     def parse_number():
+  |         nonlocal pos
+  |         start = pos
+  |         while pos < len(s) and s[pos].isdigit():
+  |             pos += 1
+  |         if pos == start:
+  |             raise ValueError(f"Expected number at position {pos}")
+  |         return int(s[start:pos])
+  | 
+  |     def parse_atom():
+  |         skip_spaces()
+  |         if pos >= len(s):
+  |             raise ValueError("Unexpected end of expression")
+  |         if s[pos] == '(':
+  |             pos += 1
+  |             result = parse_expression()
+  |             skip_spaces()
+  |             if pos >= len(s) or s[pos] != ')':
+  |                 raise ValueError("Expected ')'")
+  |             pos += 1
+  |             return result
+  |         elif s[pos].isdigit():
+  |             return parse_number()
+  |         else:
+  |             raise ValueError(f"Unexpected character '{s[pos]}' at position {pos}")
+  | 
+  |     def parse_factor():
+  |         skip_spaces()
+  |         if pos < len(s) and s[pos] == '+':
+  |             pos += 1
+  |             return parse_factor()
+  |         elif pos < len(s) and s[pos] == '-':
+  |             pos += 1
+  |             return -parse_factor()
+  |         else:
+  |             return parse_atom()
+  | 
+  |     def parse_term():
+  |         result = parse_factor()
+  |         while True:
+  |             skip_spaces()
+  |             if pos < len(s) and s[pos] in ('*', '/'):
+  |                 op = s[pos]
+  |                 pos += 1
+  |                 right = parse_factor()
+  |                 if op == '*':
+  |                     result = result * right
+  |                 else:
+  |                     result = result / right
+  |             else:
+  |                 break
+  |         return result
+  | 
+  |     def parse_expression():
+  |         result = parse_term()
+  |         while True:
+  |             skip_spaces()
+  |             if pos < len(s) and s[pos] in ('+', '-'):
+  |                 op = s[pos]
+  |                 pos += 1
+  |                 right = parse_term()
+  |                 if op == '+':
+  |                     result = result + right
+  |                 else:
+  |                     result = result - right
+  |             else:
+  |                 break
+  |         return result
+  | 
+  |     result = parse_expression()
+  |     skip_spaces()
+  |     if pos != len(s):
+  |         raise ValueError(f"Unexpected character '{s[pos]}' at position {pos}")
+  |     return float(result)
+  --- per-assertion: [False, False, False, False, False]
+  medium  eval_expr         #19 5/5  loc= 74  wall= 21.3s
+  medium  eval_expr         #20 5/5  loc= 70  wall= 24.7s
+
+=== REPRODUCIBILITY (per-run scores) ===
+  medium  eval_expr         [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 0, 5, 5, 5, 0, 5, 5]   18/20 runs at 5/5
+
+=== EFFORT vs QUALITY ===
+effort     tests passed   pass%    LOC  reason_ch   total s  empty
+medium           90/100   90.0%   1445     164658    590.0s      0
+
+Read LOC as over-engineering, not effort: a level that ties on pass rate
+while writing more code is producing a worse answer, which is the whole
+complaint about the xhigh default. `empty` counts turns that returned no
+content at all — xhigh can spend a whole budget thinking and answer nothing.
