@@ -321,8 +321,14 @@ Changing either key needs `./scripts/pi-container.sh --recreate`, because the
 port is fixed when the container is created; the launcher warns when the two
 disagree.
 
+**Opening Ovis lands on pi.** herdr's first pane is a shell, and Ovis's chat
+tab is whatever runs in the pane, so typing there ran shell commands. Whenever
+no pane runs pi, `ovis.sh` starts one there through `pi-local.sh`, in the
+container home (`OVIS_PI_DIR`), at Ovis start and at every `pi-container.sh`
+launch; `OVIS_PI_PANE=0` turns it off.
+
 Ovis only sees pi when pi runs in a herdr pane, so plain launches are
-unchanged and a session meant for Ovis is started with `--ovis`:
+unchanged and a further session meant for Ovis is started with `--ovis`:
 
 ```bash
 ./scripts/pi-container.sh --ovis               # pi in a new herdr pane, attached here
