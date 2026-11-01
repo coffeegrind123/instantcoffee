@@ -300,6 +300,26 @@ Ghidra and GhidraMCP are deliberately absent: ~3 GB of JDK and Ghidra for a
 server `mcp/servers.json` does not register. Add the blocks and an
 `mcp/servers.json` entry if you want it.
 
+## Why the extensions load from a copy
+
+The repo arrives on a Windows bind mount, and pi took 111-113 s to load its
+extension set from it against 3-5 s from the container's own disk (measured
+2026-11-01; nearly all of it the vendored packages, `pi-subagents-lite` alone
+~90 s). So inside the container `pi-local.sh` copies `.pi/extensions` and the
+five vendored packages into `/var/tmp/pi-ext/ext.XXXXXX` at each launch (~4 s)
+and loads `vendor/` from there; the first screen comes up in about 12 s.
+
+- **`.pi/extensions` still load from the repo.** pi also discovers them when it
+  runs inside the repo, and a second path to the same extension registers it
+  twice and fails the whole load. They are in the copy only because vendor code
+  imports from them.
+- **One copy per launch.** A running session may still spawn subagents from its
+  copy; copies older than a day are removed. `prinny-channel` is not copied.
+- `PI_STACK_REPO_ROOT` tells `/stack`, the browser guard and subagent children
+  where the real repo is, since the copy is not it.
+- `PI_EXT_LOCAL_COPY=0` loads everything from the repo again. Edits to vendor
+  code take effect at the next launch either way.
+
 ## First start
 
 The entrypoint seeds `~/.bashrc` if absent, brings up Xvfb, and then prints

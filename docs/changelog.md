@@ -10,6 +10,16 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**pi in the container starts in ~12 s instead of ~85 s (2026-11-01).** The
+vendored extensions load from a copy on the container's own disk; the Windows
+bind mount made the load take over a minute and a half. Also: `/loop` now pauses
+when you press Esc while pi is waiting to retry a failed request, the dashboard
+shows pi's own tool durations, subagent thinking levels follow pi's per-model
+setting and can follow the parent session (`parent`), a subagent's output limit
+uses the field pi itself sends, and `--print-only` no longer starts the browser.
+llama b12019 confirmed to reuse its cache when a request changes only the end
+of a long prompt (16 tokens reprocessed of 45,218).
+
 **pi 1.4.0 audit (2026-10-31).** Every extension checked against pi 0.87.1 ->
 1.4.0. Fixed: `/loop` sent its rules twice on every iteration (pi now runs the
 start hook on loop turns too); `/persona` started mid-turn switched the persona

@@ -207,12 +207,12 @@ does not belong on the allow-list — take it out of `vendor/rtk-pi/src/gate.ts`
 and record why, the way the entries already there do.
 
 **pi in the container takes a minute and a half to show anything.**
-Expected, for now. Measured 2026-11-01 in the rebuilt `pi-agent` image: 77-89 s
-from launch to the first screen, against about 1 s for pi with no extensions.
-The time is the extensions loading from the Windows bind mount (`pi-subagents-lite`
-alone: 85-100 s from a 9p mount, 2-4 s from local disk); pi 0.87 and 1.4 are the
-same. Nothing is hung if `docker exec instantcoffee-pi ps` shows `pi` using CPU.
-`context/pi-1.4-audit-2026-10-31.md` §5 and §7 have the numbers.
+Fixed 2026-11-01: it was 77-89 s to the first screen, because the extensions
+loaded from the Windows bind mount (111 s for the set, against 3-5 s from local
+disk). The launcher now loads `vendor/` from a fresh copy on the container's
+disk, about 12 s to the first screen. If it is slow again, check the launch
+line ends `vendor extensions from a local copy`; `PI_EXT_LOCAL_COPY=0` turns the
+copy off. `docs/container.md` has the details.
 
 **`pi -p "..."` from a script or a tool never returns.**
 pi in print mode reads stdin until EOF when stdin is not a terminal, and a

@@ -9628,3 +9628,23 @@ exports) and `enableInstallTelemetry: false` in pi's settings. Nothing the
 stack uses needs pi's startup network; pi updates are npm, run by pi-local.sh.
 
 Evidence: `context/pi-1.4-audit-2026-10-31.md` §6.
+
+## 2026-11-01 — vendor extensions load from a local copy in the pi container
+
+The pi container took 77-89 s to its first screen; the extension set loaded in
+111-113 s from the Windows bind mount and 3-5 s from local disk. `pi-local.sh`
+now copies `.pi/extensions` and the five vendored packages to
+`/var/tmp/pi-ext/ext.XXXXXX` per launch (~4 s) and loads vendor/ from there: ~12
+s to the first screen. Rejected: loading `.pi/extensions` from the copy too —
+pi discovers them when it runs inside the repo, and two paths to one extension
+fail the load. Rejected: one shared copy refreshed each launch — a running
+session spawns subagents from its copy later. Off with `PI_EXT_LOCAL_COPY=0`.
+
+## 2026-11-01 — #26004 confirmed on b12019; its log signature is trace-only
+
+A request that changes only the end of a 45,218-token prompt reprocessed 16
+tokens (control, change at the start: all of them). The handoff's planned check
+(grep llama's log for "forcing full prompt re-processing") cannot work on this
+build: that line and the checkpoint-restore line are trace level. Measure with
+the request's own `timings.prompt_n` / `cache_n` instead.
+

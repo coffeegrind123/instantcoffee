@@ -1,6 +1,46 @@
+# Handoff — 2026-11-01 (part 21: the open-work batch — pi container start 85 s -> 12 s, #26004 confirmed, Strata 0, the audit's leftovers done; NEXT: the b12019 spec-decode re-baseline)
+
+Everything below this part-21 block is history. Start here.
+
+## State at hand-off
+
+- Stack UP on `uc-coding` at 128K, capture ON. `instantcoffee-pi` exists (pi
+  1.4.0, image rebuilt 2026-10-31) and is idle; GPU idle.
+- `data2` clone needs `git pull` for today's commits (its pi container runs it).
+  It has no `.env.local`, so the container warns that `PI_SESSIONS_DIR` points
+  at `data`: pre-existing, worth a `.env.local` there.
+
+## What this session did (evidence in audit §8)
+
+1. **pi container start 77-89 s -> ~12 s.** vendor/ loads from a per-launch
+   local copy (`mirror_extensions`); `.pi/extensions` stay on the repo path, or
+   pi registers them twice when run inside the repo (the first attempt failed
+   exactly that way).
+2. **#26004 confirmed** with a direct two-request test (16 of 45,218 tokens
+   reprocessed; control: all). The planned log grep could never work: both
+   signature lines are trace-level in b12019.
+3. **Strata: 0** stranded of 198 reasoning completions. No forge patch.
+4. Child browser fencing observed live (4/4, control 3/3 unfenced); `/loop`
+   pauses on `agent_settled.aborted`; observe uses pi's `durationMs`
+   (`provider_stream_event` measured and declined); subagents upstream leftovers
+   ported (tool-map merge, output-limit field, thinking precedence + `parent`,
+   viewer); `--print-only` side effect gone; kld preflight credits llama.
+5. OPEN-WORK triaged (its new status table at the top).
+
+## Next
+
+1. **b12019 spec-decode re-baseline** (OPEN-WORK status table): 1-2 h GPU on a
+   quiet box; absorbs 0e and 6a; the baseline 0h needs.
+2. 0h size-m 128/192 (~50 min), then 0 (a multi-hour unattended `/loop` read for
+   the three signals).
+3. Operator decisions: bash `curl`/`wget` and web content (§5); an orchestrator
+   run end to end (0j, DeepSeek); GSQ to C: when C: has room.
+
+---
+
 # Handoff — 2026-10-31 (part 20: the pi 0.87 -> 1.4 extension audit — done; six defects fixed, two suites CI never ran brought back green; the pi container image is gone)
 
-Everything below this part-20 block is history. Start here.
+Everything below part 21 is history.
 
 ## State at hand-off
 
@@ -36,7 +76,7 @@ The whole account, with evidence, is `context/pi-1.4-audit-2026-10-31.md`.
    delegation after fixing S7, `/loop` with a reverted-fix control); startup
    measured at 77-89 s to the first frame. The test container is removed;
    `./scripts/pi-container.sh` creates the real one on first use. Its `data2`
-   clone still needs this work pulled in once it is committed.
+   clone was pulled to `4904d2b` the same day.
 2. pi startup (77-89 s, extensions loaded from the Windows bind mount) is open:
    measured, not fixed.
 3. DONE same session (audit §6): telemetry off; pi-mcp-adapter retired for pi's

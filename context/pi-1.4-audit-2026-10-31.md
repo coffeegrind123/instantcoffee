@@ -270,3 +270,53 @@ through tmux. The launcher pruned `pi-mcp-adapter` from the real settings in
   parent's observed fencing.
 - Harness traps, both mine: piping the launcher through `tee` gave pi pipes
   instead of a TTY and it waited on stdin (the same `-p` trap as §1).
+
+## 8. Follow-ups, 2026-11-01
+
+- **#26004 confirmed on b12019, and the handoff's instrument for it was blind.**
+  Both "restored context checkpoint" and "forcing full prompt re-processing"
+  are `SLT_TRC` (trace) in b12019 (`tools/server/server-context.cpp` 4289/4293),
+  so a default-verbosity log can never show either; zero of both proved
+  nothing. Measured instead with two requests straight to llama (45,218-token
+  prompt, `max_tokens` 1): changing only the last question prefilled **16**
+  tokens and reused 45,201 (0.7 s against 43.9 s cold); the control, changing
+  only the system prompt, prefilled all 45,218. Ordinary tool turns in the
+  overnight loop prefilled 0.1-1.3 % of a 23-29K context.
+- **Strata stranded tool calls: 0** on 198 completions, all with reasoning, none
+  with `<tool_call>` markup inside the reasoning. No forge patch needed. (The
+  overnight loop was stopped early at the operator's request; these two answers
+  came from better instruments rather than from a longer run.)
+- **A child's browser output is fenced** in what its model is sent
+  (`context/testing/pi-audit/extensions/probe-fencing.ts`, hooked on `context`):
+  4 of 4 results fenced; control with `browser-guard` left out of the child: 3
+  of 3 unfenced.
+- **pi container start: 77-89 s -> ~12 s to the first frame.** vendor/ loads
+  from a per-launch copy on the container's disk (`mirror_extensions` in
+  lib.sh; 111-113 s from the bind mount against 3-5 s local, copy ~4 s).
+  First attempt also loaded `.pi/extensions` from the copy and **failed every
+  launch inside the repo**: pi discovers the repo's own `.pi/extensions`, so a
+  second path registered "browser" and `stack_status` twice. `.pi/extensions`
+  now load from the repo (one path, deduplicated); children take their
+  `.pi/extensions` paths from `PI_STACK_REPO_ROOT`. Verified in a container from
+  the repo and from a scratch directory: 12.3 s, no load errors, `/stack status`
+  finds the repo.
+- **`/loop` pauses on `agent_settled.aborted`** (pi >= 1.1): Esc during a
+  provider-error retry left the last message at `error`, and the loop counted a
+  provider failure and went on. Its own degenerate-repetition abort is
+  excluded. `tests/settled-aborted.test.ts`.
+- **observe** sends pi's `durationMs` as `duration_ms` (the paired-start clock
+  also counted every extension's hooks). `provider_stream_event` **not
+  adopted**: on this stack the first provider event and the first
+  `message_update` coincide (gap 0 ms on 3 of 3 requests; forge re-streams in
+  ~3 chunks), so it would add a per-chunk handler for nothing.
+- **pi-subagents-lite**, the rest of the upstream review: tools of same-named
+  extensions merged (source pin; the function stays private), the per-API
+  output-limit field (forge gets `max_completion_tokens`, which pi sends, not a
+  second `max_tokens`), thinking precedence explicit > frontmatter > pi
+  per-model > `defaultThinking` > pi default with a `parent` choice (the judge
+  now also gets `defaultThinking` when its frontmatter is silent; unset here),
+  and the viewer keeping finished blocks while a message streams (real in pi
+  1.4, but not by upstream's mechanism: pi adds the streaming message to
+  `state.messages` only at `message_end`).
+- `pi-local.sh --print-only` no longer starts the browser server; `kld-run.sh`
+  preflight credits the memory of the llama it is about to stop.

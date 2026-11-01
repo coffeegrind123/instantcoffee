@@ -8,9 +8,36 @@ Ranked by what I would do first.
 the bottom.** Two sessions' worth of I/O lessons are in it and they are cheap to
 re-learn expensively.
 
+## Status as of 2026-11-01 — read this before any section below
+
+Triaged item by item against HANDOFF parts 18-21, `decisions.md` and
+`context/pi-1.4-audit-2026-10-31.md`. Most of the file below is now history; the
+sections keep their text, and this table says what each one is today.
+
+| § | Today | Why |
+| --- | --- | --- |
+| 000 sweep | DONE, except GSQ to C: | #26004 confirmed and Strata 0 of 198 (audit §8); kld preflight credits llama. GSQ to C: is blocked on C: space (operator, 2026-11-01). |
+| 00 ninfer | DONE as a question | measured 2026-09-04; re-opening needs a CI-built image (no local compiles) and a b12019 baseline |
+| 00b 128K | SUPERSEDED | b12019: 128K costs ~7% prefill, ~0% decode; window tiers (decisions 2026-10-31) |
+| 0 unattended /loop | OPEN | no multi-hour run has been read for the three signals since the 08-27 fixes |
+| 0b-0d ngram | DONE / SUPERSEDED | map-k adopted, p-min 0, size-m 96 |
+| 0e novel-text cost | SUPERSEDED | its arms no longer run; the question moves into the b12019 spec re-baseline |
+| 0f CUDA abort | dormant | no recurrence on b10689/b11118/b12019; if it returns, `CUDA_LAUNCH_BLOCKING=1` |
+| 0g watchdog | DONE | |
+| 0h size-m > 96 | OPEN | ~50 min GPU, after the re-baseline |
+| 0i b11118 measurement | SUPERSEDED, gap carried | **no spec sweep has run on b12019**: the re-baseline is the first item now |
+| 0j orchestrator | OPEN, low | never run end to end on a real task; needs DeepSeek |
+| 1, 2, 4 | DONE | |
+| 3 rotation asymmetry | OPEN, research only | drives no setting; b12019 changed greedy output, so controls first |
+| 5 browser injection | DONE except bash `curl`/`wget` | every browser result fenced since 2026-10-31, children included; the 08-31 audit's "adapter mostly clean" was wrong for its proxy tools |
+| 6a acceptance null | OPEN | belongs in the b12019 re-baseline |
+| 6b eval_expr x20 | OPEN | a few hours GPU; decides medium vs xhigh |
+
+Order now: b12019 spec re-baseline (absorbs 0e, 6a) -> 0h -> 0 -> the rest.
+
 ---
 
-## 000. The 2026-10-04 GitHub sweep — CLOSED; stack upgraded to b12019 + forge 0.10.0
+## 000. The 2026-10-04 GitHub sweep — CLOSED; stack upgraded to b12019 + forge 0.10.0 — #26004 and Strata closed 2026-11-01 (status table)
 
 **All sweep measurements are done and all decisions made (2026-10-31).** The
 stack now runs llama `server-cuda-b12019` + forge `0.10.0`; see **HANDOFF part 18**
@@ -335,7 +362,7 @@ session's worth of re-derivation.
 
 ---
 
-## 00b. 128K — CLOSED 2026-09-03: it fits, and it halves decode
+## 00b. 128K — CLOSED 2026-09-03: it fits, and it halves decode — verdict valid on b10689 only; SUPERSEDED 2026-10-31 (status table)
 
 `kvarn-measured-and-refused.md` ends by naming the next cheap measurement:
 *"re-run bee-128k-q8 on a quiet box and read `free` off the engine's exit
@@ -763,7 +790,7 @@ not "no cost".
 
 ---
 
-## 0e. Settle the novel-text cost of the pin — 19 rounds, ~4h
+## 0e. (SUPERSEDED 2026-11-01, see the status table) Settle the novel-text cost of the pin — 19 rounds, ~4h
 
 > **Still open; partial evidence from 2026-09-22/23, and the arms below need
 > updating.** The pin is now p-min 0.0 with map-k size-m 96, so compare against
@@ -1062,7 +1089,7 @@ is the test of the prompt, not of the plumbing.
 
 ---
 
-## 0i. Upgrade llama.cpp (b10689 -> b11118) and the pi-side tools — llama APPLIED, measurement NOT DONE (2026-09-23)
+## 0i. Upgrade llama.cpp (b10689 -> b11118) and the pi-side tools — llama APPLIED, measurement NOT DONE (2026-09-23) — the owed measurements now apply to b12019 (status table)
 
 The runbook is HANDOFF **part 14**; what happened is **part 15**. b11118 runs in
 production and passed every functional check (part 14 §3 steps 1, 2, 6, 7). The
@@ -2174,12 +2201,15 @@ the mount is not a block device in here.
   `--skip-tokens` saves another load.
 - **Do not drop the page cache.** I did it four times to make room for buffers
   that were never the binding constraint, and every subsequent model read came
-  off the physical disk again.
+  off the physical disk again. (That is about model-read-heavy passes. Out of
+  memory with ENOMEM is different: there, dropping the Docker VM's cache first
+  is the fix; see the global notes.)
 - **Do not touch llama while a pass holds the card.** Restarting it mid-pass put
   two 17.5 GB reads in contention.
 - **Do not launch long runs with `nohup … &` from a tool call.** They get reaped
   mid-run and leave an attached `docker run` orphaned — its stdout buffer fills
-  with no reader and the container wedges holding VRAM.
+  with no reader and the container wedges holding VRAM. Use `setsid nohup … &`:
+  a process in its own session (PPID 1) survives (HANDOFF part 18).
 - **Container load average is a bad proxy.** The box has 16 cores. During the
   one complaint, the CPU was a `cc1plus` build, an `eslint` run and a node test
   suite in OTHER sessions.
