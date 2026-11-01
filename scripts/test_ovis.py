@@ -182,8 +182,9 @@ class SupervisorLock(unittest.TestCase):
             self.assertNotIn("9", fds, "herdr inherited the supervisor lock")
             with open(mark + ".shell") as fh:
                 # Unset in the container, herdr's panes got /bin/sh, which has no
-                # bracketed paste: text pasted from Ovis ran as `^[[200~...`.
-                self.assertEqual(fh.read().strip(), "/bin/bash")
+                # bracketed paste: text pasted from Ovis ran as `^[[200~...`. herdr
+                # now gets the pane shell (pi, then bash), whatever the caller had.
+                self.assertEqual(fh.read().strip(), os.path.join(SCRIPTS, "ovis-shims", "pane-shell"))
 
     def test_control_the_server_launch_closes_it_too(self) -> None:
         with open(OVIS, encoding="utf-8") as fh:
@@ -245,51 +246,56 @@ class Relay(unittest.TestCase):
         self.assertIn('ovis_forward.py" 0.0.0.0 "$OVIS_CONTAINER_PORT"', src)
 
 
-class DefaultPiPane(unittest.TestCase):
-    """Opening Ovis lands on pi, not on herdr's bare shell.
+class PaneShell(unittest.TestCase):
+    """herdr's shell for every new pane: pi first, then bash.
 
-    herdr's first pane is a shell. The operator opened Ovis's chat on it, typed
-    "hello", and got `bash: hello: command not found` (2026-11-01). The
-    supervisor now starts pi there (through pi-local.sh) whenever no pane runs pi.
+    A new workspace or tab in Ovis opened herdr's default pane, a plain shell, so
+    Ovis showed "Message Shell" or a terminal (operator, 2026-11-01). herdr runs
+    $SHELL for every new pane; ovis.sh hands it scripts/ovis-shims/pane-shell.
     """
 
-    def run_ensure(self, agents: str, panes: str, **extra: str) -> list[str]:
+    def run_shell(self, args: list[str], **extra: str) -> list[str]:
         with tempfile.TemporaryDirectory() as td:
-            calls = os.path.join(td, "calls")
-            herdr = os.path.join(td, "herdr")
-            with open(herdr, "w") as fh:
-                fh.write('#!/usr/bin/env bash\n'
-                         f'echo "$*" >> "{calls}"\n'
-                         f'case "$1 $2" in "agent list") echo \'{agents}\';; "pane list") echo \'{panes}\';; esac\n')
-            os.chmod(herdr, 0o755)
-            run_dir = os.path.join(td, "run")
-            os.makedirs(run_dir)
-            sourced(f'HERDR="{herdr}"; RUN_DIR="{run_dir}"; ensure_pi_pane', **extra)
-            if not os.path.exists(calls):
-                return []
-            with open(calls) as fh:
-                return [ln for ln in fh.read().splitlines() if ln.startswith("pane run")]
+            scripts = os.path.join(td, "scripts")
+            os.makedirs(os.path.join(scripts, "ovis-shims"))
+            shutil.copy(os.path.join(SCRIPTS, "ovis-shims", "pane-shell"), os.path.join(scripts, "ovis-shims", "pane-shell"))
+            shutil.copy(os.path.join(SCRIPTS, "lib.sh"), os.path.join(scripts, "lib.sh"))
+            launcher = os.path.join(scripts, "pi-local.sh")
+            with open(launcher, "w") as fh:
+                fh.write('#!/usr/bin/env bash\necho "PI-LOCAL SHELL=$SHELL"\n')
+            os.chmod(launcher, 0o755)
+            fakebin = os.path.join(td, "bin")
+            os.makedirs(fakebin)
+            with open(os.path.join(fakebin, "bash"), "w") as fh:
+                fh.write('#!/bin/sh\necho "BASH $*"\n')
+            os.chmod(os.path.join(fakebin, "bash"), 0o755)
+            env = env_with(OVIS_PANE_BASH=os.path.join(fakebin, "bash"), **extra)
+            env.pop("OVIS_PANE_PLAIN", None) if "OVIS_PANE_PLAIN" not in extra else None
+            out = subprocess.run([BASH, os.path.join(scripts, "ovis-shims", "pane-shell"), *args],
+                                 capture_output=True, text=True, env=env, timeout=60)
+            return out.stdout.splitlines()
 
-    SHELL_ONLY = ('{"result":{"panes":[{"pane_id":"w1:p1","agent_status":"unknown"}]}}')
-    NO_AGENTS = '{"result":{"agents":[]}}'
-    PI_RUNNING = '{"result":{"agents":[{"agent":"pi","pane_id":"w2:p1"}]}}'
+    def test_an_interactive_pane_starts_pi_then_bash(self) -> None:
+        out = self.run_shell([])
+        self.assertEqual(out[0], "PI-LOCAL SHELL=/bin/bash", out)
+        self.assertTrue(out[-1].startswith("BASH"), out)
 
-    def test_starts_pi_in_the_shell_pane_when_none_runs(self) -> None:
-        runs = self.run_ensure(self.NO_AGENTS, self.SHELL_ONLY)
-        self.assertEqual(len(runs), 1, runs)
-        self.assertTrue(runs[0].startswith("pane run w1:p1 bash "), runs[0])
+    def test_a_login_pane_starts_pi_too(self) -> None:
+        self.assertEqual(self.run_shell(["-l"])[0], "PI-LOCAL SHELL=/bin/bash")
 
-    def test_leaves_it_alone_when_pi_already_runs(self) -> None:
-        self.assertEqual(self.run_ensure(self.PI_RUNNING, self.SHELL_ONLY), [])
+    def test_a_command_is_just_bash(self) -> None:
+        self.assertEqual(self.run_shell(["-c", "echo hi"]), ["BASH -c echo hi"])
 
-    def test_off_switch(self) -> None:
-        self.assertEqual(self.run_ensure(self.NO_AGENTS, self.SHELL_ONLY, OVIS_PI_PANE="0"), [])
+    def test_off_switch_and_plain_request(self) -> None:
+        self.assertEqual(self.run_shell([], OVIS_PI_PANE="0"), ["BASH -i"])
+        self.assertEqual(self.run_shell([], OVIS_PANE_PLAIN="1"), ["BASH -i"])
 
-    def test_control_the_supervisor_calls_it(self) -> None:
+    def test_control_herdr_gets_it_and_the_typed_launch_is_gone(self) -> None:
         with open(OVIS, encoding="utf-8") as fh:
             src = fh.read()
-        body = src[src.index("supervise() {"):src.index("healthy() {")]
-        self.assertIn("ensure_pi_pane", body)
+        self.assertIn("pane-shell", src[src.index("start_herdr() {"):src.index("# --- the supervisor")])
+        self.assertNotIn("ensure_pi_pane", src)
+        self.assertIn("--env OVIS_PANE_PLAIN=1", src)
 
 
 class PiLocalDropsTheShim(unittest.TestCase):
@@ -479,6 +485,50 @@ class CustomUiCoverage(unittest.TestCase):
             if missing:
                 offenders[name] = sorted(missing)
         self.assertEqual(offenders, {}, "pi's bundled extensions open custom TUI from commands not in TERMINAL_COMMANDS")
+
+
+class HerdrRestore(unittest.TestCase):
+    """herdr restores its panes on restart and types `pi --session <file>` into
+    them; with pane-shell starting pi in every pane, that text landed in the
+    running pi's editor (2026-11-01). ovis.sh turns the resume off."""
+
+    def run_config(self, existing: str | None) -> tuple[str, str]:
+        with tempfile.TemporaryDirectory() as td:
+            cfg = os.path.join(td, ".config", "herdr", "config.toml")
+            if existing is not None:
+                os.makedirs(os.path.dirname(cfg))
+                with open(cfg, "w") as fh:
+                    fh.write(existing)
+            proc = sourced("ensure_herdr_config", HOME=td)
+            with open(cfg) as fh:
+                return fh.read(), proc.stderr
+
+    def test_creates_it(self) -> None:
+        text, _ = self.run_config(None)
+        self.assertIn("[session]\nresume_agents_on_restore = false\n", text)
+
+    def test_adds_the_key_to_an_existing_session_table(self) -> None:
+        text, _ = self.run_config('[ui]\nx = 1\n[session]\nstartup_per_agent_delay_ms = 5\n')
+        self.assertIn("[session]\nresume_agents_on_restore = false\n", text)
+        self.assertIn("startup_per_agent_delay_ms = 5", text)
+        self.assertEqual(text.count("[session]"), 1)
+
+    def test_adds_a_session_table_to_a_file_without_one(self) -> None:
+        text, _ = self.run_config('[ui]\nx = 1\n')
+        self.assertTrue(text.startswith("[ui]\nx = 1\n"))
+        self.assertIn("[session]\nresume_agents_on_restore = false\n", text)
+
+    def test_leaves_an_explicit_choice_and_warns_on_true(self) -> None:
+        text, err = self.run_config('[session]\nresume_agents_on_restore = true\n')
+        self.assertIn("resume_agents_on_restore = true", text)
+        self.assertIn("resume_agents_on_restore", err)
+
+    def test_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            for _ in range(2):
+                sourced("ensure_herdr_config", HOME=td)
+            with open(os.path.join(td, ".config", "herdr", "config.toml")) as fh:
+                self.assertEqual(fh.read().count("resume_agents_on_restore"), 1)
 
 
 class LaunchScript(unittest.TestCase):

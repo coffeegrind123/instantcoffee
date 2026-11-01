@@ -93,17 +93,52 @@ herdr_up() {
   "$HERDR" status 2>/dev/null | awk '/^server:/{s=1; next} s && /status:/{print $2; exit}' | grep -qx running
 }
 
+# herdr restores its panes on restart and resumes each pi into its session by
+# typing `pi --session <file>` into the pane. pane-shell has already started a
+# pi there, so the line landed in that pi's editor (2026-11-01). Resume is off;
+# the earlier conversation stays one /resume away. An explicit choice in the
+# file is left alone, with a warning when it is `true`.
+ensure_herdr_config() {
+  python3 - "$HOME/.config/herdr/config.toml" <<'PY' || warn "could not set resume_agents_on_restore in herdr's config"
+import os, re, sys
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+key = re.search(r"^\s*resume_agents_on_restore\s*=\s*(\S+)", text, re.M)
+if key:
+    if key.group(1).lower() == "true":
+        print(f"warn {path} has resume_agents_on_restore = true: restored panes will get two pis", file=sys.stderr)
+    sys.exit(0)
+line = "resume_agents_on_restore = false\n"
+table = re.search(r"^\[session\]\s*\n", text, re.M)
+if table:
+    text = text[:table.end()] + line + text[table.end():]
+else:
+    text = text + ("" if text.endswith("\n") or not text else "\n") + "[session]\n" + line
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path + ".tmp", "w", encoding="utf-8") as fh:
+    fh.write(text)
+os.replace(path + ".tmp", path)
+PY
+}
+
 start_herdr() {
   herdr_up && return 0
+  ensure_herdr_config
   # PATH is the herdr SERVER's, and every pane inherits it. `9>&-`: herdr
   # outlives the supervisor by design, and with the supervisor's lock open it
   # held that lock forever, so every later supervisor's flock failed in silence
   # and Ovis never came back after a stop (2026-11-01).
-  # SHELL: unset in this container, and herdr then gives every pane /bin/sh,
-  # which has no bracketed paste, so text pasted from Ovis arrived as
-  # `^[[200~...` and ran as a command (2026-11-01).
-  SHELL=/bin/bash PATH="$SHIM_DIR:$PATH" setsid script -qfc \
-    "stty cols $HERDR_COLS rows $HERDR_ROWS; exec '$HERDR'" /dev/null </dev/null >/dev/null 2>&1 9>&- &
+  # SHELL is what herdr runs for every new pane: scripts/ovis-shims/pane-shell,
+  # pi first and then bash, so a new workspace or tab in Ovis opens on a pi
+  # chat (2026-11-01). Never the container's default: it has no SHELL, and
+  # herdr's /bin/sh fallback has no bracketed paste, so text pasted from Ovis
+  # arrived as `^[[200~...` and ran as a command. `script` itself runs its -c
+  # line with bash; only herdr gets the pane shell.
+  # Started from OVIS_PI_DIR (default the container home): herdr's first pane,
+  # and so its first pi, works where herdr was started.
+  local dir; dir="$(env_get OVIS_PI_DIR)"; [[ -d "${dir:-}" ]] || dir="$HOME"
+  ( cd "$dir" && SHELL=/bin/bash PATH="$SHIM_DIR:$PATH" setsid script -qfc \
+    "stty cols $HERDR_COLS rows $HERDR_ROWS; SHELL='$SHIM_DIR/pane-shell' exec '$HERDR'" /dev/null </dev/null >/dev/null 2>&1 9>&- & )
   local i
   for i in $(seq 1 30); do
     herdr_up && return 0
@@ -138,7 +173,6 @@ supervise() {
       sleep "$backoff"; backoff=$(( backoff * 2 > 60 ? 60 : backoff * 2 ))
       continue
     fi
-    ensure_pi_pane
     if ! alive "$FORWARD_PID"; then
       python3 "$REPO_ROOT/scripts/ovis_forward.py" 0.0.0.0 "$OVIS_CONTAINER_PORT" \
         127.0.0.1 "$OVIS_INTERNAL_PORT" >> "$LOG" 2>&1 9>&- &
@@ -223,7 +257,6 @@ start() {
     warn "Ovis did not answer within 30 s — see ${LOG}"
     return 0
   fi
-  herdr_up && ensure_pi_pane
   if (( ! quiet )); then
     if auth_off; then
       echo "Ovis:    $(url)  (no token: OVIS_TOKEN=off; sessions: pi-container.sh --ovis)"
@@ -310,40 +343,6 @@ write_launch() {
   printf '%s' "$f"
 }
 
-# Opening Ovis should land on pi. herdr's first pane is a bare shell, and its
-# chat tab is whatever runs in the pane: the operator typed "hello" there and
-# got `bash: hello: command not found` (2026-11-01). So whenever no pane runs
-# pi, start one through pi-local.sh: in the first pane with no agent in it,
-# else in a new workspace. OVIS_PI_PANE=0 turns it off; OVIS_PI_DIR is where
-# it works (default the container home). Quitting it leaves the shell; the
-# next `ovis.sh start` (every pi-container.sh launch) or Ovis restart brings
-# it back.
-ensure_pi_pane() {
-  [[ "$(env_get OVIS_PI_PANE | tr '[:upper:]' '[:lower:]')" =~ ^(0|false|no|off)$ ]] && return 0
-  "$HERDR" agent list 2>/dev/null | grep -q '"agent":"pi"' && return 0
-
-  local dir pane launch
-  dir="$(env_get OVIS_PI_DIR)"; : "${dir:=$HOME}"
-  [[ -d "$dir" ]] || { log "OVIS_PI_DIR=$dir does not exist; no default pi pane"; return 0; }
-  pane="$("$HERDR" pane list 2>/dev/null | python3 -c '
-import json, sys
-try:
-    panes = json.load(sys.stdin)["result"]["panes"]
-except Exception:
-    panes = []
-print(next((p["pane_id"] for p in panes if p.get("agent_status") == "unknown"), ""))' 2>/dev/null || true)"
-  if [[ -z "$pane" ]]; then
-    pane="$("$HERDR" workspace create --cwd "$dir" --label pi --no-focus 2>/dev/null | python3 -c '
-import json, sys
-print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])' 2>/dev/null || true)"
-  fi
-  [[ -n "$pane" ]] || { log "no pane for the default pi session"; return 0; }
-  launch="$(write_launch "$dir")"
-  "$HERDR" pane run "$pane" "bash $(printf '%q' "$launch")" >/dev/null 2>&1 \
-    && log "default pi session started in pane $pane ($dir)" \
-    || log "could not start the default pi session in pane $pane"
-  return 0
-}
 
 run() {
   in_container
@@ -362,7 +361,9 @@ run() {
   herdr_up || die "herdr is not running — see ${LOG}"
 
   local created pane term launch
-  created="$("$HERDR" workspace create --cwd "$dir" --label "pi $(basename "$dir")" --no-focus)" \
+  # A plain pane: this launch carries the caller's keys, so the pane must not
+  # start pi on its own (scripts/ovis-shims/pane-shell).
+  created="$("$HERDR" workspace create --cwd "$dir" --label "pi $(basename "$dir")" --no-focus --env OVIS_PANE_PLAIN=1)" \
     || die "herdr could not create a workspace: $created"
   read -r pane term < <(python3 -c '
 import json, sys
