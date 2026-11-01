@@ -349,6 +349,23 @@ if [[ -r "$GUARD_EXT" ]]; then
   pi_flags+=(-e "$GUARD_EXT")
 fi
 
+# herdr's pi integration, only inside a herdr pane (HERDR_ENV=1, which herdr
+# sets for every pane). It reports the session file and lifecycle to herdr over
+# herdr's local socket, which is what lets Ovis read pi's own transcript;
+# without it Ovis falls back to scraping the screen and showed 0 turns
+# (measured 2026-11-01). Loaded by path from the image (Dockerfile.pi generates
+# it), never installed into ~/.pi, so a session outside herdr never sees it.
+HERDR_NOTE=""
+if [[ "${HERDR_ENV:-}" == "1" && -n "${HERDR_PANE_ID:-}" ]]; then
+  HERDR_EXT="${OVIS_HERDR_INTEGRATION:-/opt/ovis/integrations/herdr-agent-state.ts}"
+  if [[ -r "$HERDR_EXT" ]]; then
+    pi_flags+=(-e "$HERDR_EXT")
+    HERDR_NOTE=", herdr pane ${HERDR_PANE_ID}"
+  else
+    warn "$HERDR_EXT is missing — Ovis will show this session from the screen only."
+  fi
+fi
+
 # /loop comes from vendor/pi-loop-mode — a fork of pi-loop-mode@2.5.4 that this
 # repo carries and edits (see vendor/pi-loop-mode/FORK.md). It is loaded by
 # absolute path, like /stack above, so the same code runs whatever directory pi
@@ -1125,5 +1142,5 @@ progress with:
   docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
 A cold load of a 17.9 GB quant takes ~25 minutes on this box."
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE}${EXT_NOTE})"
+echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE}${EXT_NOTE}${HERDR_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

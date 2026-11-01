@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# `pi` inside a herdr pane. scripts/ovis.sh puts this directory first on the
+# herdr server's PATH, and every pane inherits it, so a pi typed into a pane or
+# started there by Ovis (which types `pi` at the pane's prompt) runs through
+# scripts/pi-local.sh: forge, the extensions, the banner — the same session a
+# plain launch gets.
+#
+# This directory leaves PATH before pi-local.sh runs. pi-local.sh ends in
+# `exec pi`, and with the shim still first that would run the launcher again.
+
+shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+p=":$PATH:"
+p="${p//:$shim_dir:/:}"
+p="${p#:}"
+PATH="${p%:}"
+export PATH
+exec "$shim_dir/../pi-local.sh" "$@"

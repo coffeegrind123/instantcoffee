@@ -191,6 +191,8 @@ context_size_note   = CHANGED 2026-10-31, was 98304: windows are now per mode
 rtk_version         = 0.45.0
 rtk_filters         = allow-list verified
 rtk_filters_note    = 2026-08-16, ./scripts/rtk.sh --check
+ovis_bundle         = remote-v40
+ovis_bundle_note    = devswha/ovis prebuilt linux bundle (herdr 0.9.3, bun 1.4.2), pinned by sha256 in Dockerfile.pi (ARG OVIS_*); end to end measured 2026-11-01 (HANDOFF part 22)
 kv_cache            = q8_0/q8_0
 kv_cache_note       = CHANGED 2026-08-22; MEASURED — prefill four
                       digits and rising with depth, see verified_2026_08_22).

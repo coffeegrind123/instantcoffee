@@ -271,6 +271,12 @@ jobs:
       - name: Extension local-copy unit tests
         run: python scripts/test_ext_mirror.py
 
+      # Ovis in the pi container: OVIS_ENABLED defaults on, the port is
+      # published on loopback only, the token is private, a herdr pane keeps
+      # the caller's stack keys, and herdr's pi integration loads only in a pane.
+      - name: Ovis container unit tests
+        run: python scripts/test_ovis.py
+
       # The browser CLI turns shell words into JSON arguments for a tool it has
       # never seen, from that tool's own schema. A regression there is silent:
       # a dropped or mistyped parameter produces a call that succeeds and does

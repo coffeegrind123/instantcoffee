@@ -251,6 +251,43 @@ RUN git clone https://github.com/coffeegrind123/Zendriver-MCP-fork.git /opt/zend
     cd /opt/zendriver-mcp && \
     pip install --no-cache-dir --break-system-packages -e .
 
+# ── Ovis: a web and phone client for pi sessions in herdr panes ──────────────
+# github.com/devswha/ovis. Its prebuilt release bundle, pinned and checked
+# against the sha256 its own manifest.json publishes: the built web UI, the
+# server (run by the bundled bun), herdr itself and a Rust PTY host. Nothing is
+# compiled. scripts/ovis.sh runs it; OVIS_ENABLED in .env decides whether it
+# starts.
+#
+# The herdr pi integration is generated here, into the bundle, never into
+# ~/.pi: herdr writes it under PI_CODING_AGENT_DIR, and pi-local.sh loads it by
+# path only inside a herdr pane. Without it Ovis cannot find pi's session file
+# and shows the pane from its screen only (measured 2026-11-01).
+ARG OVIS_BUNDLE_TAG=remote-v40
+ARG OVIS_SHA256_LINUX_X64=beb56b9bb55519f5ad2f54fe5bd5bb20ef01c0b0725a680d1016d16085095416
+ARG OVIS_SHA256_LINUX_ARM64=64e5e95399f219a8862c809bc79a531d3ebad3af45e25f9d287f7c7477044024
+RUN set -eux; \
+    case "$(uname -m)" in \
+      x86_64|amd64)  plat=linux-x64;   want="${OVIS_SHA256_LINUX_X64}" ;; \
+      aarch64|arm64) plat=linux-arm64; want="${OVIS_SHA256_LINUX_ARM64}" ;; \
+      *) echo "no Ovis bundle for $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSL --max-time 600 -o "$tmp/ovis.tgz" \
+      "https://github.com/devswha/ovis/releases/download/${OVIS_BUNDLE_TAG}/herdr-web-ui-${plat}.tgz"; \
+    got="$(sha256sum "$tmp/ovis.tgz" | awk '{print $1}')"; \
+    [ "$got" = "$want" ] || { echo "Ovis bundle checksum mismatch: expected $want, got $got" >&2; exit 1; }; \
+    mkdir -p /opt/ovis; \
+    tar xzf "$tmp/ovis.tgz" -C /opt/ovis --no-same-owner; \
+    rm -rf "$tmp"; \
+    /opt/ovis/bin/herdr --version; \
+    /opt/ovis/bin/bun --version; \
+    agent="$(mktemp -d)"; mkdir -p "$agent/extensions"; \
+    PI_CODING_AGENT_DIR="$agent" /opt/ovis/bin/herdr integration install pi; \
+    install -m 0644 "$agent/extensions/herdr-agent-state.ts" /opt/ovis/integrations/herdr-agent-state.ts; \
+    rm -rf "$agent"; \
+    cat /opt/ovis/bundle.json
+EXPOSE 7317
+
 # ── Defaults seeded into the home mount on first start ───────────────────────
 RUN <<'DEFAULTS_EOF'
 mkdir -p /root/defaults
@@ -400,6 +437,13 @@ echo "mcp2cli: $(mcp2cli --version 2>/dev/null || echo 'not found')"
 echo "uv:      $(uv --version 2>/dev/null || echo 'not found')"
 echo "Chrome:  $(google-chrome --version 2>/dev/null || echo 'not found')"
 echo "Browser: /opt/zendriver-mcp (ZENDRIVER_MCP_DIR)"
+
+# --- Ovis ----------------------------------------------------------------------
+# The logic is in the checkout (scripts/ovis.sh), so it updates with a git pull
+# rather than a rebuild. It reads OVIS_ENABLED itself and never fails the start.
+if [ -n "$REPO" ] && [ -x "$REPO/scripts/ovis.sh" ]; then
+    "$REPO/scripts/ovis.sh" start || echo "warn: Ovis did not start - see /tmp/ovis/ovis.log"
+fi
 echo
 echo "cd into a project and run:  qpi"
 

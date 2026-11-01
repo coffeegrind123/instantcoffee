@@ -106,6 +106,18 @@ env_forward_args() {
   done
 }
 
+# Ovis in the pi container (scripts/ovis.sh). Read by both sides of it:
+# pi-container.sh on the host decides the published port, ovis.sh inside decides
+# whether to start. Default ON, so unset or empty is on; 0/false/no/off is off.
+# The port inside the container is fixed; OVIS_PORT is the host side.
+OVIS_CONTAINER_PORT=7317
+ovis_enabled() {
+  case "$(env_get OVIS_ENABLED | tr '[:upper:]' '[:lower:]')" in
+    0|false|no|off) return 1 ;;
+  esac
+  return 0
+}
+
 # Rewrite a key in .env in place, preserving comments and ordering.
 env_set() {
   local key="$1" value="$2" file="$REPO_ROOT/.env"

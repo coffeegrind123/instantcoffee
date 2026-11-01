@@ -6,6 +6,7 @@
 #   ./scripts/pi-container.sh -C myproj       work on <container home>/myproj
 #   ./scripts/pi-container.sh --session <id>  resume a session, in its own directory
 #   ./scripts/pi-container.sh -p "summarize"  any pi flag passes through
+#   ./scripts/pi-container.sh --ovis          the session in a herdr pane, so Ovis shows it
 #   ./scripts/pi-container.sh --shell         a shell in the container, not pi
 #   ./scripts/pi-container.sh --status        what is running, and against what
 #   ./scripts/pi-container.sh --stop          stop it (all state is on the mount)
@@ -58,10 +59,12 @@ CREPO="$(env_get PI_CONTAINER_REPO)";       : "${CREPO:=${CHOME}/qwen3.8-forge}"
 SHM="$(env_get PI_CONTAINER_SHM)";          : "${SHM:=2g}"
 EXTRA="$(env_get PI_CONTAINER_EXTRA_ARGS)"
 READY_TIMEOUT="$(env_get PI_CONTAINER_READY_TIMEOUT)"; : "${READY_TIMEOUT:=300}"
+OVIS_PORT="$(env_get OVIS_PORT)";            : "${OVIS_PORT:=$OVIS_CONTAINER_PORT}"
 
 MODE=run
 WORKDIR_ARG=""
 PRINT_ONLY=0
+OVIS_RUN=0
 # A session names its own directory, and these are the flags that name a
 # session. They are OBSERVED, not consumed: pi gets them verbatim, and the only
 # thing this script does with them is work out which directory to start in.
@@ -88,11 +91,12 @@ while (( $# )); do
   case "$1" in
     -C|--project)  WORKDIR_ARG="${2:-}"; shift 2 ;;
     --shell)       MODE=shell; shift ;;
+    --ovis)        OVIS_RUN=1; shift ;;
     --status)      MODE=status; shift ;;
     --stop)        MODE=stop; shift ;;
     --recreate)    MODE=recreate; shift ;;
     --print-only)  PRINT_ONLY=1; shift ;;
-    -h|--help)     sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
+    -h|--help)     sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     --session|--session-id|--fork)
                    SESSION_FLAG="$1"; SESSION_SEL="$(take_value "$@")"
                    ARGS+=("$1"); shift
@@ -152,6 +156,12 @@ build_run_cmd() {
            --add-host host.docker.internal:host-gateway
            --shm-size="$SHM"
            -e "PI_HOME_HOSTPATH=${HHOME}")
+  # Ovis (scripts/ovis.sh) listens on 0.0.0.0 inside; publish it on loopback
+  # only. A port is fixed at creation, so changing OVIS_ENABLED or OVIS_PORT
+  # needs --recreate, and ovis_port_drift says so.
+  if ovis_enabled; then
+    RUN_CMD+=(-p "127.0.0.1:${OVIS_PORT}:${OVIS_CONTAINER_PORT}")
+  fi
   # Split on whitespace on purpose: this is a flag string, not a path.
   if [[ -n "$EXTRA" ]]; then
     local extra_arr; read -r -a extra_arr <<< "$EXTRA"
@@ -214,6 +224,29 @@ warn_repo_drift() {
   warn "  .env — a modified tracked file is what blocks the fast-forward."
 }
 
+# OVIS_ENABLED and the container's published port disagree. Says which way,
+# because the two fixes differ only in which setting is the one you meant.
+ovis_port_drift() {
+  local bound
+  bound="$(docker port "$NAME" "${OVIS_CONTAINER_PORT}/tcp" 2>/dev/null | head -n1)"
+  if ovis_enabled && [[ -z "$bound" ]]; then
+    warn "OVIS_ENABLED is on but ${NAME} publishes no Ovis port — ./scripts/pi-container.sh --recreate"
+  elif ovis_enabled && [[ "${bound##*:}" != "$OVIS_PORT" ]]; then
+    warn "Ovis is published on ${bound}, not OVIS_PORT=${OVIS_PORT} — ./scripts/pi-container.sh --recreate"
+  elif ! ovis_enabled && [[ -n "$bound" ]]; then
+    dim "OVIS_ENABLED=0 but ${NAME} still publishes ${bound}; --recreate drops it" >&2
+  fi
+  return 0
+}
+
+# start.sh starts Ovis at every container boot; this covers a container that
+# was already running, or was created from an image whose start.sh predates
+# Ovis. Idempotent, and quiet unless something is wrong.
+ensure_ovis() {
+  ovis_enabled || return 0
+  docker exec "$NAME" "${CREPO}/scripts/ovis.sh" start --quiet || true
+}
+
 wait_ready() {
   local waited=0
   while (( waited < READY_TIMEOUT )); do
@@ -232,6 +265,8 @@ ensure_up() {
   if [[ "$st" == running ]]; then
     image_drifted && warn "the container predates the current ${IMAGE} — ./scripts/pi-container.sh --recreate to adopt it"
     warn_repo_drift
+    ovis_port_drift
+    ensure_ovis
     return 0
   fi
 
@@ -260,6 +295,8 @@ ensure_up() {
 
   # After the container is up, not before: the check has to exec into it.
   warn_repo_drift
+  ovis_port_drift
+  ensure_ovis
 }
 
 # --- which directory pi works on --------------------------------------------
@@ -499,6 +536,7 @@ case "$MODE" in
       else
         printf 'forge        not answering — ./scripts/up.sh\n'
       fi
+      printf 'ovis         %s\n' "$(docker exec "$NAME" "${CREPO}/scripts/ovis.sh" status --brief 2>/dev/null || echo 'unknown — no scripts/ovis.sh in the container checkout')"
     fi
     exit 0 ;;
 esac
@@ -515,7 +553,12 @@ if (( PRINT_ONLY )); then
   if [[ "$(state)" == running ]]; then
     apply_session_workdir
     mapfile -t FORWARD_ENV < <(env_forward_args)
-    printf '%q ' docker exec -it "${FORWARD_ENV[@]}" -w "$(resolve_workdir "$WORKDIR_ARG")" "$NAME" "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"; echo
+    PRINT_WORKDIR="$(resolve_workdir "$WORKDIR_ARG")"
+    if (( OVIS_RUN )); then
+      printf '%q ' docker exec -it "${FORWARD_ENV[@]}" -w "$PRINT_WORKDIR" "$NAME" "${CREPO}/scripts/ovis.sh" run -w "$PRINT_WORKDIR" -- "${ARGS[@]}"; echo
+    else
+      printf '%q ' docker exec -it "${FORWARD_ENV[@]}" -w "$PRINT_WORKDIR" "$NAME" "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"; echo
+    fi
   fi
   exit 0
 fi
@@ -544,6 +587,14 @@ tty_flags=(-i)
 
 if [[ "$MODE" == shell ]]; then
   exec docker exec "${tty_flags[@]}" "${FORWARD_ENV[@]}" -w "$WORKDIR" "$NAME" bash -l
+fi
+
+# --ovis: the same session, started in a herdr pane so Ovis shows it, with this
+# terminal attached to the pane. ovis.sh carries the forwarded keys into the
+# pane, which herdr would otherwise start from its own environment.
+if (( OVIS_RUN )); then
+  ovis_enabled || die "--ovis needs OVIS_ENABLED=1 (it is off in .env/.env.local)"
+  exec docker exec "${tty_flags[@]}" "${FORWARD_ENV[@]}" -w "$WORKDIR" "$NAME" "${CREPO}/scripts/ovis.sh" run -w "$WORKDIR" -- "${ARGS[@]}"
 fi
 
 exec docker exec "${tty_flags[@]}" "${FORWARD_ENV[@]}" -w "$WORKDIR" "$NAME" "${CREPO}/scripts/pi-local.sh" "${ARGS[@]}"
