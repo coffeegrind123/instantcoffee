@@ -265,8 +265,13 @@ Then, inside:
 
 ```bash
 cd ~/your-project
-qpi                       # alias for ~/qwen3.8-forge/scripts/pi-local.sh
+pi                        # alias for ~/qwen3.8-forge/scripts/pi-local.sh (so is qpi)
 ```
+
+`pi` is an alias, so it applies to interactive shells only. pi's subagents
+start their children by running `pi` off PATH, and those must get the real
+binary, which is also `command pi` when you want stock pi. A home seeded before
+2026-11-01 has only `qpi`; add the line from the image's default `.bashrc`.
 
 ## What is in the image, and where
 
@@ -339,8 +344,12 @@ The terminal attaches to the pane; **Ctrl+B then Q detaches** and pi keeps
 running, in Ovis. Exported stack keys reach the pane the same way they reach a
 plain launch (herdr starts panes from its own environment, so `ovis.sh` writes
 them into a one-shot launch script that deletes itself). A `pi` started from
-Ovis itself, or typed into a pane, goes through `pi-local.sh` too: herdr's
-panes have `scripts/ovis-shims/` first on PATH.
+Ovis itself, or typed into a pane, goes through `pi-local.sh` too: the
+container's `.bashrc` aliases `pi` to it, and `scripts/ovis-shims/` (first on
+herdr's PATH) covers a pane whose shell reads no `.bashrc`. `.bashrc` puts
+`/usr/local/bin` ahead of the shim, so in a bash pane the alias is what does it
+(measured 2026-11-01: one launcher run per `pi`, the Ovis start included), and
+`pi-local.sh` takes the shim off PATH before its own `exec pi` either way.
 
 Open `http://127.0.0.1:7317/` and paste the token:
 
