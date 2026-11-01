@@ -463,6 +463,22 @@ print(len(json.load(urllib.request.urlopen(req, timeout=300))['tokens']))
   local avail_mb; avail_mb="$(docker run --rm alpine free -m | awk '/^Mem:/{print $7}')"
   local swap_mb;  swap_mb="$(docker run --rm alpine free -m | awk '/^Swap:/{print $4}')"
   echo "    host memory   ${avail_mb} MiB available, ${swap_mb} MiB free swap"
+  # The run stops llama before the base pass (below), so a running llama's
+  # memory is available to it. Counting it as taken refused runs by about
+  # llama's own footprint (~1.8 GiB here). Only credited while it IS running:
+  # a stopped llama has nothing to give back.
+  if [[ "$(docker inspect -f '{{.State.Running}}' "$LLAMA_CT" 2>/dev/null)" == "true" ]]; then
+    local usage llama_mb
+    usage="$(docker stats --no-stream --format '{{.MemUsage}}' "$LLAMA_CT" 2>/dev/null | awk '{print $1}')"
+    llama_mb="$(awk -v u="$usage" 'BEGIN {
+      n = u + 0; unit = u; sub(/^[0-9.]+/, "", unit)
+      f = (unit == "GiB") ? 1024 : (unit == "MiB") ? 1 : (unit == "KiB") ? 1/1024 : (unit == "TiB") ? 1048576 : 0
+      printf "%d", n * f }')"
+    if (( llama_mb > 0 )); then
+      avail_mb=$(( avail_mb + llama_mb ))
+      echo "                  +${llama_mb} MiB held by ${LLAMA_CT}, released when llama stops: ${avail_mb} MiB"
+    fi
+  fi
   local blocked=0
   for d in ${DEPTHS//,/ }; do
     local need_mb=0

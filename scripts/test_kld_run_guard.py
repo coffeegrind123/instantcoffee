@@ -35,7 +35,8 @@ STUB = r"""#!/bin/sh
 args="$*"
 case "$args" in
   "image inspect "*)                 exit 0 ;;
-  *" free -m"*)                      printf 'Mem: 0 0 0 0 0 50000\nSwap: 0 0 60000\n'; exit 0 ;;
+  *" free -m"*)                      printf 'Mem: 0 0 0 0 0 %s\nSwap: 0 0 %s\n' "$(cat "__AVAIL__")" "$(cat "__SWAP__")"; exit 0 ;;
+  "stats --no-stream "*)             cat "__STATS__"; exit 0 ;;
   *" df -Pm "*)                      printf 'Fs 1M Used Avail Cap M\nx 1 1 9999999 1%% /x\n'; exit 0 ;;
   *" stat -c %s "*)                  echo 1048576; exit 0 ;;
   *" test -f "*)                     exit 0 ;;
@@ -61,6 +62,8 @@ class KldRunGuard(unittest.TestCase):
         self.calls = os.path.join(d, "calls")
         self.running = os.path.join(d, "running")
         open(self.calls, "w").close()
+        self.avail, self.swap, self.stats = (os.path.join(d, n) for n in ("avail", "swap", "stats"))
+        self.set_memory(avail_mib=50000, swap_mib=60000, llama_usage="1.8GiB / 21.47GiB")
         # Run a MIRROR of scripts/, not the tree in place: lib.sh derives
         # REPO_ROOT from the script's own path, and the real run writes its
         # log dir under ${REPO_ROOT}/.kld-logs. Mirroring sends that into the
@@ -80,7 +83,8 @@ class KldRunGuard(unittest.TestCase):
         self.script = os.path.join(mirror, "kld-run.sh")
         stub = os.path.join(d, "docker")
         with open(stub, "w") as f:
-            f.write(STUB.replace("__CALLS__", self.calls).replace("__RUNNING__", self.running))
+            f.write(STUB.replace("__CALLS__", self.calls).replace("__RUNNING__", self.running)
+                    .replace("__AVAIL__", self.avail).replace("__SWAP__", self.swap).replace("__STATS__", self.stats))
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IEXEC)
         self.env = dict(os.environ, PATH=f"{d}:{os.environ['PATH']}")
         # Pin the keys the script reads so the result does not depend on the
@@ -93,6 +97,11 @@ class KldRunGuard(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def set_memory(self, avail_mib: int, swap_mib: int, llama_usage: str) -> None:
+        for path, value in ((self.avail, avail_mib), (self.swap, swap_mib), (self.stats, llama_usage)):
+            with open(path, "w") as f:
+                f.write(f"{value}\n")
 
     def run_guard(self, running: bool):
         with open(self.running, "w") as f:
@@ -118,6 +127,23 @@ class KldRunGuard(unittest.TestCase):
         self.assertNotIn("stop ", calls, f"a stopped llama was stopped anyway:\n{out}\n---\n{calls}")
         self.assertNotIn("start ", calls, f"a stopped llama was started by the trap:\n{out}\n---\n{calls}")
         self.assertIn("is not running", out, f"the run did not say llama was not running:\n{out}")
+
+
+    # The host-RAM verdict counted a running llama's memory as unavailable,
+    # although the run stops llama before the base pass: a run that would fit
+    # once llama was down was refused by about the llama's own footprint
+    # (~1.8 GiB on this box, HANDOFF parts 18-19). Depth 512 needs ~396 MiB
+    # here; 300 MiB is free and llama holds 3 GiB.
+    def test_running_llama_is_credited(self):
+        self.set_memory(avail_mib=300, swap_mib=60000, llama_usage="3GiB / 21.47GiB")
+        out, _ = self.run_guard(running=True)
+        self.assertNotIn("REFUSED", out, f"a run that fits once llama stops was refused:\n{out}")
+        self.assertIn("released when llama stops", out, out)
+
+    def test_control_stopped_llama_is_not_credited(self):
+        self.set_memory(avail_mib=300, swap_mib=60000, llama_usage="3GiB / 21.47GiB")
+        out, _ = self.run_guard(running=False)
+        self.assertIn("REFUSED", out, f"nothing to credit, so this must still be refused:\n{out}")
 
 
 if __name__ == "__main__":
