@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -167,20 +168,80 @@ class SupervisorLock(unittest.TestCase):
             with open(herdr, "w") as fh:
                 fh.write('#!/usr/bin/env bash\n'
                          f'if [ "$1" = status ]; then [ -s "{mark}" ] && printf "server:\\n  status: running\\n"; exit 0; fi\n'
+                         f'echo "$SHELL" > "{mark}.shell"\n'
                          f'ls /proc/$$/fd > "{mark}.tmp" && mv "{mark}.tmp" "{mark}"; sleep 3\n')
             os.chmod(herdr, 0o755)
             lock = os.path.join(td, "lock")
-            proc = sourced(f'HERDR="{herdr}"; exec 9>"{lock}"; start_herdr && echo STARTED')
+            # SHELL=/bin/sh is what the container's panes got: herdr must get bash anyway.
+            proc = sourced(f'HERDR="{herdr}"; exec 9>"{lock}"; start_herdr && echo STARTED', SHELL="/bin/sh")
             self.assertIn("STARTED", proc.stdout, proc.stderr)
             with open(mark) as fh:
                 fds = fh.read().split()
             self.assertIn("0", fds, "control: the listing must be of real descriptors")
             self.assertNotIn("9", fds, "herdr inherited the supervisor lock")
+            with open(mark + ".shell") as fh:
+                # Unset in the container, herdr's panes got /bin/sh, which has no
+                # bracketed paste: text pasted from Ovis ran as `^[[200~...`.
+                self.assertEqual(fh.read().strip(), "/bin/bash")
 
     def test_control_the_server_launch_closes_it_too(self) -> None:
         with open(OVIS, encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn('exec "$BUN" server/index.ts ) >> "$LOG" 2>&1 9>&- &', src)
+
+
+class Relay(unittest.TestCase):
+    """scripts/ovis_forward.py: Ovis binds loopback behind it, so its LAN banner stays off."""
+
+    def test_relays_both_ways_and_passes_a_half_close(self) -> None:
+        import socket
+        import threading
+        import time
+
+        upstream = socket.socket()
+        upstream.bind(("127.0.0.1", 0))
+        upstream.listen(1)
+        target_port = upstream.getsockname()[1]
+        received = bytearray()
+
+        def echo_after_eof() -> None:
+            conn, _ = upstream.accept()
+            while chunk := conn.recv(65536):
+                received.extend(chunk)
+            conn.sendall(b"R" * 300_000)   # the whole answer comes after the client's EOF
+            conn.close()
+
+        threading.Thread(target=echo_after_eof, daemon=True).start()
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        listen_port = probe.getsockname()[1]
+        probe.close()
+        relay = subprocess.Popen([sys.executable, os.path.join(SCRIPTS, "ovis_forward.py"), "127.0.0.1",
+                                  str(listen_port), "127.0.0.1", str(target_port)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            self.assertIn("ovis-forward", relay.stdout.readline())
+            client = socket.create_connection(("127.0.0.1", listen_port), timeout=10)
+            client.sendall(b"Q" * 200_000)
+            client.shutdown(socket.SHUT_WR)
+            answer = bytearray()
+            while chunk := client.recv(65536):
+                answer.extend(chunk)
+            client.close()
+            time.sleep(0.1)
+            self.assertEqual(bytes(received), b"Q" * 200_000)
+            self.assertEqual(bytes(answer), b"R" * 300_000)
+        finally:
+            relay.terminate()
+            relay.wait(timeout=10)
+            upstream.close()
+
+    def test_ovis_binds_loopback_and_the_relay_owns_the_published_port(self) -> None:
+        with open(OVIS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('HOST=127.0.0.1 PORT="$OVIS_INTERNAL_PORT"', src)
+        self.assertNotIn("HOST=0.0.0.0", src)
+        self.assertIn('ovis_forward.py" 0.0.0.0 "$OVIS_CONTAINER_PORT"', src)
 
 
 class LaunchScript(unittest.TestCase):

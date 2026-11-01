@@ -19,9 +19,11 @@
 # herdr pane, which is what `run` arranges. Detach from a pane with Ctrl+B then
 # Q: pi keeps running, and Ovis keeps showing it.
 #
-# Access: the server listens on 0.0.0.0:7317 inside the container, because a
-# published port arrives from the Docker gateway rather than from loopback, and
-# pi-container.sh publishes it on 127.0.0.1 only. Every request except
+# Access: Ovis listens on 127.0.0.1:7318 inside the container, behind a relay
+# on 0.0.0.0:7317 (scripts/ovis_forward.py), because Docker delivers a published
+# port to the container's own address and Ovis shows a "reachable on your
+# network" banner for any non-loopback bind. pi-container.sh publishes 7317 on
+# the host's 127.0.0.1 only. Every request except
 # /api/health and the page itself needs the token (measured 2026-11-01: 401
 # without it or with a wrong one). Telemetry and self-update are always off.
 #
@@ -40,6 +42,9 @@ RUN_DIR="${OVIS_RUN_DIR:-/tmp/ovis}"
 LOG="$RUN_DIR/ovis.log"
 SUPERVISOR_PID="$RUN_DIR/supervisor.pid"
 SERVER_PID="$RUN_DIR/server.pid"
+FORWARD_PID="$RUN_DIR/forward.pid"
+# Where Ovis itself listens; the relay owns OVIS_CONTAINER_PORT.
+OVIS_INTERNAL_PORT=7318
 TOKEN_FILE="${OVIS_TOKEN_FILE:-$HOME/.config/ovis/token}"
 # `pi` on the herdr server's PATH, so a pi started in a pane, or by Ovis, goes
 # through pi-local.sh. See scripts/ovis-shims/pi.
@@ -94,7 +99,10 @@ start_herdr() {
   # outlives the supervisor by design, and with the supervisor's lock open it
   # held that lock forever, so every later supervisor's flock failed in silence
   # and Ovis never came back after a stop (2026-11-01).
-  PATH="$SHIM_DIR:$PATH" setsid script -qfc \
+  # SHELL: unset in this container, and herdr then gives every pane /bin/sh,
+  # which has no bracketed paste, so text pasted from Ovis arrived as
+  # `^[[200~...` and ran as a command (2026-11-01).
+  SHELL=/bin/bash PATH="$SHIM_DIR:$PATH" setsid script -qfc \
     "stty cols $HERDR_COLS rows $HERDR_ROWS; exec '$HERDR'" /dev/null </dev/null >/dev/null 2>&1 9>&- &
   local i
   for i in $(seq 1 30); do
@@ -121,7 +129,7 @@ supervise() {
   flock -n 9 || exit 0
   echo $$ > "$SUPERVISOR_PID"
   local child="" backoff=2 started ran rc tok
-  trap '[[ -n "$child" ]] && kill "$child" 2>/dev/null; rm -f "$SUPERVISOR_PID" "$SERVER_PID"; exit 0' TERM INT
+  trap '[[ -n "$child" ]] && kill "$child" 2>/dev/null; alive "$FORWARD_PID" && kill "$(cat "$FORWARD_PID" 2>/dev/null)" 2>/dev/null; rm -f "$SUPERVISOR_PID" "$SERVER_PID" "$FORWARD_PID"; exit 0' TERM INT
 
   while ovis_enabled; do
     rotate_log
@@ -130,6 +138,11 @@ supervise() {
       sleep "$backoff"; backoff=$(( backoff * 2 > 60 ? 60 : backoff * 2 ))
       continue
     fi
+    if ! alive "$FORWARD_PID"; then
+      python3 "$REPO_ROOT/scripts/ovis_forward.py" 0.0.0.0 "$OVIS_CONTAINER_PORT" \
+        127.0.0.1 "$OVIS_INTERNAL_PORT" >> "$LOG" 2>&1 9>&- &
+      echo $! > "$FORWARD_PID"
+    fi
     tok="$(token)"
     started=$(date +%s)
     log "starting Ovis ($(cat "$OVIS_DIR/bundle.json" 2>/dev/null))"
@@ -137,7 +150,7 @@ supervise() {
     # none (server/index.ts:209), so OVIS_TOKEN=off is an unset variable here.
     ( cd "$OVIS_DIR" && \
       if [[ -n "$tok" ]]; then export OVIS_TOKEN="$tok"; else unset OVIS_TOKEN; fi && \
-      HOST=0.0.0.0 PORT="$OVIS_CONTAINER_PORT" \
+      HOST=127.0.0.1 PORT="$OVIS_INTERNAL_PORT" \
       OVIS_TELEMETRY=0 OVIS_AUTO_UPDATE=0 NO_OPEN_BROWSER=1 OVIS_NO_OPEN=1 \
       OVIS_HERDR_BIN="$HERDR" PATH="$SHIM_DIR:$PATH" \
       exec "$BUN" server/index.ts ) >> "$LOG" 2>&1 9>&- &
@@ -151,7 +164,8 @@ supervise() {
     sleep "$backoff"
   done
   log "OVIS_ENABLED is off; supervisor exiting"
-  rm -f "$SUPERVISOR_PID" "$SERVER_PID"
+  alive "$FORWARD_PID" && kill "$(cat "$FORWARD_PID" 2>/dev/null)" 2>/dev/null
+  rm -f "$SUPERVISOR_PID" "$SERVER_PID" "$FORWARD_PID"
 }
 
 healthy() { curl -fsS -m 2 -o /dev/null "$HEALTH_URL" 2>/dev/null; }
@@ -204,7 +218,7 @@ stop() {
   in_container
   local p pid sup="" i
   [[ -f "$SUPERVISOR_PID" ]] && sup="$(cat "$SUPERVISOR_PID" 2>/dev/null || true)"
-  for p in "$SUPERVISOR_PID" "$SERVER_PID"; do
+  for p in "$SUPERVISOR_PID" "$SERVER_PID" "$FORWARD_PID"; do
     pid="$(cat "$p" 2>/dev/null || true)"
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
@@ -214,7 +228,7 @@ stop() {
       sleep 0.25
     done
   fi
-  rm -f "$SUPERVISOR_PID" "$SERVER_PID"
+  rm -f "$SUPERVISOR_PID" "$SERVER_PID" "$FORWARD_PID"
   ok "Ovis stopped; herdr and its panes are still running (${HERDR} server stop ends them)"
 }
 
