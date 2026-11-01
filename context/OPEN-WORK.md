@@ -29,7 +29,7 @@ sections keep their text, and this table says what each one is today.
 | 0j orchestrator | OPEN, low | never run end to end on a real task; needs DeepSeek |
 | 1, 2, 4 | DONE | |
 | 3 rotation asymmetry | OPEN, research only | drives no setting; b12019 changed greedy output, so controls first |
-| 5 browser injection | DONE except bash `curl`/`wget` | every browser result fenced since 2026-10-31, children included; the 08-31 audit's "adapter mostly clean" was wrong for its proxy tools |
+| 5 browser injection | PARTIAL: bash fetches fenced by pattern | every browser result fenced since 2026-10-31, children included; since 2026-11-01 browser-guard also fences bash results whose command fetches (curl, wget, text browsers, Python/Node fetch APIs) — a pattern, so a fetch it does not recognise still passes unfenced. The 08-31 audit's "adapter mostly clean" was wrong for its proxy tools |
 | 6a acceptance null | OPEN | belongs in the b12019 re-baseline |
 | 6b eval_expr x20 | OPEN | a few hours GPU; decides medium vs xhigh |
 
@@ -2029,7 +2029,7 @@ the inline version, so pass logs do not change shape.
 
 ---
 
-## 5. Browser anti-injection — shipped, AUDITED 2026-08-31, mcp.sh CLOSED 2026-09-03; one path remains
+## 5. Browser anti-injection — shipped, AUDITED 2026-08-31, mcp.sh CLOSED 2026-09-03; one path remains (2026-11-01: bash fetches fenced by pattern; PARTIAL, not closed)
 
 Three layers went in on 2026-08-24:
 

@@ -300,6 +300,24 @@ function advice(toolName: string, state: string, detail: string): string {
 	}
 }
 
+/**
+ * bash commands that plainly fetch from the web (OPEN-WORK §5, the last
+ * unfenced path; operator's choice 2026-11-01). bash is general, so this cannot
+ * catch every fetch, and the record calls the path PARTIAL. A fetch tool counts
+ * only as a COMMAND: at the start, or after `;`, `&&`, `|`, `(` or `$(`,
+ * optionally behind sudo/rtk/time/env — so `grep -rn curl` and `echo wget` do
+ * not. An interpreter counts only when its code calls a fetch API.
+ */
+const CMD_START = String.raw`(?:^|[;&|(\x60]\s*|\$\(\s*)(?:(?:sudo|rtk|time|command|env(?:\s+\S+=\S+)*)\s+)*`;
+const FETCH_COMMAND = new RegExp(CMD_START + String.raw`(?:curl|wget|aria2c|lynx|w3m|links|elinks|xh|httpie)(?=\s|$)`, "m");
+const INTERPRETER = new RegExp(CMD_START + String.raw`(?:python3?|node|deno|bun)(?=\s|$)`, "m");
+const FETCH_API = /\b(?:urllib\.request|urlopen\(|requests\.(?:get|post|put|request|Session)\b|http\.client|fetch\()/;
+const ENVELOPE = /--- BEGIN UNTRUSTED WEB CONTENT [0-9a-f]{16}/;
+
+export function fetchesFromWeb(command: string): boolean {
+	return FETCH_COMMAND.test(command) || (INTERPRETER.test(command) && FETCH_API.test(command));
+}
+
 /** Tools that run other tools; their result can carry what a nested browser call returned. */
 const SCRIPT_TOOLS = new Set(["codemode"]);
 
@@ -333,6 +351,16 @@ export default function (pi: ExtensionAPI) {
 				content: blocks.map((b) =>
 					b?.type === "text" ? { ...b, text: wrapUntrusted(b.text ?? "", `${toolName} (browser)`) } : b,
 				),
+			} as never;
+		}
+
+		if (toolName === "bash") {
+			const command = String((anyEvent as { input?: { command?: unknown } }).input?.command ?? "");
+			if (anyEvent.isError || !fetchesFromWeb(command) || !Array.isArray(anyEvent.content)) return;
+			const blocks = anyEvent.content as { type?: string; text?: string }[];
+			if (blocks.some((b) => b?.type === "text" && ENVELOPE.test(b.text ?? ""))) return;
+			return {
+				content: blocks.map((b) => (b?.type === "text" ? { ...b, text: wrapUntrusted(b.text ?? "", "bash (web fetch)") } : b)),
 			} as never;
 		}
 
