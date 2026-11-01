@@ -90,9 +90,12 @@ herdr_up() {
 
 start_herdr() {
   herdr_up && return 0
-  # PATH is the herdr SERVER's, and every pane inherits it.
+  # PATH is the herdr SERVER's, and every pane inherits it. `9>&-`: herdr
+  # outlives the supervisor by design, and with the supervisor's lock open it
+  # held that lock forever, so every later supervisor's flock failed in silence
+  # and Ovis never came back after a stop (2026-11-01).
   PATH="$SHIM_DIR:$PATH" setsid script -qfc \
-    "stty cols $HERDR_COLS rows $HERDR_ROWS; exec '$HERDR'" /dev/null </dev/null >/dev/null 2>&1 &
+    "stty cols $HERDR_COLS rows $HERDR_ROWS; exec '$HERDR'" /dev/null </dev/null >/dev/null 2>&1 9>&- &
   local i
   for i in $(seq 1 30); do
     herdr_up && return 0
@@ -137,7 +140,7 @@ supervise() {
       HOST=0.0.0.0 PORT="$OVIS_CONTAINER_PORT" \
       OVIS_TELEMETRY=0 OVIS_AUTO_UPDATE=0 NO_OPEN_BROWSER=1 OVIS_NO_OPEN=1 \
       OVIS_HERDR_BIN="$HERDR" PATH="$SHIM_DIR:$PATH" \
-      exec "$BUN" server/index.ts ) >> "$LOG" 2>&1 &
+      exec "$BUN" server/index.ts ) >> "$LOG" 2>&1 9>&- &
     child=$!
     echo "$child" > "$SERVER_PID"
     rc=0; wait "$child" || rc=$?
@@ -194,12 +197,23 @@ start() {
   fi
 }
 
+# The supervisor's TERM trap removes both pid files, which can race this loop,
+# so a vanished file is not an error. It then waits for the supervisor to be
+# gone, so a `start` right after it cannot find the old one still holding the lock.
 stop() {
   in_container
-  local p
+  local p pid sup="" i
+  [[ -f "$SUPERVISOR_PID" ]] && sup="$(cat "$SUPERVISOR_PID" 2>/dev/null || true)"
   for p in "$SUPERVISOR_PID" "$SERVER_PID"; do
-    alive "$p" && kill "$(cat "$p")" 2>/dev/null
+    pid="$(cat "$p" 2>/dev/null || true)"
+    [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
+  if [[ -n "$sup" ]]; then
+    for i in $(seq 1 20); do
+      kill -0 "$sup" 2>/dev/null || break
+      sleep 0.25
+    done
+  fi
   rm -f "$SUPERVISOR_PID" "$SERVER_PID"
   ok "Ovis stopped; herdr and its panes are still running (${HERDR} server stop ends them)"
 }

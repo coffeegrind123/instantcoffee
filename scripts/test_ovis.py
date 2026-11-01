@@ -150,6 +150,39 @@ class NoToken(unittest.TestCase):
         self.assertNotIn('OVIS_TOKEN="$tok" \\', src)
 
 
+class SupervisorLock(unittest.TestCase):
+    """herdr must not inherit the supervisor's lock (fd 9).
+
+    It did, on 2026-11-01: herdr outlives the supervisor by design, so after
+    `ovis.sh stop` the lock stayed held by herdr and every later supervisor's
+    `flock -n` failed in silence. Ovis never came back until herdr restarted.
+    """
+
+    def test_herdr_starts_without_fd_9(self) -> None:
+        if not shutil.which("script"):
+            self.skipTest("util-linux script not installed")
+        with tempfile.TemporaryDirectory() as td:
+            mark = os.path.join(td, "fds")
+            herdr = os.path.join(td, "herdr")
+            with open(herdr, "w") as fh:
+                fh.write('#!/usr/bin/env bash\n'
+                         f'if [ "$1" = status ]; then [ -s "{mark}" ] && printf "server:\\n  status: running\\n"; exit 0; fi\n'
+                         f'ls /proc/$$/fd > "{mark}.tmp" && mv "{mark}.tmp" "{mark}"; sleep 3\n')
+            os.chmod(herdr, 0o755)
+            lock = os.path.join(td, "lock")
+            proc = sourced(f'HERDR="{herdr}"; exec 9>"{lock}"; start_herdr && echo STARTED')
+            self.assertIn("STARTED", proc.stdout, proc.stderr)
+            with open(mark) as fh:
+                fds = fh.read().split()
+            self.assertIn("0", fds, "control: the listing must be of real descriptors")
+            self.assertNotIn("9", fds, "herdr inherited the supervisor lock")
+
+    def test_control_the_server_launch_closes_it_too(self) -> None:
+        with open(OVIS, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('exec "$BUN" server/index.ts ) >> "$LOG" 2>&1 9>&- &', src)
+
+
 class LaunchScript(unittest.TestCase):
     """What a herdr pane runs: write it with ovis.sh, run it against a fake launcher."""
 
