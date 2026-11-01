@@ -2346,7 +2346,11 @@ export default function (pi: ExtensionAPI) {
     opts: { suppressAbort?: boolean } = {},
   ): Promise<void> => {
       const trimmed = args.trim();
-      const [subcommand = "status", ...rest] = trimmed.split(/\s+/);
+      // Forge fork: `"".split(/\s+/)` is `[""]`, not `[]`, so a destructuring
+      // default never applied and bare `/loop` fell through to "/loop <goal>"
+      // below, starting an endless loop with an empty goal (2026-11-01;
+      // tests/bare-loop.test.ts). Bare `/loop` is the status, as intended.
+      const [subcommand, ...rest] = trimmed ? trimmed.split(/\s+/) : ["status"];
       const command = subcommand.toLowerCase();
       const remainder = rest.join(" ").trim();
 

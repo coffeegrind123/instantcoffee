@@ -2427,3 +2427,19 @@ progress cases failed (`commits every turn while its results only say ok`,
 `a tracked file is edited every turn without a commit`) and the three controls
 passed. With the log exclusion disabled, the tracked-log case and the
 nothing-changes control both fail, so the exclusion is load-bearing.
+
+## AR — bare `/loop` started an endless loop with an empty goal
+
+Found from the Ovis chat on 2026-11-01, then reproduced from pi's own prompt:
+`/loop` with no arguments is documented (and coded) as the status, and it
+started a loop instead, endless, with no goal. `const [subcommand = "status",
+...rest] = trimmed.split(/\s+/)` never took its default: `"".split(/\s+/)` is
+`[""]`, not `[]`, so `subcommand` was `""`, no branch matched it, and the
+handler fell through to the "/loop <goal> starts a loop immediately"
+convenience with an empty goal. Empty arguments now read as `status`.
+
+## AR — the tests
+
+**306 → 310**, `tests/bare-loop.test.ts`: `""`, `"   "` and `"\t"` show the
+status and send no loop turn (all three red before the fix), and the control,
+`/loop <goal>`, still starts a loop.
