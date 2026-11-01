@@ -109,7 +109,8 @@ jobs:
           node --experimental-strip-types --no-warnings --test \
             .pi/extensions/tests/*.test.ts \
             .pi/extensions/compaction-guard/tests/*.test.ts \
-            .pi/extensions/observe/tests/*.test.ts
+            .pi/extensions/observe/tests/*.test.ts \
+            vendor/ovis-patches/tests/*.test.ts
 
       # pi is installed HERE rather than at the Matrix step further down,
       # because the rtk suite drives pi's real `execCommand` to establish what a

@@ -24,6 +24,7 @@ was measured live on 2026-11-01; context/HANDOFF.md part 22.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -309,6 +310,175 @@ class PiLocalDropsTheShim(unittest.TestCase):
         strip = src.index('PATH="$(strip_path "$PATH" "$REPO_ROOT/scripts/ovis-shims")"')
         self.assertLess(strip, src.index("command -v pi >/dev/null"))
         self.assertLess(strip, src.index('exec pi "${pi_flags[@]}"'))
+
+
+class OvisPatch(unittest.TestCase):
+    """scripts/ovis_patch.py on a synthetic bundle: the pinned hashes are swapped
+    for the fixture's, so this exercises the logic CI can run; the real bundle's
+    files are checked live (HANDOFF part 22)."""
+
+    def setUp(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ovis_patch", os.path.join(SCRIPTS, "ovis_patch.py"))
+        self.mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.mod)
+        self.td = tempfile.TemporaryDirectory()
+        self.ovis = self.td.name
+        os.makedirs(os.path.join(self.ovis, "server"))
+        with open(os.path.join(self.ovis, "bundle.json"), "w") as fh:
+            json.dump({"version": "40"}, fh)
+        edits = []
+        for rel, _, pairs in self.mod.EDITS:
+            text = "head\n" + "".join(old for old, _ in pairs) + "tail\n"
+            os.makedirs(os.path.dirname(os.path.join(self.ovis, rel)), exist_ok=True)
+            with open(os.path.join(self.ovis, rel), "w") as fh:
+                fh.write(text)
+            edits.append((rel, self.mod.sha256(text), pairs))
+        self.mod.EDITS = edits
+
+    def tearDown(self) -> None:
+        self.td.cleanup()
+
+    def read(self, rel: str) -> str:
+        with open(os.path.join(self.ovis, rel)) as fh:
+            return fh.read()
+
+    def test_applies_then_is_idempotent(self) -> None:
+        self.assertTrue(self.mod.apply(self.ovis))
+        for rel, _, pairs in self.mod.EDITS:
+            text = self.read(rel)
+            for old, new in pairs:
+                self.assertIn(new, text, rel)
+            self.assertTrue(os.path.exists(os.path.join(self.ovis, rel + ".orig")))
+        for _, rel in self.mod.NEW_FILES:
+            self.assertTrue(os.path.exists(os.path.join(self.ovis, rel)), rel)
+        self.assertFalse(self.mod.apply(self.ovis), "a second run must change nothing")
+        self.assertTrue(os.path.exists(os.path.join(self.ovis, self.mod.STAMP)), "no stamp for ovis.sh to compare the server against")
+
+    def test_refuses_another_bundle_and_writes_nothing(self) -> None:
+        with open(os.path.join(self.ovis, "bundle.json"), "w") as fh:
+            json.dump({"version": "41"}, fh)
+        with self.assertRaises(self.mod.Refused):
+            self.mod.apply(self.ovis)
+        self.assertFalse(os.path.exists(os.path.join(self.ovis, self.mod.NEW_FILES[0][1])))
+
+    def test_refuses_a_changed_file_before_writing_any(self) -> None:
+        last = self.mod.EDITS[-1][0]
+        with open(os.path.join(self.ovis, last), "a") as fh:
+            fh.write("upstream changed this\n")
+        with self.assertRaises(self.mod.Refused):
+            self.mod.apply(self.ovis)
+        first = self.mod.EDITS[0]
+        self.assertNotIn(first[2][0][1], self.read(first[0]), "an earlier file was patched before the refusal")
+
+    def test_replaces_an_older_version_of_its_own_edits(self) -> None:
+        self.assertTrue(self.mod.apply(self.ovis))
+        rel, original, pairs = self.mod.EDITS[1]
+        old, new = pairs[0]
+        newer = new.replace(self.mod.MARK, self.mod.MARK + " v2")
+        self.mod.EDITS[1] = (rel, original, [(old, newer)] + pairs[1:])
+        self.assertTrue(self.mod.apply(self.ovis))
+        text = self.read(rel)
+        self.assertIn(newer, text)
+        self.assertNotIn(new, text.replace(newer, ""), "the older edit was left in beside the newer one")
+
+    def test_refuses_a_file_changed_after_our_patch_without_its_backup(self) -> None:
+        self.assertTrue(self.mod.apply(self.ovis))
+        rel = self.mod.EDITS[0][0]
+        os.remove(os.path.join(self.ovis, rel + ".orig"))
+        with open(os.path.join(self.ovis, rel), "w") as fh:
+            fh.write("instantcoffee: but not ours any more\n")
+        with self.assertRaises(self.mod.Refused):
+            self.mod.apply(self.ovis)
+
+    def test_every_edit_carries_the_marker(self) -> None:
+        for rel, _, pairs in self.mod.EDITS:
+            for _, new in pairs:
+                self.assertIn(self.mod.MARK, new, rel)
+
+
+class RendererCoverage(unittest.TestCase):
+    """Every entry type an extension here draws with a custom renderer must have
+    an Ovis notice format, or it is invisible in the Ovis chat."""
+
+    def test_every_rendered_entry_type_has_a_notice(self) -> None:
+        import re
+        found: dict[str, str] = {}
+        consts: dict[str, str] = {}
+        for base in (os.path.join(REPO, ".pi", "extensions"), os.path.join(REPO, "vendor")):
+            for root, dirs, files in os.walk(base):
+                dirs[:] = [d for d in dirs if d not in ("node_modules", "tests", "test", ".git")]
+                for name in files:
+                    if not name.endswith(".ts"):
+                        continue
+                    with open(os.path.join(root, name), encoding="utf-8", errors="replace") as fh:
+                        src = fh.read()
+                    for m in re.finditer(r'export const ([A-Z_]+) = "([a-z-]+)"', src):
+                        consts[m.group(1)] = m.group(2)
+                    for m in re.finditer(r'registerEntryRenderer(?:<[^>]*>)?\(\s*(?:"([^"]+)"|\'([^\']+)\'|([A-Z_]+))', src):
+                        found[m.group(1) or m.group(2) or m.group(3)] = os.path.relpath(os.path.join(root, name), REPO)
+        types = {consts.get(t, t): where for t, where in found.items()}
+        self.assertGreaterEqual(len(types), 3, f"control: the scan must find the known renderers, found {types}")
+        with open(os.path.join(REPO, "vendor", "ovis-patches", "pi-entry-notices.ts"), encoding="utf-8") as fh:
+            notices = fh.read()
+        missing = {t: where for t, where in types.items() if f'"{t}":' not in notices}
+        self.assertEqual(missing, {}, "entry renderers with no Ovis notice format (vendor/ovis-patches/pi-entry-notices.ts)")
+
+
+class CustomUiCoverage(unittest.TestCase):
+    """A command from a package that draws its own TUI (ctx.ui.custom) must be a
+    terminal command in Ovis, or the chat sends into a menu nobody can see."""
+
+    def test_custom_ui_packages_have_their_commands_marked_terminal(self) -> None:
+        import re
+        with open(os.path.join(REPO, "vendor", "ovis-patches", "pi-native-catalog-rows.ts"), encoding="utf-8") as fh:
+            listed = set(re.findall(r'"([a-z-]+)"', re.search(r"TERMINAL_COMMANDS[^=]*=\s*\[([^\]]*)\]", fh.read()).group(1)))
+        roots = [os.path.join(REPO, "vendor", d) for d in os.listdir(os.path.join(REPO, "vendor"))]
+        roots += [os.path.join(REPO, ".pi", "extensions", f) for f in os.listdir(os.path.join(REPO, ".pi", "extensions"))]
+        offenders, custom_packages = {}, 0
+        for root in roots:
+            files = [root] if root.endswith(".ts") else [os.path.join(d, f) for d, ds, fs in os.walk(root)
+                     if not {"node_modules", "tests", "test"} & set(d.split(os.sep)) for f in fs if f.endswith(".ts")]
+            text = ""
+            for path in files:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text += fh.read()
+            if not re.search(r"ui\.custom(?:<[^>]*>)?\(", text):
+                continue
+            custom_packages += 1
+            commands = set(re.findall(r"registerCommand\(\s*[\"']([a-z-]+)[\"']", text))
+            missing = commands - listed
+            if missing:
+                offenders[os.path.relpath(root, REPO)] = sorted(missing)
+        self.assertGreaterEqual(custom_packages, 1, "control: the scan must find pi-subagents-lite's ui.custom")
+        self.assertEqual(offenders, {}, "commands that open custom TUI but are not TERMINAL_COMMANDS")
+
+    def test_pi_bundled_extensions_with_custom_ui_are_terminal_commands(self) -> None:
+        """pi ships extensions of its own (/mcp, /llama); an update can add a custom UI."""
+        import re
+        root = subprocess.run(["npm", "root", "-g"], capture_output=True, text=True).stdout.strip() if shutil.which("npm") else ""
+        bundled = os.path.join(root, "@earendil-works", "pi-coding-agent", "dist", "extensions")
+        if not os.path.isdir(bundled):
+            self.skipTest("pi is not installed here")
+        with open(os.path.join(REPO, "vendor", "ovis-patches", "pi-native-catalog-rows.ts"), encoding="utf-8") as fh:
+            listed = set(re.findall(r'"([a-z-]+)"', re.search(r"TERMINAL_COMMANDS[^=]*=\s*\[([^\]]*)\]", fh.read()).group(1)))
+        offenders = {}
+        for name in os.listdir(bundled):
+            folder = os.path.join(bundled, name)
+            if not os.path.isfile(os.path.join(folder, "index.js")):
+                continue
+            # the whole extension: /mcp registers in index.js and draws in ui.js
+            src = ""
+            for file in sorted(os.listdir(folder)):
+                if file.endswith(".js"):
+                    with open(os.path.join(folder, file), encoding="utf-8") as fh:
+                        src += fh.read()
+            if "ui.custom" not in src and ".custom(" not in src:
+                continue
+            missing = set(re.findall(r'registerCommand\("([a-z-]+)"', src)) - listed
+            if missing:
+                offenders[name] = sorted(missing)
+        self.assertEqual(offenders, {}, "pi's bundled extensions open custom TUI from commands not in TERMINAL_COMMANDS")
 
 
 class LaunchScript(unittest.TestCase):

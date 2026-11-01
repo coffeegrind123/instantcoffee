@@ -190,7 +190,27 @@ start() {
     return 0
   fi
   mkdir -p "$RUN_DIR"
+  # Previews of sessions whose pi died before writing them (ovis-bridge removes
+  # its own on a clean shutdown; a killed pi cannot).
+  find "$RUN_DIR/preview" -maxdepth 1 -name '*.jsonl' -mmin +1440 -delete 2>/dev/null || true
   token >/dev/null
+  # The stack's edits to Ovis's server (scripts/ovis_patch.py): pi's live
+  # commands, its notices and its effort. Refused on any bundle they were not
+  # written for, and then Ovis runs as shipped.
+  # A server older than the patched files is running the code from before
+  # them, whoever applied them (a hand-run ovis_patch.py printed `changed` to
+  # nobody, and this then saw `unchanged`: 2026-11-01).
+  local pid
+  if python3 "$REPO_ROOT/scripts/ovis_patch.py" "$OVIS_DIR" >/dev/null 2>>"$LOG"; then
+    pid="$(cat "$SERVER_PID" 2>/dev/null || true)"
+    if [[ -n "$pid" && -d "/proc/$pid" ]] \
+       && (( $(stat -c %Y "/proc/$pid") < $(stat -c %Y "$OVIS_DIR/.instantcoffee-patched") )); then
+      log "Ovis server predates its patches; restarting it to load them"
+      kill "$pid" 2>/dev/null || true
+    fi
+  else
+    warn "Ovis server patches refused (see ${LOG}); Ovis runs without this stack's commands and notices"
+  fi
   if ! alive "$SUPERVISOR_PID"; then
     setsid "$REPO_ROOT/scripts/ovis.sh" supervise </dev/null >/dev/null 2>&1 &
   fi
