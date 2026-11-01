@@ -326,11 +326,22 @@ Changing either key needs `./scripts/pi-container.sh --recreate`, because the
 port is fixed when the container is created; the launcher warns when the two
 disagree.
 
-**Opening Ovis lands on pi.** herdr's first pane is a shell, and Ovis's chat
-tab is whatever runs in the pane, so typing there ran shell commands. Whenever
-no pane runs pi, `ovis.sh` starts one there through `pi-local.sh`, in the
-container home (`OVIS_PI_DIR`), at Ovis start and at every `pi-container.sh`
-launch; `OVIS_PI_PANE=0` turns it off.
+**Every pane is a pi chat.** Ovis's chat tab is whatever runs in the pane, and
+herdr's default pane is a shell, so typing there ran shell commands and a new
+workspace or tab said "Message Shell". herdr runs `$SHELL` for every new pane,
+and `ovis.sh` starts it with `scripts/ovis-shims/pane-shell`: pi through
+`pi-local.sh` in the pane's directory, then bash when you quit pi. Anything
+that runs `$SHELL -c ...` gets plain bash. The first pane starts in
+`OVIS_PI_DIR` (default the container home); `OVIS_PI_PANE=0` gives plain
+shells.
+
+In Ovis: **New workspace** honours its Agent picker, which defaults to pi until
+you pick something else in that browser (Shell is then a real shell); the
+**+** tab button and splits open on pi. herdr's restore of agent sessions after
+its own restart is off (`resume_agents_on_restore = false` in
+`~/.config/herdr/config.toml`, set by `ovis.sh` unless you set it): it typed
+`pi --session …` into the pi the pane had already started. Your earlier
+conversations are under pi's `/resume`.
 
 Ovis only sees pi when pi runs in a herdr pane, so plain launches are
 unchanged and a further session meant for Ovis is started with `--ovis`:
@@ -383,6 +394,37 @@ paired: every program on the host, every container on the same Docker (through
 page that rebinds its own name to 127.0.0.1, which passes Ovis's same-origin
 check. Whatever gets in can type into pi, and this container mounts the docker
 socket. `--status` says when it is on.
+
+**This stack's commands and output in the chat.** Out of the box Ovis knows
+pi's builtins and the skills and prompts it finds as files, and reads the chat
+from pi's session file. Measured 2026-11-01, none of this stack showed: its
+commands are registered by extensions at run time, its skills and prompts load
+from `pi-local.sh` flags, and its commands answer through `ctx.ui.notify` or
+entries pi draws with a custom renderer, neither of which Ovis reads. Two
+pieces close that, and the chat then lists, runs and answers every one:
+
+- `.pi/extensions/ovis-bridge.ts`, loaded by `pi-local.sh` in a herdr pane
+  only, writes pi's live command list (`pi.getCommands()`) to
+  `/tmp/ovis/catalog/<pane>.json`; saves every extension's `notify` as an
+  `ovis-notice` entry (never sent to the model); keeps a preview of the session
+  until pi writes its file, which pi does only at the first message, so a
+  command run first still shows; reports footer statuses (the `/loop` pill) as
+  the pane's line in Ovis's sidebar; and records `REASONING_EFFORT`, which pi
+  itself records as `off` for this model.
+- `scripts/ovis_patch.py` edits Ovis's server at every `ovis.sh start`, from
+  `vendor/ovis-patches/`: a native-catalog provider for pi; those entries as
+  chat notices (`/stack` reports, subagent transcripts, notices); as a
+  command's result, so it reads Done rather than "No result seen"; the preview;
+  the effort; and room for pi's extension-status footer line, without which
+  no pi dialog (`/persona`, `/stack mode`) became a card while a status was
+  set. Each file is pinned to the bundle's sha256 and anything else is refused
+  loudly; Ovis then runs as shipped.
+
+Commands that draw their own TUI (`/agents`, pi's `/mcp` and `/llama`) cannot
+become cards and are listed as terminal commands: sent from the chat, Ovis
+opens the pane's terminal with the menu in it. `scripts/test_ovis.py` fails when
+a command from a package that draws custom TUI, or an entry type an extension
+renders, is not covered.
 
 **On a phone**, publish the host port to your tailnet from the machine that
 runs Docker (on Windows, from the Windows side): `tailscale serve --bg 7317`.
