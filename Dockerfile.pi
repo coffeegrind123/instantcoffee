@@ -309,6 +309,10 @@ fi
 
 # pi works on your CURRENT directory, so cd to the project first.
 alias qpi='~/qwen3.8-forge/scripts/pi-local.sh'
+# `pi` is the stack's launcher too, the session pi-container.sh opens. An alias,
+# so interactive shells only: pi's subagents start children by running `pi` off
+# PATH, and those must get the real binary. Stock pi: `command pi`.
+alias pi='~/qwen3.8-forge/scripts/pi-local.sh'
 alias stack='~/qwen3.8-forge/scripts'
 alias docker-compose="docker compose"
 INNER

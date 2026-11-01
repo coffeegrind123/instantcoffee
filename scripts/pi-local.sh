@@ -1087,6 +1087,14 @@ if (( PRINT_ONLY )); then
   exit 0
 fi
 
+# In a herdr pane scripts/ovis-shims is first on PATH, so `pi` there is THIS
+# launcher. The shim takes itself off before it runs us, but an alias (`pi`,
+# `qpi` in the container's .bashrc) reaches us with it still on, and `exec pi`
+# below would then run the launcher a second time. Taken off here, whichever
+# way we were reached.
+PATH="$(strip_path "$PATH" "$REPO_ROOT/scripts/ovis-shims")"
+export PATH
+
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
 

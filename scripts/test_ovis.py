@@ -291,6 +291,26 @@ class DefaultPiPane(unittest.TestCase):
         self.assertIn("ensure_pi_pane", body)
 
 
+class PiLocalDropsTheShim(unittest.TestCase):
+    """`pi`/`qpi` aliases reach pi-local.sh with the shim still first on PATH in a
+    herdr pane; its own `exec pi` must not resolve to the shim and relaunch."""
+
+    def test_strip_path(self) -> None:
+        cases = [("/s:/a:/b", "/a:/b"), ("/a:/s:/b", "/a:/b"), ("/a:/b:/s", "/a:/b"),
+                 ("/s:/a:/s", "/a"), ("/a:/b", "/a:/b"), ("/a:/sx:/b", "/a:/sx:/b")]
+        for path, want in cases:
+            got = subprocess.run([BASH, "-c", f'source "{SCRIPTS}/lib.sh"; strip_path "{path}" /s'],
+                                 capture_output=True, text=True, timeout=30).stdout
+            self.assertEqual(got, want, path)
+
+    def test_pi_local_strips_it_before_resolving_pi(self) -> None:
+        with open(PI_LOCAL, encoding="utf-8") as fh:
+            src = fh.read()
+        strip = src.index('PATH="$(strip_path "$PATH" "$REPO_ROOT/scripts/ovis-shims")"')
+        self.assertLess(strip, src.index("command -v pi >/dev/null"))
+        self.assertLess(strip, src.index('exec pi "${pi_flags[@]}"'))
+
+
 class LaunchScript(unittest.TestCase):
     """What a herdr pane runs: write it with ovis.sh, run it against a fake launcher."""
 

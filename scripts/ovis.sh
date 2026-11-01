@@ -325,12 +325,6 @@ print(json.load(sys.stdin)["result"]["root_pane"]["pane_id"])' 2>/dev/null || tr
   return 0
 }
 
-strip_path() {
-  local p=":$1:" drop="$2"
-  p="${p//:$drop:/:}"; p="${p#:}"; p="${p%:}"
-  printf '%s' "$p"
-}
-
 run() {
   in_container
   local dir="$PWD"

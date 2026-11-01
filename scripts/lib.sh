@@ -118,6 +118,14 @@ ovis_enabled() {
   return 0
 }
 
+# PATH ($1) without one directory ($2), every occurrence. Used to take
+# scripts/ovis-shims back off PATH (ovis.sh, pi-local.sh).
+strip_path() {
+  local p=":$1:" drop="$2"
+  p="${p//:$drop:/:}"; p="${p#:}"; p="${p%:}"
+  printf '%s' "$p"
+}
+
 # Rewrite a key in .env in place, preserving comments and ordering.
 env_set() {
   local key="$1" value="$2" file="$REPO_ROOT/.env"
