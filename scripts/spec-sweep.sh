@@ -322,6 +322,10 @@ CONFIGS=(
   # drafting CUDA graphs (#28549) — n-max 5/6 lost at b10689 on a costlier step.
   "mapk-sm96-n5|ngram-map-k,draft-mtp|5|0.0||||:96:"
   "mapk-sm96-n6|ngram-map-k,draft-mtp|6|0.0||||:96:"
+  # 2026-11-01: OPEN-WORK 0h, the size-m curve above 96 (it rose 24 -> 64 -> 96
+  # with no top found). Measured with the b12019 re-baseline.
+  "mapk-sm128|ngram-map-k,draft-mtp|4|0.0||||:128:"
+  "mapk-sm192|ngram-map-k,draft-mtp|4|0.0||||:192:"
   # 2026-09-23: MTP's cost at depth. Run each with --prompt-len into its own
   # --results-dir; ngrammapk-p0-n4 was the production pin when this was measured
   # (production is mapk-sm96 since 2026-09-23).
