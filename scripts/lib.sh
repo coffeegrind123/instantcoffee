@@ -33,7 +33,56 @@ compose() {
   local env_files=".env"
   [[ -f "$REPO_ROOT/.env.local" ]] && env_files=".env,.env.local"
   ( cd "$REPO_ROOT" && COMPOSE_ENV_FILES="$env_files" OBSERVE_GIT_HASH="$(observe_git_hash)" \
-      docker compose "$@" )
+      COMPOSE_PROFILES="$(compose_profiles)" docker compose "$@" )
+}
+
+# The recorder sits behind the `capture` profile, so a plain `compose up`
+# recreates forge pointed at http://capture:8082 without starting it: forge's
+# /health is then a 502 forever while llama is loaded and idle (2026-11-03).
+# Whenever forge's backend is the recorder, the profile is on for every caller.
+compose_profiles() {
+  local profiles="${COMPOSE_PROFILES:-}"
+  if [[ "$(env_get FORGE_BACKEND_URL)" == http://capture:* && ",${profiles}," != *,capture,* ]]; then
+    profiles="${profiles:+${profiles},}capture"
+  fi
+  printf '%s' "$profiles"
+}
+
+# Why forge's /health (the backend's readiness, forwarded) is failing, decided by
+# asking llama directly. forge reports a 502 both while llama loads and when its
+# backend is unreachable, so the forwarded code alone cannot tell them apart.
+forge_not_ready_msg() {
+  local llama="$1" backend code
+  backend="$(env_get FORGE_BACKEND_URL)"; : "${backend:=http://llama:8080}"
+  code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "${llama}/health" 2>/dev/null || true)"
+
+  if [[ "$code" == 200 ]]; then
+    printf 'forge is up and llama has the model loaded (%s/health is 200), but forge\n' "$llama"
+    printf 'cannot reach its backend, FORGE_BACKEND_URL=%s.\n' "$backend"
+    if [[ "$backend" == http://capture:* ]]; then
+      printf 'That is the capture recorder, and it is not running. Record:  ./scripts/capture.sh on\n'
+      printf 'Stop recording and point forge back at llama:            ./scripts/capture.sh off'
+    else
+      printf 'Check that backend, or remove FORGE_BACKEND_URL from .env.local and ./scripts/up.sh'
+    fi
+    return 0
+  fi
+
+  if [[ "$code" == 503 ]]; then
+    local ct="${LLAMA_CONTAINER:-instantcoffee-llama}"
+    printf 'forge is up but the model is not loaded yet — llama-server is\n'
+    printf 'still reading the GGUF. Watch it with ./scripts/logs.sh llama, or measure real\n'
+    printf 'progress with:\n'
+    # Not /proc/<pid>/io: this WSL kernel has no task I/O accounting, the file
+    # does not exist. The open GGUF's file offset is the read progress instead.
+    printf '  docker exec %s sh -c '\''for f in /proc/[0-9]*/fd/*; do t=$(readlink $f); case $t in *.gguf) echo "$t: $(grep ^pos ${f%%/fd/*}/fdinfo/${f##*/}) of $(stat -c %%s $t)";; esac; done'\''\n' "$ct"
+    printf 'A cold load of a 17.9 GB quant takes ~25 minutes on this box.'
+    return 0
+  fi
+
+  printf 'forge is up but llama-server is not answering at %s (HTTP %s).\n' "$llama" "${code:-000}"
+  printf 'It may be restarting after a failed load. Look at ./scripts/logs.sh llama;\n'
+  printf '"read error: Cannot allocate memory" there is host memory pressure, not the model.'
 }
 
 # --- observe -------------------------------------------------------------------

@@ -1153,11 +1153,7 @@ curl -fsS -m 5 -o /dev/null "${BASE}/forge/health" 2>/dev/null \
   || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
 curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
-  || die "forge is up but the model is not loaded yet at ${BASE} — llama-server is
-still reading the GGUF. Watch it with ./scripts/logs.sh llama, or measure real
-progress with:
-  docker exec ${LLAMA_CONTAINER:-instantcoffee-llama} sh -c 'grep ^rchar /proc/7/io'
-A cold load of a 17.9 GB quant takes ~25 minutes on this box."
+  || die "$(forge_not_ready_msg "http://${HOST}:$(env_get LLAMA_PORT)")"
 
 echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE}${EXT_NOTE}${HERDR_NOTE})"
 exec pi "${pi_flags[@]}" "${ARGS[@]}"

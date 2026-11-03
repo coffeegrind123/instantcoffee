@@ -113,11 +113,13 @@ mmap'd load, which this is not.)
 *Silence in the log is also normal.* llama-server prints nothing between
 `load_model: loading model ...` and the end of the load.
 
-**The real progress counter** is bytes read by the process — and note that
-`init: true` means llama-server is **PID 7**, not PID 1:
+**The real progress counter** is the open GGUF's file offset. `/proc/<pid>/io`
+(`rchar`) does not exist on the current WSL kernel (6.18, no task I/O
+accounting), so read it from `fdinfo` — and note that `init: true` means
+llama-server is **PID 7**, not PID 1:
 
 ```bash
-docker exec instantcoffee-llama sh -c 'grep ^rchar /proc/7/io; cat /proc/7/wchan'
+docker exec instantcoffee-llama sh -c 'for f in /proc/7/fd/*; do t=$(readlink $f); case $t in *.gguf) echo "$t: $(grep ^pos /proc/7/fdinfo/${f##*/}) of $(stat -c %s $t)";; esac; done; cat /proc/7/wchan'
 ```
 
 Sample it twice and divide. `State: D` with `wchan: p9_client_rpc` is the
