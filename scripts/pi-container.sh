@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run pi against the local model, in its own container.
+# Run pi against the configured backend, in its own container.
 #
 #   ./scripts/pi-container.sh                 start a session
 #   ./scripts/pi-container.sh -C myproj       work on <container home>/myproj
@@ -61,6 +61,17 @@ EXTRA="$(env_get PI_CONTAINER_EXTRA_ARGS)"
 READY_TIMEOUT="$(env_get PI_CONTAINER_READY_TIMEOUT)"; : "${READY_TIMEOUT:=300}"
 OVIS_PORT="$(env_get OVIS_PORT)";            : "${OVIS_PORT:=$OVIS_CONTAINER_PORT}"
 
+STACK_BACKEND="$(env_get STACK_BACKEND)"
+: "${STACK_BACKEND:=local}"
+case "$STACK_BACKEND" in
+  local|anthropic) ;;
+  *) die "STACK_BACKEND must be 'local' or 'anthropic', got '$STACK_BACKEND'." ;;
+esac
+# The inner launcher reads the container checkout's .env. Exporting the host's
+# selected backend makes that value authoritative so the forwarded credential,
+# status line, and actual provider cannot disagree when two checkouts drift.
+export STACK_BACKEND
+
 MODE=run
 WORKDIR_ARG=""
 PRINT_ONLY=0
@@ -87,7 +98,11 @@ ARGS=()
 # printed NOTHING and exited 0 — the precise failure the guard exists to avoid,
 # reintroduced by the guard.
 take_value() { [[ $# -ge 2 ]] && printf '%s' "$2"; return 0; }
+PASSTHROUGH=0
 while (( $# )); do
+  if (( PASSTHROUGH )); then
+    ARGS+=("$1"); shift; continue
+  fi
   case "$1" in
     -C|--project)  WORKDIR_ARG="${2:-}"; shift 2 ;;
     --shell)       MODE=shell; shift ;;
@@ -96,6 +111,10 @@ while (( $# )); do
     --stop)        MODE=stop; shift ;;
     --recreate)    MODE=recreate; shift ;;
     --print-only)  PRINT_ONLY=1; shift ;;
+    --)            PASSTHROUGH=1; ARGS+=("--"); shift ;;
+    -p|--print)    PASSTHROUGH=1; ARGS+=("$1"); shift ;;
+    --provider|--provider=*|--model|--model=*|--models|--models=*)
+                   die "backend routing is selected by STACK_BACKEND; use ./scripts/mode.sh instead of '$1'" ;;
     -h|--help)     sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'; exit 0 ;;
     --session|--session-id|--fork)
                    SESSION_FLAG="$1"; SESSION_SEL="$(take_value "$@")"
@@ -497,6 +516,22 @@ resolve_workdir() {
   printf '%s' "$CHOME"
 }
 
+# env_forward_args forwards keys by name, never by value. Exporting the hosted
+# credential before that scan makes a key found in .env.local eligible; the
+# explicit fallback covers a key supplied only by the caller's environment when
+# the scan has no file entry to discover its name from.
+forward_anthropic_key() {
+  [[ "$STACK_BACKEND" == "anthropic" ]] || return 0
+  local key i
+  key="$(env_get ANTHROPIC_API_KEY)"
+  [[ -n "$key" ]] || return 0
+  export ANTHROPIC_API_KEY="$key"
+  for (( i=0; i<${#FORWARD_ENV[@]}; i++ )); do
+    [[ "${FORWARD_ENV[$i]}" == "ANTHROPIC_API_KEY" ]] && return 0
+  done
+  FORWARD_ENV+=(-e ANTHROPIC_API_KEY)
+}
+
 # --- modes ------------------------------------------------------------------
 case "$MODE" in
   stop)
@@ -520,6 +555,40 @@ case "$MODE" in
     printf 'image        %s\n' "$IMAGE"
     printf 'home         %s -> %s\n' "$HHOME" "$CHOME"
     printf 'checkout     %s\n' "$CREPO"
+    if [[ "$STACK_BACKEND" == "local" ]]; then
+      status_main="$(env_get MODEL_ALIAS)"
+      status_child="$(env_get SUBAGENT_MODEL)"; : "${status_child:=deepseek/deepseek-flash}"
+      status_advisor="$(env_get ADVISOR_MODEL)"; : "${status_advisor:=$status_child}"
+      status_cache="none (local); context-derived compaction"
+      printf 'backend      local (forge)\n'
+    else
+      status_main="$(env_get ANTHROPIC_MODEL)";          : "${status_main:=claude-opus-5-5}"
+      status_child_default="$(env_get ANTHROPIC_SUBAGENT_MODEL)"; : "${status_child_default:=claude-haiku-5-5}"
+      status_advisor_default="$(env_get ANTHROPIC_ADVISOR_MODEL)"; : "${status_advisor_default:=claude-fable-5-1}"
+      status_child="$(env_get SUBAGENT_MODEL)"
+      if [[ -z "$status_child" || "$status_child" == "deepseek/deepseek-flash" ]]; then
+        status_child="anthropic/${status_child_default}"
+      fi
+      status_advisor="anthropic/${status_advisor_default}"
+      if [[ -n "$(env_get ADVISOR_MODEL)" ]]; then
+        status_advisor="$(env_get ADVISOR_MODEL)"
+      fi
+      status_cache="$(env_get PI_CACHE_WARMING)"; : "${status_cache:=idle}"
+      status_at="$(env_get PI_COMPACTION_AT_PCT)"; : "${status_at:=0.28}"
+      status_keep="$(env_get PI_COMPACTION_KEEP_PCT)"; : "${status_keep:=0.15}"
+      status_cache="${status_cache}; ${status_at}/${status_keep} compaction"
+      if [[ -n "$(env_get ANTHROPIC_API_KEY)" ]]; then
+        host_key="present"
+      else
+        host_key="MISSING"
+      fi
+      status_key="${host_key} on host; forwarded by the next hosted launch"
+      printf 'backend      anthropic (built-in provider)\n'
+      printf 'api key      %s\n' "$status_key"
+    fi
+    printf 'models       main=%s children=%s advisor=%s\n' \
+      "$status_main" "$status_child" "$status_advisor"
+    printf 'cache        %s\n' "$status_cache"
     if [[ "$st" == running ]]; then
       image_drifted && printf 'drift        YES — created from an older %s; --recreate to adopt it\n' "$IMAGE" \
                     || printf 'drift        no\n'
@@ -529,12 +598,16 @@ case "$MODE" in
       printf 'mounts       '
       docker inspect -f '{{range .Mounts}}{{println .Destination}}{{end}}' "$NAME" 2>/dev/null \
         | grep -v '^/var/run/docker.sock$' | grep -v '^$' | paste -sd' ' -
-      if docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/forge/health 2>/dev/null; then
-        docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/health 2>/dev/null \
-          && printf 'forge        up, model loaded\n' \
-          || printf 'forge        up, model still loading\n'
+      if [[ "$STACK_BACKEND" == "local" ]]; then
+        if docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/forge/health 2>/dev/null; then
+          docker exec "$NAME" curl -fsS -m 3 -o /dev/null http://host.docker.internal:8081/health 2>/dev/null \
+            && printf 'forge        up, model loaded\n' \
+            || printf 'forge        up, model still loading\n'
+        else
+          printf 'forge        not answering — ./scripts/up.sh\n'
+        fi
       else
-        printf 'forge        not answering — ./scripts/up.sh\n'
+        printf 'forge        informational only; hosted backend does not probe it\n'
       fi
       printf 'ovis         %s\n' "$(docker exec "$NAME" "${CREPO}/scripts/ovis.sh" status --brief 2>/dev/null || echo 'unknown — no scripts/ovis.sh in the container checkout')"
     fi
@@ -553,6 +626,7 @@ if (( PRINT_ONLY )); then
   if [[ "$(state)" == running ]]; then
     apply_session_workdir
     mapfile -t FORWARD_ENV < <(env_forward_args)
+    forward_anthropic_key
     PRINT_WORKDIR="$(resolve_workdir "$WORKDIR_ARG")"
     if (( OVIS_RUN )); then
       printf '%q ' docker exec -it "${FORWARD_ENV[@]}" -w "$PRINT_WORKDIR" "$NAME" "${CREPO}/scripts/ovis.sh" run -w "$PRINT_WORKDIR" -- "${ARGS[@]}"; echo
@@ -577,6 +651,7 @@ WORKDIR="$(resolve_workdir "$WORKDIR_ARG")"
 # pi-local.sh: docker exec starts with the CONTAINER's environment, so every
 # exported stack key is forwarded by name (env_forward_args in lib.sh).
 mapfile -t FORWARD_ENV < <(env_forward_args)
+forward_anthropic_key
 (( ${#FORWARD_ENV[@]} )) && dim "forwarding: $(printf '%s\n' "${FORWARD_ENV[@]}" | grep -v '^-e$' | paste -sd' ' -)"
 
 # -t only when there is a terminal on BOTH ends. `docker exec -it` against a

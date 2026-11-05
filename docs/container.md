@@ -9,8 +9,10 @@ works exactly the same on the host.
 
 ## What it does and does not run
 
-It runs **pi**. It does **not** run llama-server or forge: those stay in the
-compose stack on the host GPU, driven through a mounted docker socket.
+It runs **pi**. In local mode it does **not** run llama-server or forge: those
+stay in the compose stack on the host GPU, driven through a mounted docker
+socket. In Anthropic mode the container talks directly to `api.anthropic.com`;
+no inference container or host GPU is involved.
 
 ```
    container                                     host
@@ -24,6 +26,10 @@ compose stack on the host GPU, driven through a mounted docker socket.
           │                                                     (GPU)
           └── http://host.docker.internal:8081 ──────────────►  forge  :8081
 ```
+
+With `STACK_BACKEND=anthropic`, the last two arrows are absent. pi reaches
+Anthropic over HTTPS, and `--status` reports the configured seats, key presence,
+and cache policy instead of probing forge.
 
 `pi-local.sh` already detects `/.dockerenv` and swaps `localhost` for
 `host.docker.internal`, so nothing in the repo changes to run from inside. Docker
@@ -82,6 +88,11 @@ Then:
 ./scripts/pi-container.sh --recreate      # adopt a rebuilt image
 ./scripts/pi-container.sh --print-only    # the two docker commands, and stop
 ```
+
+`--` ends launcher-option parsing, and everything after `-p`/`--print` is passed
+to pi unchanged. That prevents a prompt such as `--stop` from becoming a control
+command. `--provider`, `--model`, and `--models` are rejected here and in
+`pi-local.sh`; choose a mode instead of silently routing around `STACK_BACKEND`.
 
 A one-off override works exactly as it does for `pi-local.sh`:
 
@@ -481,6 +492,8 @@ The forge line uses **two** probes, never one. `/forge/health` is forge's own
 liveness; `/health` is the backend's readiness, forwarded. Conflating them
 reports "forge is down" for the whole cold load of a model that is loading
 perfectly normally — see `pi-local.sh`, which learned the same lesson.
+Anthropic mode does not print that line; it reports the hosted backend and
+whether `ANTHROPIC_API_KEY` was forwarded, without printing the value.
 
 `tini` is PID 1 so Xvfb, Chrome and the browser server get reaped. Without a
 real init they accumulate as zombies across a long session, and Chrome's hold

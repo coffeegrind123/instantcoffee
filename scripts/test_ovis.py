@@ -315,7 +315,7 @@ class PiLocalDropsTheShim(unittest.TestCase):
             src = fh.read()
         strip = src.index('PATH="$(strip_path "$PATH" "$REPO_ROOT/scripts/ovis-shims")"')
         self.assertLess(strip, src.index("command -v pi >/dev/null"))
-        self.assertLess(strip, src.index('exec pi "${pi_flags[@]}"'))
+        self.assertLess(strip, src.index('exec pi "${LAUNCH_ARGS[@]}"'))
 
 
 class OvisPatch(unittest.TestCase):

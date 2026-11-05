@@ -16,6 +16,8 @@ README.md               what this is, how to run it, and where to read more
 docs/                   public documentation, split out of the README 2026-08-25
   modes.md              the regimes and window tiers, their models, every sampler value
   pi.md                 /stack, /loop, subagents, /prinny, provider config
+  anthropic.md          hosted Anthropic mode, cache policy, team solve, return path
+  team-solve.md         durable command-checked team workflow and Claude role allocation
   context-budget.md     MCP as a CLI, filtered bash output, the browser
   reasoning.md          REASONING_EFFORT and thinking language
   quants.md             what fits in 24 GiB and what each step down costs
@@ -30,6 +32,9 @@ prompts/
   orchestrator/         orchestrator-mode prompt (main.md) and its worker/explorer types
   README.md             why this is applied client-side and not in the engine
 scripts/
+  team-solve/           pi-native team-solve orchestrator
+    team_solve.py       durable state machine, command checks, and run ledger
+    prompts.py          fresh-context role instructions
   lib.sh                shared helpers, sourced by every script here
   setup.sh              prerequisites -> model -> build -> up -> verify
   update.sh             update everything, verify, roll back on failure

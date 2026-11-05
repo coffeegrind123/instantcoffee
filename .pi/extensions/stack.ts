@@ -29,6 +29,25 @@ import { Type } from "typebox";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	BACKEND_INDEPENDENT_STACK_COMMANDS,
+	LOCAL_ONLY_STACK_COMMANDS,
+	STACK_SUBCOMMANDS,
+	envDisplayValue,
+	isSecretKey,
+	isStackSubcommand,
+	localCommandUnavailable,
+	modeBackend,
+	modeBackendProblem,
+	modeNames,
+	restartCommand,
+	splitStackArgs,
+	stackArgumentProblem,
+	stackBackend,
+	stackBackendProblem,
+	valueLooksSecret,
+	type StackBackend,
+} from "./stack-backend.ts";
 
 // --- repo discovery ---------------------------------------------------------
 // pi may be started from a subdirectory, so walk up looking for the markers
@@ -90,8 +109,27 @@ function parseEnvFile(path: string): Map<string, string> {
 	return out;
 }
 
+function parseEnvFileKeys(path: string): Set<string> {
+	const out = new Set<string>();
+	if (!existsSync(path)) return out;
+	let text: string;
+	try {
+		text = readFileSync(path, "utf8");
+	} catch {
+		return out;
+	}
+	for (const raw of text.split("\n")) {
+		const match = /^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)=/.exec(raw);
+		if (match) out.add(match[1]);
+	}
+	return out;
+}
+
 class StackEnv {
 	private merged = new Map<string, string>();
+	private fromEnvFile = new Map<string, string>();
+	private fromLocalFile = new Map<string, string>();
+	private visibleKeys = new Set<string>();
 	readonly keysInEnvFile = new Set<string>();
 	readonly root: string;
 
@@ -100,19 +138,42 @@ class StackEnv {
 	constructor(root: string) {
 		this.root = root;
 		const base = parseEnvFile(join(root, ".env"));
-		for (const k of base.keys()) this.keysInEnvFile.add(k);
+		this.fromEnvFile = base;
+		for (const k of base.keys()) {
+			this.keysInEnvFile.add(k);
+			this.visibleKeys.add(k);
+		}
 		for (const [k, v] of base) this.merged.set(k, v);
-		for (const [k, v] of parseEnvFile(join(root, ".env.local"))) this.merged.set(k, v);
+		const local = parseEnvFile(join(root, ".env.local"));
+		this.fromLocalFile = local;
+		for (const [k, v] of local) {
+			this.merged.set(k, v);
+			this.visibleKeys.add(k);
+		}
+		// Optional documented keys matter when their only value is exported —
+		// notably ANTHROPIC_API_KEY, which should never be written to .env.
+		for (const k of parseEnvFileKeys(join(root, ".env.local.example"))) {
+			if (Object.prototype.hasOwnProperty.call(process.env, k)) this.visibleKeys.add(k);
+		}
 	}
 
 	get(key: string, fallback = ""): string {
-		const exported = process.env[key];
-		if (exported !== undefined && exported !== "") return exported;
+		if (Object.prototype.hasOwnProperty.call(process.env, key)) return process.env[key] ?? "";
 		return this.merged.get(key) ?? fallback;
 	}
 
+	precedenceSource(key: string): string | null {
+		if (Object.prototype.hasOwnProperty.call(process.env, key)) return "the environment";
+		if (this.fromLocalFile.has(key)) return ".env.local";
+		return null;
+	}
+
+	envFileValue(key: string, fallback = ""): string {
+		return this.fromEnvFile.get(key) ?? fallback;
+	}
+
 	entries(): Array<[string, string]> {
-		return [...this.merged.keys()].sort().map((k) => [k, this.get(k)] as [string, string]);
+		return [...this.visibleKeys].sort().map((k) => [k, this.get(k)] as [string, string]);
 	}
 }
 
@@ -185,6 +246,40 @@ const CLIENT_ONLY_KEYS = new Set([
 	"PI_UPDATE_INTERVAL_H",
 	"MCP2CLI_ENABLED",
 	"THINK_LANG",
+	"STACK_BACKEND",
+	"STACK_LAST_LOCAL_MODE",
+	"ANTHROPIC_MODEL",
+	"ANTHROPIC_SUBAGENT_MODEL",
+	"ANTHROPIC_ADVISOR_MODEL",
+	"PI_CONTEXT_WINDOW",
+	"PI_CACHE_SHORT_SECONDS",
+	"PI_CACHE_LONG_SECONDS",
+	"PI_CACHE_WARMING",
+	"PI_SHOW_CACHE_MISS_NOTICES",
+	"PI_CACHE_RETENTION",
+	"PI_UPDATE_MODELS_ON_LAUNCH",
+	"PI_COMPACTION_AT_PCT",
+	"PI_COMPACTION_KEEP_PCT",
+	"PI_OFFLINE",
+	"ORCHESTRATOR",
+	"SUBAGENTS_ENABLED",
+	"SUBAGENT_MODEL",
+	"ADVISOR_MODEL",
+	"TEAM_SOLVE_ENABLED",
+	"TEAM_SOLVE_FABLE_MODEL",
+	"TEAM_SOLVE_OPUS_MODEL",
+	"TEAM_SOLVE_SONNET_MODEL",
+	"TEAM_SOLVE_HAIKU_MODEL",
+	"TEAM_SOLVE_FABLE_THINKING",
+	"TEAM_SOLVE_OPUS_THINKING",
+	"TEAM_SOLVE_SONNET_THINKING",
+	"TEAM_SOLVE_HAIKU_THINKING",
+	"TEAM_SOLVE_DEFAULT_PROFILE",
+	"TEAM_SOLVE_MAX_ROUNDS",
+	"TEAM_SOLVE_MAX_HOURS",
+	"TEAM_SOLVE_ROLE_TIMEOUT",
+	"TEAM_SOLVE_CHECK_TIMEOUT",
+	"TEAM_SOLVE_ROLE_RETRIES",
 ]);
 
 // --- http --------------------------------------------------------------------
@@ -198,6 +293,11 @@ const CLIENT_ONLY_KEYS = new Set([
  */
 const QUEUE_BACKED_TIMEOUT_MS = 8000;
 const DIRECT_TIMEOUT_MS = 8000;
+// scripts/spec-sweep.sh measures up to ~27 minutes on this box. Leave room for
+// the slow case instead of killing a recreate inside its normal duration.
+const LLAMA_RECREATE_TIMEOUT_MS = 2_400_000;
+// smoke_test.py allows 2,700s for a cold model load before its own checks run.
+const SMOKE_TIMEOUT_MS = 3_600_000;
 
 /** An HTTP error that kept its status and body, so callers can tell 503-loading
  *  apart from 503-something-else without a second request. */
@@ -262,7 +362,8 @@ interface SlotView {
 	speculative: boolean | null;
 }
 
-interface StackStatus {
+interface LocalStackStatus {
+	backend: "local";
 	root: string;
 	llamaUrl: string;
 	forgeUrl: string;
@@ -291,8 +392,54 @@ interface StackStatus {
 	generatedAt: number;
 }
 
+interface HostedStackStatus {
+	backend: "anthropic";
+	root: string;
+	endpoint: string;
+	keyPresent: boolean;
+	models: {
+		main: string;
+		subagent: string;
+		advisor: string;
+	};
+	contextWindow: number;
+	cache: {
+		shortSeconds: number;
+		longSeconds: number;
+		warming: string;
+		retention: string;
+	};
+	compaction: {
+		atPct: number;
+		keepPct: number;
+	};
+	settings: Array<[string, string]>;
+	generatedAt: number;
+}
+
+type StackStatus = LocalStackStatus | HostedStackStatus;
+
 /** Settings worth showing without being asked. Everything else via `/stack env`. */
-const HEADLINE_KEYS = [
+const HOSTED_HEADLINE_KEYS = [
+	"STACK_BACKEND",
+	"STACK_LAST_LOCAL_MODE",
+	"ANTHROPIC_MODEL",
+	"ANTHROPIC_SUBAGENT_MODEL",
+	"ANTHROPIC_ADVISOR_MODEL",
+	"PI_CONTEXT_WINDOW",
+	"PI_CACHE_WARMING",
+	"PI_CACHE_RETENTION",
+	"PI_COMPACTION_AT_PCT",
+	"PI_COMPACTION_KEEP_PCT",
+	"PI_OFFLINE",
+	"ORCHESTRATOR",
+	"SUBAGENT_MODEL",
+	"ADVISOR_MODEL",
+];
+
+const LOCAL_HEADLINE_KEYS = [
+	"STACK_BACKEND",
+	"STACK_LAST_LOCAL_MODE",
 	"MODEL_REPO",
 	"GGUF_FILE",
 	"MODEL_ALIAS",
@@ -335,13 +482,13 @@ const HEADLINE_KEYS = [
  *
  * Five of the seven do not report output verbatim; they choose a verdict from
  * `r.code` and say a sentence about it. The worst two are the pair that recreate
- * llama, both on a 600-second timeout, in a file whose own text says the cold
- * load is "~9-20 minutes" — so the timeout is INSIDE the operation's normal
- * duration, and a killed `compose up -d --force-recreate llama` reported
- * *"llama recreated"*, at `warn`, to an operator who then waits for a container
- * that was never brought up. `/stack set` was the same shape one layer quieter:
- * a killed `env_set` was reported as `KEY: old -> new`, i.e. as an .env write
- * that did not happen.
+ * llama, which originally used a 600-second timeout in a file whose own text
+ * says the cold load is "~9-20 minutes" — inside the operation's normal
+ * duration. A killed `compose up -d --force-recreate llama` reported *"llama
+ * recreated"*, at `warn`, to an operator who then waits for a container that was
+ * never brought up. `/stack set` was the same shape one layer quieter: a killed
+ * `env_set` was reported as `KEY: old -> new`, i.e. as an .env write that did
+ * not happen.
  *
  * One helper rather than seven inline tests, for the reason
  * `vendor/pi-subagents-lite/src/spawn/git-failure.ts` is one module: the next
@@ -367,6 +514,39 @@ export function execVerdict(
 }
 
 async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeInfo): Promise<StackStatus> {
+	const backend = stackBackend(env.get("STACK_BACKEND"));
+	const headlineKeys = backend === "anthropic" ? HOSTED_HEADLINE_KEYS : LOCAL_HEADLINE_KEYS;
+	const settings = headlineKeys
+		.filter((k) => env.get(k) !== "")
+		.map((k) => [k, envDisplayValue(k, env.get(k))] as [string, string]);
+
+	if (backend === "anthropic") {
+		return {
+			backend,
+			root: env.root,
+			endpoint: "https://api.anthropic.com",
+			keyPresent: env.get("ANTHROPIC_API_KEY") !== "",
+			models: {
+				main: env.get("ANTHROPIC_MODEL") || "claude-opus-5-5",
+				subagent: env.get("ANTHROPIC_SUBAGENT_MODEL") || "claude-haiku-5-5",
+				advisor: env.get("ANTHROPIC_ADVISOR_MODEL") || "claude-fable-5-1",
+			},
+			contextWindow: Number(env.get("PI_CONTEXT_WINDOW") || "1000000"),
+			cache: {
+				shortSeconds: Number(env.get("PI_CACHE_SHORT_SECONDS") || "300"),
+				longSeconds: Number(env.get("PI_CACHE_LONG_SECONDS") || "3600"),
+				warming: env.get("PI_CACHE_WARMING") || "idle",
+				retention: env.get("PI_CACHE_RETENTION") || "long",
+			},
+			compaction: {
+				atPct: Number(env.get("PI_COMPACTION_AT_PCT") || "0.28"),
+				keepPct: Number(env.get("PI_COMPACTION_KEEP_PCT") || "0.15"),
+			},
+			settings,
+			generatedAt: Date.now(),
+		};
+	}
+
 	const inDocker = existsSync("/.dockerenv");
 	const host = inDocker ? "host.docker.internal" : env.get("BIND_ADDR", "127.0.0.1") || "127.0.0.1";
 	const llamaUrl = `http://${host}:${env.get("LLAMA_PORT", "8080")}`;
@@ -383,7 +563,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		dockerVram(pi, compose),
 	]);
 
-	let llama: StackStatus["llama"];
+	let llama: LocalStackStatus["llama"];
 	if (propsR.status === "fulfilled") {
 		const p = propsR.value;
 		// props.n_ctx is null on this build; the real value lives on
@@ -430,7 +610,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		};
 	}
 
-	let forge: StackStatus["forge"];
+	let forge: LocalStackStatus["forge"];
 	if (healthR.status === "fulfilled") {
 		forge = {
 			ok: true,
@@ -444,7 +624,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		forge = { ok: false, error: String(healthR.reason?.message ?? healthR.reason) };
 	}
 
-	const containers: StackStatus["containers"] = [];
+	const containers: LocalStackStatus["containers"] = [];
 	// `dockerPs` returns null for a daemon that did not answer, and leaving
 	// `containers` empty is the honest answer: the formatter prints nothing for a
 	// service it was never told about, rather than a false "not running".
@@ -457,6 +637,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 	}
 
 	return {
+		backend,
 		root: env.root,
 		llamaUrl,
 		forgeUrl,
@@ -464,7 +645,7 @@ async function collectStatus(pi: ExtensionAPI, env: StackEnv, compose: ComposeIn
 		forge,
 		containers,
 		vram: vramR.status === "fulfilled" ? vramR.value : null,
-		settings: HEADLINE_KEYS.filter((k) => env.get(k) !== "").map((k) => [k, env.get(k)] as [string, string]),
+		settings,
 		generatedAt: Date.now(),
 	};
 }
@@ -537,6 +718,37 @@ function fmtInt(n: number): string {
 
 function statusLines(s: StackStatus): string[] {
 	const out: string[] = [];
+
+	if (s.backend === "anthropic") {
+		const compactionAt = Number.isFinite(s.contextWindow) ? Math.round(s.contextWindow * s.compaction.atPct) : null;
+		const keep = Number.isFinite(s.contextWindow) ? Math.round(s.contextWindow * s.compaction.keepPct) : null;
+		out.push(`backend  anthropic  ${s.endpoint}`);
+		out.push(`auth     ANTHROPIC_API_KEY ${s.keyPresent ? "present" : "MISSING — add it to .env.local"}`);
+		out.push(`models   main ${s.models.main}`);
+		out.push(`         subagents ${s.models.subagent}`);
+		out.push(`         advisor ${s.models.advisor}`);
+		out.push(
+			`context  ${fmtInt(s.contextWindow)}` +
+				(compactionAt !== null && keep !== null
+					? `   compact ~${fmtInt(compactionAt)}   keep ~${fmtInt(keep)}`
+					: ""),
+		);
+		out.push(
+			`cache    ${s.cache.warming}/${s.cache.retention}` +
+				`   tiers ${s.cache.shortSeconds}s / ${s.cache.longSeconds}s`,
+		);
+		out.push("");
+		out.push("No llama, forge, Docker, or GPU state is queried in this mode.");
+		out.push("Use /anthropic status to inspect it, or /anthropic off to return local.");
+
+		if (s.settings.length) {
+			out.push("");
+			out.push("settings (.env, .env.local, exported)");
+			const width = Math.max(...s.settings.map(([k]) => k.length));
+			for (const [k, v] of s.settings) out.push(`  ${k.padEnd(width)}  ${v}`);
+		}
+		return out;
+	}
 
 	if (s.llama.ok) {
 		const l = s.llama;
@@ -620,6 +832,13 @@ function statusLines(s: StackStatus): string[] {
 	return out;
 }
 
+function stackStatusTone(s: StackStatus): StatusEntry["tone"] {
+	if (s.backend === "anthropic") return s.keyPresent ? "info" : "error";
+	if (s.llama.ok && s.llama.queueWedged) return "error";
+	if (!s.llama.ok && s.llama.loading) return s.forge.ok ? "warn" : "error";
+	return !s.llama.ok || !s.forge.ok ? "error" : "info";
+}
+
 // --- extension ---------------------------------------------------------------
 
 interface StatusEntry {
@@ -627,21 +846,6 @@ interface StatusEntry {
 	lines: string[];
 	tone: "info" | "warn" | "error";
 }
-
-const SUBCOMMANDS = [
-	"status",
-	"mode",
-	"env",
-	"set",
-	"up",
-	"down",
-	"restart",
-	"smoke",
-	"bench",
-	"logs",
-	"slots",
-	"help",
-];
 
 /**
  * Is this factory being run for a SUBAGENT's session?
@@ -706,41 +910,61 @@ export default function stackExtension(pi: ExtensionAPI) {
 
 	const env = new StackEnv(root);
 	const compose = readCompose(root);
+	const currentEnv = () => new StackEnv(root!);
 
 	// --- read-only observation, exposed to the model -------------------------
 	pi.registerTool({
 		name: "stack_status",
 		label: "Stack status",
 		description:
-			"Read the live state of the local inference stack: loaded model, context size, slot cache, " +
-			"speculative decoding, prefill/decode throughput, GPU memory, forge health and the effective " +
-			".env settings. Read-only — it cannot change or restart anything.",
-		promptSnippet: "Inspect the local forge + llama.cpp stack (model, context, throughput, GPU, settings)",
+			"Read the active inference backend: local llama.cpp/forge state or hosted Anthropic models, " +
+			"context, cache, credentials presence and effective settings. Read-only — it cannot change or restart anything.",
+		promptSnippet: "Inspect the active local or Anthropic inference stack",
 		promptGuidelines: [
-			"Use stack_status before blaming the model for slow or truncated output — it reports prefill/decode throughput, KV usage and whether a slot is busy.",
+			"Use stack_status before blaming the model for slow or truncated output — local mode reports prefill/decode throughput, KV usage and slot state; hosted mode reports the configured seats and cache policy.",
 			"stack_status is read-only. Restarting or reconfiguring the stack is a user action via /stack; do not ask to run it as a tool.",
 		],
 		parameters: Type.Object({}),
 		async execute() {
+			const problem = stackBackendProblem(env.get("STACK_BACKEND"));
+			if (problem) {
+				return {
+					content: [{ type: "text", text: problem }],
+					details: { backend: "invalid", root: env.root },
+					isError: true,
+				};
+			}
 			const s = await collectStatus(pi, env, compose);
 			return {
 				content: [{ type: "text", text: statusLines(s).join("\n") }],
-				details: { llamaUrl: s.llamaUrl, forgeUrl: s.forgeUrl },
+				details:
+					s.backend === "anthropic"
+						? { backend: s.backend, endpoint: s.endpoint }
+						: { backend: s.backend, llamaUrl: s.llamaUrl, forgeUrl: s.forgeUrl },
+				isError: stackStatusTone(s) === "error",
 			};
 		},
 	});
 
 	// --- user-only control ----------------------------------------------------
 	pi.registerCommand("stack", {
-		description: "Inspect and control the forge + llama.cpp stack",
+		description: "Inspect the active local or Anthropic inference stack",
 		getArgumentCompletions: (prefix) => {
 			const parts = prefix.split(/\s+/);
 			if (parts.length <= 1) {
-				const hits = SUBCOMMANDS.filter((c) => c.startsWith(parts[0] ?? ""));
+				const problem = stackBackendProblem(env.get("STACK_BACKEND"));
+				const available = problem
+					? STACK_SUBCOMMANDS.filter(
+							(command) => command === "status" || BACKEND_INDEPENDENT_STACK_COMMANDS.has(command),
+						)
+					: STACK_SUBCOMMANDS.filter(
+							(command) => !localCommandUnavailable(stackBackend(env.get("STACK_BACKEND")), command),
+						);
+				const hits = available.filter((c) => c.startsWith(parts[0] ?? ""));
 				return hits.length ? hits.map((c) => ({ value: c, label: c })) : null;
 			}
 			if (parts[0] === "set" && parts.length === 2) {
-				const hits = [...env.keysInEnvFile].filter((k) => k.startsWith(parts[1])).sort();
+				const hits = [...currentEnv().keysInEnvFile].filter((k) => k.startsWith(parts[1])).sort();
 				return hits.length ? hits.slice(0, 40).map((k) => ({ value: `set ${k}=`, label: k })) : null;
 			}
 			if (parts[0] === "mode" && parts.length === 2) {
@@ -752,15 +976,42 @@ export default function stackExtension(pi: ExtensionAPI) {
 				return hits.length ? hits.map((a) => ({ value: `slots ${a}`, label: a })) : null;
 			}
 			if ((parts[0] === "restart" || parts[0] === "logs") && parts.length === 2) {
-				const hits = ["llama", "forge"].filter((a) => a.startsWith(parts[1]));
+				const services =
+					parts[0] === "restart" ? ["llama", "forge"] : [...compose.containers.keys()].sort();
+				const hits = services.filter((a) => a.startsWith(parts[1]));
 				return hits.length ? hits.map((a) => ({ value: `${parts[0]} ${a}`, label: a })) : null;
 			}
 			return null;
 		},
 		handler: async (args, ctx) => {
-			const argv = args.trim().split(/\s+/).filter(Boolean);
+			const parsed = splitStackArgs(args);
+			if ("error" in parsed) {
+				ctx.ui.notify(parsed.error, "warning");
+				return;
+			}
+			const argv = parsed.args;
 			const sub = (argv[0] ?? "status").toLowerCase();
 			const rest = argv.slice(1);
+			if (!isStackSubcommand(sub)) {
+				ctx.ui.notify(`Unknown subcommand '${sub}'. Try /stack help`, "warning");
+				return;
+			}
+			const argumentProblem = stackArgumentProblem(sub, rest);
+			if (argumentProblem) {
+				report(`stack ${sub}`, argumentProblem, "warn");
+				return;
+			}
+			const backendValue = env.get("STACK_BACKEND");
+			const problem = stackBackendProblem(backendValue);
+			if (problem && !BACKEND_INDEPENDENT_STACK_COMMANDS.has(sub)) {
+				report(`stack ${sub}`, [problem, "", "Fix STACK_BACKEND in .env, .env.local, or the environment."], "error");
+				return;
+			}
+			const unavailable = problem ? null : localCommandUnavailable(stackBackend(backendValue), sub);
+			if (unavailable) {
+				report(`stack ${sub}`, unavailable, "warn");
+				return;
+			}
 
 			switch (sub) {
 				case "status":
@@ -773,10 +1024,11 @@ export default function stackExtension(pi: ExtensionAPI) {
 					return setKey(ctx, rest.join(" "));
 				case "up":
 				case "down":
+					return lifecycle(ctx, sub);
 				case "restart":
 					return lifecycle(ctx, sub, rest[0]);
 				case "smoke":
-					return runScript(ctx, "smoke-test.sh", [], 900_000, "smoke");
+					return runScript(ctx, "smoke-test.sh", [], SMOKE_TIMEOUT_MS, "smoke");
 				case "bench":
 					return runScript(ctx, "bench.sh", rest, 3_600_000, "bench");
 				case "logs":
@@ -785,32 +1037,85 @@ export default function stackExtension(pi: ExtensionAPI) {
 					return slots(ctx, rest);
 				case "help":
 					return showHelp();
-				default:
-					ctx.ui.notify(`Unknown subcommand '${sub}'. Try /stack help`, "warning");
 			}
 		},
 	});
+
+	pi.registerCommand("anthropic", {
+		description: "Show, enable, or leave the hosted Anthropic stack mode",
+		getArgumentCompletions: (prefix) => {
+			const hits = ["status", "on", "enable", "off", "disable", "local"].filter((c) =>
+				c.startsWith(prefix.trim()),
+			);
+			return hits.length ? hits.map((c) => ({ value: c, label: c })) : null;
+		},
+		handler: async (args, ctx) => {
+			const parts = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+			if (parts.length > 1) {
+				ctx.ui.notify("Usage: /anthropic [status|on|off]", "warning");
+				return;
+			}
+			const action = parts[0] ?? "status";
+			if (action === "status") {
+				showAnthropicStatus();
+				return;
+			}
+			if (action === "on" || action === "enable") {
+				await applyMode(ctx, "anthropic", "anthropic");
+				return;
+			}
+			if (action === "off" || action === "local" || action === "disable") {
+				await applyMode(ctx, lastLocalMode(), "anthropic");
+				return;
+			}
+			ctx.ui.notify("Usage: /anthropic [status|on|off]", "warning");
+		},
+	});
+
+	function showAnthropicStatus() {
+		const configured = new StackEnv(root!);
+		const configuredBackend = stackBackend(configured.get("STACK_BACKEND"));
+		const sessionBackend = stackBackend(env.get("STACK_BACKEND"));
+		const configuredProblem = stackBackendProblem(configured.get("STACK_BACKEND"));
+		const sessionProblem = stackBackendProblem(env.get("STACK_BACKEND"));
+		report("anthropic", [
+			`pi session    ${sessionProblem ? `INVALID (${sessionProblem})` : sessionBackend}`,
+			`configured    ${configuredProblem ? `INVALID (${configuredProblem})` : configuredBackend}`,
+			`endpoint      https://api.anthropic.com`,
+			`api key       ${configured.get("ANTHROPIC_API_KEY") ? "present" : "MISSING — add ANTHROPIC_API_KEY to .env.local"}`,
+			`main          ${configured.get("ANTHROPIC_MODEL") || "claude-opus-5-5"}`,
+			`subagents     ${configured.get("ANTHROPIC_SUBAGENT_MODEL") || "claude-haiku-5-5"}`,
+			`advisor       ${configured.get("ANTHROPIC_ADVISOR_MODEL") || "claude-fable-5-1"}`,
+			`context       ${configured.get("PI_CONTEXT_WINDOW") || "1000000"}`,
+			`cache         ${configured.get("PI_CACHE_WARMING") || "idle"}/${configured.get("PI_CACHE_RETENTION") || "long"}`,
+			"",
+			...(configuredProblem || sessionProblem
+				? ["Fix STACK_BACKEND with /stack mode coding or /stack mode anthropic."]
+				: sessionBackend === configuredBackend
+					? ["This pi session is already on the configured backend."]
+					: ["Configuration changed. Relaunch pi to activate it."]),
+		], configuredProblem || sessionProblem ? "error" : sessionBackend === configuredBackend ? "info" : "warn");
+	}
 
 	async function showStatus(ctx: ExtensionCommandContext) {
 		ctx.ui.setWorkingMessage?.("Reading stack status…");
 		try {
 			const s = await collectStatus(pi, env, compose);
-			const bad = !s.llama.ok || !s.forge.ok;
-			report("stack", statusLines(s), bad ? "error" : "info");
+			report("stack", statusLines(s), stackStatusTone(s));
 		} finally {
 			ctx.ui.setWorkingMessage?.(undefined);
 		}
 	}
 
-	/** Mode names, from modes/*.env — the same files scripts/mode.sh reads. */
+	/** Mode names, plus mode.sh's `local` alias, which has no file of its own. */
 	function listModes(): string[] {
 		try {
-			return readdirSync(join(root!, "modes"))
+			const files = readdirSync(join(root!, "modes"))
 				.filter((f) => f.endsWith(".env"))
 				.map((f) => f.slice(0, -4))
-				.sort();
+			return modeNames(files);
 		} catch {
-			return [];
+			return modeNames([]);
 		}
 	}
 
@@ -835,7 +1140,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 				"stack mode",
 				[
 					...(bad ? [`mode.sh ${bad.reason}`, ""] : []),
-					...tail(cleanShellOutput(r.stdout, r.stderr).join("\n"), 60),
+					...cleanShellOutput(r.stdout, r.stderr),
 				],
 				bad ? "error" : "info",
 			);
@@ -848,12 +1153,77 @@ export default function stackExtension(pi: ExtensionAPI) {
 			return;
 		}
 
+		await applyMode(ctx, target, "stack mode");
+	}
+
+	function modeFileBackend(target: string): StackBackend {
+		try {
+			return modeBackend(readFileSync(join(root!, "modes", `${target}.env`), "utf8"));
+		} catch {
+			return "local";
+		}
+	}
+
+	function modeFileProblem(target: string): string | null {
+		try {
+			return modeBackendProblem(readFileSync(join(root!, "modes", `${target}.env`), "utf8"));
+		} catch {
+			return `missing modes/${target}.env`;
+		}
+	}
+
+	function lastLocalMode(): string {
+		const candidate = currentEnv().get("STACK_LAST_LOCAL_MODE", "coding");
+		return listModes().includes(candidate) &&
+			candidate !== "anthropic" &&
+			candidate !== "local" &&
+			modeFileBackend(candidate) === "local"
+			? candidate
+			: "coding";
+	}
+
+	async function applyMode(ctx: ExtensionCommandContext, target: string, title: string) {
+		const script = join(root!, "scripts", "mode.sh");
+		if (!existsSync(script)) {
+			report(title, [`missing ${script}`], "error");
+			return;
+		}
+		const modes = listModes();
+		if (!modes.includes(target)) {
+			report(title, [`no such mode '${target}'`, `available: ${modes.join(", ")}`], "error");
+			return;
+		}
+		const effectiveTarget = target === "local" ? lastLocalMode() : target;
+		const targetProblem = modeFileProblem(effectiveTarget);
+		if (targetProblem) {
+			report(title, [`${effectiveTarget} mode is invalid: ${targetProblem}`], "error");
+			return;
+		}
+		const targetBackend = modeFileBackend(effectiveTarget);
+		const currentBackendValue = currentEnv().get("STACK_BACKEND");
+		const currentBackend = stackBackend(currentBackendValue);
+		const backendChanges = stackBackendProblem(currentBackendValue) !== null || currentBackend !== targetBackend;
+		const hosted = targetBackend === "anthropic";
+		const action = target === "local" ? `Restore ${effectiveTarget} mode?` : `Switch to ${effectiveTarget} mode?`;
+		const localText =
+			target === "local"
+				? `Restore the last local profile (${effectiveTarget}) by rewriting its keys in\n` +
+					".env and installing pi's forge provider.\n\n"
+				: `Rewrites the ${effectiveTarget} keys in .env (model and sampling) and installs\n` +
+					"pi's forge provider.\n\n";
+
 		const ok = await ctx.ui.confirm(
-			`Switch to ${target} mode?`,
-			`Rewrites the ${target} keys in .env (model, sampling, thinking language).\n\n` +
-				`Nothing is live until llama is recreated — llama-server answers 501 to\n` +
-				`POST /props — and that is a ~9-20 minute cold load on this box.\n\n` +
-				`You will be asked separately whether to restart now.`,
+			action,
+			hosted
+				? `Rewrites the ${target} keys in .env and installs pi's Anthropic provider.\n\n` +
+					"Hosted mode starts no llama or forge container. Relaunch pi after this\n" +
+					"change; the provider is selected when pi starts."
+				: localText +
+					(backendChanges
+						? "Relaunch pi after this change. Start or recreate llama when you are ready."
+						: "The mode is not live until llama is recreated — llama-server answers\n" +
+							"501 to POST /props — and that is a ~9-20 minute cold load on this box.\n\n" +
+							"You will be asked separately whether to restart now."),
 		);
 		if (!ok) {
 			ctx.ui.notify("Cancelled", "info");
@@ -878,34 +1248,54 @@ export default function stackExtension(pi: ExtensionAPI) {
 			/^\s*or: docker compose/,
 		]);
 		if (applyBad) {
-			report(`stack mode ${target}`, [`mode.sh ${applyBad.reason}`, ...lines], "error");
+			report(`${title} ${effectiveTarget}`, [`mode.sh ${applyBad.reason}`, ...lines], "error");
+			return;
+		}
+
+		if (hosted || backendChanges) {
+			const hostedKeyMissing = hosted && !new StackEnv(root!).get("ANTHROPIC_API_KEY");
+			const switchNote = hosted
+				? [
+						"Hosted mode is configured. Relaunch pi to use api.anthropic.com.",
+						"No llama or forge restart is needed or offered.",
+						hostedKeyMissing
+							? "ANTHROPIC_API_KEY is missing. Add it to .env.local before relaunching."
+							: "ANTHROPIC_API_KEY is present.",
+					]
+				: [
+						`Local mode is configured. Relaunch pi to return to forge/${effectiveTarget}.`,
+						`Then check the stack with /stack, or start it with /stack up.`,
+					];
+			report(`${title} ${effectiveTarget}`, [...lines, "", ...switchNote], hostedKeyMissing ? "error" : "warn");
+			return;
+		}
+
+		if (lines.some((line) => /^already in .+ mode — no \.env changes needed$/.test(line))) {
+			report(`${title} ${effectiveTarget}`, [...lines, "", "No restart is needed."], "info");
 			return;
 		}
 
 		const restart = await ctx.ui.confirm(
 			`Recreate llama now?`,
-			`.env is on ${target}. Recreating loads the mode's model and sampling.\n` +
+			`.env is on ${effectiveTarget}. Recreating loads the mode's model and sampling.\n` +
 				`Expect ~9-20 minutes before it answers again, and this session's model\n` +
 				`access goes away for that whole time.\n\nSay no to apply it later.`,
 		);
 		if (!restart) {
-			report(`stack mode ${target}`, [...lines, "", "Not restarted. Apply with: /stack restart llama"], "warn");
+			report(`${title} ${effectiveTarget}`, [...lines, "", "Not restarted. Apply with: /stack restart llama"], "warn");
 			return;
 		}
 
-		ctx.ui.setWorkingMessage?.(`Recreating llama on ${target}…`);
+		ctx.ui.setWorkingMessage?.(`Recreating llama on ${effectiveTarget}…`);
 		try {
 			const bash =
 				`set -euo pipefail\nsource "${join(root!, "scripts", "lib.sh")}"\ncompose up -d --force-recreate llama\n`;
-			const r = await pi.exec("bash", ["-c", bash], { cwd: root!, timeout: 600_000 });
-			// AI5: `killed` before `code`, and this is the site where the two
-			// numbers are visibly in conflict — the timeout is ten minutes and the
-			// paragraph below says the cold load is nine to twenty. A killed
-			// `compose up` reported "llama recreated" and the operator waited for a
-			// container that was never brought up.
-			const bad = execVerdict(r, 600_000);
+			const r = await pi.exec("bash", ["-c", bash], { cwd: root!, timeout: LLAMA_RECREATE_TIMEOUT_MS });
+			// AI5: `killed` before `code`. The timeout covers the measured cold
+			// load, so a killed `compose up` is never reported as "llama recreated".
+			const bad = execVerdict(r, LLAMA_RECREATE_TIMEOUT_MS);
 			report(
-				`stack mode ${target}`,
+				`${title} ${effectiveTarget}`,
 				[
 					...lines,
 					"",
@@ -929,8 +1319,9 @@ export default function stackExtension(pi: ExtensionAPI) {
 	}
 
 	function showEnv(filter?: string) {
+		const configured = currentEnv();
 		const needle = filter?.toUpperCase();
-		const rows = env.entries().filter(([k]) => !needle || k.includes(needle));
+		const rows = configured.entries().filter(([k]) => !needle || k.includes(needle));
 		if (!rows.length) {
 			report("stack env", [`no keys matching '${filter}'`], "warn");
 			return;
@@ -938,7 +1329,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 		const width = Math.max(...rows.map(([k]) => k.length));
 		report(
 			`stack env${filter ? ` ~ ${filter}` : ""}`,
-			rows.map(([k, v]) => `${k.padEnd(width)}  ${v}`),
+			rows.map(([k, v]) => `${k.padEnd(width)}  ${envDisplayValue(k, v)}`),
 		);
 	}
 
@@ -949,11 +1340,44 @@ export default function stackExtension(pi: ExtensionAPI) {
 			return;
 		}
 		const [, key, value] = m;
+		const configured = currentEnv();
+
+		if (isSecretKey(key) || valueLooksSecret(value)) {
+			const credentialHelp = isSecretKey(key)
+				? key === "ANTHROPIC_API_KEY"
+					? "  ANTHROPIC_API_KEY=sk-ant-... ./scripts/pi-local.sh"
+					: `  ${key}=... ./scripts/pi-local.sh`
+				: "  The value itself contains a credential (userinfo URL, key flag, or token).";
+			report(
+				"stack set",
+				[
+					`Refusing to write ${key} to .env.`,
+					"",
+					".env is tracked. Put credentials in .env.local (gitignored), or export them for one launch.",
+					credentialHelp,
+				],
+				"error",
+			);
+			return;
+		}
+
+		if (key === "STACK_BACKEND") {
+			report(
+				"stack set",
+				[
+					"STACK_BACKEND is not edited in isolation: the provider config and mode keys must change together.",
+					"",
+					"Use /stack mode anthropic, /anthropic on, or /stack mode coding.",
+				],
+				"warn",
+			);
+			return;
+		}
 
 		// env_set() in lib.sh refuses to append a key that is not already there,
 		// on the grounds that a typo'd key would otherwise sit in .env doing
 		// nothing. Fail here too, where the message can be more useful.
-		if (!env.keysInEnvFile.has(key)) {
+		if (!configured.keysInEnvFile.has(key)) {
 			report("stack set", [`'${key}' is not in .env — refusing to append it blindly.`, "", "Add it to .env by hand if it is genuinely new."], "error");
 			return;
 		}
@@ -979,9 +1403,26 @@ export default function stackExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		const current = env.get(key);
+		const shadow = configured.precedenceSource(key);
+		if (shadow) {
+			report(
+				"stack set",
+				[
+					`${key} is overridden by ${shadow}; /stack set only edits .env and cannot change the effective value.`,
+					"",
+					`effective: ${envDisplayValue(key, configured.get(key)) || "(empty)"}`,
+					`in .env:  ${envDisplayValue(key, configured.envFileValue(key)) || "(empty)"}`,
+					"",
+					`Remove or change the ${shadow} override first.`,
+				],
+				"error",
+			);
+			return;
+		}
+
+		const current = configured.envFileValue(key);
 		if (current === value) {
-			report("stack set", [`${key} is already ${value || "(empty)"} — nothing to do.`], "warn");
+			report("stack set", [`${key} is already ${envDisplayValue(key, value) || "(empty)"} — nothing to do.`], "warn");
 			return;
 		}
 
@@ -996,11 +1437,16 @@ export default function stackExtension(pi: ExtensionAPI) {
 			? "llama-server answers 501 to POST /props"
 			: "forge has no admin API and is CLI-flag driven";
 
-		const consequence = clientOnly
+		const activeBackend = stackBackend(configured.get("STACK_BACKEND"));
+		const inactiveBackend = (activeBackend === "local" && key.startsWith("ANTHROPIC_"))
+			|| (activeBackend === "anthropic" && runtime.length > 0);
+		const consequence = inactiveBackend
+			? `Saved for the other backend. It has no effect in the active ${activeBackend} mode until you switch and relaunch pi.`
+			: clientOnly
 			? "Read by scripts/pi-local.sh at launch — restart pi to pick it up. No container restart needed."
 			: runtime.length
 				? `Read by ${runtime.join(" and ")} at startup. ${why}, so this only takes effect after: ` +
-					`/stack restart ${runtime.join(" ")}` +
+					restartCommand(runtime) +
 					(runtime.includes("llama") ? "  (llama is a ~20 minute cold load on this box)" : "")
 				: owners.length
 					? `Used by ${owners.join(", ")} — one-shot tooling, picked up on their next run.`
@@ -1008,7 +1454,7 @@ export default function stackExtension(pi: ExtensionAPI) {
 
 		const ok = await ctx.ui.confirm(
 			`Set ${key}?`,
-			`${key}\n  from: ${current || "(empty)"}\n  to:   ${value || "(empty)"}\n\n${consequence}\n\nEdits ${join(root!, ".env")}.`,
+			`${key}\n  from: ${envDisplayValue(key, current) || "(empty)"}\n  to:   ${envDisplayValue(key, value) || "(empty)"}\n\n${consequence}\n\nEdits ${join(root!, ".env")}.`,
 		);
 		if (!ok) {
 			ctx.ui.notify("Cancelled", "info");
@@ -1044,7 +1490,15 @@ export default function stackExtension(pi: ExtensionAPI) {
 			);
 			return;
 		}
-		report("stack set", [`${key}: ${current || "(empty)"} -> ${value || "(empty)"}`, "", consequence], "warn");
+		report(
+			"stack set",
+			[
+				`${key}: ${envDisplayValue(key, current) || "(empty)"} -> ${envDisplayValue(key, value) || "(empty)"}`,
+				"",
+				consequence,
+			],
+			"warn",
+		);
 	}
 
 	async function lifecycle(ctx: ExtensionCommandContext, action: string, target?: string) {
@@ -1073,13 +1527,14 @@ export default function stackExtension(pi: ExtensionAPI) {
 					`set -euo pipefail\n` +
 					`source "${join(root!, "scripts", "lib.sh")}"\n` +
 					`compose up -d --force-recreate ${services.join(" ")}\n`;
-				const r = await pi.exec("bash", ["-c", script], { cwd: root!, timeout: 600_000 });
-				// AI5: `killed` before `code`. The same pair of numbers as the
-				// `/stack mode` recreate above — a ten-minute timeout over an
-				// operation the confirmation prompt describes as "roughly 20
-				// minutes" — so "llama is loading" was said about a compose command
-				// pi had killed.
-				const bad = execVerdict(r, 600_000);
+				const r = await pi.exec("bash", ["-c", script], {
+					cwd: root!,
+					timeout: LLAMA_RECREATE_TIMEOUT_MS,
+				});
+				// AI5: `killed` before `code`. The timeout covers the measured cold
+				// load, so "llama is loading" is not said about a compose command
+				// pi killed while it was still working.
+				const bad = execVerdict(r, LLAMA_RECREATE_TIMEOUT_MS);
 				report(
 					"stack restart",
 					[
@@ -1191,26 +1646,29 @@ export default function stackExtension(pi: ExtensionAPI) {
 			report("stack slots", ["Usage: /stack slots save|restore|erase [slot-id]"], "warn");
 			return;
 		}
-		const id = rest[1] ? Number(rest[1]) : 0;
-		if (!Number.isInteger(id) || id < 0) {
+		if (rest[1] !== undefined && !/^\d+$/.test(rest[1])) {
+			ctx.ui.notify(`Bad slot id '${rest[1]}'`, "warning");
+			return;
+		}
+		const id = rest[1] === undefined ? 0 : Number(rest[1]);
+		if (!Number.isSafeInteger(id)) {
 			ctx.ui.notify(`Bad slot id '${rest[1]}'`, "warning");
 			return;
 		}
 
-		if (action !== "erase") {
-			const ok = await ctx.ui.confirm(
-				`${action} slot ${id}?`,
-				`Measured here: a 32k slot save wrote 315 MB in 180s without finishing,\n` +
+		const prompt =
+			action === "erase"
+				? `Erase the saved session for slot ${id}? This deletes the saved slot state.`
+				: `Measured here: a 32k slot save wrote 315 MB in 180s without finishing,\n` +
 					`and aborting one wedged llama's task queue — inference included —\n` +
 					`until the container was recreated (~20 min cold load).\n\n` +
 					`This cannot be cancelled once started, by design: interrupting it is\n` +
 					`what causes the wedge. The slot is blocked meanwhile, so this session's\n` +
-					`own requests will queue behind it.\n\nProceed?`,
-			);
-			if (!ok) {
-				ctx.ui.notify("Cancelled", "info");
-				return;
-			}
+					`own requests will queue behind it.\n\nProceed?`;
+		const ok = await ctx.ui.confirm(`${action} slot ${id}?`, prompt);
+		if (!ok) {
+			ctx.ui.notify("Cancelled", "info");
+			return;
 		}
 
 		const inDocker = existsSync("/.dockerenv");
@@ -1260,24 +1718,32 @@ export default function stackExtension(pi: ExtensionAPI) {
 	}
 
 	function showHelp() {
+		const modes = listModes();
 		report("stack help", [
-			"/stack [status]           model, context, slots, throughput, GPU, forge, settings",
+			"/stack [status]           active backend, models, context, health and settings",
 			"/stack mode              which preset .env matches, and what differs",
-			"/stack mode coding|uc-coding|prose  switch regime, then offer the restart it needs",
-			"/stack env [FILTER]       every effective setting (.env + .env.local + exported)",
+			`/stack mode ${modes.join("|") || "<mode>"}  switch execution backend/mode`,
+			"/stack env [FILTER]       known stack settings, including exported overrides",
 			"/stack set KEY=VALUE      edit .env, and say exactly what must restart",
-			"/stack up | down          start / stop the stack via scripts/",
-			"/stack restart [svc]      recreate llama and/or forge  (llama ≈ 20 min cold load)",
+			"/stack help               show this command list",
+			"/anthropic status|on|off  inspect or switch hosted mode (enable/disable/local aliases)",
+			"",
+			"Local backend only:",
+			"/stack up | down          start / stop llama, forge and observe",
+			"/stack restart [svc]      recreate llama and/or forge (llama ≈ 20 min cold load)",
 			"/stack smoke              scripts/smoke-test.sh",
 			"/stack bench [args]       scripts/bench.sh",
-			"/stack logs [llama|forge] last 60 log lines",
+			"/stack logs [service]     last 60 log lines (default llama)",
 			"/stack slots save|restore|erase [id]",
+			"",
+			"Anthropic backend: no local lifecycle, benchmark, log or slot commands are",
+			"run. The provider is selected at pi launch, so switching modes requires a relaunch.",
 			"",
 			"The model can call stack_status to read the stack. It cannot change it:",
 			"every mutation above is a user-only command on purpose.",
 			"",
-			"Reconfiguration is never live — llama-server answers 501 to POST /props,",
-			"and forge is CLI-flag driven with no admin API.",
+			"Local reconfiguration is never live — llama-server answers 501 to POST /props,",
+			"and forge is CLI-flag driven with no admin API. Hosted settings are read at launch.",
 		]);
 	}
 }

@@ -1,7 +1,8 @@
-# Modes: coding (96K / 128K / 192K), uc-coding, and prose
+# Modes: local coding tiers, prose, and hosted Anthropic
 
-The three switchable regimes, the model behind each, and every sampler knob
-they set. Applied with `./scripts/mode.sh` or `/stack mode` inside pi.
+The local regimes, the model behind each, and every sampler knob they set,
+plus the hosted Anthropic profile. Applied with `./scripts/mode.sh`,
+`/stack mode`, `/anthropic on`, or `/anthropic off` inside pi.
 
 Nothing in this stack filters content. That was checked rather than assumed, on
 2026-08-13:
@@ -17,8 +18,9 @@ So if an uncensored model is behaving timidly here, the cause is configuration,
 not a filter. Four things constrain output, and **`prose` mode already fixes the
 first three** — they are listed so the reasoning is inspectable, not as a to-do:
 
-1. **A sampler profile tuned for code.** `TEMPERATURE=0.6` is Qwen's "precise
-   coding" preset, and XTC/DRY ship disabled. `prose` moves to 1.0 with DRY on.
+1. **A sampler profile tuned for code.** The current Qwen3.8 profiles use
+   temperature 1.0; `prose` differs by enabling DRY and turning the reasoning
+   language fragment off.
 2. **The MTP quant caps your sampling range.** DavidAU's card asks for
    `temp <= 1` and `repeat pen 1.0` on MTP quants, then separately recommends
    `repeat pen 1.1-1.15` for chat/roleplay and regular GGUFs "for creative/
@@ -39,15 +41,16 @@ otherwise reach for `read`/`bash`/`edit`/`write`:
 qpi -nt -nc --system-prompt "You are a literary fiction writer. Return only prose."
 ```
 
-## Three modes
+## Local modes
 
-The stack ships three regimes, and `coding` comes in three context-window tiers
+The stack ships five local mode files, and `coding` comes in three context-window tiers
 (see "Context-window tiers" below). A mode is just a file of `KEY=VALUE` lines in
-`modes/`; adding one means adding a file — `scripts/mode.sh` and pi's
-`/stack mode` both discover `modes/*.env` at runtime, so nothing else needs
-editing.
+`modes/`. `scripts/mode.sh` and pi's `/stack mode` both discover it at runtime.
+Every mode declares `STACK_BACKEND`; local mode files also retain an identical
+set of model keys so a switch cannot leave a stale window, model, or sampler.
 
-- **`coding`** — the default. Stock unsloth weights, Qwen's thinking preset, 96K.
+- **`coding`** — the reference profile. Stock unsloth weights, Qwen's thinking
+  preset, 96K. The checked-in `.env` currently matches `uc-coding`.
 - **`coding-128k`**, **`coding-192k`** — `coding` at bigger windows (same
   weights at 128K; GSQ IQ3_S at 192K). See "Context-window tiers".
 - **`uc-coding`** — `coding`'s exact sampler profile on the decensored
@@ -61,6 +64,8 @@ editing.
 ./scripts/mode.sh --list
 ./scripts/mode.sh prose              # rewrite .env
 ./scripts/mode.sh prose --restart    # ...and recreate llama
+./scripts/mode.sh anthropic          # hosted mode; no llama/forge restart
+./scripts/mode.sh local              # return to STACK_LAST_LOCAL_MODE
 ```
 
 From inside pi, the same thing — the extension shells out to that script rather
@@ -69,6 +74,8 @@ than carrying a second definition of what "prose mode" means:
 ```
 /stack mode                 # status
 /stack mode prose           # switch, then offer the restart it needs
+/stack mode anthropic       # switch backend, then relaunch pi
+/stack mode local           # restore STACK_LAST_LOCAL_MODE
 ```
 
 | | `coding` | `uc-coding` | `prose` |
@@ -79,6 +86,47 @@ than carrying a second definition of what "prose mode" means:
 | DRY | off | off | 0.8 |
 | `REASONING_EFFORT` | medium | medium | medium |
 | `THINK_LANG` | zh | zh | off |
+
+## Anthropic mode
+
+`modes/anthropic.env` sets `STACK_BACKEND=anthropic`. pi uses its built-in
+Anthropic provider and the launcher writes three role models plus prompt-cache
+policy into pi's agent directory:
+
+| seat | default |
+| --- | --- |
+| main/orchestrator | `claude-opus-5-5` |
+| every subagent | `claude-haiku-5-5` |
+| advisor | `claude-fable-5-1` |
+
+The launcher's compaction, banner, and status accounting use
+`PI_CONTEXT_WINDOW=1000000`; the actual model window still comes from pi's
+catalog. Compaction fires around 280,000 and keeps roughly 150,000. Prompt-cache
+tiers are 300 s and 3600 s, retention defaults to the long tier, and idle
+warming is enabled. These are launch-time settings; restart pi after changing
+them.
+
+The key is required and belongs in `.env.local`:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Anthropic mode never invokes `up.sh`, `down.sh`, Docker Compose, a model loader,
+or a GPU probe. `/stack up`, `down`, `restart`, `smoke`, `bench`, `logs`, and
+`slots` therefore report that they are local-only instead of failing against
+the wrong backend.
+
+The complete hosted setup and switching guide is
+[anthropic.md](anthropic.md).
+
+Local team settings (`ORCHESTRATOR`, `SUBAGENTS_ENABLED`, `SUBAGENT_MODEL`,
+`ADVISOR_MODEL`, and `PI_OFFLINE`) are snapshotted when entering Anthropic mode
+and restored on return. Local model profiles do not overwrite them.
+An exported value or `.env.local` entry that would keep a mode key at another
+value makes the switch fail before anything is written; `STACK_BACKEND` alone is
+not the only pin that matters. The switch also snapshots `.env`, `models.json`,
+and `settings.json`, and restores all three if provider configuration fails.
 
 `uc-coding` differs from `coding` in its model and, since 2026-10-31, its window
 (128K against `coding`'s 96K; `coding-128k` is the like-for-like), and from
@@ -96,7 +144,7 @@ Added 2026-10-31, measured on llama b12019 (`context/bench/capacity/*-b12019*`,
 | --- | --- | --- | --- | --- | --- | --- |
 | `coding` | UD-Q4_K_XL | 96K | 23.2 / 1.3 GB | ~2030 t/s @ 90K | 50-53 | 0.0060 / 0.0185 |
 | `coding-128k` | UD-Q4_K_XL | 128K | 23.3 / 1.3 GB | ~1150 t/s @ 125K | 33-45 | 0.0060 / 0.0185 |
-| `coding-192k` | GSQ-RCO IQ3_S (D:) | 192K | 22.8 / 1.8 GB | ~1620 t/s @ 155K | 40-45 | 0.0332 / 0.0849 |
+| `coding-192k` | GSQ-RCO IQ3_S (D:) | 192K | 22.8 / 1.8 GB | ~1620 t/s @ 155K | 40-45 | 0.0332 / 0.0846 |
 | `uc-coding`, `prose` | orcarouter Q4_K_M | 128K | 23.7 / 0.8 GB | ~1770 t/s @ 125K | 44-48 | 0.0168 / 0.0463 |
 
 GPU figures are device-wide with a quiet desktop (Windows holding ~1.4-1.9 GB).
@@ -116,7 +164,7 @@ GPU figures are device-wide with a quiet desktop (Windows holding ~1.4-1.9 GB).
   slowed when the desktop was busy. GSQ is stock-weights only, so the
   uncensored modes stop at 128K. Its GGUF is on D: (spinning disk) because C:
   had 8 GB free; a cold switch can take a long time until it is copied to C:
-  and `MODELS_DIR` in `modes/coding-192k.env` points at `//c/llm-models`.
+  and `MODELS_DIR` in `modes/coding-192k.env` points at `//d/llm-models`.
 - **Every mode file declares `CTX_SIZE`, `DRY_PENALTY_LAST_N` and
   `MODELS_DIR`**, because `mode.sh` only rewrites keys the target names
   (`scripts/test_mode_switch.py` enforces identical key sets). A switch that

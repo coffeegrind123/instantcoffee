@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
 #
-# Run the pi coding agent (pi.dev) against the local model.
+# Run the pi coding agent (pi.dev) against the configured backend.
 #
 #   ./scripts/pi-local.sh                 start a session
 #   ./scripts/pi-local.sh -p "summarize"  any pi flag passes through
 #   ./scripts/pi-local.sh --install-only  write ~/.pi/agent/models.json and stop
-#   ./scripts/pi-local.sh --print-only    show the command without running it
+#   ./scripts/pi-local.sh --print-only    write provider config, then print the command
 #
-# pi has no built-in notion of "an OpenAI-compatible proxy" as a flag — custom
-# providers are declared in ~/.pi/agent/models.json. This script generates that
-# file from .env so the model id, context window and port cannot drift apart
-# from what the stack is actually serving.
+# STACK_BACKEND=local (the default) keeps the forge path and its health probes.
+# STACK_BACKEND=anthropic uses pi's built-in Anthropic provider with the hosted
+# model seats and prompt-cache settings from .env/.env.local.
 #
 # Deliberately NOT using pi's own /llama integration: that makes pi manage its
 # own llama.cpp router and models, which would bypass forge entirely and lose
 # every guardrail this repo exists to provide.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+# In a herdr pane scripts/ovis-shims is first on PATH, so `pi` there is THIS
+# launcher. The shim takes itself off before it runs us, but an alias (`pi`,
+# `qpi` in the container's .bashrc) reaches us with it still on, and `exec pi`
+# below would then run the launcher a second time. Strip it before any pi probe
+# so these checks and the final exec resolve the real binary.
+PATH="$(strip_path "$PATH" "$REPO_ROOT/scripts/ovis-shims")"
+export PATH
 
 INSTALL_ONLY=0; PRINT_ONLY=0
 ARGS=()
@@ -28,17 +35,51 @@ for a in "$@"; do
   esac
 done
 
-MODEL="$(env_get MODEL_ALIAS)"
-CTX="$(env_get CTX_SIZE)"
-MAX_TOKENS="$(env_get PI_MAX_TOKENS)"
-: "${MAX_TOKENS:=8192}"
+forbid_backend_flags() {
+  local origin="$1"; shift
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --provider|--provider=*|--model|--model=*|--models|--models=*)
+        die "$origin may not override backend routing with '$arg'.
+Choose a mode with ./scripts/mode.sh or set the matching key in .env."
+        ;;
+    esac
+  done
+}
+forbid_backend_flags "launcher arguments" "${ARGS[@]}"
 
-PORT="$(env_get FORGE_PORT)"
+STACK_BACKEND="$(env_get STACK_BACKEND)"
+: "${STACK_BACKEND:=local}"
+case "$STACK_BACKEND" in
+  local|anthropic) ;;
+  *) die "STACK_BACKEND must be 'local' or 'anthropic', got '$STACK_BACKEND'." ;;
+esac
+
+require_positive_int() {
+  local key="$1" value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] && (( 10#$value > 0 )) \
+    || die "$key must be a positive integer, got '$value'."
+}
+
+require_open_fraction() {
+  local key="$1" value="$2"
+  python3 - "$key" "$value" <<'PY' \
+    || die "$key must be a fraction strictly between 0 and 1, got '$value'."
+import sys
+key, raw = sys.argv[1:]
+try:
+    value = float(raw)
+except ValueError:
+    raise SystemExit(1)
+if not 0 < value < 1:
+    raise SystemExit(1)
+PY
+}
 
 # Published ports bind to the host's loopback; inside a container the host is
 # reachable as host.docker.internal instead.
 [[ -f /.dockerenv ]] && HOST="host.docker.internal" || HOST="localhost"
-BASE="http://${HOST}:${PORT}"
 
 # AO10: `agent_dir` in lib.sh, not `${HOME}/.pi/agent`. This is where pi reads
 # models.json and settings.json from, and it moves with PI_CODING_AGENT_DIR —
@@ -48,14 +89,34 @@ BASE="http://${HOST}:${PORT}"
 PI_DIR="$(agent_dir)"
 MODELS_JSON="${PI_DIR}/models.json"
 
-# --- generate models.json ----------------------------------------------------
-# Merges into any existing file rather than overwriting it — pi keeps other
-# providers here too, and clobbering someone's whole model config to add one
-# local entry would be rude.
-mkdir -p "$PI_DIR"
-MODEL="$MODEL" BASE_URL="${BASE}/v1" CTX="$CTX" MAX_TOKENS="$MAX_TOKENS" \
-MODELS_JSON="$MODELS_JSON" \
-python3 - <<'PY'
+if [[ "$STACK_BACKEND" == "local" ]]; then
+  MODEL="$(env_get MODEL_ALIAS)"
+  CTX="$(env_get CTX_SIZE)"
+  MAX_TOKENS="$(env_get PI_MAX_TOKENS)"
+  : "${MAX_TOKENS:=8192}"
+  require_positive_int CTX_SIZE "$CTX"
+  require_positive_int PI_MAX_TOKENS "$MAX_TOKENS"
+  (( 10#$MAX_TOKENS <= 10#$CTX )) \
+    || die "PI_MAX_TOKENS ($MAX_TOKENS) exceeds CTX_SIZE ($CTX); output must fit inside the context window."
+
+  PORT="$(env_get FORGE_PORT)"
+  BASE="http://${HOST}:${PORT}"
+  MAIN_MODEL="$MODEL"
+  BACKEND_PROVIDER="forge"
+  BANNER_SUBAGENT_MODEL="$(env_get SUBAGENT_MODEL)"
+  : "${BANNER_SUBAGENT_MODEL:=deepseek/deepseek-flash}"
+  BANNER_ADVISOR_MODEL="$(env_get ADVISOR_MODEL)"
+  : "${BANNER_ADVISOR_MODEL:=$BANNER_SUBAGENT_MODEL}"
+  BANNER_CACHE_POLICY="cache: none (local); compaction: context-derived"
+
+  # --- generate models.json --------------------------------------------------
+  # Merges into any existing file rather than overwriting it — pi keeps other
+  # providers here too, and clobbering someone's whole model config to add one
+  # local entry would be rude.
+  mkdir -p "$PI_DIR"
+  MODEL="$MODEL" BASE_URL="${BASE}/v1" CTX="$CTX" MAX_TOKENS="$MAX_TOKENS" \
+  MODELS_JSON="$MODELS_JSON" \
+  python3 - <<'PY'
 import json, os, pathlib
 
 path = pathlib.Path(os.environ["MODELS_JSON"])
@@ -173,8 +234,9 @@ PY
 #     (content: [], stopReason "stop"). Below it, 3 of 196.
 #
 # Sizing both knobs off CTX_SIZE keeps the trigger at 50% of whatever window the
-# stack is actually serving and cuts back to ~20% of it, which is the difference
-# between compacting every turn and compacting every ~50.
+# stack is actually serving and cuts back to ~20% of it. pi starts when free
+# context falls below reserveTokens, so the reserve itself must be half the
+# window.
 #
 # This is written to pi's GLOBAL settings on purpose: the loop runs in whatever
 # project you point it at, and a .pi/settings.json in this repo would only apply
@@ -192,11 +254,24 @@ if path.exists():
         raise SystemExit(f"{path} exists but is not valid JSON — refusing to overwrite it")
 
 compaction = data.setdefault("compaction", {})
-# Trigger at 50% of the window; never later than pi's own default headroom.
-compaction["reserveTokens"] = min(16384, ctx // 2)
+# Trigger at 50% of the window.
+compaction["reserveTokens"] = ctx // 2
 # Keep ~20% of the window after a compaction, floored so a tiny window still
 # keeps a usable turn and capped at pi's default so a large one is unchanged.
 compaction["keepRecentTokens"] = max(2000, min(20000, round(ctx * 0.2)))
+
+# Hosted launches write Anthropic-only cache policy and per-model compaction.
+# Remove those on return so local sessions do not inherit idle cache warming or
+# budgets keyed to models this backend is not running.
+model_overrides = compaction.get("modelOverrides")
+if isinstance(model_overrides, dict):
+    for model_id in [key for key in model_overrides if key.startswith("anthropic/")]:
+        model_overrides.pop(model_id, None)
+    if not model_overrides:
+        compaction.pop("modelOverrides", None)
+
+data["cacheWarming"] = "off"
+data["showCacheMissNotices"] = False
 
 # pi's HTTP IDLE timeout, i.e. how long a request may go without producing a
 # byte. Default 300_000 ms. Measured 2026-08-16 in ~/testing: a session's first
@@ -230,10 +305,126 @@ data["enableInstallTelemetry"] = False
 path.write_text(json.dumps(data, indent=2) + "\n")
 print(f"wrote {path} (compaction: {compaction}, httpIdleTimeoutMs: {data['httpIdleTimeoutMs']})")
 PY
+else
+  # The three hosted seats. The launcher writes only provider annotations for
+  # pi's built-in Anthropic provider; model ids and credentials stay catalog/env
+  # concerns rather than a second provider implementation.
+  MAIN_MODEL="$(env_get ANTHROPIC_MODEL)";          : "${MAIN_MODEL:=claude-opus-5-5}"
+  SUBAGENT_ID="$(env_get ANTHROPIC_SUBAGENT_MODEL)"; : "${SUBAGENT_ID:=claude-haiku-5-5}"
+  ADVISOR_ID="$(env_get ANTHROPIC_ADVISOR_MODEL)";   : "${ADVISOR_ID:=claude-fable-5-1}"
+  CTX="$(env_get PI_CONTEXT_WINDOW)";                : "${CTX:=1000000}"
+
+  CACHE_SHORT="$(env_get PI_CACHE_SHORT_SECONDS)";   : "${CACHE_SHORT:=300}"
+  CACHE_LONG="$(env_get PI_CACHE_LONG_SECONDS)";     : "${CACHE_LONG:=3600}"
+  CACHE_WARMING="$(env_get PI_CACHE_WARMING)";       : "${CACHE_WARMING:=idle}"
+  SHOW_CACHE_MISSES="$(env_get PI_SHOW_CACHE_MISS_NOTICES)"; : "${SHOW_CACHE_MISSES:=1}"
+  AT_PCT="$(env_get PI_COMPACTION_AT_PCT)";          : "${AT_PCT:=0.28}"
+  KEEP_PCT="$(env_get PI_COMPACTION_KEEP_PCT)";      : "${KEEP_PCT:=0.15}"
+  require_positive_int PI_CONTEXT_WINDOW "$CTX"
+  require_positive_int PI_CACHE_SHORT_SECONDS "$CACHE_SHORT"
+  require_positive_int PI_CACHE_LONG_SECONDS "$CACHE_LONG"
+  require_open_fraction PI_COMPACTION_AT_PCT "$AT_PCT"
+  require_open_fraction PI_COMPACTION_KEEP_PCT "$KEEP_PCT"
+  python3 - "$AT_PCT" "$KEEP_PCT" <<'PY' \
+    || die "PI_COMPACTION_KEEP_PCT ($KEEP_PCT) must be smaller than PI_COMPACTION_AT_PCT ($AT_PCT)."
+import sys
+at_pct, keep_pct = map(float, sys.argv[1:])
+raise SystemExit(0 if keep_pct < at_pct else 1)
+PY
+
+  CACHE_RETENTION="$(env_get PI_CACHE_RETENTION)"
+  [[ -n "$CACHE_RETENTION" ]] && export PI_CACHE_RETENTION="$CACHE_RETENTION"
+
+  BASE="https://api.anthropic.com"
+  BACKEND_PROVIDER="anthropic"
+  BANNER_SUBAGENT_MODEL="anthropic/${SUBAGENT_ID}"
+  BANNER_ADVISOR_MODEL="anthropic/${ADVISOR_ID}"
+  BANNER_CACHE_POLICY="cache: ${CACHE_WARMING}, short ${CACHE_SHORT}s / long ${CACHE_LONG}s, retention ${CACHE_RETENTION:-short}; compaction ${AT_PCT}/${KEEP_PCT}"
+
+  mkdir -p "$PI_DIR"
+  MODELS_JSON="$MODELS_JSON" MAIN_MODEL_ID="$MAIN_MODEL" SUBAGENT_MODEL_ID="$SUBAGENT_ID" \
+  ADVISOR_MODEL_ID="$ADVISOR_ID" CACHE_SHORT="$CACHE_SHORT" CACHE_LONG="$CACHE_LONG" \
+  python3 - <<'PY'
+import json, os, pathlib
+
+path = pathlib.Path(os.environ["MODELS_JSON"])
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except json.JSONDecodeError:
+        raise SystemExit(f"{path} exists but is not valid JSON — refusing to overwrite it")
+
+providers = data.setdefault("providers", {})
+anthropic = providers.setdefault("anthropic", {})
+# `$ANTHROPIC_API_KEY` is pi's own interpolation syntax. The file names the
+# variable; the exported secret itself never reaches this file.
+anthropic["apiKey"] = "$ANTHROPIC_API_KEY"
+
+overrides = anthropic.setdefault("modelOverrides", {})
+tiers = {"short": int(os.environ["CACHE_SHORT"]), "long": int(os.environ["CACHE_LONG"])}
+for role in ("MAIN_MODEL_ID", "SUBAGENT_MODEL_ID", "ADVISOR_MODEL_ID"):
+    overrides.setdefault(os.environ[role], {})["promptCache"] = dict(tiers)
+
+path.write_text(json.dumps(data, indent=2) + "\n")
+path.chmod(0o600)
+print(f"wrote {path}")
+PY
+
+  CTX="$CTX" PI_DIR="$PI_DIR" CACHE_WARMING="$CACHE_WARMING" \
+  SHOW_CACHE_MISSES="$SHOW_CACHE_MISSES" AT_PCT="$AT_PCT" KEEP_PCT="$KEEP_PCT" \
+  MAIN_MODEL="$MAIN_MODEL" SUBAGENT_ID="$SUBAGENT_ID" ADVISOR_ID="$ADVISOR_ID" \
+  python3 - <<'PY'
+import json, os, pathlib
+
+path = pathlib.Path(os.environ["PI_DIR"]) / "settings.json"
+ctx = int(os.environ["CTX"])
+data = {}
+if path.exists():
+    try:
+        data = json.loads(path.read_text() or "{}")
+    except json.JSONDecodeError:
+        raise SystemExit(f"{path} exists but is not valid JSON — refusing to overwrite it")
+
+compaction = data.setdefault("compaction", {})
+for stale in ("reserveTokens", "keepRecentTokens"):
+    compaction.pop(stale, None)
+
+trigger = max(1000, round(ctx * float(os.environ["AT_PCT"])))
+reserve = max(2000, ctx - trigger)
+keep = max(4000, round(ctx * float(os.environ["KEEP_PCT"])))
+per_model = {"reserveTokens": reserve, "keepRecentTokens": keep}
+
+overrides = compaction.setdefault("modelOverrides", {})
+for model_id in (os.environ["MAIN_MODEL"], os.environ["SUBAGENT_ID"], os.environ["ADVISOR_ID"]):
+    overrides[f"anthropic/{model_id}"] = dict(per_model)
+
+data["cacheWarming"] = os.environ["CACHE_WARMING"]
+data["showCacheMissNotices"] = os.environ["SHOW_CACHE_MISSES"] == "1"
+data["enableInstallTelemetry"] = False
+
+path.write_text(json.dumps(data, indent=2) + "\n")
+print(f"wrote {path} (compaction fires at ~{ctx - reserve:,} of {ctx:,} tokens, "
+      f"keeping {keep:,}; cacheWarming: {data['cacheWarming']})")
+PY
+fi
 
 if (( INSTALL_ONLY )); then
-  dim "Provider 'forge' installed. Check with: pi --list-models"
+  if [[ "$STACK_BACKEND" == "local" ]]; then
+    dim "Provider 'forge' installed. Check with: pi --list-models"
+  else
+    dim "Backend 'anthropic' configured with provider 'anthropic'. Check with: pi --list-models"
+  fi
   exit 0
+fi
+
+if [[ "$STACK_BACKEND" == "anthropic" ]]; then
+  ANTHROPIC_KEY="$(env_get ANTHROPIC_API_KEY)"
+  [[ -n "$ANTHROPIC_KEY" ]] \
+    || die "ANTHROPIC_API_KEY is not set. Put it in .env.local (gitignored):
+  ANTHROPIC_API_KEY=sk-ant-...
+or export it in the shell you launch from."
+  export ANTHROPIC_API_KEY="$ANTHROPIC_KEY"
 fi
 
 # --- pi's own network traffic -------------------------------------------------
@@ -246,9 +437,18 @@ fi
 #                   touch; Dockerfile.pi ships ripgrep and fd so nothing is
 #                   downloaded on demand.
 PI_TELEMETRY_VAL="$(env_get PI_TELEMETRY)"; : "${PI_TELEMETRY_VAL:=0}"
-PI_OFFLINE_VAL="$(env_get PI_OFFLINE)";     : "${PI_OFFLINE_VAL:=1}"
+PI_OFFLINE_VAL="$(env_get PI_OFFLINE)"
+if [[ "$STACK_BACKEND" == "local" ]]; then
+  : "${PI_OFFLINE_VAL:=1}"
+elif [[ -z "${PI_OFFLINE+x}" ]] \
+     && { [[ ! -f "$REPO_ROOT/.env.local" ]] \
+          || ! grep -Eq '^[[:space:]]*PI_OFFLINE=' "$REPO_ROOT/.env.local"; }; then
+  # The tracked .env carries the local-only default. Hosted launches stay
+  # online unless the caller or .env.local explicitly chose otherwise.
+  PI_OFFLINE_VAL=""
+fi
 export PI_TELEMETRY="$PI_TELEMETRY_VAL"
-if [[ "$PI_OFFLINE_VAL" == "0" ]]; then
+if [[ -z "$PI_OFFLINE_VAL" || "$PI_OFFLINE_VAL" == "0" ]]; then
   unset PI_OFFLINE
 else
   export PI_OFFLINE="$PI_OFFLINE_VAL"
@@ -278,7 +478,11 @@ if [[ "${PI_AGENT_CONTAINER:-}" == "1" && "$(env_get PI_EXT_LOCAL_COPY)" != "0" 
     warn "could not copy the extensions to local disk; loading them from the repo (slow on a bind mount)"
   fi
 fi
-pi_flags=(--provider forge --model "$MODEL")
+if [[ "$STACK_BACKEND" == "local" ]]; then
+  pi_flags=(--provider forge --model "$MODEL")
+else
+  pi_flags=(--provider anthropic --model "$MAIN_MODEL")
+fi
 
 # pi discovers AGENTS.md / CLAUDE.md by walking parent directories. Loaded by
 # default: an agent that ignores the conventions file in the repo it is editing
@@ -338,6 +542,22 @@ if [[ -r "$STACK_EXT" ]]; then
   STACK_NOTE=", /stack"
 else
   warn "$STACK_EXT is missing — /stack will not be available this session."
+fi
+
+# /team-solve is hosted-only. It registers a detached, command-checked workflow
+# that starts fresh pi processes for each Claude role; local forge sessions do
+# not load it and therefore never inherit a hosted orchestration path.
+TEAM_SOLVE_NOTE=""
+TEAM_SOLVE_EXT="$REPO_ROOT/.pi/extensions/team-solve.ts"
+unset PI_TEAM_SOLVE_ACTIVE
+if [[ "$STACK_BACKEND" == "anthropic" && "$(env_get TEAM_SOLVE_ENABLED)" != "0" ]]; then
+  if [[ -r "$TEAM_SOLVE_EXT" ]]; then
+    pi_flags+=(-e "$TEAM_SOLVE_EXT")
+    export PI_TEAM_SOLVE_ACTIVE=1
+    TEAM_SOLVE_NOTE=", /team-solve"
+  else
+    warn "$TEAM_SOLVE_EXT is missing — /team-solve will not be available this session."
+  fi
 fi
 
 # Rewrites a browser-tool timeout into an instruction instead of a parameter
@@ -927,6 +1147,10 @@ fi
 EXTRA_ARGS="$(env_get PI_EXTRA_ARGS)"
 if [[ -n "$EXTRA_ARGS" ]]; then
   read -r -a extra <<< "$EXTRA_ARGS"
+  forbid_backend_flags PI_EXTRA_ARGS "${extra[@]}"
+  for arg in "${extra[@]}"; do
+    [[ "$arg" != "--" ]] || die "PI_EXTRA_ARGS cannot contain '--'; put user messages in the launcher arguments."
+  done
   pi_flags+=("${extra[@]}")
 fi
 
@@ -966,15 +1190,42 @@ if [[ -n "$THINK_FILE" ]]; then
   THINK_NOTE=", thinking in $(env_get THINK_LANG)"
 fi
 
-# Orchestrator mode: the local model coordinates and verifies, and every
-# subagent runs on a remote model — up to SUBAGENT_MAX_CONCURRENT at once. See
+# The hosted catalog moves ahead of the copy bundled with pi. This refresh must
+# finish before the orchestrator probes below; otherwise the first launch after
+# a clone can reject a model that the refreshed catalog is about to publish.
+# It is hosted-only and fails soft: a registry round trip must not block a
+# session, and the positive model probes below are what decide whether launch is
+# safe.
+CATALOG_NOTE=""
+if [[ "$STACK_BACKEND" == "anthropic" ]] \
+   && (( ! PRINT_ONLY )) \
+   && [[ "$(env_get PI_UPDATE_MODELS_ON_LAUNCH)" != "0" ]] \
+   && command -v pi >/dev/null 2>&1; then
+  PI_OFFLINE=0 timeout 60 pi update --models >/dev/null 2>&1 \
+    && CATALOG_NOTE=", catalog refreshed" \
+    || CATALOG_NOTE=", catalog refresh failed"
+fi
+
+# The main seat is validated even when orchestrator mode is off. A catalog
+# refresh that succeeded is still not proof that this exact model id exists.
+if [[ "$STACK_BACKEND" == "anthropic" ]] && (( ! PRINT_ONLY )); then
+  command -v pi >/dev/null 2>&1 \
+    || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+  if ! pi --list-models "$MAIN_MODEL" 2>/dev/null \
+       | awk -v p="anthropic" -v m="$MAIN_MODEL" '$1 == p && $2 == m { found = 1 } END { exit !found }'; then
+    die "pi does not list anthropic/$MAIN_MODEL (unknown to this pi $(pi --version 2>/dev/null), or no Anthropic credentials). Refresh the catalog with: pi update --models"
+  fi
+fi
+
+# Orchestrator mode: the parent coordinates and verifies, and every subagent
+# runs on the backend's child seat — up to SUBAGENT_MAX_CONCURRENT at once. See
 # ORCHESTRATOR in .env and docs/orchestrator.md.
 #
 # Nothing here touches the operator's own subagent settings. The model and the
 # per-provider cap go into a file this launch writes and the fork reads as its
 # SESSION layer (vendor/pi-subagents-lite/src/config/mode-seed.ts), which every
 # reset in /agents returns to — so a "clear" cannot quietly drop the children
-# onto the one llama slot. The worker/explorer agent types come from
+# onto the one llama slot. The worker/explorer/advisor agent types come from
 # prompts/orchestrator/agents through SUBAGENT_MODE_AGENTS_DIR, above the
 # operator's global agents and below a project's own.
 ORCH_NOTE=""
@@ -984,46 +1235,88 @@ if [[ "$(env_get ORCHESTRATOR)" == "1" ]]; then
     || die "ORCHESTRATOR=1 needs the subagent extension loaded (SUBAGENTS_ENABLED=1, and see the warning above if it is set)."
 
   ORCH_MODEL="$(env_get SUBAGENT_MODEL)"
-  ORCH_MODEL="${ORCH_MODEL:-deepseek/deepseek-flash}"
+  if [[ "$STACK_BACKEND" == "local" ]]; then
+    ORCH_MODEL="${ORCH_MODEL:-deepseek/deepseek-flash}"
+  elif [[ -z "$ORCH_MODEL" || "$ORCH_MODEL" == "deepseek/deepseek-flash" ]]; then
+    # The tracked .env carries the local team default. Hosted must not inherit
+    # that value unless the operator deliberately overrides SUBAGENT_MODEL to
+    # another hosted model.
+    ORCH_MODEL="anthropic/${SUBAGENT_ID}"
+  fi
   [[ "$ORCH_MODEL" =~ ^[^/[:space:]]+/[^[:space:]]+$ ]] \
     || die "SUBAGENT_MODEL must be provider/model-id, got '$ORCH_MODEL'."
   ORCH_PROVIDER="${ORCH_MODEL%%/*}"
   ORCH_MODEL_ID="${ORCH_MODEL#*/}"
+
+  ORCH_ADVISOR="$(env_get ADVISOR_MODEL)"
+  ORCH_ADVISOR_EXPLICIT=0
+  if [[ -n "$ORCH_ADVISOR" ]]; then
+    ORCH_ADVISOR_EXPLICIT=1
+  elif [[ "$STACK_BACKEND" == "local" ]]; then
+    ORCH_ADVISOR="$ORCH_MODEL"
+  else
+    ORCH_ADVISOR="anthropic/${ADVISOR_ID}"
+  fi
+  [[ "$ORCH_ADVISOR" =~ ^[^/[:space:]]+/[^[:space:]]+$ ]] \
+    || die "ADVISOR_MODEL must be provider/model-id, got '$ORCH_ADVISOR'."
+  ORCH_ADVISOR_PROVIDER="${ORCH_ADVISOR%%/*}"
+  ORCH_ADVISOR_ID="${ORCH_ADVISOR#*/}"
 
   ORCH_CAP="$(env_get SUBAGENT_MAX_CONCURRENT)"
   ORCH_CAP="${ORCH_CAP:-$ORCH_MAX_AGENTS_CEILING}"
   [[ "$ORCH_CAP" =~ ^[0-9]+$ ]] && (( ORCH_CAP >= 1 && ORCH_CAP <= ORCH_MAX_AGENTS_CEILING )) \
     || die "SUBAGENT_MAX_CONCURRENT must be 1-${ORCH_MAX_AGENTS_CEILING}, got '$ORCH_CAP'."
 
-  # The key comes from .env.local (gitignored) through env_get, and reaches pi
-  # only as an environment variable: pi's built-in deepseek provider reads
-  # DEEPSEEK_API_KEY itself, so it is never written into models.json.
-  if [[ "$ORCH_PROVIDER" == "deepseek" ]]; then
-    DEEPSEEK_API_KEY_VALUE="$(env_get DEEPSEEK_API_KEY)"
-    [[ -n "$DEEPSEEK_API_KEY_VALUE" ]] \
-      || die "ORCHESTRATOR=1 with a deepseek model needs DEEPSEEK_API_KEY in .env.local."
-    export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY_VALUE"
-  fi
+  ORCH_MODELS=("$ORCH_MODEL")
+  [[ "$ORCH_ADVISOR" == "$ORCH_MODEL" ]] || ORCH_MODELS+=("$ORCH_ADVISOR")
 
-  # Positive check, not an assumption: pi lists a model only when its provider
-  # is known AND has credentials, so an unknown id and a missing key both fail
-  # here instead of as a spawn error inside the session. It does not prove the
-  # key is VALID — the first spawn does.
-  if ! pi --list-models "$ORCH_MODEL_ID" 2>/dev/null \
-       | awk -v p="$ORCH_PROVIDER" -v m="$ORCH_MODEL_ID" '$1 == p && $2 == m { found = 1 } END { exit !found }'; then
-    die "pi does not list $ORCH_MODEL (unknown to this pi $(pi --version 2>/dev/null), or no credentials for '$ORCH_PROVIDER')."
-  fi
+  # Keys come from .env.local (gitignored) through env_get and reach pi only as
+  # environment variables. Both the child and advisor seat can be overridden to
+  # a different provider, so credential setup follows the resolved refs.
+  for orch_ref in "${ORCH_MODELS[@]}"; do
+    if [[ "${orch_ref%%/*}" == "deepseek" ]]; then
+      DEEPSEEK_API_KEY_VALUE="$(env_get DEEPSEEK_API_KEY)"
+      [[ -n "$DEEPSEEK_API_KEY_VALUE" ]] \
+        || die "ORCHESTRATOR=1 with $orch_ref needs DEEPSEEK_API_KEY in .env.local."
+      export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY_VALUE"
+    fi
+  done
+
+  # Positive checks, not assumptions: pi lists a model only when its provider
+  # is known AND has credentials. Both seats are probed independently because
+  # SUBAGENT_MODEL and ADVISOR_MODEL may resolve to different providers.
+  for orch_ref in "${ORCH_MODELS[@]}"; do
+    orch_provider="${orch_ref%%/*}"
+    orch_model_id="${orch_ref#*/}"
+    if ! pi --list-models "$orch_model_id" 2>/dev/null \
+         | awk -v p="$orch_provider" -v m="$orch_model_id" '$1 == p && $2 == m { found = 1 } END { exit !found }'; then
+      die "pi does not list $orch_ref (unknown to this pi $(pi --version 2>/dev/null), or no credentials for '$orch_provider'). Refresh the catalog with: pi update --models"
+    fi
+  done
 
   ORCH_SEED="$PI_DIR/orchestrator-mode.json"
-  ORCH_MODEL="$ORCH_MODEL" ORCH_PROVIDER="$ORCH_PROVIDER" ORCH_CAP="$ORCH_CAP" ORCH_SEED="$ORCH_SEED" \
+  STACK_BACKEND="$STACK_BACKEND" ORCH_MODEL="$ORCH_MODEL" ORCH_PROVIDER="$ORCH_PROVIDER" \
+  ORCH_ADVISOR="$ORCH_ADVISOR" ORCH_ADVISOR_PROVIDER="$ORCH_ADVISOR_PROVIDER" \
+  ORCH_ADVISOR_EXPLICIT="$ORCH_ADVISOR_EXPLICIT" ORCH_CAP="$ORCH_CAP" ORCH_SEED="$ORCH_SEED" \
   python3 - <<'PY'
 import json, os
+
+caps = {
+    os.environ["ORCH_PROVIDER"]: int(os.environ["ORCH_CAP"]),
+    os.environ["ORCH_ADVISOR_PROVIDER"]: int(os.environ["ORCH_CAP"]),
+}
+# forge stays at 1: a child a project pins to the local model still queues on
+# the one llama slot instead of racing the parent for it.
+caps["forge"] = 1
+
 seed = {
     "model": os.environ["ORCH_MODEL"],
-    # forge stays at 1: a child a project pins to the local model still queues
-    # on the one llama slot instead of racing the orchestrator for it.
-    "concurrency": {"providers": {os.environ["ORCH_PROVIDER"]: int(os.environ["ORCH_CAP"]), "forge": 1}},
+    "concurrency": {"providers": caps},
 }
+# Hosted mode pins the advisor seat. Local mode leaves it unpinned unless
+# ADVISOR_MODEL was explicitly set, so it inherits the DeepSeek child default.
+if os.environ["STACK_BACKEND"] == "anthropic" or os.environ["ORCH_ADVISOR_EXPLICIT"] == "1":
+    seed["overrides"] = {"advisor": os.environ["ORCH_ADVISOR"]}
 with open(os.environ["ORCH_SEED"], "w") as fh:
     json.dump(seed, fh, indent=2)
 PY
@@ -1045,8 +1338,8 @@ PY
     || die "SUBAGENT_MAX_DEPTH must be 1 or 2, got '$SUBAGENT_MAX_DEPTH'."
 
   ORCH_AGENTS="$REPO_ROOT/prompts/orchestrator/agents"
-  [[ -r "$ORCH_AGENTS/worker.md" && -r "$ORCH_AGENTS/explorer.md" ]] \
-    || die "$ORCH_AGENTS is missing its worker/explorer agent types."
+  [[ -r "$ORCH_AGENTS/worker.md" && -r "$ORCH_AGENTS/explorer.md" && -r "$ORCH_AGENTS/advisor.md" ]] \
+    || die "$ORCH_AGENTS is missing its worker/explorer/advisor agent types."
   export SUBAGENT_MODE_AGENTS_DIR="$ORCH_AGENTS"
 
   ORCH_PROMPT="$REPO_ROOT/prompts/orchestrator/main.md"
@@ -1054,10 +1347,13 @@ PY
   ORCH_TEXT="$(cat "$ORCH_PROMPT")"
   ORCH_TEXT="${ORCH_TEXT//\{\{MAX_AGENTS\}\}/$ORCH_CAP}"
   ORCH_TEXT="${ORCH_TEXT//\{\{SUBAGENT_MODEL\}\}/$ORCH_MODEL}"
+  ORCH_TEXT="${ORCH_TEXT//\{\{ADVISOR_MODEL\}\}/$ORCH_ADVISOR}"
   ORCH_TEXT="${ORCH_TEXT//\{\{MAX_DEPTH\}\}/$SUBAGENT_MAX_DEPTH}"
   [[ "$ORCH_TEXT" != *"{{"* ]] || die "$ORCH_PROMPT has a placeholder this launcher does not fill."
   pi_flags+=(--append-system-prompt "$ORCH_TEXT")
-  ORCH_NOTE=", orchestrator (${ORCH_CAP}x ${ORCH_MODEL}, depth ${SUBAGENT_MAX_DEPTH})"
+  BANNER_SUBAGENT_MODEL="$ORCH_MODEL"
+  BANNER_ADVISOR_MODEL="$ORCH_ADVISOR"
+  ORCH_NOTE=", orchestrator (${ORCH_CAP}x ${ORCH_MODEL}, advisor ${ORCH_ADVISOR}, depth ${SUBAGENT_MAX_DEPTH})"
 fi
 
 # The delegation nudge, whenever subagents are actually registered.
@@ -1091,18 +1387,15 @@ if [[ "$(env_get SUBAGENTS_ENABLED)" == "1" && "$(env_get SUBAGENT_NUDGE)" == "1
   fi
 fi
 
+build_launch_argv() {
+  LAUNCH_ARGS=("${pi_flags[@]}" "${ARGS[@]}")
+}
+build_launch_argv
+
 if (( PRINT_ONLY )); then
-  printf 'pi'; printf ' %q' "${pi_flags[@]}"; printf '\n'
+  printf 'pi'; printf ' %q' "${LAUNCH_ARGS[@]}"; printf '\n'
   exit 0
 fi
-
-# In a herdr pane scripts/ovis-shims is first on PATH, so `pi` there is THIS
-# launcher. The shim takes itself off before it runs us, but an alias (`pi`,
-# `qpi` in the container's .bashrc) reaches us with it still on, and `exec pi`
-# below would then run the launcher a second time. Taken off here, whichever
-# way we were reached.
-PATH="$(strip_path "$PATH" "$REPO_ROOT/scripts/ovis-shims")"
-export PATH
 
 command -v pi >/dev/null 2>&1 \
   || die "pi is not installed — npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
@@ -1122,9 +1415,12 @@ if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
   [[ -f "$STAMP" ]] && AGE_H=$(( ( $(date +%s) - $(stat -c %Y "$STAMP" 2>/dev/null || echo 0) ) / 3600 ))
   if (( AGE_H >= INTERVAL_H )); then
     if command -v npm >/dev/null 2>&1; then
-      CUR="$(pi --version 2>/dev/null | tr -d ' ')"
-      LATEST="$(timeout 20 npm view @earendil-works/pi-coding-agent version 2>/dev/null | tr -d ' ')"
-      mkdir -p "$(dirname "$STAMP")" && touch "$STAMP"
+      # lib.sh runs set -e. Both substitutions must survive a failed probe, and
+      # the stamp write is diagnostic rather than a reason to block launch.
+      CUR="$(pi --version 2>/dev/null | tr -d ' ' || true)"
+      LATEST="$(timeout 20 npm view @earendil-works/pi-coding-agent version 2>/dev/null | tr -d ' ' || true)"
+      mkdir -p "$(dirname "$STAMP")" 2>/dev/null && touch "$STAMP" 2>/dev/null \
+        || warn "could not write the update stamp ${STAMP} — the check will just run again next launch"
       if [[ -n "$LATEST" && "$LATEST" != "$CUR" ]]; then
         info "Updating pi ${CUR:-?} -> ${LATEST}"
         if timeout 300 npm install -g --ignore-scripts @earendil-works/pi-coding-agent >/dev/null 2>&1; then
@@ -1139,21 +1435,24 @@ if [[ "$(env_get PI_AUTO_UPDATE)" == "1" ]]; then
   fi
 fi
 
-# forge has to answer before pi starts, or the first request fails inside pi's
-# UI where the cause is much harder to see.
-#
-# TWO probes, not one, because forge 0.9 split them and conflating them produces
-# a lie. /forge/health is forge's own liveness. /health is the BACKEND's
-# readiness, forwarded — it returns 502 for the whole ~25 minute cold load of a
-# model that is loading perfectly normally. Probing only /health (which is what
-# this did until 2026-08-15) reports "forge is not answering" when forge is up
-# and healthy and the only thing happening is that the weights are still being
-# read off disk.
-curl -fsS -m 5 -o /dev/null "${BASE}/forge/health" 2>/dev/null \
-  || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
+if [[ "$STACK_BACKEND" == "local" ]]; then
+  # forge has to answer before pi starts, or the first request fails inside pi's
+  # UI where the cause is much harder to see.
+  #
+  # TWO probes, not one, because forge 0.9 split them and conflating them produces
+  # a lie. /forge/health is forge's own liveness. /health is the BACKEND's
+  # readiness, forwarded — it returns 502 for the whole ~25 minute cold load of a
+  # model that is loading perfectly normally. Probing only /health (which is what
+  # this did until 2026-08-15) reports "forge is not answering" when forge is up
+  # and healthy and the only thing happening is that the weights are still being
+  # read off disk.
+  curl -fsS -m 5 -o /dev/null "${BASE}/forge/health" 2>/dev/null \
+    || die "forge is not answering at ${BASE} — start it with ./scripts/up.sh"
 
-curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
-  || die "$(forge_not_ready_msg "http://${HOST}:$(env_get LLAMA_PORT)")"
+  curl -fsS -m 5 -o /dev/null "${BASE}/health" 2>/dev/null \
+    || die "$(forge_not_ready_msg "http://${HOST}:$(env_get LLAMA_PORT)")"
+fi
 
-echo "pi -> ${BASE}  (model: ${MODEL}, ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE}${EXT_NOTE}${HERDR_NOTE})"
-exec pi "${pi_flags[@]}" "${ARGS[@]}"
+echo "pi -> ${BASE}  [backend: ${STACK_BACKEND}/${BACKEND_PROVIDER}]  main: ${MAIN_MODEL}  subagents: ${BANNER_SUBAGENT_MODEL}  advisor: ${BANNER_ADVISOR_MODEL}  (${BANNER_CACHE_POLICY}${CATALOG_NOTE})"
+echo "   ${CTX_FILES_NOTE}${THINK_NOTE}${MCP_NOTE}${BROWSER_NOTE}${WEB_RULES_NOTE}${DELEGATE_NOTE}${RTK_NOTE}${STACK_NOTE}${TEAM_SOLVE_NOTE}${LOOP_NOTE}${CGUARD_NOTE}${SUBAGENTS_NOTE}${ORCH_NOTE}${PRINNY_NOTE}${PERSONA_NOTE}${OBSERVE_NOTE}${EXT_NOTE}${HERDR_NOTE}"
+exec pi "${LAUNCH_ARGS[@]}"

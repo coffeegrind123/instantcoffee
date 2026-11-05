@@ -22,6 +22,21 @@ describe("piEntryNotice", () => {
     assert.equal(piEntryNotice(custom("stack-report", { title: "stack env", lines: [] }))?.text, "stack env");
   });
 
+  test("a /team-solve report carries its status into the summary", () => {
+    assert.deepEqual(
+      piEntryNotice(custom("team-solve-report", {
+        title: "team-solve status",
+        lines: ["status    running", "phase     solve"],
+        tone: "info",
+      })),
+      {
+        kind: "notice",
+        text: "team-solve status · status running\nstatus    running\nphase     solve",
+        source: "team-solve-report",
+      },
+    );
+  });
+
   test("a subagent transcript part names the agent and says what was cut", () => {
     const notice = piEntryNotice(custom("subagent-turn", { shortId: "a1b2", agentType: "general-purpose", phase: "turn", lines: ["read x"], dropped: 3 }));
     assert.equal(notice?.text, "[subagent a1b2 general-purpose] turn\nread x\n… 3 more lines");

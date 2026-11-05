@@ -10,6 +10,17 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**Durable Anthropic team solve (2026-11-05).** Anthropic mode now loads
+`/team-solve`, a pi-native GVS5H/Memdoor workflow with fresh contexts for
+planning, independent ideation, implementation, review, management, repair, and
+audit. Fable handles planning/management/audit, Opus implementation/repair,
+Sonnet ideation/review and routine coding, and Haiku routing/triage. Runs are detached, persist
+under gitignored `.team-solve/`, keep a manager-curated task ledger, summarize
+token-limit cutoffs without discarding workspace progress, and invalidate
+resume entries when their check/diff evidence changes. They default to a
+72-hour total budget and treat the operator's verification command as the only
+success signal. See `docs/team-solve.md`.
+
 **pi in the container starts in ~12 s instead of ~85 s (2026-11-01).** The
 vendored extensions load from a copy on the container's own disk; the Windows
 bind mount made the load take over a minute and a half. Also: `/loop` now pauses

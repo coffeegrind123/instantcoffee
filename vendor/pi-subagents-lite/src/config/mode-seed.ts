@@ -4,11 +4,13 @@
  * `SUBAGENT_MODE_CONFIG` names a JSON file the launcher writes for this launch:
  *
  *   { "model": "deepseek/deepseek-flash",
+ *     "overrides": { "explorer": "deepseek/deepseek-flash" },
  *     "concurrency": { "providers": { "deepseek": 15, "forge": 1 } } }
  *
  * `model` becomes the session default model (precedence rung 2, above every
- * file and frontmatter), and `concurrency` the session concurrency layer. The
- * store resets its session layer to THIS rather than to empty, so neither
+ * file and frontmatter), `overrides` the session per-agent-type models (above
+ * the default), and `concurrency` the session concurrency layer. The store
+ * resets its session layer to THIS rather than to empty, so neither
  * session_start nor a "clear" in /agents can drop children onto the parent's
  * model mid-run. Nothing here is ever written to disk.
  *
@@ -27,11 +29,15 @@ export interface ModeSeed {
   error?: string;
 }
 
-const TOP_KEYS = new Set(["model", "concurrency"]);
+const TOP_KEYS = new Set(["model", "overrides", "concurrency"]);
 const CAP_MAPS = ["providers", "models"] as const;
 
 /** `provider/model-id`, the form pi's registry and resolveModel both key on. */
 const MODEL_REF = /^[^/\s]+\/\S+$/;
+
+/** Agent names use the same conservative character set as agent/skill files. */
+const AGENT_TYPE = /^[A-Za-z_][A-Za-z0-9._-]*$/;
+const RESERVED_OVERRIDE_KEYS = new Set(["default", "__proto__", "prototype", "constructor"]);
 
 function empty(error?: string): ModeSeed {
   return { overrides: { default: null }, concurrency: {}, ...(error ? { error } : {}) };
@@ -45,6 +51,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isAgentType(value: string): boolean {
+  return value.length <= 128 && AGENT_TYPE.test(value) && !RESERVED_OVERRIDE_KEYS.has(value);
+}
+
+function isModelRef(value: unknown): value is string {
+  return typeof value === "string" && MODEL_REF.test(value);
+}
+
 /** Validate a parsed file. Returns the problem, or undefined when it is usable whole. */
 function problemWith(data: unknown): string | undefined {
   if (!isPlainObject(data)) {
@@ -56,8 +70,22 @@ function problemWith(data: unknown): string | undefined {
     return `unknown key(s): ${unknown.join(", ")}`;
   }
 
-  if (data.model !== undefined && (typeof data.model !== "string" || !MODEL_REF.test(data.model))) {
+  if (data.model !== undefined && !isModelRef(data.model)) {
     return `model must be "provider/model-id", got ${JSON.stringify(data.model)}`;
+  }
+
+  if (data.overrides !== undefined) {
+    if (!isPlainObject(data.overrides)) {
+      return "overrides is not an object";
+    }
+    for (const [type, model] of Object.entries(data.overrides)) {
+      if (!isAgentType(type)) {
+        return `overrides key ${JSON.stringify(type)} is not a valid agent type`;
+      }
+      if (!isModelRef(model)) {
+        return `overrides.${type} must be "provider/model-id", got ${JSON.stringify(model)}`;
+      }
+    }
   }
 
   if (data.concurrency === undefined) {
@@ -112,9 +140,13 @@ export function readModeSeed(env: Record<string, string | undefined> = process.e
     return empty(`${MODE_CONFIG_ENV}=${path}: ${problem}`);
   }
 
-  const d = data as { model?: string; concurrency?: RawConcurrency };
+  const d = data as {
+    model?: string;
+    overrides?: Record<string, string>;
+    concurrency?: RawConcurrency;
+  };
   return {
-    overrides: { default: d.model ?? null },
+    overrides: structuredClone({ default: d.model ?? null, ...(d.overrides ?? {}) }),
     concurrency: d.concurrency ? structuredClone(d.concurrency) : {},
   };
 }

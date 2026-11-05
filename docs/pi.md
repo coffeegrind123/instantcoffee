@@ -1,7 +1,8 @@
 # Using it with pi
 
-Starting sessions, the `/stack` `/loop` `/prinny` commands, subagents, how
-the provider config is generated, and why this stack targets pi at all.
+Starting sessions, the `/stack` `/loop` `/team-solve` `/prinny` commands,
+subagents, how the provider config is generated, and why this stack targets pi
+at all.
 
 ## Starting a session in a project
 
@@ -32,7 +33,7 @@ Common variants — any pi flag passes straight through:
 qpi                                  # interactive session
 qpi -c                               # continue the previous session here
 qpi -p "what does src/auth.py do?"   # one-shot, non-interactive, prints and exits
-qpi --print-only                     # show the exact command, run nothing
+qpi --print-only                     # refresh provider config, then show the command
 qpi --install-only                   # just refresh ~/.pi/agent/models.json
 ```
 
@@ -71,23 +72,40 @@ with `, /stack` when it is active.
 > `-e ~/instantcoffee/.pi/extensions/stack.ts` yourself.
 
 ```
-/stack                     model, context, slots, throughput, GPU, forge, settings
+/stack                     active backend, models, context, health, settings
 /stack mode                which preset .env matches, and what differs
-/stack mode <name>         switch mode (Tab completes), then offer the restart it needs;
-                           relaunch pi after a window-changing switch
-/stack env [FILTER]        every effective setting (.env + .env.local + exported)
+/stack mode <name>         switch local or anthropic mode (Tab completes)
+/stack mode local          restore the last named local mode
+/stack env [FILTER]        known stack settings, including exported overrides
 /stack set KEY=VALUE       edit .env, and say exactly what must restart
-/stack up | down           start / stop via scripts/
-/stack restart [llama|forge]
-/stack smoke | bench
-/stack logs [llama|forge]
-/stack slots save|restore|erase [id]
+/anthropic status|on|off   hosted mode; enable/disable/local are aliases
+/stack up | down           local only: start / stop via scripts/
+/stack restart [llama|forge]  local only
+/stack smoke | bench       local only
+/stack logs [service]      local only; defaults to llama
+/stack slots save|restore|erase [id]  local only
 ```
 
 **Observation is model-callable; mutation is not.** The `stack_status` tool lets
-the model check throughput or KV usage before blaming itself for slow output.
+the model check local throughput/KV usage or the hosted model/cache configuration
+before blaming itself for slow output.
 Every command that changes something is user-only, so a model cannot restart
 llama in the middle of your task.
+
+`STACK_BACKEND` controls the split. In local mode all commands behave as before.
+In Anthropic mode, status/mode/env/set/help inspect the configuration, while
+every llama/forge lifecycle, benchmark, log, and slot command returns a clear
+local-only message before invoking Docker. `/stack env` redacts API keys and
+tokens, and `/stack set` refuses to write credentials into tracked `.env`.
+It also refuses a write when `.env.local` or the environment overrides that key,
+because editing `.env` would not change the effective value.
+Switching backend rewrites the mode and provider configuration; provider
+selection is launch-time, so relaunch pi to activate it.
+
+In Anthropic mode the launcher also loads `/team-solve`, the durable
+command-checked team workflow documented in
+**[team-solve.md](team-solve.md)**. It is absent in local mode and can be
+disabled with `TEAM_SOLVE_ENABLED=0`.
 
 **Nothing here reconfigures a running server, because nothing can.**
 llama-server answers **501 to `POST /props`** on this build — context size,
@@ -1012,10 +1030,10 @@ one is 61% of the whole window, so a compaction cannot free more than the
 remainder, and `prepareCompaction()` silently returns nothing at all until the
 context exceeds it — which is why compaction in the measured sessions first fired
 at 88% full rather than at the 50% the setting implies. `reserveTokens =
-min(16384, CTX_SIZE // 2)` keeps the trigger at 50% of whatever window is
-actually served; `keepRecentTokens = max(2000, min(20000, CTX_SIZE * 0.2))` cuts
-back to ~20% of it. Measured against pi's own `prepareCompaction()`, that drops
-the post-compaction floor from 20,000 tokens to 7,000. Global rather than a
+CTX_SIZE // 2` keeps the trigger at 50% of whatever window is actually served;
+`keepRecentTokens = max(2000, min(20000, CTX_SIZE * 0.2))` cuts back to ~20% of
+it. Measured against pi's own `prepareCompaction()`, that drops the
+post-compaction floor from 20,000 tokens to 7,000. Global rather than a
 `.pi/settings.json` here, because `/loop` runs in whatever project you point it
 at — and project settings only load for a *trusted* project.
 

@@ -45,7 +45,9 @@ jobs:
                    scripts/capture_sessions.py scripts/test_capture_proxy.py \
                    scripts/test_forge_patches.py scripts/test_interrupt_exits.py \
                    scripts/bench_tools.py \
-                   scripts/test_download_verify.py scripts/test_smoke_observe.py; do
+                   scripts/test_download_verify.py scripts/test_smoke_observe.py \
+                   scripts/team-solve/team_solve.py scripts/team-solve/prompts.py \
+                   scripts/test_team_solve_pi.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done
@@ -260,6 +262,18 @@ jobs:
       - name: Mode switch unit tests
         run: python scripts/test_mode_switch.py
 
+      # The team orchestrator starts real child pi processes, so these drive it
+      # with a fake pi binary that has the same JSON event contract. They pin
+      # the command as ground truth, parallel ideation, model routing, durable
+      # state, and manual checks that must not corrupt a completed run.
+      - name: Team-solve orchestrator tests
+        run: python scripts/test_team_solve_pi.py
+
+      # The hosted-only /team-solve extension must be loaded in Anthropic mode
+      # and absent locally; this also checks that disabling it in .env works.
+      - name: Launcher order and backend tests
+        run: python scripts/test_launcher_order.py
+
       # The browser's native tools need pi's built-in MCP (>= 0.99) and
       # --tools +codemode needs >= 1.1.0; older pi falls back to the CLI. Also
       # pins that the retired pi-mcp-adapter is pruned from pi's settings and
@@ -360,7 +374,15 @@ jobs:
                      BROWSER_MCP_PORT BROWSER_MCP_DISPLAY BROWSER_MCP_AUTOSTART
                      BROWSER_MCP_TIMEOUT
                      BROWSER_MCP_NATIVE BROWSER_MCP_AUTOUP PI_TELEMETRY PI_OFFLINE
-                     RTK_ENABLED RTK_VERSION )
+                     RTK_ENABLED RTK_VERSION TEAM_SOLVE_ENABLED
+                     TEAM_SOLVE_DEFAULT_PROFILE TEAM_SOLVE_MAX_ROUNDS
+                     TEAM_SOLVE_MAX_HOURS TEAM_SOLVE_ROLE_TIMEOUT
+                     TEAM_SOLVE_CHECK_TIMEOUT TEAM_SOLVE_ROLE_RETRIES
+                     TEAM_SOLVE_MULTI_DAY
+                     TEAM_SOLVE_FABLE_MODEL TEAM_SOLVE_OPUS_MODEL
+                     TEAM_SOLVE_SONNET_MODEL TEAM_SOLVE_HAIKU_MODEL
+                     TEAM_SOLVE_FABLE_THINKING TEAM_SOLVE_OPUS_THINKING
+                     TEAM_SOLVE_SONNET_THINKING TEAM_SOLVE_HAIKU_THINKING )
           missing=0
           for key in "${required[@]}"; do
             if ! grep -qE "^${key}=" .env; then

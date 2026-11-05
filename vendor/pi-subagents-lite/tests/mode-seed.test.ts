@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { MODE_CONFIG_ENV, readModeSeed, withoutOverride } from "../src/config/mode-seed.ts";
+import { resolveModel } from "../src/models/model-precedence.ts";
 
 function seedFile(body: unknown): string {
   const dir = mkdtempSync(join(tmpdir(), "mode-seed-"));
@@ -38,6 +39,14 @@ function seedFile(body: unknown): string {
 const VALID = {
   model: "deepseek/deepseek-flash",
   concurrency: { providers: { deepseek: 15, forge: 1 } },
+};
+
+const WITH_OVERRIDES = {
+  ...VALID,
+  overrides: {
+    advisor: "deepseek/deepseek-pro",
+    Explore: "deepseek/deepseek-flash",
+  },
 };
 
 describe("readModeSeed", () => {
@@ -55,13 +64,52 @@ describe("readModeSeed", () => {
     assert.deepEqual(seed.concurrency, { providers: { deepseek: 15, forge: 1 } });
   });
 
+  it("adds valid per-agent overrides to the session model layer", () => {
+    const seed = readModeSeed({ [MODE_CONFIG_ENV]: seedFile(WITH_OVERRIDES) });
+    assert.equal(seed.error, undefined);
+    assert.deepEqual(seed.overrides, {
+      default: "deepseek/deepseek-flash",
+      advisor: "deepseek/deepseek-pro",
+      Explore: "deepseek/deepseek-flash",
+    });
+    assert.deepEqual(seed.concurrency, { providers: { deepseek: 15, forge: 1 } });
+  });
+
+  it("gives a per-agent override precedence over the mode default", () => {
+    const seed = readModeSeed({ [MODE_CONFIG_ENV]: seedFile(WITH_OVERRIDES) });
+    const config = {
+      agent: { default: null, forceBackground: false },
+      concurrency: { default: 1 },
+    };
+    assert.equal(
+      resolveModel({
+        subagentType: "advisor",
+        config,
+        parentModelId: "forge/local",
+        sessionOverrides: seed.overrides,
+      }),
+      "deepseek/deepseek-pro",
+    );
+    assert.equal(
+      resolveModel({
+        subagentType: "worker",
+        config,
+        parentModelId: "forge/local",
+        sessionOverrides: seed.overrides,
+      }),
+      "deepseek/deepseek-flash",
+    );
+  });
+
   it("returns fresh objects, so a store mutating one cannot edit the next reset", () => {
-    const path = seedFile(VALID);
+    const path = seedFile(WITH_OVERRIDES);
     const first = readModeSeed({ [MODE_CONFIG_ENV]: path });
     first.overrides.default = "forge/qwen";
+    first.overrides.advisor = "forge/qwen";
     first.concurrency.providers!.deepseek = 1;
     const second = readModeSeed({ [MODE_CONFIG_ENV]: path });
     assert.equal(second.overrides.default, "deepseek/deepseek-flash");
+    assert.equal(second.overrides.advisor, "deepseek/deepseek-pro");
     assert.equal(second.concurrency.providers!.deepseek, 15);
   });
 
@@ -76,6 +124,12 @@ describe("readModeSeed", () => {
     ["a cap below one", { concurrency: { providers: { deepseek: 0 } } }],
     ["a cap map that is not an object", { concurrency: { providers: 15 } }],
     ["an unknown top-level key", { model: "deepseek/deepseek-flash", modle: "x" }],
+    ["an overrides map that is not an object", { ...VALID, overrides: [] }],
+    ["an empty override agent type", { ...VALID, overrides: { "": "deepseek/deepseek-pro" } }],
+    ["an unsafe override agent type", { ...VALID, overrides: { "../advisor": "deepseek/deepseek-pro" } }],
+    ["a reserved override agent type", { ...VALID, overrides: { default: "deepseek/deepseek-pro" } }],
+    ["a per-agent model with no provider", { ...VALID, overrides: { advisor: "deepseek-pro" } }],
+    ["a per-agent model that is not a string", { ...VALID, overrides: { advisor: 7 } }],
   ];
   for (const [label, body] of REFUSED) {
     it(`refuses ${label}, whole`, () => {
@@ -93,7 +147,11 @@ describe("readModeSeed", () => {
 });
 
 describe("withoutOverride", () => {
-  const seed = { default: "deepseek/deepseek-flash" };
+  const seed = {
+    default: "deepseek/deepseek-flash",
+    advisor: "deepseek/deepseek-pro",
+    Explore: "deepseek/deepseek-flash",
+  };
 
   it("clearing the session default falls back to the mode's, not to the parent's model", () => {
     const next = withoutOverride({ default: "forge/other" }, "default", seed);
@@ -101,15 +159,32 @@ describe("withoutOverride", () => {
   });
 
   it("clearing a per-type override removes it when the mode has none for that type", () => {
-    const next = withoutOverride({ default: "deepseek/deepseek-flash", Explore: "forge/x" }, "Explore", seed);
-    assert.equal(next.Explore, undefined);
+    const next = withoutOverride({ default: "deepseek/deepseek-flash", worker: "forge/x" }, "worker", seed);
+    assert.equal(next.worker, undefined);
     assert.equal(next.default, "deepseek/deepseek-flash");
   });
 
+  it("clearing one per-type override restores the seed's value and preserves the others", () => {
+    const next = withoutOverride(
+      {
+        default: "forge/other",
+        advisor: "forge/other-advisor",
+        Explore: "forge/other-explorer",
+      },
+      "advisor",
+      seed,
+    );
+    assert.deepEqual(next, {
+      default: "forge/other",
+      advisor: "deepseek/deepseek-pro",
+      Explore: "forge/other-explorer",
+    });
+  });
+
   it("does not mutate what it was given", () => {
-    const current = { default: "forge/other" };
-    withoutOverride(current, "default", seed);
-    assert.equal(current.default, "forge/other");
+    const current = { default: "forge/other", advisor: "forge/other-advisor" };
+    withoutOverride(current, "advisor", seed);
+    assert.deepEqual(current, { default: "forge/other", advisor: "forge/other-advisor" });
   });
 });
 

@@ -37,6 +37,13 @@ const FORMATS: Record<string, (data: unknown) => string> = {
     const title = text(row(data).title);
     return [first ? `${title} · ${first}` : title, ...body].filter(Boolean).join("\n");
   },
+  // .pi/extensions/team-solve.ts: the same title/first-line contract.
+  "team-solve-report": (data) => {
+    const body = lines(row(data).lines);
+    const first = body.find((line) => line.trim())?.replace(/\s+/g, " ").trim();
+    const title = text(row(data).title);
+    return [first ? `${title} · ${first}` : title, ...body].filter(Boolean).join("\n");
+  },
   // vendor/pi-subagents-lite: one part of a delegation's transcript
   "subagent-turn": (data) => {
     const d = row(data);

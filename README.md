@@ -2,12 +2,16 @@
 
 [![CI](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/coffeegrind123/instantcoffee/main/badges/ci.json)](https://github.com/coffeegrind123/instantcoffee/actions)
 
-**A 27B coding model on one RTX 4090, and the plumbing that makes it usable.**
+**A 27B local coding model or hosted Anthropic seats, behind one pi workflow.**
 
-Qwen3.8-27B runs under llama.cpp, behind the forge guardrail proxy, driven by the
-[pi](https://pi.dev) coding agent. Everything is pinned, every pin is recorded in
-`versions.lock`, and one command updates the lot and rolls back if the smoke test
-fails.
+The default local backend runs Qwen3.8-27B under llama.cpp, behind the forge
+guardrail proxy, driven by the [pi](https://pi.dev) coding agent. The optional
+`anthropic` mode points pi directly at `api.anthropic.com`, with Opus as the
+session model, Haiku for subagents, and Fable as the planning advisor. Local
+pins remain in `versions.lock`; both backends share the core extensions,
+orchestrator, browser, loop, persona, and observability. Anthropic mode adds
+`/team-solve`, a durable multi-model workflow evaluated only by a verification
+command.
 
 The interesting part is not that a 27B model fits in 24 GiB — it is what it takes
 to make it *pleasant*. Speculative decoding so it types fast enough to wait for.
@@ -44,6 +48,19 @@ window before the model has read a single line of your code.
 pi talks to **8081** (forge). Nothing should talk to 8080 directly except forge —
 that port is exposed only for debugging and metrics.
 
+In Anthropic mode the inference path is instead:
+
+```
+pi --provider anthropic  ──HTTPS──►  api.anthropic.com
+  main       claude-opus-5-5
+  subagents  claude-haiku-5-5
+  advisor    claude-fable-5-1
+```
+
+There is no llama, forge, Docker inference container, GPU requirement, model
+load, or slot cache in that mode. The observe dashboard and the rest of the
+pi-side tooling remain available.
+
 **This stack targets pi and nothing else.** Claude Code support was removed
 (2026-08-12): it cost a launcher, an Anthropic-wire smoke test, a Harbor agent
 subclass, an SDK dependency, and a set of `.env` keys, all to serve a client
@@ -54,14 +71,62 @@ documented for.
 
 ## Requirements
 
-- Docker Desktop with **GPU support enabled** (Settings → Resources → GPU)
-- NVIDIA driver with CUDA support — verified here on driver `596.36`
-- ~18 GB of disk for the `coding` model, another ~16 GB if you also want
+- Local backend: Docker Desktop with **GPU support enabled** (Settings →
+  Resources → GPU)
+- Local backend: NVIDIA driver with CUDA support — verified here on driver `596.36`
+- Local backend: ~18 GB of disk for the `coding` model, another ~16 GB if you also want
   `prose` (which `uc-coding` shares, so no extra), ~5 GB for images
 - `bash`, `curl`, and `docker` for the scripts (`python3` optional — the scripts fall
   back to a throwaway container when it is missing)
 - `uv` only for one optional extra: MCP-as-a-CLI (`scripts/mcp.sh`). Nothing in
   the core stack needs it.
+
+Anthropic mode needs an Anthropic API key and network access, but none of the
+GPU, model-download, or forge requirements above.
+
+`/team-solve` additionally needs `python3`. Git is optional and only improves
+the review diff when it is available.
+
+## Two backends
+
+`STACK_BACKEND` selects the execution path. Local is the compatibility default,
+so existing checkouts and mode files continue to use llama/forge.
+
+Full setup, commands, cache/team behavior, and local-return steps:
+**[docs/anthropic.md](docs/anthropic.md)**.
+
+```bash
+./scripts/mode.sh                    # active mode, including STACK_BACKEND
+./scripts/mode.sh anthropic          # configure hosted mode; no Docker restart
+./scripts/mode.sh coding             # return to a named local mode
+```
+
+Inside pi, `/stack mode anthropic`, `/anthropic on`, and `/anthropic off` drive
+the same `scripts/mode.sh` path. `/stack mode local` restores the last named
+local profile. Provider selection happens when pi starts, so relaunch pi after a
+backend switch.
+
+The hosted key belongs in gitignored `.env.local`, never tracked `.env`:
+
+```bash
+printf 'ANTHROPIC_API_KEY=sk-ant-...\n' >> .env.local
+```
+
+`/anthropic status` reports whether the key and seats are configured.
+`/stack status` reports the active backend; `/stack env` redacts credentials.
+
+Anthropic mode also loads `/team-solve`, a durable command-checked team of
+fresh Claude roles. The default coding allocation uses Fable for planning,
+management, and audit; Opus for implementation and repair; Sonnet for
+independent ideation and review; and Haiku for routing and triage:
+
+```text
+/team-solve run "Fix the failing suite" --check "pytest -q"
+/team-solve status
+```
+
+The verification command decides completion, and the default 72-hour budget
+supports multi-day work. See [docs/team-solve.md](docs/team-solve.md).
 
 ## Quick start
 
@@ -100,11 +165,12 @@ cd ~/my-project && qpi
 | `./scripts/logs.sh llama` | Tail llama-server (watch the model load here) |
 | `./scripts/smoke-test.sh` | Verify inference and tool calling end to end |
 | `./scripts/mode.sh` | Show the active regime; `mode.sh prose --restart` switches |
+| `./scripts/mode.sh anthropic` | Select hosted Anthropic mode; never starts or recreates llama/forge |
 | `./scripts/download-model.sh` | Fetch the GGUF (resumable; a no-op if it is already on disk) |
 | `./scripts/update.sh` | Update llama.cpp and forge, restart, verify, roll back on failure |
 | `./scripts/update.sh --check` | Report what is available without changing anything |
 | `./scripts/update.sh --observe` | Update only the dashboard to its latest `main`, rolled back if it fails its healthcheck |
-| `cd <project> && ~/instantcoffee/scripts/pi-local.sh` | Launch pi against the local model, scoped to that folder |
+| `cd <project> && ~/instantcoffee/scripts/pi-local.sh` | Launch pi against the backend selected by `STACK_BACKEND`, scoped to that folder |
 | `./scripts/pi-container.sh` | The same, in a container with its own home and the browser stack ([docs/container.md](docs/container.md)) |
 
 That is the whole day-to-day surface. The three dozen measurement and tuning
@@ -114,7 +180,10 @@ live in **[docs/benchmarking.md](docs/benchmarking.md)**, because burying
 
 ## Modes
 
-Three regimes. `coding` is the default and runs the stock unsloth weights.
+Five local regime files plus `anthropic`. `coding` is the reference profile
+and runs the stock unsloth weights. The checked-in `.env` currently matches
+`uc-coding` (the decensored model at 128K), so `./scripts/mode.sh` reports that
+as active until another profile is applied.
 `uc-coding` keeps coding's exact sampler profile but swaps in a decensored
 build, for coding work the stock model would deflect on. `prose` runs that same
 decensored model tuned for fiction — DRY on, reasoning-language off.
@@ -128,10 +197,11 @@ window at launch.
 
 ```bash
 ./scripts/mode.sh                 # what is active, and what each mode sets
-./scripts/mode.sh --list          # coding, coding-128k, coding-192k, uc-coding, prose
+./scripts/mode.sh --list          # anthropic, coding, coding-128k, coding-192k, uc-coding, prose
 ./scripts/mode.sh uc-coding       # rewrite .env (nothing is live yet)
 ./scripts/download-model.sh       # the model has to be on disk first
 docker compose up -d --force-recreate llama
+./scripts/mode.sh anthropic       # hosted backend; configures pi, touches no container
 ```
 
 Switching costs a 9–20 minute cold load, so it is a deliberate act rather than a
@@ -205,6 +275,7 @@ be the wrong trade.
 | --- | --- |
 | [docs/modes.md](docs/modes.md) | The regimes and window tiers, their models, every sampler value |
 | [docs/pi.md](docs/pi.md) | `/stack`, `/loop`, subagents, `/prinny`, `/persona`, how the provider config is generated, why pi |
+| [docs/team-solve.md](docs/team-solve.md) | Durable Anthropic team runs: role/model allocation, verification contract, budgets, and artifacts |
 | [docs/orchestrator.md](docs/orchestrator.md) | Orchestrator mode (off by default): the local model plans, DeepSeek subagents execute |
 | [docs/context-budget.md](docs/context-budget.md) | MCP servers as a CLI, filtered bash output, the browser on pi's built-in MCP — the three big context consumers |
 | [docs/reasoning.md](docs/reasoning.md) | `REASONING_EFFORT` in detail, and reasoning in another language |

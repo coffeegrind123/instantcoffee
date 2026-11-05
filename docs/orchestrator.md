@@ -1,5 +1,11 @@
 # Orchestrator mode
 
+Orchestrator mode has two backends under one contract. The local path keeps the
+27B model as the coordinator and runs children on
+`deepseek/deepseek-flash`. The hosted path uses Opus as the coordinator, Haiku
+for children, and Fable as a read-only advisor; all three are billed through
+the Anthropic API.
+
 The local model coordinates; remote subagents execute. One pi session on the
 27B plans the work, writes briefs, dispatches up to 15 subagents on DeepSeek
 Flash in parallel, re-runs every check they claim, reads their diffs and keeps
@@ -16,17 +22,20 @@ the state on a board that survives compaction and new sessions.
          └─► ...      ┘
 ```
 
-Same shape as the `~/codex` setup (GLM orchestrator, DeepSeek subagents), with
-the local model as the orchestrator.
+The same coordinator/worker split is also used by other agent setups, with the
+local model as the orchestrator here.
 
-**Off by default** (`ORCHESTRATOR=0`). With it on, everything a subagent reads
-is sent to DeepSeek's API; with it off, subagents run on the local model and
-nothing leaves the machine.
+**Off by default in the shipped `.env`** (`ORCHESTRATOR=0`); local model
+profiles do not touch it. With it on, everything a subagent reads is sent to
+DeepSeek's API; with it off, local subagents run on the local model.
+`modes/anthropic.env` turns orchestrator mode on because its entire execution
+path is hosted.
 
 ## Turning it on
 
 1. `DEEPSEEK_API_KEY=...` in `.env.local` (gitignored). For pi in a container,
    the container checkout's `.env.local`.
+   For Anthropic mode, use `ANTHROPIC_API_KEY` instead; DeepSeek is not needed.
 2. For one session: `ORCHESTRATOR=1 ./scripts/pi-container.sh` (or
    `pi-local.sh`) — the launcher reads the variable ahead of `.env`, and the
    container launcher passes it through. To keep it on for a machine, put
@@ -35,13 +44,18 @@ nothing leaves the machine.
    `SUBAGENTS_ENABLED=1` must stay on either way.
 3. The launch line ends `orchestrator (15x deepseek/deepseek-flash, depth 2)`.
 
-It is pi-side only: llama is untouched, so no restart and nothing in
-`modes/`, which switches the llama regime and is orthogonal to this.
+Hosted mode instead reports `orchestrator (15x
+anthropic/claude-haiku-5-5, advisor anthropic/claude-fable-5-1, depth 2)`.
+
+It is pi-side only: llama is untouched, so no restart is involved. Local model
+profiles do not overwrite team settings. `mode.sh` snapshots the local team
+configuration when entering Anthropic mode and restores it on return.
 
 | key | default | |
 |---|---|---|
 | `ORCHESTRATOR` | `0` | the switch |
-| `SUBAGENT_MODEL` | `deepseek/deepseek-flash` | `provider/model-id` as `pi --list-models` shows it |
+| `SUBAGENT_MODEL` | `deepseek/deepseek-flash` local; Anthropic mode sets Haiku | `provider/model-id` as `pi --list-models` shows it |
+| `ADVISOR_MODEL` | empty locally; Anthropic mode sets Fable | read-only planning agent override |
 | `SUBAGENT_MAX_CONCURRENT` | `15` | 1-15, per level |
 | `SUBAGENT_MAX_DEPTH` | empty = `2` here | `1` = only the orchestrator spawns; `2` = its subagents may spawn helpers |
 | `DEEPSEEK_API_KEY` | — | `.env.local` only |
@@ -57,10 +71,12 @@ the subagent extension not loaded.
   SESSION layer — above every config file — and every reset in `/agents`
   returns to it, so clearing an override cannot put children back on the llama
   slot. The operator's `subagents-lite.json` is never written.
-  Concurrency: `deepseek: N`, `forge: 1`.
-- **Agent types** `worker` and `explorer` from `prompts/orchestrator/agents/`,
-  through `SUBAGENT_MODE_AGENTS_DIR`: above the operator's global agents, below
-  a project's own `.pi/agents/`.
+  Concurrency: one pool per resolved provider at `N`, plus `forge: 1`.
+- **Agent types** `worker`, `explorer`, and `advisor` from
+  `prompts/orchestrator/agents/`, through `SUBAGENT_MODE_AGENTS_DIR`: above the
+  operator's global agents, below a project's own `.pi/agents/`. The advisor is
+  read-only; the Anthropic seed pins it to Fable through a per-agent-type
+  override.
 - **The orchestrator prompt**, `prompts/orchestrator/main.md`, appended to the
   system prompt with the cap and model filled in. The delegation nudge
   (`prompts/delegate.md`) is left out: it says agents share one slot, which is
@@ -102,10 +118,11 @@ code and output, the red-gate run, and what was not done.
 
 ## Costs and limits
 
-- **Data leaves the machine.** Every file a child reads goes to DeepSeek. The
-  prompts forbid briefing a child to read credentials; the subagent extension
-  already denies children the Matrix channel.
-- **DeepSeek usage is billed**; `/agents` shows per-agent cost when enabled.
+- **Data leaves the machine.** Local orchestrator children send files to
+  DeepSeek. Anthropic mode sends the session and every child to Anthropic.
+  The prompts forbid briefing a child to read credentials; the subagent
+  extension already denies children the Matrix channel.
+- **Provider usage is billed**; `/agents` shows per-agent cost when enabled.
   At depth 2, up to 30 calls can be live at once.
 - **Children bypass forge.** Forge fronts llama only, so its guardrails apply
   to the orchestrator's turns, not the children's.

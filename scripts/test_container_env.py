@@ -47,8 +47,9 @@ class EnvForwarding(unittest.TestCase):
         self.assertNotIn("7", " ".join(args))
 
     def test_a_key_only_in_the_example_file_is_forwarded(self) -> None:
-        # DEEPSEEK_API_KEY lives in .env.local; the tracked example documents it.
-        self.assertIn("DEEPSEEK_API_KEY", forward({"DEEPSEEK_API_KEY": "sk-test"}))
+        # These live in .env.local; the tracked example documents both backends.
+        for key in ("DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"):
+            self.assertIn(key, forward({key: "test-key"}))
 
     def test_an_unrelated_variable_is_not(self) -> None:
         self.assertEqual(forward({"SOME_UNRELATED_THING": "x"}), [])
@@ -61,7 +62,9 @@ class EnvForwarding(unittest.TestCase):
         with open(os.path.join(REPO, ".env"), encoding="utf-8") as fh:
             self.assertIn("\nORCHESTRATOR=", fh.read())
         with open(os.path.join(REPO, ".env.local.example"), encoding="utf-8") as fh:
-            self.assertIn("DEEPSEEK_API_KEY=", fh.read())
+            example = fh.read()
+        self.assertIn("DEEPSEEK_API_KEY=", example)
+        self.assertIn("ANTHROPIC_API_KEY=", example)
 
     def test_both_exec_paths_use_it(self) -> None:
         with open(os.path.join(REPO, "scripts", "pi-container.sh"), encoding="utf-8") as fh:

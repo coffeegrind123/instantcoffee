@@ -19,6 +19,10 @@
 /models/
 __pycache__/
 
+# Durable team-solve ledgers, role transcripts, diffs, and check logs are
+# workspace-local working data. They may contain private source and prompts.
+.team-solve/
+
 # Per-iteration log written by /loop (vendor/pi-loop-mode) into the working
 # directory it is looping on, which is sometimes this one. `/loop stats` reads it.
 .pi-loop-log.jsonl
