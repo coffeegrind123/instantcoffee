@@ -10,6 +10,17 @@ For the reasoning behind a change rather than the fact of it, see
 
 ---
 
+**Team solve takes a task without a command (2026-11-07).** `/team-solve run
+"what to do"` no longer needs `--check`: the planner settles one from the
+project, or a fresh judge decides when nothing can be run, and `--until
+"sentence"` makes your own end condition binding. A direct attempt runs first
+and the team takes over only when it does not pass. A check that already failed
+before the run counts only the failing tests the change adds; every accepted
+state is kept and put back if a later round breaks it; diffs are measured from
+the run's start through a private index (a shadow repository outside git), so
+your own uncommitted work and secrets never appear as the team's. Ported from
+the deepseek-codex team-solve skill. See `docs/team-solve.md`.
+
 **Durable Anthropic team solve (2026-11-05).** Anthropic mode now loads
 `/team-solve`, a pi-native GVS5H/Memdoor workflow with fresh contexts for
 planning, independent ideation, implementation, review, management, repair, and

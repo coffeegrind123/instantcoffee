@@ -1,21 +1,23 @@
 # Team solve in Anthropic mode
 
-`/team-solve` is a durable, command-checked workflow for work that benefits
-from several fresh Claude contexts. It ports the GVS5H/Memdoor
-plan → ideate → solve → verify loop from the Codex team-solve project into pi.
+`/team-solve` is a durable workflow for work that benefits from several fresh
+Claude contexts. It ports the GVS5H/Memdoor method from the Codex team-solve
+project into pi: a direct attempt first, then plan → ideate → solve → verify
+rounds when that attempt does not pass.
 
-The verification command is the only authority on completion. A planner,
-manager, or audit role can explain a result, but it cannot turn a nonzero exit
-status into success. The orchestrator stores and reruns the command without
-rewriting it.
+The task can be just a sentence. A verification command, when there is one, is
+the authority on completion: a planner, manager, review, judge or audit role
+can explain a result, but none can turn a failing check into success. When no
+command can check the work, the review and a fresh judge must both pass it, and
+the result says **judged, not checked**.
 
 ## Requirements
 
 - Anthropic mode is active: `STACK_BACKEND=anthropic`.
 - `ANTHROPIC_API_KEY` is present in the environment or gitignored `.env.local`.
 - `/team-solve` is enabled with `TEAM_SOLVE_ENABLED=1` (the default).
-- `python3` is available. Git is optional, but enables diff snapshots for review
-  and repair roles.
+- `python3` and the `git` binary are available. The workspace itself need not be
+  a git repository: outside one, a private shadow repository tracks the run.
 
 The extension is loaded only by the Anthropic launcher path. Switching the
 configuration back to local mode requires the usual pi relaunch; the running
@@ -27,7 +29,17 @@ From the project pi should edit:
 
 ```text
 /team-solve run "Implement the missing parser and cover its edge cases" --check "python3 -m pytest -q"
+/team-solve run "Rename ReadConfig to LoadConfig everywhere; go test ./... must pass"
+/team-solve run "Write docs/branching.md for new teammates" --until "it names the feature/ prefix and the review rule"
 ```
+
+- With `--check`, that command is the check.
+- Without it, the planner settles one: the command the task names ("Check:
+  `go test ./x/` passes"), else the project's own tests scoped to the task.
+  When nothing can be run, the check is **the judge**.
+- `--until "sentence"` is your end condition in your own words. It goes into
+  the task every role reads and becomes the first line of Done when, word for
+  word; the review and the judge fail the work while it does not hold.
 
 The command starts a detached orchestrator and returns immediately. It does not
 hold the pi session open for a multi-hour or multi-day run.
@@ -57,15 +69,52 @@ team run is reproducible and does not recursively start another team.
 
 The sequence is:
 
-1. Run the check once to establish a baseline.
-2. Route the task to a workload profile.
-3. Plan, then ask two ideators for independent proposals in parallel.
-4. Implement, then run the check.
-5. Triage the check, review the diff, and let a manager choose the next action.
-6. Repair and check again for up to ten rounds by default.
-7. Capture a final diff, run the strict final check, and audit the handoff.
+```
+snapshot ─ [baseline] ─ route ─┬─ direct (writable, the prompt as written) ─┬─ test-0 ─┬─ passed ─────────────────────────┐
+                               └─ plan ─ settle ─ [baseline on a copy] ─────┘          └─ failed: ideate A ‖ B ─ solve ─┤
+round r:  check ─ triage ─ review ─ [judge] ─ manager ─ accepted + DONE? ─── no: repair ─ round r+1
+keep net ─ final check ─ audit
+```
 
-A passing baseline short-circuits the run unless `--improve` is supplied.
+1. Snapshot the workspace as the run found it. With `--check`, run it once on
+   that untouched workspace: the baseline.
+2. Route the task to a workload profile.
+3. The **direct attempt** (one writable agent on the prompt as written) and
+   the **planner** run side by side. The planner settles Deliverable, Check,
+   Scope and Done when into `task.md`; a check it settled gets its baseline on
+   a copy of the start (the direct attempt is already changing the live one).
+4. **test-0**: the check and the scope on the direct attempt. When it passes,
+   it is round 1's work and only review (and the judge when needed) follow.
+   When it does not, two ideators propose in parallel and the solver corrects
+   the attempt.
+5. Each round: run the check, capture the diff since the start and the scope
+   report, triage, review, the judge when a command cannot settle it, then the
+   manager picks the next action. Repair and check again, up to ten rounds by
+   default; a repair that changes nothing stops the run.
+6. The keep net, a final diff, the strict final check, and the audit.
+
+A passing baseline ends the run with no model work only when no task was given
+besides the check. With a task, a check that already passed cannot show the
+work, so the team runs and the judge has to agree too. `--improve` keeps
+working after the work is accepted.
+
+**A round is accepted** when the check passes (or there is none to run), the
+review's verdict is not FAIL, and, whenever a command cannot settle it alone
+(no command, a check that cannot decide, a check that passed before any work,
+a repaired change, a review with no verdict), the judge says PASS. The judge
+is a fresh read-only role that sees the task and the diff, never the team's
+reasoning. The run stops when a round is accepted and the manager says DONE.
+
+**The baseline counts what the work adds.** When the check already failed on
+the workspace as found, the run counts only the failing tests the change adds
+(pytest, unittest, Django's runner and go test logs). A failure that reads
+exactly as it did before any change cannot decide: the judge gets its log. Any
+other failure counts against the change.
+
+**The keep net.** Every accepted state is saved. If a later round breaks it,
+the last accepted state is put back. With nothing accepted, a command check
+puts the direct attempt back unless the team's work passes it; a judge-only
+task keeps the latest work. The work set aside is in `team.patch`.
 Completed role markers are reused only when both the prompt and the evidence
 files that role read are unchanged. The check is always rerun because workspace
 state may have changed while the orchestrator was stopped.
@@ -77,9 +126,13 @@ The `coding` profile is the primary path:
 | Role | Claude model | Effort | Access |
 | --- | --- | --- | --- |
 | Router, failure triage, cut-off summary | Haiku 5.5 | medium | read tools only |
-| Plan, manager, final audit | Fable 5.1 | high | read tools only |
+| Plan, manager, judge, final audit | Fable 5.1 | high | read tools only |
 | Independent ideators, review | Sonnet 5.5 | high | read tools only |
-| Implementation, repair | Opus 5.5 | high | read/write/bash |
+| Direct attempt, implementation, repair | Opus 5.5 | high | read/write/bash |
+
+The judge always runs on a different model from the one that wrote the work:
+Fable in `coding`, `writing` and `general`, Opus in `everyday` and `research`
+(where Fable or Sonnet solve), Sonnet in `high-volume`.
 
 Other profiles preserve the same separation while shifting cost:
 
@@ -151,17 +204,19 @@ restarts an unfinished or failed run with a fresh total budget.
 
 ## The check contract
 
-The check is a shell command supplied by the operator and run in the workspace
-with `bash --noprofile --norc -c`. Use an existing objective test, build, or
-reproduction command:
+The check is a shell command, supplied by the operator or settled by the
+planner, run in the workspace with `bash --noprofile --norc -c`. Use an
+existing objective test, build, or reproduction command:
 
 ```text
 /team-solve run "Fix the race" --check "go test ./..."
 /team-solve run "Reproduce and fix issue 42" --check "python3 scripts/repro.py"
 ```
 
-Exit 0 is the only success signal. The orchestrator also treats a timeout as
-failure. Roles are told not to weaken tests, delete coverage, or special-case
+Exit 0 is the success signal (or, against a failing baseline, no new failing
+test). The orchestrator also treats a timeout as failure. With no command, the
+review and the judge decide, and `status`, the final line and `result.json`
+say so. Roles are told not to weaken tests, delete coverage, or special-case
 sample inputs. If the check does not already exist, create or review it before
 starting an unattended run.
 
@@ -188,7 +243,10 @@ filesystem policy when the task itself must be confined to the workspace.
 Each run writes under `.team-solve/runs/<run-id>/`:
 
 ```text
-task.md                 task statement given to every role
+prompt.md               the task as given (and --until), untouched
+task.md                 the task plus the settled Deliverable, Check, Scope, Done when
+direct.patch            the direct attempt; accepted.patch the last accepted state
+team.patch              work the keep net set aside, when it put a state back
 state.json              durable phase, role, usage, budget, and check state
 result.json             final machine-readable handoff
 tasks.json              manager-curated task ledger
@@ -197,8 +255,11 @@ round-NN/tasks-initial.json
 round-NN/tasks-before.json
 round-NN/proposals/     ideator A and B outputs
 round-NN/*.jsonl        raw pi event streams per attempt
+round-01/direct.md      the direct attempt's summary; direct-check.log, direct-diff.txt
 round-NN/check.log      captured verification output
-round-NN/diff.txt       tracked and untracked workspace changes
+round-NN/diff.txt       every change since the run started, with the scope report
+round-NN/scope.txt      each changed file against the Scope
+round-NN/judge.md       the judge's verdict, when it ran
 round-NN/*.cutoff.md    partial output from a role cut off at its limit
 round-NN/cutoff.md      Haiku summary of the cut-off attempt
 round-NN/*.md           triage, review, manager, repair, and audit ledgers
@@ -206,9 +267,19 @@ final-check.log         authoritative final check
 final-diff.txt          final change snapshot
 ```
 
-`.team-solve/` is private runtime state. It is gitignored because it can contain
-source diffs, prompts, logs, and workspace paths. It should not be published or
-copied into a public repository.
+`.team-solve/` is private runtime state. It carries its own `.gitignore` because
+it can contain source diffs, prompts, logs, and workspace paths. It should not be
+published or copied into a public repository.
+
+**Snapshots.** Each state of the workspace is a git tree written through a
+private index, so the project's index, branch and stash are never touched, and
+the diff since the start shows neither the operator's own uncommitted work nor
+a file untracked before the run as the team's. Sensitive paths (`.env*`,
+`*.pem`, `*.key`, `*secret*`, `*credential*`, ...) are excluded from every
+snapshot, so their contents never enter the object store. A role that moves
+HEAD has it put back. Outside a git repository a private shadow repository in
+`.team-solve/shadow.git` provides the same diffs and snapshots. The run's refs
+(`refs/team-solve/<run>/`) are deleted when it finishes.
 
 ## Direct command-line use
 

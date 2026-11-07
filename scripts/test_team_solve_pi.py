@@ -43,7 +43,7 @@ record = {
     "started": time.time(),
 }
 workspace = pathlib.Path.cwd()
-if role in ("ideate-a", "ideate-b"):
+if role in ("ideate-a", "ideate-b", "direct", "plan"):
     time.sleep(0.2)
 sleep_roles = {
     item.strip()
@@ -92,6 +92,23 @@ fix_roles = {
 if role in fix_roles and os.environ.get("TEAM_SOLVE_TEST_FIX", "1") == "1":
     (workspace / "fixed.txt").write_text("fixed\n", encoding="utf-8")
 
+# TEAM_SOLVE_TEST_WRITES: {"role": [[path, content], ...]} written by that role.
+for path, content in json.loads(os.environ.get("TEAM_SOLVE_TEST_WRITES", "{}")).get(role, []):
+    target = workspace / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+
+def next_in(name, default):
+    """The n-th call of a role gets the n-th entry of TEAM_SOLVE_TEST_<NAME> (the last repeats)."""
+    items = [item for item in os.environ.get(f"TEAM_SOLVE_TEST_{name}", "").split(",") if item]
+    if not items:
+        return default
+    counter = pathlib.Path(os.environ["TEAM_SOLVE_TEST_FAKE_PI_LOG"] + f".{name}")
+    used = int(counter.read_text()) if counter.exists() else 0
+    counter.write_text(str(used + 1))
+    return items[min(used, len(items) - 1)]
+
 if role == "router" and os.environ.get("TEAM_SOLVE_TEST_MALFORMED_ROUTER") == "1":
     print("{not valid json", flush=True)
     text = '{"profile":"coding","rationale":"implementation task"}'
@@ -106,7 +123,7 @@ elif role == "router":
         }
     )
 elif role == "manager":
-    if os.environ.get("TEAM_SOLVE_TEST_MANAGER_CONTINUE") == "1":
+    if next_in("MANAGERS", "") == "CONTINUE" or os.environ.get("TEAM_SOLVE_TEST_MANAGER_CONTINUE") == "1":
         text = (
             "STATUS: CONTINUE\n"
             "NEXT_TASK: create fixed.txt\n"
@@ -130,7 +147,18 @@ elif role == "cutoff":
 elif role == "triage":
     text = "CLASS: implementation\nEVIDENCE: fixed.txt\nREPAIR: implemented\nAVOID: none"
 elif role == "review":
-    text = "## Verdict\nPASS\n\n## Findings\nNone\n\n## Required next action\nNone\n\n## Residual risks\nNone"
+    verdict = next_in("REVIEWS", "PASS")
+    text = f"## Verdict\n{verdict}\n\n## Findings\nNone\n\n## Required next action\nNone\n\n## Residual risks\nNone"
+elif role == "judge":
+    text = f"verdict: {next_in('JUDGES', 'PASS')}\nthe change against the task"
+elif role == "plan" and os.environ.get("TEAM_SOLVE_TEST_PLAN_CHECK"):
+    text = (
+        "## Deliverable\nchanges to this tree\n\n"
+        f"## Check\n{os.environ['TEAM_SOLVE_TEST_PLAN_CHECK']}\n\n"
+        "## Scope\n`.`\n\n"
+        "## Done when\n- (inferred) the task is done\n\n"
+        "## Tasks\n- [todo] do the task\n"
+    )
 else:
     text = f"{role} complete"
 
@@ -315,6 +343,7 @@ class TeamSolvePi(unittest.TestCase):
             set(by_role),
             {
                 "router",
+                "direct",
                 "plan",
                 "ideate-a",
                 "ideate-b",
@@ -325,6 +354,14 @@ class TeamSolvePi(unittest.TestCase):
                 "audit",
             },
         )
+        # the direct attempt changed nothing, so the team took over; the check
+        # and the review settled it with no judge
+        self.assertFalse(state["direct_passed"])
+        self.assertEqual(state["rounds"]["1"], {"check": "pass", "exit": 0, "review": "PASS", "judge": "skipped",
+                                                "accepted": True, "outside_scope": 0})
+        d = by_role["direct"]
+        p = by_role["plan"]
+        self.assertLess(max(float(d["started"]), float(p["started"])), min(float(d["finished"]), float(p["finished"])))
         a = by_role["ideate-a"]
         b = by_role["ideate-b"]
         self.assertLess(max(float(a["started"]), float(b["started"])), min(float(a["finished"]), float(b["finished"])))
@@ -716,6 +753,166 @@ class TeamSolvePi(unittest.TestCase):
             (run_dir / "round-01" / "cutoff.md").read_text(),
         )
 
+    # --- prompt-only runs: the planner settles the check, or the judge decides ---
+
+    def roles_called(self) -> list[str]:
+        return [str(record["role"]) for record in self.records()]
+
+    def test_judge_only_task_with_until_outside_git(self) -> None:
+        subprocess.run(["rm", "-rf", str(self.workspace / ".git")], check=True)
+        self.env.update({
+            "TEAM_SOLVE_TEST_FIX": "0",
+            "TEAM_SOLVE_TEST_PLAN_CHECK": "judge",
+            "TEAM_SOLVE_TEST_WRITES": json.dumps({
+                "direct": [["answer.md", "use any name\n"]],
+                "repair": [["answer.md", "use feature/<topic>\n"]],
+            }),
+            "TEAM_SOLVE_TEST_REVIEWS": "FAIL,PASS",
+            "TEAM_SOLVE_TEST_JUDGES": "PASS",
+            "TEAM_SOLVE_TEST_MANAGERS": "CONTINUE,DONE",
+        })
+        result = self.run_team(
+            "run", "Write answer.md: a note on naming git branches",
+            "--until", "answer.md names the prefix feature/",
+            "--profile", "coding", "--rounds", "3",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("judged, not checked", result.stderr)
+        self.assertEqual((self.workspace / "answer.md").read_text(), "use feature/<topic>\n")
+        run_dir = self.current_run()
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["check_kind"], "judge")
+        self.assertEqual(state["check"], "")
+        self.assertEqual(state["repository"], "shadow")
+        self.assertTrue(state["direct_passed"])                      # nothing to run: the change passes test-0
+        self.assertEqual(state["rounds"]["1"]["review"], "FAIL")
+        self.assertEqual(state["rounds"]["2"], {"check": "none", "exit": None, "review": "PASS", "judge": "PASS",
+                                                "accepted": True, "outside_scope": 0})
+        roles = self.roles_called()
+        self.assertNotIn("solve", roles)                                # the direct attempt was the round-1 work
+        self.assertNotIn("ideate-a", roles)
+        self.assertEqual(roles.count("judge"), 1)                      # round 1 failed the review: no judge
+        self.assertEqual(roles.count("repair"), 1)
+        task = (run_dir / "task.md").read_text()
+        done_when = task.split("## Done when", 1)[1].strip().splitlines()
+        self.assertEqual(done_when[0], "- answer.md names the prefix feature/")
+        self.assertIn("End condition (the run is done only when this holds): answer.md names the prefix feature/",
+                      (run_dir / "prompt.md").read_text())
+        self.assertTrue((self.workspace / ".team-solve" / "shadow.git").is_dir())
+        status = self.run_team("status")
+        self.assertIn("judged, not checked", status.stdout)
+        self.assertIn("until     answer.md names the prefix feature/", status.stdout)
+        checked = self.run_team("check")
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+        self.assertIn("the last judge said PASS", checked.stdout)
+
+    def test_planner_settles_a_command_and_the_direct_attempt_passes(self) -> None:
+        self.env.update({"TEAM_SOLVE_TEST_FIX_ROLES": "direct", "TEAM_SOLVE_TEST_PLAN_CHECK": "`test -f fixed.txt`"})
+        result = self.run_team("run", "create fixed.txt", "--profile", "coding")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("checked by `test -f fixed.txt`", result.stderr)
+        state = json.loads((self.current_run() / "state.json").read_text())
+        self.assertEqual((state["check"], state["check_source"], state["check_kind"]),
+                         ("test -f fixed.txt", "planner", "command"))
+        self.assertEqual(state["baseline_check"]["exit"], 1)            # on a copy of the start: no fixed.txt yet
+        self.assertTrue(state["direct_passed"])
+        roles = self.roles_called()
+        for absent in ("ideate-a", "ideate-b", "solve", "repair", "judge"):
+            self.assertNotIn(absent, roles)
+        self.assertEqual(subprocess.run(["git", "status", "--porcelain"], cwd=self.workspace, capture_output=True,
+                                        text=True).stdout, "?? fixed.txt\n")   # .team-solve is ignored
+
+    def test_a_check_that_passed_before_any_work_needs_the_judge(self) -> None:
+        self.env.update({
+            "TEAM_SOLVE_TEST_FIX": "0",
+            "TEAM_SOLVE_TEST_WRITES": json.dumps({"direct": [["notes.md", "notes\n"]]}),
+            "TEAM_SOLVE_TEST_JUDGES": "PASS",
+        })
+        result = self.run_team("run", "write notes.md", "--check", "true", "--profile", "coding")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        state = json.loads((self.current_run() / "state.json").read_text())
+        self.assertTrue(state["check_uninformative"])
+        self.assertEqual(state["rounds"]["1"]["judge"], "PASS")
+        self.assertIn("judge", self.roles_called())
+
+    def test_keep_net_puts_back_the_last_accepted_state(self) -> None:
+        self.env.update({
+            "TEAM_SOLVE_TEST_FIX": "0",
+            "TEAM_SOLVE_TEST_WRITES": json.dumps({
+                "direct": [["v.txt", "good\n"]],
+                "repair": [["v.txt", "broken\n"]],
+            }),
+        })
+        result = self.run_team("run", "make v.txt good", "--check", "grep -qx good v.txt",
+                               "--profile", "coding", "--rounds", "2", "--improve")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual((self.workspace / "v.txt").read_text(), "good\n")
+        run_dir = self.current_run()
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertEqual(state["rounds"]["2"]["check"], "fail")
+        self.assertTrue(state["keep"].startswith("put back: the last accepted state (round 1)"))
+        self.assertIn("broken", (run_dir / "team.patch").read_text())
+        self.assertEqual(state["final_check"]["status"], "pass")
+
+    def test_keep_net_puts_back_the_direct_attempt_when_the_team_proves_nothing(self) -> None:
+        self.env.update({
+            "TEAM_SOLVE_TEST_FIX": "0",
+            "TEAM_SOLVE_TEST_REVIEWS": "FAIL",
+            "TEAM_SOLVE_TEST_MANAGER_CONTINUE": "1",
+            "TEAM_SOLVE_TEST_WRITES": json.dumps({
+                "direct": [["v.txt", "direct\n"]],
+                "solve": [["v.txt", "solve\n"]],
+                "repair": [["v.txt", "repair\n"]],
+            }),
+        })
+        result = self.run_team("run", "make v.txt right", "--check", "grep -qx right v.txt",
+                               "--profile", "coding", "--rounds", "2")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual((self.workspace / "v.txt").read_text(), "direct\n")
+        run_dir = self.current_run()
+        state = json.loads((run_dir / "state.json").read_text())
+        self.assertTrue(state["keep"].startswith("put back: the direct attempt"))
+        self.assertIn("+repair", (run_dir / "team.patch").read_text())
+
+    def test_baseline_counts_only_the_failures_the_change_adds(self) -> None:
+        (self.workspace / "check.py").write_text(
+            "import os, sys\n"
+            "fails = ['t.py::old']\n"
+            "if not (os.path.exists('feature.txt') and open('feature.txt').read().strip() == 'yes'):\n"
+            "    fails.append('t.py::feature')\n"
+            "for f in fails:\n"
+            "    print('FAILED ' + f + ' - boom')\n"
+            "print(f'{len(fails)} failed, 3 passed in 0.01s')\n"
+            "sys.exit(1)\n"
+        )
+        self.env.update({"TEAM_SOLVE_TEST_FIX": "0",
+                         "TEAM_SOLVE_TEST_WRITES": json.dumps({"direct": [["feature.txt", "yes\n"]]})})
+        result = self.run_team("run", "make the feature test pass", "--check", f"{sys.executable} check.py",
+                               "--profile", "coding")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        run_dir = self.current_run()
+        self.assertIn("adds no failing test", (run_dir / "final-check.log").read_text())
+        self.assertNotIn("judge", self.roles_called())
+
+    def test_a_failure_unlike_the_baseline_counts_against_the_change(self) -> None:
+        (self.workspace / "check.sh").write_text('test -f fixed.txt || { echo "missing at $(date +%s%N)"; exit 1; }\n'
+                                                 'grep -q right fixed.txt || { echo "wrong content"; exit 1; }\n')
+        self.env.update({"TEAM_SOLVE_TEST_FIX": "0", "TEAM_SOLVE_TEST_REVIEWS": "PASS",
+                         "TEAM_SOLVE_TEST_WRITES": json.dumps({"direct": [["fixed.txt", "wrong\n"]],
+                                                               "solve": [["fixed.txt", "wrong\n"]]})})
+        result = self.run_team("run", "write fixed.txt", "--check", "bash check.sh", "--profile", "coding",
+                               "--rounds", "1")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        state = json.loads((self.current_run() / "state.json").read_text())
+        self.assertEqual(state["direct_check"]["status"], "fail")
+        self.assertIn("fails differently", (self.current_run() / "round-01" / "direct-check.log").read_text())
+
+    def test_run_without_a_task_or_check_is_refused(self) -> None:
+        result = self.run_team("run")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no task", result.stderr)
+        self.assertEqual(self.records(), [])
+
 
 class TeamSolveUnits(unittest.TestCase):
     @classmethod
@@ -968,9 +1165,6 @@ class TeamSolveUnits(unittest.TestCase):
                 cwd=workspace,
                 check=True,
             )
-            (workspace / "keep.txt").write_text("visible-after\n")
-            (workspace / "secret-config.txt").write_text("SECRET_VALUE\n")
-            (workspace / "untracked-secret.txt").write_text("UNTRACKED_SECRET\n")
             run_dir = workspace / ".team-solve" / "runs" / "run"
             run_dir.mkdir(parents=True)
             orchestrator = self.module.Orchestrator(
@@ -979,6 +1173,11 @@ class TeamSolveUnits(unittest.TestCase):
                 {"role_timeout_sec": 3600, "check_timeout_sec": 3600},
                 activate=False,
             )
+            # The diff is measured from the run's start: take it, then change files.
+            orchestrator.tree.start()
+            (workspace / "keep.txt").write_text("visible-after\n")
+            (workspace / "secret-config.txt").write_text("SECRET_VALUE\n")
+            (workspace / "untracked-secret.txt").write_text("UNTRACKED_SECRET\n")
             destination = run_dir / "diff.txt"
             orchestrator.capture_diff(destination)
             captured = destination.read_text()

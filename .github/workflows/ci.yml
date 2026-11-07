@@ -47,7 +47,8 @@ jobs:
                    scripts/bench_tools.py \
                    scripts/test_download_verify.py scripts/test_smoke_observe.py \
                    scripts/team-solve/team_solve.py scripts/team-solve/prompts.py \
-                   scripts/test_team_solve_pi.py; do
+                   scripts/team-solve/tree.py scripts/team-solve/taskspec.py \
+                   scripts/team-solve/failures.py scripts/test_team_solve_pi.py; do
             python -c "import py_compile; py_compile.compile('$f', doraise=True)"
             echo "  $f: OK"
           done

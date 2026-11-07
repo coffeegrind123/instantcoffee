@@ -50,10 +50,30 @@ describe("team-solve argv", () => {
 		});
 	});
 
-	test("run requires its ground-truth command", () => {
-		const result = buildTeamSolveInvocation(["run", "do the thing"], "/work/task");
-		assert.ok("error" in result);
-		assert.match(result.error, /requires an explicit verification command/);
+	test("run takes a task alone: the planner settles the check, or the judge", () => {
+		assert.deepEqual(buildTeamSolveInvocation(["run", "do the thing"], "/work/task"), {
+			action: "run",
+			args: ["run", "--dir", "/work/task", "do the thing"],
+		});
+		assert.deepEqual(
+			buildTeamSolveInvocation(["run", "write the doc", "--until", "a newcomer can follow it"], "/work/task"),
+			{
+				action: "run",
+				args: ["run", "--dir", "/work/task", "write the doc", "--until", "a newcomer can follow it"],
+			},
+		);
+		assert.deepEqual(buildTeamSolveInvocation(["run", "--check", "pytest -q"], "/work/task"), {
+			action: "run",
+			args: ["run", "--dir", "/work/task", "--check", "pytest -q"],
+		});
+	});
+
+	test("run with nothing to do asks for a task", () => {
+		for (const words of [["run"], ["run", "--profile", "coding"], ["run", "--until", "it works"]]) {
+			const result = buildTeamSolveInvocation(words, "/work/task");
+			assert.ok("error" in result, words.join(" "));
+			assert.match(result.error, /needs a task/);
+		}
 	});
 
 	test("workspace ownership cannot be overridden", () => {
@@ -105,6 +125,10 @@ describe("team-solve argv", () => {
 		assert.deepEqual(
 			teamSolveCompletionItems("run --ch").map((item) => item.value),
 			["run --check", "run --check-timeout"],
+		);
+		assert.deepEqual(
+			teamSolveCompletionItems("run --un").map((item) => item.value),
+			["run --until"],
 		);
 		assert.deepEqual(
 			teamSolveCompletionItems("run --multi").map((item) => item.value),

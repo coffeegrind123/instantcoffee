@@ -16,7 +16,7 @@ backend from local llama.cpp/forge to the hosted Anthropic Messages API.
 | prompt cache | llama KV/prefix cache | Anthropic ephemeral cache, 300 s / 3600 s tiers |
 | reasoning-language prompt | mode-specific | off |
 | local containers | llama, forge, observe | observe only, if enabled |
-| team solve | unavailable | `/team-solve`, durable command-checked roles |
+| team solve | unavailable | `/team-solve`, durable roles checked by a command or a judge |
 
 Everything pi-side remains: `/stack`, `/anthropic`, `/loop`, `/prinny`,
 `/persona`, browser tools, Ovis, the observe dashboard, subagents, and the
@@ -87,12 +87,14 @@ for `on`, `off`, and `off`.
 ## Durable team solve
 
 Anthropic mode loads `/team-solve`, a pi-native port of the GVS5H/Memdoor
-method. It runs fresh planner, ideator, implementation, review, manager, and
-audit processes against the current workspace, with the verification command
-as the only success signal:
+method. It runs a direct attempt, then fresh planner, ideator, implementation,
+review, judge, manager, and audit processes against the current workspace. A
+verification command decides when there is one; the planner settles one when
+none is given, and with nothing to run the review and a fresh judge decide:
 
 ```text
 /team-solve run "Implement the missing feature" --check "pytest -q"
+/team-solve run "Write the migration guide" --until "every breaking change has a before/after example"
 /team-solve status
 /team-solve logs --role solve
 /team-solve check

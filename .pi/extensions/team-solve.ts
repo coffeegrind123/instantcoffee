@@ -169,7 +169,8 @@ export default function teamSolveExtension(pi: ExtensionAPI) {
 					`launcher   ${launcherLog}`,
 					"",
 					"Use /team-solve status, logs, resume, check, or stop.",
-					"The verification command alone decides whether the run is solved.",
+					"A verification command decides when there is one; otherwise the review and a fresh",
+					"judge must both pass the work (status then says \"judged, not checked\").",
 				],
 				"info",
 			);
@@ -181,7 +182,7 @@ export default function teamSolveExtension(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("team-solve", {
-		description: "Run a durable, command-checked team of Claude models",
+		description: "Run a durable team of Claude models on a task, until a check or a judge says it is done",
 		getArgumentCompletions: (prefix) => {
 			const items = teamSolveCompletionItems(prefix);
 			return items.length ? items : null;

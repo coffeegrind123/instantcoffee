@@ -10,8 +10,8 @@ guardrail proxy, driven by the [pi](https://pi.dev) coding agent. The optional
 session model, Haiku for subagents, and Fable as the planning advisor. Local
 pins remain in `versions.lock`; both backends share the core extensions,
 orchestrator, browser, loop, persona, and observability. Anthropic mode adds
-`/team-solve`, a durable multi-model workflow evaluated only by a verification
-command.
+`/team-solve`, a durable multi-model workflow that drives a task to done: a
+verification command decides when there is one, a fresh judge when there is not.
 
 The interesting part is not that a 27B model fits in 24 GiB — it is what it takes
 to make it *pleasant*. Speculative decoding so it types fast enough to wait for.
@@ -84,8 +84,8 @@ documented for.
 Anthropic mode needs an Anthropic API key and network access, but none of the
 GPU, model-download, or forge requirements above.
 
-`/team-solve` additionally needs `python3`. Git is optional and only improves
-the review diff when it is available.
+`/team-solve` additionally needs `python3` and the `git` binary; the workspace
+itself need not be a git repository.
 
 ## Two backends
 
@@ -115,18 +115,20 @@ printf 'ANTHROPIC_API_KEY=sk-ant-...\n' >> .env.local
 `/anthropic status` reports whether the key and seats are configured.
 `/stack status` reports the active backend; `/stack env` redacts credentials.
 
-Anthropic mode also loads `/team-solve`, a durable command-checked team of
-fresh Claude roles. The default coding allocation uses Fable for planning,
+Anthropic mode also loads `/team-solve`, a durable team of fresh Claude roles. The default coding allocation uses Fable for planning,
 management, and audit; Opus for implementation and repair; Sonnet for
 independent ideation and review; and Haiku for routing and triage:
 
 ```text
 /team-solve run "Fix the failing suite" --check "pytest -q"
+/team-solve run "Write docs/branching.md" --until "it names the feature/ prefix"
 /team-solve status
 ```
 
-The verification command decides completion, and the default 72-hour budget
-supports multi-day work. See [docs/team-solve.md](docs/team-solve.md).
+A direct attempt goes first and the team takes over when it does not pass. A
+verification command decides completion when there is one (the planner settles
+one when you give none); with nothing to run, the review and a fresh judge must
+both pass the work. The default 72-hour budget supports multi-day work. See [docs/team-solve.md](docs/team-solve.md).
 
 ## Quick start
 

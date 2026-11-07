@@ -23,7 +23,9 @@ import os
 import re
 import signal
 import subprocess
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -37,6 +39,9 @@ REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 
 from prompts import ROLE_PROMPTS, role_prompt  # noqa: E402
+import failures  # noqa: E402
+import taskspec  # noqa: E402
+from tree import Tree, TreeError, ensure_state_dir  # noqa: E402
 
 STATE_DIR = ".team-solve"
 STATE_VERSION = 1
@@ -71,12 +76,14 @@ ROLE_TIERS = {
         "plan": "fable",
         "ideate-a": "sonnet",
         "ideate-b": "sonnet",
+        "direct": "opus",
         "solve": "opus",
         "cutoff": "haiku",
         "triage": "haiku",
         "review": "sonnet",
         "manager": "fable",
         "repair": "opus",
+        "judge": "fable",
         "audit": "fable",
     },
     "everyday": {
@@ -84,12 +91,14 @@ ROLE_TIERS = {
         "plan": "sonnet",
         "ideate-a": "sonnet",
         "ideate-b": "sonnet",
+        "direct": "sonnet",
         "solve": "sonnet",
         "cutoff": "haiku",
         "triage": "haiku",
         "review": "opus",
         "manager": "sonnet",
         "repair": "sonnet",
+        "judge": "opus",
         "audit": "sonnet",
     },
     "research": {
@@ -97,12 +106,14 @@ ROLE_TIERS = {
         "plan": "fable",
         "ideate-a": "fable",
         "ideate-b": "sonnet",
+        "direct": "fable",
         "solve": "fable",
         "cutoff": "haiku",
         "triage": "haiku",
         "review": "opus",
         "manager": "fable",
         "repair": "fable",
+        "judge": "opus",
         "audit": "fable",
     },
     "writing": {
@@ -110,12 +121,14 @@ ROLE_TIERS = {
         "plan": "sonnet",
         "ideate-a": "sonnet",
         "ideate-b": "sonnet",
+        "direct": "sonnet",
         "solve": "sonnet",
         "cutoff": "haiku",
         "triage": "haiku",
         "review": "opus",
         "manager": "sonnet",
         "repair": "sonnet",
+        "judge": "fable",
         "audit": "fable",
     },
     "general": {
@@ -123,12 +136,14 @@ ROLE_TIERS = {
         "plan": "sonnet",
         "ideate-a": "sonnet",
         "ideate-b": "sonnet",
+        "direct": "sonnet",
         "solve": "sonnet",
         "cutoff": "haiku",
         "triage": "haiku",
         "review": "opus",
         "manager": "sonnet",
         "repair": "sonnet",
+        "judge": "fable",
         "audit": "fable",
     },
     "high-volume": {
@@ -136,17 +151,21 @@ ROLE_TIERS = {
         "plan": "sonnet",
         "ideate-a": "haiku",
         "ideate-b": "haiku",
+        "direct": "haiku",
         "solve": "haiku",
         "cutoff": "haiku",
         "triage": "haiku",
         "review": "sonnet",
         "manager": "sonnet",
         "repair": "haiku",
+        "judge": "sonnet",
         "audit": "sonnet",
     },
 }
-WRITABLE_ROLES = {"solve", "repair"}
-CUTOFF_SUMMARIZABLE_ROLES = {"solve", "repair"}
+WRITABLE_ROLES = {"direct", "solve", "repair"}
+CUTOFF_SUMMARIZABLE_ROLES = {"direct", "solve", "repair"}
+CHECK_PASS, CHECK_FAIL, CHECK_NONE = "pass", "fail", "none"
+MAX_CONTEXT_LOG = 30_000
 REQUIRED_OUTPUT_ROLES = set(ROLE_PROMPTS)
 PROFILE_CHOICES = (
     "auto",
@@ -348,8 +367,7 @@ def read_json(path: Path) -> Any:
 def claim_run_lock(workspace: Path) -> Iterator[None]:
     if not workspace.is_dir():
         raise TeamSolveError(f"workspace is not a directory: {workspace}")
-    home = state_home(workspace)
-    home.mkdir(parents=True, exist_ok=True)
+    home = ensure_state_dir(workspace)
     home.chmod(0o700)
     path = home / "run.lock"
     with path.open("a+", encoding="utf-8") as handle:
@@ -538,6 +556,41 @@ def tail(path: Path, limit: int = 80) -> str:
     return "\n".join(lines[-limit:])
 
 
+def failure_shape(text: str) -> list[str]:
+    """A failing log's last lines with numbers (timings, addresses, pids)
+    blanked, so two runs of the same broken check compare equal."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    return [re.sub(r"[0-9]+", "#", line) for line in lines[-20:]]
+
+
+def verdict_of(text: str, heading: bool = False) -> str:
+    """PASS, FAIL or none. A judge answers `verdict: PASS` on its first line; a
+    review puts PASS or FAIL first under ## Verdict. Markdown emphasis aside. A
+    role that narrates instead of answering gave no verdict: none, not FAIL."""
+    lines = text.splitlines()
+    if heading:
+        for index, line in enumerate(lines):
+            if re.match(r"^\s*#{1,6}\s*verdict\s*$", line, re.I):
+                for after in lines[index + 1:index + 6]:
+                    word = re.sub(r"[*`_]", "", after).strip().upper()
+                    if word.startswith("PASS"):
+                        return "PASS"
+                    if word.startswith("FAIL"):
+                        return "FAIL"
+                    if word:
+                        break
+                break
+    for line in lines[:10]:
+        clean = re.sub(r"[*`_]", "", line).strip().lower()
+        if clean.startswith("verdict:"):
+            word = clean[len("verdict:"):].strip().upper()
+            if word.startswith("PASS"):
+                return "PASS"
+            if word.startswith("FAIL"):
+                return "FAIL"
+    return "none"
+
+
 def compact_text(text: str, limit: int = 240) -> str:
     one = " ".join(text.split())
     return one if len(one) <= limit else one[: limit - 1] + "…"
@@ -649,6 +702,7 @@ class Orchestrator:
         self.stop_requested = False
         self.cancel_requested = threading.Event()
         self.pi_bin = setting("TEAM_SOLVE_PI_BIN", "pi")
+        self._tree: Tree | None = None
         self.role_timeout = parse_duration(
             str(state.get("role_timeout_sec") or setting("TEAM_SOLVE_ROLE_TIMEOUT", "4h")),
             "TEAM_SOLVE_ROLE_TIMEOUT",
@@ -811,18 +865,35 @@ class Orchestrator:
 
     def role_done_path(self, round_no: int, role: str) -> Path:
         round_dir = self.run_dir / f"round-{round_no:02d}"
+        if role == "direct":
+            return self.run_dir / "round-01" / "direct.md"
         if role == "ideate-a":
             return round_dir / "proposals" / "A.md"
         if role == "ideate-b":
             return round_dir / "proposals" / "B.md"
         return round_dir / f"{role}.md"
 
+    def worker_path(self, round_no: int) -> Path:
+        """The ledger of the role that produced round N's work: the direct
+        attempt when it passed test-0, else solve in round 1, repair after."""
+        round_dir = self.run_dir / f"round-{round_no:02d}"
+        if round_no == 1:
+            return round_dir / ("direct.md" if self.state.get("direct_passed") else "solve.md")
+        return round_dir / "repair.md"
+
+    def check_line(self) -> str:
+        if self.state.get("check"):
+            return f"Check command (do not edit): {self.state['check']}\n"
+        if self.state.get("check_kind") == "judge":
+            return "Check command: none (nothing can be run; a fresh judge decides with the review)\n"
+        return "Check command: none given (the planner settles one, or the judge)\n"
+
     def role_key(self, round_no: int, role: str) -> str:
         return f"{round_no:02d}:{role}"
 
     def role_evidence_paths(self, round_no: int, role: str) -> list[Path]:
         round_dir = self.run_dir / f"round-{round_no:02d}"
-        worker = round_dir / ("solve.md" if round_no == 1 else "repair.md")
+        worker = self.worker_path(round_no)
         task = self.run_dir / "task.md"
         tasks = round_dir / "tasks-before.json"
         plan = round_dir / "plan.md"
@@ -833,11 +904,18 @@ class Orchestrator:
         triage = round_dir / "triage.md"
         review = round_dir / "review.md"
         manager = round_dir / "manager.md"
+        if role == "direct":
+            return [self.run_dir / "prompt.md"]
         if role in {"router", "plan"}:
-            return [task]
+            return [self.run_dir / "prompt.md"]
+        if role == "judge":
+            return [task, diff, check] if self.state.get("judge_sees_log", {}).get(str(round_no)) else [task, diff]
         if role in {"ideate-a", "ideate-b"}:
             return [task, round_dir / "tasks-initial.json", plan]
-        if role in {"solve", "triage"}:
+        if role == "solve":
+            return [task, tasks, plan, proposal_a, proposal_b,
+                    self.run_dir / "round-01" / "direct-check.log", self.run_dir / "round-01" / "direct-diff.txt"]
+        if role == "triage":
             return [task, tasks, plan, proposal_a, proposal_b, check, diff]
         if role == "review":
             return [task, tasks, plan, proposal_a, proposal_b, check, diff, triage]
@@ -967,12 +1045,31 @@ class Orchestrator:
         base = (
             f"Workspace: {self.workspace}\n"
             f"Task file: {self.run_dir / 'task.md'}\n"
-            f"Check command (do not edit): {self.state['check']}\n"
-            f"Run directory: {self.run_dir}\n"
+            + self.check_line()
+            + f"Run directory: {self.run_dir}\n"
             f"Round: {round_no}\n"
             f"Profile: {self.state.get('resolved_profile') or self.state['profile']}\n"
             "Use absolute paths from this context. Do not delegate to another agent.\n"
         )
+        if role == "direct":
+            return (
+                "The task, as the person wrote it:\n\n"
+                + (self.run_dir / "prompt.md").read_text(encoding="utf-8", errors="replace").rstrip()
+                + f"\n\nWorkspace: {self.workspace}\n"
+            )
+        if role == "judge":
+            text = (
+                f"Workspace: {self.workspace}\n"
+                f"Task file: {self.run_dir / 'task.md'}\n"
+                f"The change since the run started: {round_dir / 'diff.txt'}\n"
+                "Use absolute paths from this context. Do not delegate to another agent.\n"
+            )
+            if self.state.get("judge_sees_log", {}).get(str(round_no)):
+                text += (
+                    f"The check `{self.state.get('check')}` fails on the workspace as the run found it too, "
+                    f"the same way, so it could not decide. Its output: {round_dir / 'check.log'}\n"
+                )
+            return text
         if role not in {"router", "plan"}:
             base += (
                 f"Task list: {tasks_path}\n"
@@ -980,17 +1077,27 @@ class Orchestrator:
                 f"Current task chosen by the manager: {self.state.get('next_task') or '(none)'}\n"
             )
         if role == "plan":
+            fixed = (
+                f"The check is fixed by the operator: copy `{self.state['check']}` under ## Check.\n"
+                if self.state.get("check_source") == "operator"
+                else "No check command was given: settle one under ## Check, or write judge.\n"
+            )
             return (
                 base
+                + fixed
                 + "Write the plan as your final answer. "
                 + f"The orchestrator will save it to {round_dir / 'plan.md'}."
             )
         if role in ("ideate-a", "ideate-b"):
             return base + f"Read {round_dir / 'plan.md'}. Return only your proposal."
         if role == "solve":
+            first = self.run_dir / "round-01"
             return (
                 base
                 + f"Read {round_dir / 'plan.md'} and both proposals in {round_dir / 'proposals'}.\n"
+                + "A first attempt at the task is already in the workspace and it did not pass: "
+                + f"{first / 'direct-diff.txt'} is what it changed (with the scope report), {first / 'direct-check.log'} "
+                + "what the check said of it.\n"
                 + "Complete the current task as the first milestone toward the full deliverable.\n"
                 + "Modify the workspace as needed, then return your completion summary."
             )
@@ -998,13 +1105,17 @@ class Orchestrator:
             return (
                 base
                 + f"Read {round_dir / 'check.log'} and {round_dir / 'diff.txt'}.\n"
-                + f"The captured check exit status is {self.state.get('last_check', {}).get('exit', 'unknown')}."
+                + f"The captured check result is {self.state.get('last_check', {}).get('status', 'unknown')} "
+                + f"(exit {self.state.get('last_check', {}).get('exit', 'none')})."
             )
         if role == "review":
             return (
                 base
-                + f"Read {round_dir / 'check.log'}, {round_dir / 'diff.txt'}, "
-                + f"{round_dir / 'triage.md'}, and the changed files."
+                + f"Read {round_dir / 'check.log'}, {round_dir / 'scope.txt'} (the files changed against the Scope), "
+                + f"{round_dir / 'diff.txt'}, "
+                + f"{round_dir / 'triage.md'}, and the changed files.\n"
+                + f"The captured check result is {self.state.get('last_check', {}).get('status', 'unknown')} "
+                + "(pass, fail, or none: nothing could be run and you judge the change against the task)."
             )
         if role == "manager":
             improvement = ""
@@ -1021,7 +1132,8 @@ class Orchestrator:
                 base
                 + f"Read {round_dir / 'plan.md'}, {round_dir / 'triage.md'}, "
                 + f"{round_dir / 'review.md'}, {round_dir / 'check.log'}, "
-                + f"{round_dir / 'diff.txt'}, and {round_dir / ('solve.md' if round_no == 1 else 'repair.md')}."
+                + f"{round_dir / 'diff.txt'}, and {self.worker_path(round_no)}."
+                + self.acceptance_note(round_no)
                 + improvement
             )
         if role == "repair":
@@ -1029,8 +1141,10 @@ class Orchestrator:
             manager = previous / "manager.md"
             manager_text = manager.read_text(encoding="utf-8", errors="replace") if manager.exists() else ""
             next_task = self.state.get("next_task") or field_value(manager_text, "NEXT_TASK")
+            judged = previous / "judge.md"
             return (
                 base
+                + (f"The judge failed the work: read {judged}.\n" if judged.exists() else "")
                 + f"Read {previous / 'manager.md'}, {previous / 'review.md'}, "
                 + f"{previous / 'triage.md'}, {previous / 'diff.txt'}, and {previous / 'check.log'}.\n"
                 + f"The manager's next task is: {next_task or '(not present; read manager.md)'}\n"
@@ -1355,112 +1469,183 @@ class Orchestrator:
                     raise error
             return futures[roles[0]].result(), futures[roles[1]].result()
 
-    def capture_diff(self, destination: Path) -> None:
+    @property
+    def tree(self) -> Tree:
+        if self._tree is None:
+            try:
+                self._tree = Tree(self.workspace, self.run_dir, str(self.state.get("run_id") or "manual"))
+                self._tree.start()
+            except (TreeError, OSError, subprocess.SubprocessError) as exc:
+                raise TeamSolveError(f"could not snapshot the workspace: {exc}") from exc
+        return self._tree
+
+    def capture_diff(self, destination: Path) -> dict[str, Any]:
+        """What the run changed since it started, plus the scope report, into
+        destination. The diff is base tree -> workspace now, so the operator's
+        own uncommitted work and files untracked before the run are never shown
+        as the team's, and a role's `git add` cannot hide a change. Sensitive
+        paths are never in a state (tree.py)."""
         destination.parent.mkdir(parents=True, exist_ok=True)
         parts = [
             f"captured_at: {utc_now()}",
             f"workspace: {self.workspace}",
+            f"repository: {'git' if self.tree.real else 'none (a private shadow repository tracks the run)'}",
         ]
-        git = subprocess.run(
-            ["git", "-C", str(self.workspace), "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if git.returncode != 0 or git.stdout.strip() != "true":
-            parts.append("workspace is not a git repository; no diff snapshot available")
-        else:
-            parts.append(f"\n## status\n{filtered_git_status(self.workspace)}")
-            excludes = git_excludes()
-            commands = [
-                (
-                    "diff stat",
-                    [
-                        "git",
-                        "-C",
-                        str(self.workspace),
-                        "diff",
-                        "--no-ext-diff",
-                        "--no-textconv",
-                        "--stat",
-                        "--",
-                        ".",
-                        *excludes,
-                    ],
-                ),
-                (
-                    "diff",
-                    [
-                        "git",
-                        "-C",
-                        str(self.workspace),
-                        "diff",
-                        "--no-ext-diff",
-                        "--no-textconv",
-                        "--binary",
-                        "--",
-                        ".",
-                        *excludes,
-                    ],
-                ),
-            ]
-            for label, command in commands:
-                try:
-                    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    parts.append(f"\n## {label}\nERROR: {exc}")
-                    continue
-                text = (result.stdout + result.stderr).replace(".team-solve/", "<team-solve>/")
-                parts.append(f"\n## {label} (exit {result.returncode})\n{text[:1_000_000]}")
-                if len(text) > 1_000_000:
-                    parts.append(f"\n[truncated {len(text) - 1_000_000} characters]")
-
-            try:
-                untracked = subprocess.run(
-                    ["git", "-C", str(self.workspace), "ls-files", "--others", "--exclude-standard", "-z"],
-                    capture_output=True,
-                    timeout=30,
-                )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                parts.append(f"\n## untracked files\nERROR: {exc}")
-            else:
-                names = [
-                    name
-                    for name in untracked.stdout.decode("utf-8", errors="surrogateescape").split("\0")
-                    if name and not name.startswith(f"{STATE_DIR}/") and not sensitive_path(name)
-                ]
-                parts.append(f"\n## untracked files\n{len(names)} file(s)")
-                for name in names:
-                    try:
-                        result = subprocess.run(
-                            [
-                                "git",
-                                "-C",
-                                str(self.workspace),
-                                "diff",
-                                "--no-index",
-                                "--no-textconv",
-                                "--binary",
-                                "--",
-                                os.devnull,
-                                name,
-                            ],
-                            capture_output=True,
-                            text=True,
-                            errors="replace",
-                            timeout=30,
-                        )
-                    except (OSError, subprocess.TimeoutExpired) as exc:
-                        parts.append(f"\n### {name}\nERROR: {exc}")
-                        continue
-                    text = (result.stdout + result.stderr).replace(".team-solve/", "<team-solve>/")
-                    parts.append(f"\n### {name}\n{text[:1_000_000]}")
-                    if len(text) > 1_000_000:
-                        parts.append(f"\n[truncated {len(text) - 1_000_000} characters]")
+        try:
+            now = self.tree.snapshot()
+            diff = self.tree.diff(binary=False, now=now)
+            report, outside = taskspec.scope_report(self.task_text(), self.tree)
+        except TreeError as exc:
+            raise TeamSolveError(f"could not measure the change: {exc}") from exc
+        stat_lines = [f"{path} +{add} -{rem}" for add, rem, path in self.tree.changed_files(now)]
+        parts.append("\n## files changed since the run started\n" + ("\n".join(stat_lines) or "(none)"))
+        parts.append("\n## scope\n" + report.rstrip())
+        text = diff.replace(".team-solve/", "<team-solve>/")
+        parts.append("\n## diff since the run started\n" + text[:1_000_000])
+        if len(text) > 1_000_000:
+            parts.append(f"\n[truncated {len(text) - 1_000_000} characters]")
         content = "\n".join(parts).rstrip() + "\n"
         if len(content) > 2_000_000:
-            content = content[:2_000_000] + f"\n[global diff truncated at 2,000,000 characters]\n"
+            content = content[:2_000_000] + "\n[global diff truncated at 2,000,000 characters]\n"
         atomic_text(destination, content)
+        (destination.parent / "scope.txt").write_text(report, encoding="utf-8")
+        return {"changed": bool(stat_lines), "outside_scope": outside, "tree": now}
+
+    def task_text(self) -> str:
+        path = self.run_dir / "task.md"
+        return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+
+    def evaluate_check(self, destination: Path) -> dict[str, Any]:
+        """The check as the run settled it: pass, fail, or none (nothing to
+        run, or a check that fails exactly as it did before any change)."""
+        if not self.state.get("check"):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            atomic_text(destination, "check: nothing to run, the judge decides\n")
+            result = {"exit": None, "status": CHECK_NONE, "timed_out": False, "seconds": 0, "at": utc_now(),
+                      "log": os.path.relpath(destination, self.run_dir)}
+            self.state["last_check"] = result
+            self.save()
+            return result
+        result = self.run_check(destination)
+        if result["exit"] == 0:
+            result["status"] = CHECK_PASS
+        else:
+            result["status"] = self.against_baseline(destination)
+        self.state["last_check"] = result
+        self.save()
+        return result
+
+    def against_baseline(self, log_path: Path) -> str:
+        """A check that already failed on the workspace as found counts only the
+        failing tests the work adds (pytest, unittest, Django, go test). A
+        failure that reads exactly as before any change says nothing about the
+        work: the judge decides, with the log. Any other failure is the work's."""
+        baseline = self.state.get("baseline_check") or {}
+        if baseline.get("exit") in (None, 0) or not baseline.get("log"):
+            return CHECK_FAIL
+        base_log = self.run_dir / baseline["log"]
+        before_text = base_log.read_text(encoding="utf-8", errors="replace") if base_log.exists() else ""
+        after_text = log_path.read_text(encoding="utf-8", errors="replace")
+        before, after = failures.parse(before_text), failures.parse(after_text)
+        with log_path.open("a", encoding="utf-8") as handle:
+            if before is not None and after is not None:
+                added = sorted(set(after) - set(before))
+                if not added:
+                    handle.write("\nthe check fails on the workspace as the run found it too "
+                                 f"({baseline['log']}), and this change adds no failing test to it: it passes\n")
+                    return CHECK_PASS
+                handle.write("\nthe tests this change makes fail (they pass on the workspace as the run found it):\n"
+                             + "\n".join(added) + "\n")
+                return CHECK_FAIL
+            if failure_shape(after_text) == failure_shape(before_text):
+                handle.write(f"\nthe check fails exactly as it did on the workspace as the run found it ({baseline['log']}): "
+                             "it says nothing about this change, the judge decides with this log\n")
+                return CHECK_NONE
+            handle.write("\nthe check failed on the workspace as the run found it too, but it fails differently "
+                         "now: counted as a failure of this change\n")
+        return CHECK_FAIL
+
+    def baseline_on_copy(self) -> dict[str, Any]:
+        """The settled check on a copy of the workspace as the run found it (a
+        role may already be changing the live one)."""
+        destination = self.run_dir / "round-00" / "baseline-check.log"
+        scratch = Path(tempfile.mkdtemp(prefix="team-solve-baseline-"))
+        try:
+            cwd = self.tree.baseline_copy(scratch)
+            saved_workspace = self.workspace
+            self.workspace = cwd
+            try:
+                result = self.run_check(destination, record=False)
+            finally:
+                self.workspace = saved_workspace
+        except (TreeError, OSError) as exc:
+            log(f"  [baseline] no clean copy ({exc}); none taken")
+            return {"exit": None, "skipped": str(exc)}
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        return result
+
+    def settle(self, plan: str) -> None:
+        """plan.md's Check, Scope and Done when into task.md, the Prompt
+        untouched. The operator's --check and --until win over the planner."""
+        if self.state.get("settled"):
+            return
+        prompt = (self.run_dir / "prompt.md").read_text(encoding="utf-8", errors="replace")
+        operator = self.state.get("check") if self.state.get("check_source") == "operator" else None
+        text, filled = taskspec.settle(plan, self.task_text(), prompt, str(self.workspace),
+                                       self.state.get("until"), operator)
+        atomic_text(self.run_dir / "task.md", text)
+        kind, cmd = taskspec.check_spec(text, str(self.workspace))
+        if kind == "samples":
+            # This orchestrator has no sample runner: tests/N.in samples are for a
+            # check command to run, so with none the judge decides.
+            log("[team-solve] the plan named samples, which have no runner here: the judge decides")
+            kind, cmd = "judge", ""
+        self.state["check_kind"] = kind
+        if kind == "command" and self.state.get("check_source") != "operator":
+            self.state["check"] = cmd
+            self.state["check_source"] = "planner"
+        self.state["settled"] = {"filled": filled, "kind": kind, "cmd": cmd}
+        self.save()
+        log(f"[team-solve] check settled: {kind}" + (f" `{cmd}`" if cmd else "")
+            + (f"; filled safely: {', '.join(filled)}" if filled else ""))
+
+    def acceptance_note(self, round_no: int) -> str:
+        entry = (self.state.get("rounds") or {}).get(str(round_no))
+        if not entry:
+            return ""
+        if entry.get("accepted"):
+            return ("\nThis round's work is ACCEPTED: the check, the review and (where needed) the judge agree. "
+                    "Use DONE unless required work remains.")
+        return (f"\nThis round's work is NOT accepted (check {entry.get('check')}, review {entry.get('review')}, "
+                f"judge {entry.get('judge')}): choose CONTINUE.")
+
+    def keep_net(self, accepted_now: bool) -> str:
+        """Never end worse proven than a state the run already had: the last
+        accepted state, else the direct attempt when the check says it is no
+        worse. A judge-only task with nothing accepted keeps the latest work,
+        which every review so far shaped."""
+        if accepted_now:
+            return "kept: the work the last round accepted"
+        kind = self.state.get("check_kind")
+        if self.tree.saved("accepted"):
+            self.tree.save("team")
+            self.tree.restore("accepted")
+            return (f"put back: the last accepted state (round {self.state.get('accepted_round')}); the later work "
+                    f"is in {self.run_dir / 'team.patch'}")
+        if self.state.get("direct_passed") and not self.state.get("repaired"):
+            return "kept: the direct attempt, untouched (not accepted)"
+        last = (self.state.get("last_check") or {}).get("status")
+        if kind == "judge":
+            return f"kept: the team's latest work (nothing can be run; the direct attempt is in {self.run_dir / 'direct.patch'})"
+        if last == CHECK_PASS:
+            return "kept: the team's work (its check passes)"
+        if self.tree.saved("direct"):
+            self.tree.save("team")
+            self.tree.restore("direct")
+            return (f"put back: the direct attempt (the team's work did not prove better: check {last}); the team's "
+                    f"work is in {self.run_dir / 'team.patch'}")
+        return "kept: the team's latest work"
 
     def run_check(self, destination: Path, *, record: bool = True) -> dict[str, Any]:
         self.require_budget()
@@ -1522,6 +1707,31 @@ class Orchestrator:
         log(f"  [check] exit {exit_code}" + (" (timed out)" if timed_out else ""))
         return result
 
+    def run_beside(self, round_no: int, tolerant: str, required: str) -> tuple[str | None, str]:
+        """Two roles at once where the first may fail without stopping the run:
+        the direct attempt beside the planner (memdoor: a failed single call
+        leaves the team to take over from what it left)."""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            side = pool.submit(self.run_role, round_no, tolerant)
+            main = pool.submit(self.run_role, round_no, required)
+            try:
+                main_text = main.result()
+            except BaseException:
+                self.cancel_requested.set()
+                self.terminate_all()
+                raise
+            try:
+                side_text = side.result()
+            except TeamStopped:
+                raise
+            except TeamSolveError as exc:
+                if self.budget_problem():
+                    raise
+                self.state.setdefault("warnings", []).append(f"{tolerant} failed: {exc}")
+                log(f"[team-solve] {tolerant} failed ({exc}); the team takes over from what it left")
+                side_text = None
+        return side_text, main_text
+
     def route_profile(self) -> str:
         requested = self.state["profile"]
         if requested != "auto":
@@ -1576,14 +1786,35 @@ class Orchestrator:
             report_finished(self)
             return 0 if self.state.get("status") == "solved" else 1
 
+        # A run saved before prompt-only runs existed had an operator check and a task.
+        if "check_source" not in self.state:
+            self.state["check_source"] = "operator" if self.state.get("check") else ""
+            self.state["check_kind"] = "command" if self.state.get("check") else ""
+            self.state["goal_given"] = not str(self.state.get("task_text", "")).startswith(
+                "Make this verification command pass")
+            if not (self.run_dir / "prompt.md").exists():
+                atomic_text(self.run_dir / "prompt.md", str(self.state.get("task_text", "")).rstrip() + "\n")
+        try:
+            self.tree.start()
+        except TreeError as exc:
+            raise TeamSolveError(f"could not snapshot the workspace: {exc}") from exc
+        self.state["repository"] = "git" if self.tree.real else "shadow"
+
+        # An operator check runs once on the untouched workspace, before any role.
+        # A planner-settled check gets its baseline on a copy of the start tree.
         baseline_path = self.run_dir / "round-00" / "baseline-check.log"
         baseline = self.state.get("baseline_check")
-        if not baseline:
+        if self.state.get("check_source") == "operator" and not baseline:
             baseline = self.run_check(baseline_path)
+            baseline["log"] = os.path.relpath(baseline_path, self.run_dir)
             self.state["baseline_check"] = baseline
             self.save()
 
-        if baseline["exit"] == 0 and not self.state.get("improve"):
+        # A passing check with nothing else asked: no model work. With a goal the
+        # check cannot show the work (it passed before it), so the team runs and
+        # the judge has to agree too.
+        if (baseline and baseline.get("exit") == 0 and not self.state.get("goal_given")
+                and not self.state.get("improve")):
             self.state["status"] = "solved"
             self.state["finished"] = True
             self.state["finished_at"] = utc_now()
@@ -1600,26 +1831,53 @@ class Orchestrator:
         self.save()
         log(f"[team-solve] profile: {profile} ({self.state.get('route_reason', '')})")
 
-        self.set_phase("plan", 1)
-        plan = self.run_role(1, "plan")
+        # The direct attempt (one writable agent on the prompt as written) beside
+        # the planner; the team works only when that attempt does not pass.
+        self.set_phase("direct+plan", 1)
+        _, plan = self.run_beside(1, "direct", "plan")
+        self.settle(plan)
+        if self.state.get("check_kind") == "command" and not self.state.get("baseline_check"):
+            baseline = self.baseline_on_copy()
+            if baseline.get("exit") is not None:
+                baseline["log"] = "round-00/baseline-check.log"
+            self.state["baseline_check"] = baseline
+            self.save()
+            log(f"[team-solve] baseline: the settled check on the workspace as found exits {baseline.get('exit')}")
+        if self.state.get("check_kind") == "command" and (self.state.get("baseline_check") or {}).get("exit") == 0:
+            # A check that passed before any work cannot show the work: the judge must agree too.
+            self.state["check_uninformative"] = bool(self.state.get("goal_given"))
         existing_tasks = self.load_tasks()
-        tasks = (
-            existing_tasks
-            if existing_tasks
-            else reconcile_tasks([], parse_task_items(plan), "")
-        )
+        tasks = existing_tasks if existing_tasks else reconcile_tasks([], parse_task_items(plan), "")
         self.save_tasks(tasks)
         initial_tasks = self.run_dir / "round-01" / "tasks-initial.json"
         if not initial_tasks.exists():
             atomic_json(initial_tasks, tasks)
         if tasks and not self.state.get("next_task"):
             self.state["next_task"] = tasks[0]["description"]
-        self.set_phase("ideate", 1)
-        self.run_parallel(1, ("ideate-a", "ideate-b"))
+
+        if "direct_passed" not in self.state:
+            self.set_phase("test-0", 1)
+            first = self.run_dir / "round-01"
+            check0 = self.evaluate_check(first / "direct-check.log")
+            measured = self.capture_diff(first / "direct-diff.txt")
+            passed = measured["changed"] and (
+                check0["status"] == CHECK_PASS
+                or (check0["status"] == CHECK_NONE and self.state.get("check_kind") == "judge")
+            )
+            self.tree.save("direct")
+            self.state["direct_check"] = check0
+            self.state["direct_passed"] = bool(passed)
+            self.save()
+            log("[team-solve] direct attempt " + ("passes: review and judge only" if passed else
+                                                    "does not pass: the team takes over"))
+
+        if not self.state["direct_passed"]:
+            self.set_phase("ideate", 1)
+            self.run_parallel(1, ("ideate-a", "ideate-b"))
 
         rounds = int(self.state["max_rounds"])
         round_no = 1
-        check = baseline
+        accepted_now = False
         while round_no <= rounds:
             self.require_budget()
             tasks = reconcile_tasks(
@@ -1631,22 +1889,63 @@ class Orchestrator:
             round_dir = self.run_dir / f"round-{round_no:02d}"
             atomic_json(round_dir / "tasks-before.json", tasks)
             if round_no == 1:
-                self.set_phase("solve", round_no)
-                self.run_role(round_no, "solve")
+                if not self.state["direct_passed"]:
+                    self.set_phase("solve", round_no)
+                    self.run_role(round_no, "solve")
             else:
                 self.set_phase("repair", round_no)
+                before = self.tree.snapshot()
                 self.run_role(round_no, "repair")
+                self.state["repaired"] = True
+                if self.tree.snapshot() == before and not self.state.get("improve"):
+                    self.state.setdefault("warnings", []).append(f"repair in round {round_no} changed nothing")
+                    self.state["stopped"] = "no_progress"
+                    log("[team-solve] the repair changed nothing; no progress, stopping")
+                    round_no -= 1
+                    break
 
             self.set_phase("verify", round_no)
-            check = self.run_check(self.run_dir / f"round-{round_no:02d}" / "check.log")
-            self.state["last_check"] = check
-            self.save()
+            check = self.evaluate_check(round_dir / "check.log")
+            measured = self.capture_diff(round_dir / "diff.txt")
 
-            self.capture_diff(round_dir / "diff.txt")
             self.set_phase("triage", round_no)
             self.run_role(round_no, "triage")
             self.set_phase("review", round_no)
-            self.run_role(round_no, "review")
+            review = verdict_of(self.run_role(round_no, "review"), heading=True)
+            if check["status"] == CHECK_FAIL and review == "PASS":
+                review = "FAIL"
+                log("[team-solve] the review said PASS on a failing check: counted as FAIL")
+            judged = "skipped"
+            if check["status"] == CHECK_FAIL or review == "FAIL" or not measured["changed"]:
+                accepted = False
+            elif (check["status"] == CHECK_PASS and review == "PASS" and not self.state.get("repaired")
+                  and not self.state.get("check_uninformative")):
+                accepted = True
+            else:
+                self.set_phase("judge", round_no)
+                if check["status"] == CHECK_NONE and self.state.get("check"):
+                    self.state.setdefault("judge_sees_log", {})[str(round_no)] = True
+                    self.save()
+                judged = verdict_of(self.run_role(round_no, "judge"))
+                if judged == "PASS":
+                    accepted = True
+                elif judged == "FAIL":
+                    accepted = False
+                else:
+                    # A judge that answered nothing leaves the check and the review to decide.
+                    accepted = check["status"] == CHECK_PASS and not self.state.get("check_uninformative")
+            self.state.setdefault("rounds", {})[str(round_no)] = {
+                "check": check["status"], "exit": check.get("exit"), "review": review, "judge": judged,
+                "accepted": accepted, "outside_scope": measured["outside_scope"],
+            }
+            if accepted:
+                self.tree.save("accepted")
+                self.state["accepted_round"] = round_no
+            accepted_now = accepted
+            self.save()
+            log(f"[team-solve] round {round_no}: check {check['status']}  review {review}  judge {judged}  -> "
+                + ("ACCEPTED" if accepted else "not accepted"))
+
             self.set_phase("manage", round_no)
             self.state.pop("next_task", None)
             manager = self.run_role(round_no, "manager")
@@ -1664,22 +1963,21 @@ class Orchestrator:
             if next_task:
                 self.state["next_task"] = next_task
             improving = bool(self.state.get("improve"))
-            if (
-                check["exit"] == 0
-                and status == "DONE"
-                and (not improving or round_no >= rounds)
-            ):
+            if accepted and (status == "DONE" or not next_task) and (not improving or round_no >= rounds):
                 break
-            if check["exit"] != 0 and status == "DONE":
-                log("[team-solve] manager said DONE while the check failed; continuing")
-            if improving and check["exit"] == 0 and status == "DONE":
-                log("[team-solve] continuing improvement after a passing check")
+            if not accepted and status == "DONE":
+                log("[team-solve] manager said DONE on work that is not accepted; continuing")
+            if improving and accepted and status == "DONE":
+                log("[team-solve] continuing improvement after accepted work")
             if round_no >= rounds:
+                self.state["stopped"] = "max_rounds"
                 break
-            if check["exit"] != 0 and not next_task:
+            if not accepted and not next_task:
                 next_task = (
                     "Fix the failing verification command at its root cause, "
                     "or switch to a different approach from the proposals."
+                    if check["status"] == CHECK_FAIL else
+                    "Address the required next action in the review and the judge's findings."
                 )
                 self.state["next_task"] = next_task
                 self.save_tasks(
@@ -1696,9 +1994,15 @@ class Orchestrator:
                 )
             round_no += 1
 
+        if "keep" not in self.state:
+            self.set_phase("keep", round_no)
+            self.state["keep"] = self.keep_net(accepted_now)
+            self.save()
+            log(f"[team-solve] {self.state['keep']}")
+
         self.set_phase("final-check", round_no)
         self.capture_diff(self.run_dir / "final-diff.txt")
-        final_check = self.run_check(self.run_dir / "final-check.log")
+        final_check = self.evaluate_check(self.run_dir / "final-check.log")
         self.state["final_check"] = final_check
         self.save()
 
@@ -1719,18 +2023,29 @@ class Orchestrator:
         else:
             self.state.pop("active_processes", None)
 
-        self.state["status"] = "solved" if final_check["exit"] == 0 else "failed"
+        kept_accepted = str(self.state.get("keep", "")).startswith(("kept: the work the last round accepted",
+                                                                      "put back: the last accepted state"))
+        solved = kept_accepted and final_check["status"] != CHECK_FAIL
+        self.state["status"] = "solved" if solved else "failed"
         self.state["finished"] = True
         self.state["finished_at"] = utc_now()
-        self.state["summary"] = (
-            "verification command passed"
-            if final_check["exit"] == 0
-            else f"verification command exited {final_check['exit']}"
-        )
+        kind = self.state.get("check_kind")
+        how = ("judged, not checked: no command could check it" if kind == "judge" or final_check["status"] == CHECK_NONE
+               else f"checked by `{self.state.get('check')}`")
+        if solved:
+            self.state["summary"] = f"accepted ({how})"
+        elif final_check["status"] == CHECK_FAIL:
+            self.state["summary"] = f"verification command exited {final_check['exit']}"
+        else:
+            self.state["summary"] = f"not accepted by the review and the judge ({how})"
         self.save()
+        try:
+            self.tree.drop_refs()
+        except TreeError:
+            pass
         write_result(self.run_dir, self.workspace, self.state)
         report_finished(self)
-        if final_check["exit"] == 0:
+        if solved:
             return 0
         print(tail(self.run_dir / "final-check.log", 200))
         return 1
@@ -2028,7 +2343,8 @@ def result_lock(run_dir: Path) -> Iterator[None]:
 def write_result_unlocked(run_dir: Path, workspace: Path, state: dict[str, Any]) -> None:
     artifacts = {
         name: os.path.relpath(run_dir / name, workspace)
-        for name in ("task.md", "tasks.json", "state.json", "final-check.log", "final-diff.txt")
+        for name in ("prompt.md", "task.md", "tasks.json", "state.json", "final-check.log", "final-diff.txt",
+                     "direct.patch", "team.patch", "accepted.patch")
         if (run_dir / name).exists()
     }
     audit = latest_audit(run_dir)
@@ -2043,6 +2359,14 @@ def write_result_unlocked(run_dir: Path, workspace: Path, state: dict[str, Any])
         "multi_day": bool(state.get("multi_day")),
         "route_reason": state.get("route_reason"),
         "check": state.get("check"),
+        "check_kind": state.get("check_kind"),
+        "check_source": state.get("check_source"),
+        "until": state.get("until") or None,
+        "direct_passed": state.get("direct_passed"),
+        "rounds": state.get("rounds") or {},
+        "accepted_round": state.get("accepted_round"),
+        "keep": state.get("keep"),
+        "stopped": state.get("stopped"),
         "baseline_check": state.get("baseline_check"),
         "last_check": state.get("last_check"),
         "final_check": state.get("final_check"),
@@ -2086,11 +2410,20 @@ def initial_config(args: argparse.Namespace, workspace: Path) -> dict[str, Any]:
         task_text = task_path.read_text(encoding="utf-8", errors="replace")
     elif args.goal:
         task_text = " ".join(args.goal).strip()
-    if not task_text:
-        task_text = f"Make this verification command pass without weakening it:\n\n{args.check}"
-    check = args.check.strip()
-    if not check:
+    check = (args.check or "").strip()
+    if args.check is not None and not check:
         raise TeamSolveError("--check must not be empty")
+    until = (getattr(args, "until", None) or "").strip()
+    if getattr(args, "until", None) is not None and not until:
+        raise TeamSolveError("--until must not be empty")
+    goal_given = bool(task_text.strip())
+    if not goal_given:
+        if not check:
+            raise TeamSolveError(
+                'no task: give one ("what to do"), --task-file FILE, or a --check command to make pass'
+            )
+        task_text = f"Make this verification command pass without weakening it:\n\n{check}"
+    task_text = taskspec.prompt_text(task_text, until or None)
     profile = args.profile or setting("TEAM_SOLVE_DEFAULT_PROFILE", "auto")
     if profile not in PROFILE_CHOICES:
         raise TeamSolveError(
@@ -2135,6 +2468,10 @@ def initial_config(args: argparse.Namespace, workspace: Path) -> dict[str, Any]:
         "task_text": task_text,
         "task_sha256": hashlib.sha256(task_text.encode()).hexdigest(),
         "check": check,
+        "check_source": "operator" if check else "",
+        "check_kind": "command" if check else "",
+        "until": until,
+        "goal_given": goal_given,
         "profile": profile,
         "max_rounds": rounds,
         "max_hours": max_hours,
@@ -2158,18 +2495,23 @@ def config_matches(state: dict[str, Any], config: dict[str, Any]) -> bool:
         "workspace",
         "task_sha256",
         "check",
+        "until",
         "profile",
         "max_rounds",
         "improve",
         "multi_day",
     )
-    return all(state.get(key) == config.get(key) for key in keys)
+    return all((state.get(key) or None) == (config.get(key) or None) for key in keys)
 
 
 def write_task(run_dir: Path, task_text: str) -> None:
-    path = run_dir / "task.md"
-    path.write_text(task_text.rstrip() + "\n", encoding="utf-8")
-    path.chmod(0o600)
+    """prompt.md: the person's words (and --until), untouched for the whole run.
+    task.md: the same prompt in the task template, whose Deliverable, Check,
+    Scope and Done when the planner settles."""
+    for name, text in (("prompt.md", task_text.rstrip() + "\n"), ("task.md", taskspec.make_task(task_text))):
+        path = run_dir / name
+        path.write_text(text, encoding="utf-8")
+        path.chmod(0o600)
 
 
 def create_run(workspace: Path, config: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
@@ -2254,6 +2596,9 @@ def cmd_resume(args: argparse.Namespace) -> int:
         active = active_problem(state)
         if active:
             raise TeamSolveError(active)
+        if state.get("finished") and state.get("status") == "solved" and not state.get("check"):
+            print_status(workspace, state)
+            return 0
         if state.get("finished") and state.get("status") == "solved":
             checker = Orchestrator(
                 workspace,
@@ -2314,6 +2659,21 @@ def print_status(workspace: Path, state: dict[str, Any]) -> None:
     profile = state.get("resolved_profile") or state.get("profile")
     print(f"profile   {profile}  {state.get('route_reason', '')}".rstrip())
     print(f"horizon   {'multi-day' if state.get('multi_day') else 'session'}")
+    kind = state.get("check_kind") or "unsettled"
+    how = {
+        "command": f"command `{state.get('check')}` ({state.get('check_source') or 'operator'})",
+        "judge": "the judge (judged, not checked: no command could check it)",
+    }.get(kind, kind)
+    print(f"check by  {how}")
+    if state.get("until"):
+        print(f"until     {state['until']}")
+    if "direct_passed" in state:
+        print(f"direct    {'passed test-0' if state['direct_passed'] else 'did not pass; the team took over'}")
+    for number, entry in sorted((state.get("rounds") or {}).items(), key=lambda item: int(item[0])):
+        print(f"round {number:<3} check {entry.get('check')}  review {entry.get('review')}  judge {entry.get('judge')}  "
+              + ("ACCEPTED" if entry.get("accepted") else "not accepted"))
+    if state.get("keep"):
+        print(f"keep      {state['keep']}")
     tasks = state.get("tasks") or []
     if tasks:
         done = sum(
@@ -2324,7 +2684,7 @@ def print_status(workspace: Path, state: dict[str, Any]) -> None:
         print(f"tasks     {done}/{len(tasks)} done  next: {state.get('next_task') or '(none)'}")
     check = state.get("last_check") or {}
     if check:
-        print(f"check     exit {check.get('exit')}  {check.get('seconds', '?')}s")
+        print(f"check     {check.get('status', 'exit')}  exit {check.get('exit')}  {check.get('seconds', '?')}s")
     usage = state.get("usage") or {}
     if usage:
         print(
@@ -2488,7 +2848,10 @@ def cmd_check(args: argparse.Namespace) -> int:
         run_dir, state = existing
         check = args.check or state.get("check")
         if not check:
-            raise TeamSolveError("the saved run has no check command")
+            judged = sorted(run_dir.glob("round-*/judge.md"), key=audit_sort_key)
+            verdict = verdict_of(judged[-1].read_text(encoding="utf-8", errors="replace")) if judged else "none"
+            print(f"no command to run: the run was judged, and the last judge said {verdict}")
+            return 0 if verdict == "PASS" and state.get("status") == "solved" else 1
         effective_state = dict(state)
         effective_state["check"] = check
         orchestrator = Orchestrator(
@@ -2645,7 +3008,7 @@ def cmd_preview(args: argparse.Namespace) -> int:
     profile = args.profile
     print(f"backend   {backend}")
     print(f"profile   {profile}")
-    print(f"check     {args.check}")
+    print(f"check     {args.check or 'settled by the planner (a command, or the judge)'}")
     print("")
     profiles = (
         [profile]
@@ -2656,6 +3019,7 @@ def cmd_preview(args: argparse.Namespace) -> int:
         print(name)
         roles = (
             "router",
+            "direct",
             "plan",
             "ideate-a",
             "ideate-b",
@@ -2663,6 +3027,7 @@ def cmd_preview(args: argparse.Namespace) -> int:
             "cutoff",
             "triage",
             "review",
+            "judge",
             "manager",
             "repair",
             "audit",
@@ -2688,8 +3053,14 @@ def cmd_help(_args: argparse.Namespace) -> int:
 
 
 COMMAND_HELP = """\
-/team-solve run [goal words] --check "COMMAND" [options]
-    Start or resume a durable, command-checked Anthropic team run.
+/team-solve run "what to do" [--until "end condition"] [--check "COMMAND"] [options]
+    Start or resume a durable Anthropic team run. A direct attempt goes first;
+    the team takes over when it does not pass.
+    --check COMMAND         the verification command (exit 0 = right). Without
+                            one the planner settles one from the project, or
+                            a fresh judge decides when nothing can be run
+    --until SENTENCE        your end condition in plain words: binding for the
+                            review and the judge, first line of Done when
     --task-file FILE        use a statement file instead of inline goal words
     --profile PROFILE       auto, coding, everyday, research, writing, general, high-volume
     --rounds N              maximum repair rounds (default 10)
@@ -2715,11 +3086,13 @@ COMMAND_HELP = """\
 /team-solve stop
     Stop the detached run and its active pi/check child process.
 
-/team-solve preview --check "COMMAND" [--profile PROFILE] [--multi-day]
+/team-solve preview [--check "COMMAND"] [--profile PROFILE] [--multi-day]
     Print the model/role allocation without making a model call.
 
-Ground truth is always the verification command. A model cannot mark a failing
-check as done. Runs continue after leaving pi; use status/resume/stop here.
+Ground truth is the verification command when there is one: a model cannot
+mark a failing check as done. With none, the review and a fresh judge must both
+pass the work, and status says "judged, not checked". Runs continue after
+leaving pi; use status/resume/stop here.
 """
 
 
@@ -2759,7 +3132,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     preview = sub.add_parser("preview", help="show model allocation")
     preview.add_argument("--profile", choices=PROFILE_CHOICES, default="auto")
-    preview.add_argument("--check", default='<verification command>')
+    preview.add_argument("--check", default="")
     preview.add_argument(
         "--multi-day",
         action=argparse.BooleanOptionalAction,
@@ -2775,7 +3148,8 @@ def build_parser() -> argparse.ArgumentParser:
 def add_run_options(parser: argparse.ArgumentParser, *, resume: bool) -> None:
     parser.add_argument("--dir", default=".")
     parser.add_argument("--task-file")
-    parser.add_argument("--check", required=not resume)
+    parser.add_argument("--check", help="the verification command (optional: the planner settles one, or the judge)")
+    parser.add_argument("--until", help="the end condition in plain words; the run is done only when it holds")
     parser.add_argument("--profile", choices=PROFILE_CHOICES)
     parser.add_argument("--rounds", type=int)
     parser.add_argument("--max-hours", type=float)

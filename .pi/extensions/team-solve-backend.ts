@@ -40,6 +40,20 @@ function takesDirectory(action: TeamSolveAction): boolean {
 	return DIRECTORY_ACTIONS.has(action);
 }
 
+const OPTIONS_WITH_VALUES = new Set([
+	"--task-file",
+	"--check",
+	"--until",
+	"--profile",
+	"--rounds",
+	"--max-hours",
+	"--role-timeout",
+	"--check-timeout",
+	"--role-retries",
+	"--role",
+	"--lines",
+]);
+
 function hasValue(args: string[], option: string): boolean {
 	const inline = `${option}=`;
 	return args.some((arg) => arg === option || arg.startsWith(inline));
@@ -75,11 +89,14 @@ export function buildTeamSolveInvocation(
 		};
 	}
 
-	if (first === "run" && !hasValue(rest, "--check")) {
+	// A run needs something to do: words, a task file, or a check to make pass.
+	// --check is optional: without it the planner settles one, or the judge decides.
+	const hasGoal = rest.some((arg, index) => !arg.startsWith("--") && !OPTIONS_WITH_VALUES.has(rest[index - 1] ?? ""));
+	if (first === "run" && !hasGoal && !hasValue(rest, "--task-file") && !hasValue(rest, "--check")) {
 		return {
 			error:
-				"/team-solve run requires an explicit verification command:\n" +
-				'/team-solve run "describe the goal" --check "pytest -q"',
+				"/team-solve run needs a task:\n" +
+				'/team-solve run "describe the goal" [--until "end condition"] [--check "pytest -q"]',
 		};
 	}
 
@@ -106,6 +123,7 @@ export function teamSolveCompletionItems(prefix: string): Array<{ value: string;
 		run: [
 			"--task-file",
 			"--check",
+			"--until",
 			"--profile",
 			"--rounds",
 			"--max-hours",
